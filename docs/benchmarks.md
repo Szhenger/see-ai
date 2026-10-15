@@ -202,7 +202,7 @@ records, the tail 10 % held out, identical ids in every stack), LoRA r8 /
 0.01, constant LR, no clipping, 4 records × 128 targets = 512 loss tokens
 per step, 300 steps, 10 threads. Apple M5 (10-core GPU, 16 GB), main at
 1d6b8ed (the code that ran), driven by the F1 harness `tool/frontier_run.py`
-(#129; on branch `claude/f1-frontier-harness` until it merges), torch 2.14.0, mlx 0.32.2 / mlx-lm 0.31.3, warm chip, strictly
+(#129, merged in #135), torch 2.14.0, mlx 0.32.2 / mlx-lm 0.31.3, warm chip, strictly
 serial. SeeAI's step is the steps-regression slope on the package binary
 (the 15→300-step slope where a 300-step run exists); PyTorch's is the
 median step after warm-up; MLX's is the trainer's own `It/sec` × 512.
@@ -256,6 +256,106 @@ writes the tied head as its own weight and SeeAI adapts it); and note that
 The harness, raw JSON and loss curves are in `out/frontier-2026-09-22/`
 (not committed); the full report is the SeeAI Frontier Harness page of
 2026-09-22.
+
+### The relaxed GEMM family on Metal, measured (F2 #130, 2026-10-15)
+
+The first Metal number for the certified half-precision family (plan v18,
+`--precision certified-bf16`, #136): the SmolLM-135M int8-base package of
+the frontier row above, compiled exact and relaxed from the same source
+and flags (the two plans are byte-identical to the ones certified on
+2026-09-23 — exact `c9181488851bad75`, relaxed `12a25add58faee3f`, 419
+frozen-weight GEMMs carrying `kFlagRelaxed`; certificate `gemm.relaxed`
+observed 6.2e-3 against 2⁻⁷), run by `tool/frontier_run.py matrix` on the
+same Apple M5 (macOS 26.6.2, 10 threads): two 40→160-step slopes and a
+300-step run per package, the relaxed package twice, an exact run again
+at the end as the thermal-drift control, and `mlx_lm`'s all-bf16 trainer
+re-run in the same session. SeeAI's step is the 160→300 slope, MLX's the
+trainer's `It/sec` × 512.
+
+| run | step (ms) | tokens/s | validation 0 → 300 | gate | committed model |
+|---|---:|---:|---:|---|---|
+| SeeAI `metal`, exact (f32 math, int8 base) | 287.2 | 1,783 | 4.5743 → 4.0137 | accepted | `a82b22e0…` |
+| SeeAI `metal`, relaxed (certified-bf16), run 1 | 203.3 | 2,519 | 4.5743 → 4.0136 | accepted | `93fb4a37…` |
+| SeeAI `metal`, relaxed, run 2 | 206.8 | 2,476 | 4.5743 → 4.0136 | accepted | `93fb4a37…` |
+| SeeAI `metal`, exact, drift control (40→160 only) | 288.4 | 1,775 | — | — | — |
+| MLX-LM all-bf16 | 114.7 | 4,465 | 4.5759 → 4.0427 | — | — |
+
+Read against F2's acceptance: the relaxed package runs **1.41× the exact
+one** and **0.56× MLX-LM's all-bf16 trainer** on the same chip in the same
+hour — the ≥ 0.9× target is not met, and the number says why, not the
+kernels: the frozen GEMMs are 47.6 % of the exact step's kernel time
+(the profile below) and the relaxed kernels run them 2.8× faster, which
+predicts 1.38× on the measured step; a relaxed family that cost *nothing*
+would top out at 1.76× on the measured step (1.91× on kernel time), and
+0.9× of MLX-LM's 4,465 needs 2.25×, so the line is out of this family's
+reach by construction.
+What remains of the step is the rank-8 LoRA family (F7 #138) and the
+dispatch model with its CPU-resident loss (F8 #139), which F2 does not
+touch. The numerical acceptance holds: the 300-step validation loss
+differs by 2.4e-5 relative (bound 1e-3), the gate decides identically,
+the two relaxed runs commit byte-identical models, and the exact package
+is where the 2026-09-22 row left it (1,783 vs 1,802 tok/s; the MLX
+reference itself read 4,465 today against 4,605 then). Peak resident set
+is 2.59 GB on every SeeAI row against 1.89 GB on 2026-09-22: E12 (#128,
+merged after that row) made the eval program read the shipped f32 weights
+from the 704 MB source model, which is resident while the gate scores it;
+the arena is unchanged at 1.56 GB.
+
+The train-only Metal profile (`SEEML_METAL_PROFILE=1`, `--val-frac 0
+--eval-every 0`, 20 steps and the commit, so every pass is a training
+pass — the mode F9 #140 asks for) puts the gain where the family says it
+is. Kernel time per step, summed from the per-kernel spans:
+
+| family | exact (ms) | relaxed (ms) | relaxed share |
+|---|---:|---:|---:|
+| frozen-weight GEMMs (q8; tensor-op `k_to_bf16+k_gemm_rx_*` when relaxed) | 124.0 | 44.5 | 25.8 % |
+| rank-8 LoRA GEMMs with their scale and add | 96.7 | 89.5 | 51.9 % |
+| elementwise, norms, fills | 14.4 | 15.2 | 8.8 % |
+| attention's batched GEMMs | 11.2 | 9.8 | 5.7 % |
+| CPU-resident opcodes (softmax cross-entropy 11/12, embedding, RoPE table) | 9.3 | 9.4 | 5.5 % |
+| attention softmax, optimizer | 4.6 | 4.2 | 2.4 % |
+| **kernel time summed** | **260.2** | **172.4** | |
+| measured step | 287.2 | 203.3 | |
+
+The relaxed kernels run the frozen GEMMs 2.8× faster; nothing else
+moved; the LM head's `512×49152×576` product alone is 10.3 ms of the
+relaxed step. After F2 the rank-8 family is half the kernel time and the
+time outside kernels (the measured step less the sum, 27–31 ms, including
+the 9 ms the CPU-resident loss costs plus its drain) is the next
+sixth — F7 and F8 by name. Raw JSON, profiles and logs in
+`out/f2-2026-10-15/` (not committed).
+
+### The nightly frontier row's recipe, run by hand (F1 #129, 2026-10-15)
+
+The opt-in frontier job in `nightly.yml` needs a self-hosted Apple-silicon
+runner and had never been dispatched, so its recipe was run on the M5
+verbatim: `export_model.py --hf` on the SmolLM-135M checkpoint over the
+docs/ tree (531 records of 129 ids), the compile and `pack_update.py
+--build`, then the five-row matrix. It is the same configuration as the
+2026-09-22 row on today's docs, main at 0832bdd plus this branch, torch
+2.14.0, mlx 0.32.2 / mlx-lm 0.31.3; the CPU row is the job's 5→15-step
+slope with no 300-step run.
+
+| row | tokens/s | step (ms) | validation 0 → 300 |
+|---|---:|---:|---:|
+| SeeAI `metal` (int8 base) | 1,782 | 287.3 | 4.5436 → 4.1534, accepted |
+| SeeAI `cpu` (int8 base) | 338 | 1,514.0 | — |
+| torch.compile MPS, bf16 base, f32 adapters | 4,033 | 126.9 | 4.5439 → 4.1446 |
+| torch.compile CPU f32 | 852 | 601.1 | 4.5437 → 4.1430 |
+| MLX-LM all-bf16 | 4,590 | 111.5 | 4.5442 → 4.1588 |
+
+Every stack starts from the same validation loss and ends within 0.016
+of the others; the ratios are the 2026-09-22 row's (SeeAI Metal 0.39× of
+MLX-LM bf16 and 0.44× of torch.compile's bf16 base; SeeAI CPU 0.40× of
+torch.compile CPU). Two things the run found in the job itself, both
+fixed in the workflow: its corpus was `docs/usage.md` alone — 58
+records, so 300 steps of 4 are 23 epochs, every stack's validation loss
+*rose* (SeeAI 4.19 → 5.72, torch 4.19 → 5.30, MLX 4.19 → 5.23) and the
+gate declined — and its CPU row ran no 300-step pass, so the parity check
+refused it as "not a measurement" and the matrix exited 3 on every run.
+Raw JSON in `out/frontier-2026-10-15b/` (not committed). The job itself
+still waits on a runner labelled `self-hosted, macOS, ARM64` with the
+checkpoint path passed as `frontier_model_dir` or set in its environment.
 
 ## Tier C — Memory (the gate that refuses compiles)
 

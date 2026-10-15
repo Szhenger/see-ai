@@ -40,18 +40,20 @@ The certificate is GRANTED only if every site's observed error is within
 --max-site-error, the free-run deviations are within --max-loss-deviation,
 and the gate verdict is the same in both arms. It binds to the plan by
 SHA-256 and by the plan's own sealed hash, and to the corpus by SHA-256; it
-carries a digest of itself. `verify` re-checks all of that against a plan,
-and, given the measured deviations of a real relaxed run (--observed, a
-frontier_exec.py diff report), that they are inside the certified
-tolerances. tool/pack_update.py refuses to package a plan beside a
-certificate that does not verify against it.
+carries a digest of itself; given --source, it binds to the source model
+by SHA-256 too. `verify` re-checks all of that against a plan, and,
+given the measured deviations of a real relaxed run (--observed, a
+frontier_exec.py diff report of the same plan bytes), that they are
+inside the certified tolerances. tool/pack_update.py refuses to package
+a plan beside a certificate that does not verify against it, and the
+emitted build.sh of a relaxed plan refuses to build without one.
 
 Usage:
     certify_numerics.py certify PLAN_OR_PACKAGE --corpus c.sds
         [--steps N] [--lanes W] [--seed S] [--val-fraction F]
         [--max-site-error F] [--max-loss-deviation F] [--out cert.json]
     certify_numerics.py verify cert.json --plan plan.seeu
-        [--corpus c.sds] [--observed diff.json]
+        [--corpus c.sds] [--source model.smf] [--observed diff.json]
 
 Exit codes: 0 granted / verified; 3 refused / not verified; 1 unusable
 input; 2 bad arguments. Needs NumPy for `certify`; `verify` is standard
@@ -80,7 +82,7 @@ UNIT_ROUNDOFF = 2.0 ** -24  # float32, round to nearest
 # instruction, whatever its opcode; its own tolerance, since one bf16
 # rounding is 2^-9 relative per element where the reductions above are
 # 2^-24 per term.
-RELAXED_GEMM_SITE = "gemm.relaxed"
+RELAXED_GEMM_SITE = fx.RELAXED_SITE
 BF16_UNIT_ROUNDOFF = 2.0 ** -9  # bfloat16, round to nearest
 
 # The opcodes whose C++ kernels reduce in float64 today — the only places a
@@ -265,9 +267,16 @@ class LockstepExecutor(fx.Executor):
             op(self.mem, self.x, ins, scalars)
             self.mem.recorder = None
             stat = self.sites.setdefault(site_name(ins), {
-                "instances": 0, "observed_rel": 0.0, "bound_rel": 0.0})
+                "instances": 0, "observed_rel": 0.0, "bound_rel": 0.0,
+                "by_opcode": {}})
             stat["instances"] += 1
             stat["bound_rel"] = max(stat["bound_rel"], self.lane.bound_rel)
+            # A site spans opcodes (the relaxed GEMM site covers every
+            # kGemm* form): the certificate carries the worst relative
+            # error per opcode as well as per site.
+            opcode = fx.OPCODES[ins.opcode]
+            by_opcode = stat["by_opcode"]
+            by_opcode.setdefault(opcode, 0.0)
             for (_, got), (_, want) in zip(dry.writes, exact):
                 scale = float(np.abs(want).max()) if want.size else 0.0
                 if scale == 0.0:
@@ -275,17 +284,10 @@ class LockstepExecutor(fx.Executor):
                 worst = float(np.abs(got.astype(np.float64) -
                                      want.astype(np.float64)).max()) / scale
                 stat["observed_rel"] = max(stat["observed_rel"], worst)
+                by_opcode[opcode] = max(by_opcode[opcode], worst)
 
 
-def sha256_file(path):
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                digest.update(block)
-    except OSError as e:
-        raise fx.PlanError(f"cannot read {path}: {e}")
-    return digest.hexdigest()
+sha256_file = fx.sha256_file
 
 
 def self_digest(cert):
@@ -306,6 +308,15 @@ def cmd_certify(args):
     np = fx.require_numpy()
     plan_path = resolve_plan(args.target)
     plan = fx.Plan.load(plan_path)
+    # The source model the eval program reads (v17): the certificate
+    # binds to it by SHA-256 so `verify --source` can refuse another
+    # file (review N35). Whether the file IS the model the plan was
+    # compiled from is the plan header's ContentHash64, which the C++
+    # probe checks on every eval section (a Python port would be a
+    # second copy of the identity contract).
+    source = ({"file": os.path.basename(args.source),
+               "sha256": sha256_file(args.source)}
+              if args.source else None)
 
     def feed():
         corpus = fx.Corpus(np, args.corpus)
@@ -379,9 +390,11 @@ def cmd_certify(args):
                  "sha256": sha256_file(plan_path),
                  "plan_hash": f"{plan.plan_hash:016x}",
                  "version": plan.version,
-                 "relaxed_gemms": plan.relaxed_gemms},
+                 "relaxed_gemms": plan.relaxed_gemms,
+                 "source_model_hash": f"{plan.source_model_hash:016x}"},
         "corpus": {"file": os.path.basename(args.corpus),
                    "sha256": sha256_file(args.corpus)},
+        "source": source,
         "contract": {"family": FAMILY, "model_lanes": args.lanes,
                      "unit_roundoff": UNIT_ROUNDOFF,
                      "bf16_unit_roundoff": BF16_UNIT_ROUNDOFF,
@@ -419,7 +432,7 @@ def cmd_certify(args):
     return 3 if reasons else 0
 
 
-def check_certificate(cert, plan_path, corpus_path=None):
+def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
     """Every reason `cert` does not vouch for the plan at `plan_path`
     (empty = it does). Standard library only: tool/pack_update.py calls
     this on the build host's tier-0 Python."""
@@ -439,9 +452,25 @@ def check_certificate(cert, plan_path, corpus_path=None):
                 corpus_path):
             problems.append("the certificate was issued over a different "
                             "corpus")
+        if source_path:
+            bound = cert.get("source")
+            if not bound:
+                problems.append("the certificate was issued without a "
+                                "source model; re-certify with --source")
+            elif bound["sha256"] != sha256_file(source_path):
+                problems.append("the certificate was issued over a "
+                                "different source model (SHA-256 "
+                                "mismatch)")
         if cert["verdict"] != "granted":
             problems.append("the certificate is a refusal: " +
                             "; ".join(cert.get("reasons", [])))
+        # A tolerance of zero (or NaN, or infinity) certifies nothing:
+        # every site measures inside it or nothing does (review F41).
+        for key, value in cert["tolerances"].items():
+            if not (isinstance(value, (int, float)) and
+                    math.isfinite(value) and value > 0.0):
+                problems.append(f"tolerance {key} is not a positive "
+                                f"finite number ({value!r})")
         if cert["contract"]["family"] != FAMILY:
             problems.append(f"unknown contract family "
                             f"{cert['contract']['family']!r}")
@@ -459,25 +488,70 @@ def check_certificate(cert, plan_path, corpus_path=None):
 
 
 def check_observed(cert, observed):
-    """A real relaxed run's measured deviations against the certified
-    tolerances. `observed` is a frontier_exec.py diff report: its
-    per-opcode worst |delta|/bound ratios, with the report's own rtol, give
-    each site's relative error."""
+    """A real run's measured deviations (a frontier_exec.py diff report)
+    against the certified tolerances. The report must be of this plan,
+    must line up with its reference (no structural mismatch) and agree
+    with it outside the certified sites, and must carry each opcode's
+    relative error itself (review F41, F42, F72)."""
     problems = []
-    limit = cert["tolerances"]["site_rel"]
-    rtol = float(observed.get("rtol", 0.0))
-    for name, stat in sorted(observed.get("opcodes", {}).items()):
-        # diff judges |a-b| <= atol + rtol*scale; ratio*rtol bounds the
-        # relative error from above for any tensor with scale >= atol/rtol.
-        measured = float(stat.get("worst_ratio", 0.0)) * rtol
-        if name in cert["contract"]["sites"]:
-            if measured > limit:
-                problems.append(f"{name}: measured relative error "
-                                f"{measured:.3e} exceeds the certified "
-                                f"{limit:.1e}")
-        elif not stat.get("worst_ratio", 0.0) <= 1.0:
-            problems.append(f"{name} is not a certified site and must "
-                            "agree with the reference at the diff tolerance")
+    try:
+        rtol = float(observed.get("rtol", 0.0))
+        if not (math.isfinite(rtol) and rtol > 0.0):
+            problems.append(f"the observed report's rtol is {rtol!r}: a "
+                            "comparison at a non-positive tolerance measures "
+                            "nothing")
+        plan_sha, plan_hash = (observed.get("plan_sha256"),
+                               observed.get("plan_hash"))
+        if plan_sha is None and plan_hash is None:
+            problems.append("the observed report does not name its plan (no "
+                            "plan_sha256 / plan_hash): regenerate it with "
+                            "the current frontier_exec.py diff")
+        else:
+            if plan_sha is not None and plan_sha != cert["plan"]["sha256"]:
+                problems.append("the observed run was of a different plan "
+                                "(SHA-256 mismatch)")
+            if (plan_hash is not None and
+                    plan_hash != cert["plan"]["plan_hash"]):
+                problems.append("the observed run was of a different plan "
+                                "(plan hash mismatch)")
+        # A certified site may sit past the diff tolerance by design (the
+        # relaxed GEMMs: 2^-7 against the diff's 1e-5), so `agrees`, which
+        # judges every site at that tolerance, is not the test here. The
+        # structural mismatches are (an older report without the list is
+        # held to `agrees`); the per-site loop below holds every
+        # uncertified site to the diff tolerance.
+        if "mismatches" in observed:
+            mismatches = observed["mismatches"]
+            if mismatches:
+                problems.append("the observed run does not line up with its "
+                                f"reference ({len(mismatches)} structural "
+                                f"mismatch(es)); the first: {mismatches[0]}")
+        elif not observed.get("agrees", False):
+            failures = observed.get("failures", [])
+            problems.append("the observed run disagrees with its reference "
+                            f"({len(failures)} failure(s)); the first: "
+                            f"{failures[0] if failures else 'none listed'}")
+        limits = cert["tolerances"]
+        for name, stat in sorted(observed.get("opcodes", {}).items()):
+            if name in cert["contract"]["sites"]:
+                if "worst_rel" not in stat:
+                    problems.append(f"{name}: the observed report carries no "
+                                    "relative error (worst_rel); regenerate "
+                                    "it with the current frontier_exec.py")
+                    continue
+                measured = float(stat["worst_rel"])
+                limit = (limits.get("relaxed_gemm_rel", limits["site_rel"])
+                         if name == RELAXED_GEMM_SITE else limits["site_rel"])
+                if not measured <= limit:  # NaN fails
+                    problems.append(f"{name}: measured relative error "
+                                    f"{measured:.3e} exceeds the certified "
+                                    f"{limit:.1e}")
+            elif not float(stat.get("worst_ratio", "nan")) <= 1.0:
+                problems.append(f"{name} is not a certified site and must "
+                                "agree with the reference at the diff "
+                                "tolerance")
+    except (KeyError, TypeError, ValueError) as e:
+        problems.append(f"malformed observed report ({e!r})")
     return problems
 
 
@@ -487,7 +561,8 @@ def cmd_verify(args):
             cert = json.load(f)
     except (OSError, ValueError) as e:
         raise fx.PlanError(f"cannot read {args.certificate}: {e}")
-    problems = check_certificate(cert, resolve_plan(args.plan), args.corpus)
+    problems = check_certificate(cert, resolve_plan(args.plan), args.corpus,
+                                 args.source)
     if not problems and args.observed:
         try:
             with open(args.observed) as f:
@@ -499,7 +574,10 @@ def cmd_verify(args):
     if not problems:
         print(f"certify_numerics: verified — {cert['contract']['family']} "
               f"over {len(cert['contract']['sites'])} site opcode(s), site "
-              f"tolerance {cert['tolerances']['site_rel']:.1e}")
+              f"tolerance {cert['tolerances']['site_rel']:.1e}"
+              + ("; bound to the source model" if args.source else "")
+              + ("; the observed run is inside the certified "
+                 "tolerances" if args.observed else ""))
     return 3 if problems else 0
 
 
@@ -530,6 +608,9 @@ def build_parser():
     v.add_argument("certificate")
     v.add_argument("--plan", required=True)
     v.add_argument("--corpus", default=None)
+    v.add_argument("--source", metavar="SMF", default=None,
+                   help="the source model the certificate was issued "
+                        "over (refused when it is another file)")
     v.add_argument("--observed", default=None)
     v.set_defaults(fn=cmd_verify)
     return p
@@ -537,10 +618,20 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    if args.command == "certify" and args.steps < 1:
-        print("certify_numerics: ERROR --steps must be positive",
-              file=sys.stderr)
-        return 2
+    if args.command == "certify":
+        if args.steps < 1:
+            print("certify_numerics: ERROR --steps must be positive",
+                  file=sys.stderr)
+            return 2
+        for name in ("max_site_error", "max_relaxed_gemm_error",
+                     "max_loss_deviation"):
+            value = getattr(args, name)
+            if not (math.isfinite(value) and value > 0.0):
+                print(f"certify_numerics: ERROR --{name.replace('_', '-')} "
+                      f"must be positive and finite (got {value!r}): a "
+                      "tolerance of zero certifies nothing",
+                      file=sys.stderr)
+                return 2
     try:
         return args.fn(args)
     except fx.PlanError as e:

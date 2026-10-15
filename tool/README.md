@@ -132,9 +132,15 @@ on identical inputs, the rounding bound that holds for *any* summation
 order of those operands (so the certificate survives whatever schedule a
 kernel author picks), and the free-run loss and validation deviation with
 the update gate's verdict under both contracts. It grants or refuses
-against `--max-site-error` / `--max-loss-deviation`, binds the result to
-the plan and corpus by SHA-256, and `verify` holds a measured run (a
-`frontier_exec.py diff` report) to the certified tolerances.
+against `--max-site-error` / `--max-loss-deviation` (each refused at
+zero, since a tolerance of zero certifies nothing), binds the result
+to the plan and corpus by SHA-256 — and to the source model, given
+`--source` — and `verify` holds a measured run (a `frontier_exec.py
+diff` report, which must name the same plan bytes, agree with its
+reference outside the certified sites and carry each opcode's relative
+error itself) to the certified tolerances; `verify --source` refuses
+another model file. The certificate carries the worst relative error
+per site and per opcode within a site.
 `pack_update.py` refuses to package a plan beside a certificate that does
 not vouch for it, so a recompile voids a certificate loudly. Since plan
 v18 the certifier also prices the `gemm.relaxed` site — the frozen-weight
@@ -142,11 +148,14 @@ GEMMs a `--precision certified-bf16` plan marks, modelled as the Metal
 kernels compute them (the activation rounded to bfloat16 once, the weight
 exact) against its own tolerance (`--max-relaxed-gemm-error`, 2⁻⁷) — and
 `pack_update.py` refuses a relaxed plan that has no certificate, or one
-that never saw that site; `--source model.smf` binds a v17 plan's eval
-program to the model file it scores. The relaxed
-opcode family itself is core-plane work that does not exist yet: today the
-certificate is the measured answer to "what would relaxing cost this
-plan", and the contract that family will be admitted under.
+that never saw that site; the compiler refuses `--build` for a relaxed
+plan, and the package's own `build.sh` refuses, before its first
+compile line, without a granted certificate over its exact plan bytes;
+`--source model.smf` binds a v17 plan's eval program to the model file
+it scores. The relaxed GEMMs are the first member of the relaxed opcode
+family; for every other site (norms, losses, softmaxes, attention) the
+certificate is still the measured answer to "what would relaxing cost
+this plan", and the contract that family will be admitted under.
 
 **`autotune.py`** is the offline autotuner, the second Python-plane
 subsystem of the overhaul (P2): it sweeps CPU GEMM tile arms through

@@ -73,6 +73,31 @@ executable step is therefore the measurement itself, on a host with Metal
 access, with validation off so the profile weights forward and backward
 as a training step does (F9).
 
+Status 2026-10-15: **measured** (`docs/benchmarks.md`, "The relaxed GEMM
+family on Metal, measured"): on the M5 the relaxed SmolLM-135M package
+runs 2,519 tok/s against the exact package's 1,783 (1.41×) and MLX-LM
+all-bf16's 4,465 in the same session (0.56×); the 300-step validation loss
+deviates 2.4e-5 relative, the gate decides identically, two relaxed runs
+commit byte-identical models, and the exact package is unchanged. The
+≥ 0.9× line is not reachable from this issue alone — the frozen GEMMs are
+47.6 % of the exact step's kernel time, so a relaxed family that cost
+nothing would top out at 1.76× on the measured step where 0.9× of MLX-LM
+needs 2.25× — and passes to F7 and F8. The code-review holes closed the same day: the compiler refuses
+`--build` for a relaxed plan and the emitted `build.sh` checks for a
+granted certificate over its exact plan bytes before compiling (N17); the
+certifier refuses a zero or non-finite tolerance, a diff report carries
+each opcode's relative error and `verify` reads that rather than
+`worst_ratio × rtol`, so NaN cannot pass (F41); the report names its plan,
+its structural mismatches refuse it, and every uncertified opcode is held
+to the diff tolerance (F42; whether the C++ arm of a diff actually ran the
+relaxed kernels is not yet in the report, so an exact-vs-exact diff still
+vouches for the site vacuously — the remaining F42 item); relaxed GEMMs are keyed `gemm.relaxed`
+on both sides (F72); the certificate binds to the source model by SHA-256
+and `verify --source` refuses another file (N35, with the ContentHash64
+check of "is this the model the plan was compiled from" left to the C++
+probe, which runs it on every eval section). The certificate carries the
+per-opcode maximum relative error within each site.
+
 ## Integrated from the 2026-09-24 code review
 
 The certified family has gate holes the review reached, and they are this

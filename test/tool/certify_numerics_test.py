@@ -90,14 +90,102 @@ class CertificateTest(unittest.TestCase):
 
     def test_observed_runs_are_held_to_the_tolerances(self):
         cert = granted(self.plan)
-        ok = {"rtol": 1e-5, "opcodes": {
-            "attn.fwd": {"worst_ratio": 0.4}, "gemm.nn": {"worst_ratio": 0.2}}}
-        self.assertEqual(cn.check_observed(cert, ok), [])
-        loose = {"rtol": 1e-5, "opcodes": {"attn.fwd": {"worst_ratio": 3.0}}}
+        sha = cn.sha256_file(self.plan)
+
+        def report(**over):
+            r = {"rtol": 1e-5, "agrees": True, "failures": [],
+                 "mismatches": [], "plan_sha256": sha, "plan_hash": "0",
+                 "opcodes": {"attn.fwd": {"worst_ratio": 0.4,
+                                          "worst_rel": 4e-6},
+                             "gemm.nn": {"worst_ratio": 0.2,
+                                         "worst_rel": 2e-6}}}
+            r.update(over)
+            return r
+
+        self.assertEqual(cn.check_observed(cert, report()), [])
+        loose = report(opcodes={"attn.fwd": {"worst_ratio": 3.0,
+                                             "worst_rel": 3e-5}})
         self.assertIn("attn.fwd: measured", cn.check_observed(cert, loose)[0])
-        stray = {"rtol": 1e-5, "opcodes": {"gemm.nn": {"worst_ratio": 1.5}}}
+        stray = report(opcodes={"gemm.nn": {"worst_ratio": 1.5,
+                                            "worst_rel": 1.5e-5}})
         self.assertIn("not a certified site",
                       cn.check_observed(cert, stray)[0])
+        # F41: the relative error is read from the report, not rebuilt from
+        # rtol (a lower bound); a NaN cannot pass, nor can a run compared at
+        # a tolerance of zero.
+        nan = report(opcodes={"attn.fwd": {"worst_ratio": 0.0,
+                                           "worst_rel": float("nan")}})
+        self.assertIn("attn.fwd: measured", cn.check_observed(cert, nan)[0])
+        for rtol in (0.0, -1e-5, float("inf"), float("nan")):
+            self.assertIn("rtol", cn.check_observed(cert, report(rtol=rtol))[0])
+        old = report(opcodes={"attn.fwd": {"worst_ratio": 0.0}})
+        self.assertIn("no relative error", cn.check_observed(cert, old)[0])
+        # F42: the report binds to the plan, and its own verdict counts.
+        self.assertIn("different plan", cn.check_observed(
+            cert, report(plan_sha256="0" * 64))[0])
+        self.assertIn("different plan",
+                      cn.check_observed(cert, report(plan_hash="1"))[0])
+        unnamed = report()
+        del unnamed["plan_sha256"], unnamed["plan_hash"]
+        self.assertIn("does not name its plan",
+                      cn.check_observed(cert, unnamed)[0])
+        # A structural mismatch refuses; a certified site past the diff
+        # tolerance (agrees=False, no mismatch) is judged by worst_rel
+        # alone, since the diff's rtol is not the certified tolerance.
+        shape = "step 1 train #3 attn.fwd @0: 8 floats vs 16"
+        self.assertIn("structural mismatch", cn.check_observed(cert, report(
+            agrees=False, failures=[shape], mismatches=[shape]))[0])
+        self.assertEqual(cn.check_observed(cert, report(
+            agrees=False, failures=["step 1 train #3 attn.fwd @0: ..."],
+            opcodes={"attn.fwd": {"worst_ratio": 3.0,
+                                  "worst_rel": 4e-6}})), [])
+        old_report = report(agrees=False,
+                            failures=["step 1 train #3 gemm.nn @0: ..."])
+        del old_report["mismatches"]
+        self.assertIn("disagrees", cn.check_observed(cert, old_report)[0])
+        # F72: the relaxed GEMM site is judged at its own tolerance.
+        relaxed = granted(self.plan, contract={
+            "family": cn.FAMILY, "model_lanes": 8,
+            "unit_roundoff": cn.UNIT_ROUNDOFF,
+            "sites": ["attn.fwd", cn.RELAXED_GEMM_SITE]},
+            tolerances={"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
+                        "loss_rel": 1e-4})
+        inside = report(opcodes={cn.RELAXED_GEMM_SITE: {"worst_ratio": 400.0,
+                                                        "worst_rel": 4e-3}})
+        self.assertEqual(cn.check_observed(relaxed, inside), [])
+        outside = report(opcodes={cn.RELAXED_GEMM_SITE: {"worst_ratio": 1e3,
+                                                         "worst_rel": 1e-2}})
+        self.assertIn("gemm.relaxed: measured",
+                      cn.check_observed(relaxed, outside)[0])
+
+    def test_a_vacuous_tolerance_certifies_nothing(self):
+        for value in (0.0, -1e-5, float("inf"), float("nan")):
+            cert = granted(self.plan, tolerances={"site_rel": value,
+                                                  "loss_rel": 1e-4})
+            problems = cn.check_certificate(cert, self.plan)
+            self.assertTrue(any("tolerance site_rel" in p for p in problems),
+                            problems)
+            # --flag=value: Python 3.9's argparse reads a bare "-1e-05" as an
+            # option and refuses it before the tool sees it.
+            status, log = run(cn, ["certify", self.plan, "--corpus", "c",
+                                   f"--max-site-error={value!r}"])
+            self.assertEqual(status, 2, log)
+            self.assertIn("certifies nothing", log)
+
+    def test_the_certificate_binds_to_the_source_model(self):
+        other = os.path.join(self._tmp.name, "other.smf")
+        with open(other, "wb") as f:
+            f.write(b"not the model")
+        bound = granted(self.plan, source={"file": "m.smf",
+                                           "sha256": cn.sha256_file(self.plan)})
+        self.assertEqual(cn.check_certificate(bound, self.plan,
+                                              source_path=self.plan), [])
+        self.assertIn("different source model", cn.check_certificate(
+            bound, self.plan, source_path=other)[0])
+        unbound = granted(self.plan)
+        self.assertEqual(cn.check_certificate(unbound, self.plan), [])
+        self.assertIn("without a source model", cn.check_certificate(
+            unbound, self.plan, source_path=self.plan)[0])
 
     def test_gamma(self):
         self.assertAlmostEqual(cn.gamma(64), 64 * 2.0 ** -24, delta=1e-10)
@@ -268,6 +356,26 @@ class CertifyPlansTest(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("relaxed GEMM", log)
         self.assertIn("no numerics certificate", log)
+        # N17: neither the compiler's --build nor the package's own
+        # build.sh links an uncertified relaxed plan — the script refuses
+        # before compiling anything, so CXX=true drives it in milliseconds.
+        done = subprocess.run(
+            [fixtures.COMPILER, "--source", os.path.join(self.dir, "mlp.smf"),
+             "--out", os.path.join(self.dir, "mlp_relaxed_build"),
+             "--data-batch", "8", "--precision", "certified-bf16",
+             "--build"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("--build cannot certify", done.stdout)
+
+        def build_sh():
+            return subprocess.run(["sh", "build.sh"], cwd=pkg,
+                                  env=dict(os.environ, CXX="true"),
+                                  capture_output=True, text=True)
+
+        done = build_sh()
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("no numerics_certificate.json", done.stderr)
         # bf16 input rounding moves a short run's loss by ~1e-3 relative;
         # the 1e-4 default is the reduction family's, so a relaxed plan
         # states its loss tolerance explicitly (F2's acceptance is 1e-3 on
@@ -290,11 +398,54 @@ class CertifyPlansTest(unittest.TestCase):
         self.assertLessEqual(site["observed_rel"], site["bound_rel"])
         self.assertLess(site["observed_rel"], 2.0 ** -7)
         self.assertEqual(cert["tolerances"]["relaxed_gemm_rel"], 2.0 ** -7)
+        # ... broken down per opcode: the forward (NN) and the dX backward
+        # (NT) products through the frozen weight.
+        self.assertEqual(set(site["by_opcode"]), {"gemm.nn", "gemm.nt"})
+        self.assertEqual(max(site["by_opcode"].values()), site["observed_rel"])
         report = os.path.join(self.dir, "pack_relaxed.json")
         self.assertEqual(run(pack_update, [pkg, "--report", report])[0], 0)
         with open(report) as f:
             self.assertEqual(json.load(f)["relaxed_gemms"],
                              plan.relaxed_gemms)
+        # Packed beside its certificate, the script gets past the
+        # preflight; a refused certificate, or one for other plan bytes,
+        # stops it again.
+        self.assertEqual(build_sh().returncode, 0)
+        cert_path = os.path.join(pkg, cn.CERT_FILE)
+        with open(cert_path) as f:
+            text = f.read()
+        with open(cert_path, "w") as f:
+            f.write(text.replace('"verdict": "granted"',
+                                 '"verdict": "refused"'))
+        done = build_sh()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("not a granted certificate", done.stderr)
+        with open(cert_path, "w") as f:
+            f.write(text.replace(cert["plan"]["sha256"], "0" * 64))
+        done = build_sh()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("SHA-256 mismatch", done.stderr)
+        with open(cert_path, "w") as f:
+            f.write(text)
+        # F72 / F42: a measured run keys its relaxed GEMMs under the
+        # certificate's site name and names the plan it measured. The
+        # exact C++ runtime is the reference here, so the site measures
+        # f32 round-off (not the bf16 rounding) and the certificate
+        # verifies against it.
+        diff = os.path.join(self.dir, "diff_relaxed.json")
+        self.assertEqual(run(fx, ["diff", os.path.join(pkg, cn.PLAN_FILE),
+                                  "--corpus", corpus, "--probe",
+                                  fixtures.PROBE, "--steps", "1",
+                                  "--report", diff])[0], 0)
+        with open(diff) as f:
+            observed = json.load(f)
+        self.assertIn(cn.RELAXED_GEMM_SITE, observed["opcodes"])
+        self.assertLess(observed["opcodes"][cn.RELAXED_GEMM_SITE]["worst_rel"],
+                        1e-5)
+        self.assertEqual(observed["plan_sha256"], cert["plan"]["sha256"])
+        self.assertEqual(observed["plan_hash"], cert["plan"]["plan_hash"])
+        self.assertEqual(run(cn, ["verify", cert_path, "--plan", pkg,
+                                  "--observed", diff])[0], 0)
         # A certificate over the exact plan does not cover the relaxed one.
         exact = self.compile("mlp_exact", "mlp.smf", 8)
         self.assertEqual(run(cn, ["certify", exact, "--corpus", corpus,

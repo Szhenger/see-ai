@@ -62,6 +62,7 @@ disagreement names the one instruction that owns it. The train, step
 """
 import argparse
 import bisect
+import hashlib
 import json
 import math
 import os
@@ -82,6 +83,11 @@ SEEU_OLDEST, SEEU_NEWEST = formats.SEEU_OLDEST_READABLE, formats.SEEU_VERSION
 RODATA_BIT = formats.RODATA_BIT
 SOURCE_BIT = formats.SOURCE_BIT
 FLAG_RELAXED = formats.FLAG_RELAXED
+# The one site name for every relaxed GEMM (v18, kFlagRelaxed), whatever
+# its opcode: the certifier prices the site under this name and a diff
+# report keys the measured deviation under it, so the two sides of a
+# certificate compare like with like (2026-09-24 review, F72).
+RELAXED_SITE = "gemm.relaxed"
 
 
 def is_source_ref(ref):
@@ -1612,6 +1618,15 @@ class Differ:
     def __init__(self, np, rtol, atol):
         self.np, self.rtol, self.atol = np, rtol, atol
         self.per_opcode, self.failures, self.compared = {}, [], 0
+        # The structural subset of `failures` (instruction count, write
+        # set, shape): what no tolerance can excuse. A certificate's
+        # verify reads this, not `agrees`, since a certified site is
+        # allowed past the diff tolerance by design (review F41).
+        self.mismatches = []
+
+    def _mismatch(self, message):
+        self.failures.append(message)
+        self.mismatches.append(message)
 
     def _mask(self, ins, values):
         """kAttnDP's strictly-upper triangle is unspecified (see _attn_dp)."""
@@ -1624,22 +1639,23 @@ class Differ:
     def section(self, label, plan, section, ours, theirs):
         np = self.np
         if len(ours) != len(theirs):
-            self.failures.append(f"{label}: {len(ours)} instructions here, "
-                                 f"{len(theirs)} in the C++ trace")
+            self._mismatch(f"{label}: {len(ours)} instructions here, "
+                           f"{len(theirs)} in the C++ trace")
             return
         for (index, ins, mine), (_, opcode, cpp) in zip(ours, theirs):
-            name = OPCODES.get(opcode, str(opcode))
+            name = (RELAXED_SITE if ins.flags & FLAG_RELAXED
+                    else OPCODES.get(opcode, str(opcode)))
             mine_by_off = dict(mine)
             if sorted(mine_by_off) != sorted(off for off, _ in cpp):
-                self.failures.append(
+                self._mismatch(
                     f"{label} #{index} {name}: writes {sorted(mine_by_off)} "
                     f"here, {sorted(off for off, _ in cpp)} in C++")
                 continue
             for off, ref in cpp:
                 got = mine_by_off[off]
                 if got.shape != ref.shape:
-                    self.failures.append(f"{label} #{index} {name} @{off}: "
-                                         f"{got.size} floats vs {ref.size}")
+                    self._mismatch(f"{label} #{index} {name} @{off}: "
+                                   f"{got.size} floats vs {ref.size}")
                     continue
                 got, ref = self._mask(ins, got), self._mask(ins, ref)
                 self.compared += 1
@@ -1653,9 +1669,19 @@ class Differ:
                 if np.isnan(delta).any():
                     worst = float("inf")
                 stat = self.per_opcode.setdefault(
-                    name, {"extents": 0, "worst_ratio": 0.0})
+                    name, {"extents": 0, "worst_ratio": 0.0,
+                           "worst_rel": 0.0})
                 stat["extents"] += 1
                 stat["worst_ratio"] = max(stat["worst_ratio"], worst / bound)
+                # The relative error itself, |delta| / scale — the unit a
+                # certificate's site tolerance is stated in. worst_ratio *
+                # rtol only bounds it from below (atol sits in the
+                # denominator), so a verify against a certificate reads
+                # this field (review F41).
+                stat["worst_rel"] = max(
+                    stat["worst_rel"],
+                    worst / scale if scale > 0.0 else
+                    (float("inf") if worst > 0.0 else 0.0))
                 if not worst <= bound:
                     at = int(np.nanargmax(delta)) if worst != float(
                         "inf") else -1
@@ -1688,8 +1714,8 @@ def cmd_diff(args):
         so both arrive at the C++ arena for whatever runs next."""
         image, theirs = probe.trace(np, section, ex.mem.export(), scalars)
         if len(theirs) != len(plan.sections[section]):
-            differ.failures.append(f"{label}: the C++ trace holds "
-                                   f"{len(theirs)} instructions")
+            differ._mismatch(f"{label}: the C++ trace holds "
+                             f"{len(theirs)} instructions")
             ex.mem.adopt(image)
             return
         ours, writes = [], []
@@ -1723,17 +1749,28 @@ def cmd_diff(args):
     finally:
         probe.close()
 
-    used = {OPCODES[i.opcode] for s in plan.sections.values() for i in s}
+    used = {RELAXED_SITE if i.flags & FLAG_RELAXED else OPCODES[i.opcode]
+            for s in plan.sections.values() for i in s}
     report = {
         "plan": args.plan, "plan_version": plan.version,
+        # What the report is a measurement of: a certificate's verify
+        # refuses a report of other plan bytes (review F42).
+        "plan_sha256": sha256_file(args.plan),
+        "plan_hash": f"{plan.plan_hash:016x}",
+        "relaxed_modelled": bool(getattr(backend, "relaxed_gemms",
+                                         False)),
         "frontier_backend": backend.name, "frontier_device": backend.device,
         "cpp_backend": args.cpp_backend, "steps": args.steps,
         "rtol": args.rtol, "atol": args.atol,
         "extents_compared": differ.compared,
         "opcodes": {k: differ.per_opcode.get(k, {"extents": 0,
-                                                 "worst_ratio": 0.0})
+                                                 "worst_ratio": 0.0,
+                                                 "worst_rel": 0.0})
                     for k in sorted(used)},
         "failures": differ.failures, "agrees": not differ.failures,
+        # The structural failures alone: a certificate's verify holds a
+        # certified site to its own tolerance, not the diff's.
+        "mismatches": differ.mismatches,
     }
     for name, stat in report["opcodes"].items():
         print(f"frontier_exec: {name:<18} {stat['extents']:>5} extent(s), "
@@ -1951,6 +1988,20 @@ def write_report(path, report):
         json.dump(report, f, indent=2, sort_keys=True)
         f.write("\n")
     os.replace(tmp, path)
+
+
+def sha256_file(path):
+    """SHA-256 of a file, streamed: what a certificate and a diff report
+    bind to (the plan's own 64-bit seal is an integrity check, not a
+    collision-resistant identity)."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+    except OSError as e:
+        raise PlanError(f"cannot read {path}: {e}")
+    return digest.hexdigest()
 
 
 def default_probe():
