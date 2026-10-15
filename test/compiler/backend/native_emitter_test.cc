@@ -162,6 +162,40 @@ TEST(NativeEmitter, SkipsTheDecimalTUOnRequest) {
   EXPECT_STR_CONTAINS(script, "run tool/pack_update.py");
 }
 
+TEST(NativeEmitter, RelaxedPlanBuildScriptDemandsTheCertificate) {
+  // N17: a relaxed plan's build.sh refuses, before its first compile
+  // line, unless a granted numerics certificate for exactly these plan
+  // bytes sits beside the plan; an exact plan's script never mentions
+  // one.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(6, 10, 3, 4);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  EmitOptions options;
+  options.embed_plan_tu = false;
+  options.relaxed_plan = true;
+  ASSERT_OK_AND_ASSIGN(EmitPaths relaxed,
+                       EmitNativePackage(compiled.plan,
+                                         (dir.path() / "relaxed").string(),
+                                         RepoRoot(), options));
+  const std::string script = ReadText(relaxed.build_script);
+  EXPECT_STR_CONTAINS(script, "numerics_certificate.json");
+  EXPECT_STR_CONTAINS(script, "\"verdict\": \"granted\"");
+  EXPECT_STR_CONTAINS(script, "shasum -a 256 update_plan.seeu");
+  EXPECT_STR_CONTAINS(script, "SEEML_ACCELERATE");
+  EXPECT_LT(script.find("numerics_certificate.json"),
+            script.find("$CXX "));
+
+  options.relaxed_plan = false;
+  ASSERT_OK_AND_ASSIGN(EmitPaths exact,
+                       EmitNativePackage(compiled.plan,
+                                         (dir.path() / "exact").string(),
+                                         RepoRoot(), options));
+  const std::string plain = ReadText(exact.build_script);
+  EXPECT_EQ(plain.find("numerics_certificate.json"), std::string::npos);
+  EXPECT_EQ(plain.find("SEEML_ACCELERATE"), std::string::npos);
+}
+
 TEST(NativeEmitter, CreatesMissingOutputDir) {
   ScopedTempDir dir;
   SmfModel model = MakeMlp(6, 10, 3, 2);

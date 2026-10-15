@@ -634,6 +634,37 @@ std::string BuildScript(bool relaxed_plan) {
   s += "set -e\n";
   s += "cd \"$(dirname \"$0\")\"\n";
   s += "CXX=\"${CXX:-c++}\"\n";
+  if (relaxed_plan) {
+    // "No certificate, no relaxed plan" (P3), enforced where the binary
+    // is made and not only where tool/pack_update.py makes it: a
+    // certificate that is absent, refused, or issued for other plan
+    // bytes stops the build before a single object is compiled
+    // (2026-09-24 review, N17).
+    s += "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
+    s += "# v18): it may be built only beside the numerics certificate that\n";
+    s += "# tool/certify_numerics.py granted for exactly these plan bytes.\n";
+    s += "if [ ! -f numerics_certificate.json ]; then\n";
+    s += "  echo \"build.sh: update_plan.seeu carries relaxed GEMMs and this\" \\\n";
+    s += "       \"package has no numerics_certificate.json; run\" \\\n";
+    s += "       \"tool/certify_numerics.py certify <pkg> --corpus <corpus.sds>\" \\\n";
+    s += "       \"[--source <model.smf>], then tool/pack_update.py <pkg> --build\" >&2\n";
+    s += "  exit 1\n";
+    s += "fi\n";
+    s += "grep -q '\"verdict\": \"granted\"' numerics_certificate.json || {\n";
+    s += "  echo \"build.sh: numerics_certificate.json is not a granted certificate\" >&2\n";
+    s += "  exit 1\n";
+    s += "}\n";
+    s += "if command -v shasum >/dev/null 2>&1; then\n";
+    s += "  PLAN_SHA=$(shasum -a 256 update_plan.seeu | cut -d' ' -f1)\n";
+    s += "else\n";
+    s += "  PLAN_SHA=$(sha256sum update_plan.seeu | cut -d' ' -f1)\n";
+    s += "fi\n";
+    s += "grep -q \"\\\"sha256\\\": \\\"$PLAN_SHA\\\"\" numerics_certificate.json || {\n";
+    s += "  echo \"build.sh: numerics_certificate.json was issued for a different\" \\\n";
+    s += "       \"plan (SHA-256 mismatch): re-certify after recompiling\" >&2\n";
+    s += "  exit 1\n";
+    s += "}\n";
+  }
   s += "# The CPU GEMM tile geometry travels IN THE PLAN (header v11): the\n";
   s += "# compiler decided it from a measured kernel-policy table or left\n";
   s += "# the runtime's defaults. It is a throughput knob only — results\n";

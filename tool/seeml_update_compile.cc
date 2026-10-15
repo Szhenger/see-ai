@@ -419,6 +419,15 @@ int main(int argc, char** argv) {
   if (no_embed && want_build)
     return Fail("--build needs the embedded plan TU that --no-embed skips; "
                 "run `python3 tool/pack_update.py <out> --build` instead");
+  // A relaxed plan (v18) is buildable only beside a numerics certificate,
+  // and only the Python plane issues one: --build here would link an
+  // uncertified relaxed binary (2026-09-24 review, N17). The emitted
+  // build.sh refuses the same way, so no path builds one by hand.
+  if (want_build && config.precision == Precision::kCertifiedBf16)
+    return Fail("--build cannot certify a --precision certified-bf16 plan; "
+                "emit it, run `python3 tool/certify_numerics.py certify <out> "
+                "--corpus <corpus.sds>`, then `python3 tool/pack_update.py "
+                "<out> --build`");
 
   // Resolved after the argument check so a malformed table is reported
   // against a well-formed command line. A table without this host is a
