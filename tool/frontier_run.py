@@ -520,6 +520,7 @@ def cmd_seeml(args):
         plan_version=compile_report["plan_version"], plan_hash=compile_report["plan_hash"],
         precision_flag=compile_report.get("precision", "f32"),
         relaxed_gemms=compile_report.get("relaxed_gemms", 0),
+        host_key=compile_report.get("kernel_policy", {}).get("host_key"),
         device=(quality or runs[0])["device"], threads=args.threads,
         config=dict(steps=args.quality_steps, tokens_per_step=tokens,
                     lo=args.lo, hi=args.hi, repeats=args.repeats),

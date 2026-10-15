@@ -202,7 +202,7 @@ records, the tail 10 % held out, identical ids in every stack), LoRA r8 /
 0.01, constant LR, no clipping, 4 records × 128 targets = 512 loss tokens
 per step, 300 steps, 10 threads. Apple M5 (10-core GPU, 16 GB), main at
 1d6b8ed (the code that ran), driven by the F1 harness `tool/frontier_run.py`
-(#129; on branch `claude/f1-frontier-harness` until it merges), torch 2.14.0, mlx 0.32.2 / mlx-lm 0.31.3, warm chip, strictly
+(#129, merged in #135), torch 2.14.0, mlx 0.32.2 / mlx-lm 0.31.3, warm chip, strictly
 serial. SeeAI's step is the steps-regression slope on the package binary
 (the 15→300-step slope where a 300-step run exists); PyTorch's is the
 median step after warm-up; MLX's is the trainer's own `It/sec` × 512.
@@ -324,6 +324,38 @@ time outside kernels (the measured step less the sum, 27–31 ms, including
 the 9 ms the CPU-resident loss costs plus its drain) is the next
 sixth — F7 and F8 by name. Raw JSON, profiles and logs in
 `out/f2-2026-10-15/` (not committed).
+
+### The nightly frontier row's recipe, run by hand (F1 #129, 2026-10-15)
+
+The opt-in frontier job in `nightly.yml` needs a self-hosted Apple-silicon
+runner and had never been dispatched, so its recipe was run on the M5
+verbatim: `export_model.py --hf` on the SmolLM-135M checkpoint over the
+docs/ tree (531 records of 129 ids), the compile and `pack_update.py
+--build`, then the five-row matrix. It is the same configuration as the
+2026-09-22 row on today's docs, main at 0832bdd plus this branch, torch
+2.14.0, mlx 0.32.2 / mlx-lm 0.31.3; the CPU row is the job's 5→15-step
+slope with no 300-step run.
+
+| row | tokens/s | step (ms) | validation 0 → 300 |
+|---|---:|---:|---:|
+| SeeAI `metal` (int8 base) | 1,782 | 287.3 | 4.5436 → 4.1534, accepted |
+| SeeAI `cpu` (int8 base) | 338 | 1,514.0 | — |
+| torch.compile MPS, bf16 base, f32 adapters | 4,033 | 126.9 | 4.5439 → 4.1446 |
+| torch.compile CPU f32 | 852 | 601.1 | 4.5437 → 4.1430 |
+| MLX-LM all-bf16 | 4,590 | 111.5 | 4.5442 → 4.1588 |
+
+Every stack starts from the same validation loss and ends within 0.016
+of the others; the ratios are the 2026-09-22 row's (SeeAI Metal 0.39× of
+MLX-LM bf16 and 0.44× of torch.compile's bf16 base; SeeAI CPU 0.40× of
+torch.compile CPU). Two things the run found in the job itself, both
+fixed in the workflow: its corpus was `docs/usage.md` alone — 58
+records, so 300 steps of 4 are 23 epochs, every stack's validation loss
+*rose* (SeeAI 4.19 → 5.72, torch 4.19 → 5.30, MLX 4.19 → 5.23) and the
+gate declined — and its CPU row ran no 300-step pass, so the parity check
+refused it as "not a measurement" and the matrix exited 3 on every run.
+Raw JSON in `out/frontier-2026-10-15b/` (not committed). The job itself
+still waits on a runner labelled `self-hosted, macOS, ARM64` with the
+checkpoint path passed as `frontier_model_dir` or set in its environment.
 
 ## Tier C — Memory (the gate that refuses compiles)
 
