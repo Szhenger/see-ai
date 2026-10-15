@@ -165,8 +165,10 @@ class CertificateTest(unittest.TestCase):
             problems = cn.check_certificate(cert, self.plan)
             self.assertTrue(any("tolerance site_rel" in p for p in problems),
                             problems)
+            # --flag=value: Python 3.9's argparse reads a bare "-1e-05" as an
+            # option and refuses it before the tool sees it.
             status, log = run(cn, ["certify", self.plan, "--corpus", "c",
-                                   "--max-site-error", repr(value)])
+                                   f"--max-site-error={value!r}"])
             self.assertEqual(status, 2, log)
             self.assertIn("certifies nothing", log)
 
