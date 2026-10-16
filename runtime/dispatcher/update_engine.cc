@@ -614,7 +614,19 @@ std::expected<float, std::string> UpdateEngine::Evaluate(Dataset& data) {
   return m->loss;
 }
 
+// Every evaluation is clocked (outside the step: the shipped runtime's
+// step reads no clock) so the report can say what the gate cost (F9).
 std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetrics(
+    Dataset& data) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto m = EvaluateMetricsImpl(data);
+  eval_seconds_ +=
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+          .count();
+  return m;
+}
+
+std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
     Dataset& data) {
   if (!arena_) return diag::executing::Error("no plan loaded");
   if (eval_program_.empty())
@@ -862,6 +874,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   TrainReport report;
   report.eval_every = eval_every;
   report.patience = track_best ? options.patience : 0;
+  eval_seconds_ = 0.0;
   if (options.validation) {
     report.has_validation = true;
     if (resumed && has_val_initial_) {
@@ -1069,6 +1082,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       report.val_final_accuracy = v->accuracy;
     }
   }
+  report.eval_seconds = eval_seconds_;
   return report;
 }
 

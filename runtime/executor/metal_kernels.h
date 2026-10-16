@@ -864,6 +864,76 @@ kernel void k_softmax_rows_bwd(KSIG, uint g [[thread_position_in_grid]],
   dot += simd_shuffle_xor(dot, 1u);
   for (uint c = lane; c < cols; c += 32u) dsr[c] = pr[c] * (dpr[c] - dot);
 }
+// --- Softmax cross-entropy (opcodes 11 / 12; F8 #139) ----------------------
+// The loss ran on the CPU until F8, draining the GPU every pass. One
+// simdgroup per row over C columns (49,152 at an LM head), max and sum by
+// the fixed shuffle trees; the row's -log p[label] lands in scratch[row]
+// and k_xent_finish folds the rows in order (compensated f32; the CPU
+// folds its chunk partials in f64) into the loss slot. The CPU's NaN rule
+// is kept: a NaN probability propagates, only genuine underflow is clamped.
+// p.rows = N, p.cols = C; slots: 0 logits, 1 labels (i32), 2 loss, 3 probs.
+kernel void k_xent_fwd(KSIG, device float* scratch [[buffer(3)]],
+                       uint g [[thread_position_in_grid]],
+                       uint lane [[thread_index_in_simdgroup]]) {
+  const uint r = g >> 5;
+  if (r >= p.rows) return;
+  const uint cols = p.cols;
+  device const float* x = RF(0) + (ulong)r * cols;
+  device const int* labels = (device const int*)(RBASE(1) + p.off[1]);
+  device float* pr = WF(3) + (ulong)r * cols;
+  const uint label = (uint)labels[r];
+  float m = -INFINITY;
+  for (uint c = lane; c < cols; c += 32u) m = max(m, x[c]);
+  m = max(m, simd_shuffle_xor(m, 16u));
+  m = max(m, simd_shuffle_xor(m, 8u));
+  m = max(m, simd_shuffle_xor(m, 4u));
+  m = max(m, simd_shuffle_xor(m, 2u));
+  m = max(m, simd_shuffle_xor(m, 1u));
+  float sum = 0.0f, pl = 0.0f;
+  for (uint c = lane; c < cols; c += 32u) {
+    const float e = exp(x[c] - m);
+    pr[c] = e;
+    sum += e;
+    if (c == label) pl = e;
+  }
+  sum = simd_sum_tree(sum);
+  const float inv = 1.0f / sum;
+  for (uint c = lane; c < cols; c += 32u) pr[c] *= inv;
+  // The label's probability as its lane computed it (e * inv, the CPU's
+  // expression), handed to lane 0 by a sum every other lane adds 0 to.
+  pl = simd_sum_tree(pl * inv);
+  if (lane == 0u) {
+    const float safe = isnan(pl) ? pl : max(pl, 1e-12f);
+    scratch[r] = -log(safe);
+  }
+}
+kernel void k_xent_finish(KSIG, device float* scratch [[buffer(3)]],
+                          uint t [[thread_position_in_grid]]) {
+  if (t != 0) return;
+  // Kahan over the rows in order: the library compiles with precise math,
+  // so the compensation survives; the sum is within 2 ulp of the f64 fold.
+  float sum = 0.0f, comp = 0.0f;
+  for (uint r = 0; r < p.rows; ++r) {
+    const float y = scratch[r] - comp;
+    const float next = sum + y;
+    comp = (next - sum) - y;
+    sum = next;
+  }
+  WF(2)[0] = sum / (float)p.rows;
+}
+// dlogits = (seed / N) * probs, minus seed / N at the label: one thread per
+// element, the CPU's two operations in the CPU's order (bitwise).
+// Slots: 0 probs, 1 labels (i32), 2 seed, 3 dlogits.
+kernel void k_xent_bwd(KSIG, uint g [[thread_position_in_grid]]) {
+  const ulong total = (ulong)p.rows * p.cols;
+  if (g >= total) return;
+  const uint n = g / p.cols, c = g - n * p.cols;
+  const float scale = RF(2)[0] / (float)p.rows;
+  device const int* labels = (device const int*)(RBASE(1) + p.off[1]);
+  float d = scale * RF(0)[g];
+  if ((int)c == labels[n]) d -= scale;
+  WF(3)[g] = d;
+}
 )msl";
 
 // =============================================================================

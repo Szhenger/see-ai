@@ -357,6 +357,149 @@ Raw JSON in `out/frontier-2026-10-15b/` (not committed). The job itself
 still waits on a runner labelled `self-hosted, macOS, ARM64` with the
 checkpoint path passed as `frontier_model_dir` or set in its environment.
 
+### The loss on the GPU, and the dispatch model measured (F8 #139, 2026-10-15)
+
+Softmax cross-entropy (opcodes 11 / 12) runs on Metal: one simdgroup per
+row over the 49,152 logits with the fixed shuffle trees, the row losses
+folded in order by a compensated single-thread kernel into the loss slot
+(the CPU folds in f64; two Metal runs are byte-identical and the loss
+agrees with the CPU inside 1e-5, the probabilities inside 1e-4 — the
+CPU's serial f32 row sum over 49,152 terms is the less accurate of the
+pair). The train-only profile of the SmolLM-135M package now shows **no
+`cpu opcode 11` or `12` row**. Two CPU-resident rows remain, and one of
+them still drains: the embedding gather (41) is instruction 0 of the
+step, with nothing pending; the RoPE angle table (45) is instruction 14,
+written into a transient slot the thirteen GPU instructions before it
+just used, so the backend flushes and waits there every step — the span
+table below shows it as a 16-dispatch command buffer per step, 0.8 ms of
+GPU inside 4.8 ms of wall, about 4 ms (1.4 %) per step. The acceptance
+line "no CPU-resident opcode in the train program" is therefore not met
+yet; porting the angle table (a kernel over B·S·H·d/2 angles) is the
+follow-up, and the gather can go with it. The loss kernels cost 4.0 +
+1.5 ms where the CPU took 7.4 + 1.8 — and the measured step did not move
+(exact 287.2 → 288.4 ms, relaxed 203.3 → 201.2), so the mid-step drain the
+review priced at "≈5 % plus the drain itself" was worth about 1 %. The
+gradient now descends from GPU-computed probabilities: the 300-step
+Metal endpoint moved from 4.013721 to 4.014309 against the CPU's
+4.013742, so the run-level CPU–Metal agreement is 1.4e-4 relative where
+it had been 5e-6 with the loss on the CPU (the twin test's 1e-5 is on
+identical inputs; this is the number the two runs reach by themselves).
+
+The dispatch model, measured without serializing (`SEEML_METAL_SPANS=1`:
+per command buffer, the GPU's busy span against the CPU wall from first
+encode to completion). One command buffer per training step, 3,862
+dispatches (exact) / 3,355 (relaxed):
+
+| package | dispatches / step | GPU busy (ms) | CPU wall (ms) | outside the GPU | Σ per-kernel spans (serialized profile) | gaps inside the busy span |
+|---|---:|---:|---:|---:|---:|---:|
+| exact | 3,862 | 276.2 | 277.9 | 1.7 ms (0.6 %) | 221.5 | 54.7 ms (19.8 %), 14 µs per dispatch |
+| relaxed | 3,355 | 192.4 | 194.2 | 1.7 ms (0.9 %) | 157.6 | 34.8 ms (18.1 %), 10 µs per dispatch |
+
+(The 2,462 + 1,400 pair is the first step, split where the loss forward
+grew the row scratch and reopened the encoder.) One finding is firm:
+**encoding is not the cost**. The CPU hands the GPU a step's worth of
+dispatches 1.7 ms before the GPU finishes them, so the "≈27 % outside any
+kernel" the review inferred from the step-timing split is not CPU time,
+and a scheduling phase that reorders instructions would recover none of
+it. The other needs a denominator the serialized profile does not give.
+The GPU is busy 276 ms per step; the kernels' own spans, summed from the
+profile taken after this port, are 220.8–221.5 ms over four runs (relaxed
+156.6–157.9), which would make the serial encoder's gap between kernels
+~55 ms, 14 µs per dispatch, 20 % of the step. But the profile taken
+before the port — the same GEMM, LoRA and norm kernels, the loss on the
+CPU — summed to 260.2 ms (relaxed 172.4), a 15 % swing with no change to
+those kernels: one command buffer per instruction lets the GPU clock
+down in the gaps, and how far depends on what sat in them (here a 9 ms
+CPU loss per step). Against that profile the gap is ~20 ms, 7 %. So the
+honest statement is a range, **7–20 % of the step between kernels**,
+straddling the issue's 10 % line, and the serialized profile cannot
+resolve it. The direct experiment can: F7's step 1 removes the 7,174
+`k_scale` dispatches a profile counts (one per adapter per pass) with no
+other change to the step, so the real step's movement per dispatch
+removed is the per-dispatch cost; F7 opens with that measurement. What
+is already decided: a concurrent dispatch type is not the answer (the
+serial encoder is what keeps two runs byte-identical without barriers),
+and for SeeAI S6 (#152) the time outside kernels, whatever its size, is
+per-dispatch latency rather than ordering, so scheduling stays a
+function inside selection and fusion owns the lever.
+
+### Measurement rules, and the rows they were missing (F9 #140, 2026-10-15)
+
+Three rules, each learned from a decision taken on the wrong object
+(the 2026-09-24 systems review):
+
+1. **Kernel decisions are taken on the train-only Metal profile**
+   (`SEEML_METAL_PROFILE=1 --val-frac 0 --eval-every 0`): with validation
+   on, the evaluations' forward passes outnumber the backward ones many to
+   one (30 : 4 in the profile F7 and F8 were first priced from), and every
+   per-family share reads too forward-heavy. The profile's header now counts
+   the passes it saw, so a reader can tell which kind of profile it is.
+2. **CPU decisions are gated on the real-package row** (the SmolLM-135M
+   package from the HF import, `model_update --backend cpu`, the frontier
+   table above); the `tok_smollm135m_q8` bench fixture is a regression
+   canary — it moves when the kernels move — not a baseline. Its under-read
+   is explained below.
+3. **The gate's share of the update is a reported number**: every package's
+   `--report` carries a `lifecycle` object (plan load and validation with
+   the source-model bind, the dataset, training, the seconds inside every
+   evaluation, merge, commit, the whole wall), and `frontier_run.py` copies
+   the 300-step run's split into its SeeAI rows.
+
+**The per-column int8 row, rerun.** Per-tensor int8 cost +0.10–0.14 nats
+of validation loss at step 0 on every model (the 2026-09-22 row); E12
+(#128) landed per-column scales and the row was never rerun. The Real
+Analysis Delta study of 2026-09-28 (`out/realanalysis-2026-09-25/`, not
+committed) ran it on SmolLM-135M, the runtime gate's own validation loss,
+300 steps, the docs corpus:
+
+| base storage | step 0 | step 300 | vs f32 at 300 |
+|---|---:|---:|---:|
+| f32 | 1.7156 | 1.0800 | — |
+| int8, per-column scales (E12) | 1.7156 | 1.0846 | +0.0046 |
+| int8, per-tensor scales (pre-E12) | 1.8335 | 1.0961 | +0.0161 |
+
+Per-column scales close the step-0 gap entirely (the gate scores the
+shipped f32 model plus the update, so the base rounding no longer enters
+the "before") and leave 0.005 nats at step 300, a quarter of the
+per-tensor residual; no follow-up issue is needed.
+
+**Tier D, the gate's share of the update wall.** The real SmolLM-135M
+package, 300 steps, the 10 % held-out split evaluated before and after
+(`--eval-every 0`), from the runner's `lifecycle` object:
+
+| backend | wall (s) | plan load + validate + source bind | dataset | training (incl. evaluations) | the two evaluations | merge | commit | gate's share |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `metal`, exact | 91.0 | 0.29 | 0.00 | 88.9 | 3.51 (1.75 each) | 0.13 | 1.65 | 3.9 % |
+| `metal`, relaxed | 66.2 | 0.45 | 0.01 | 63.9 | 3.56 | 0.13 | 1.69 | 5.4 % |
+| `cpu`, exact | 514.5 | 0.44 | 0.00 | 512.4 | 18.3 (9.15 each) | 0.14 | 1.55 | 3.6 % |
+
+Two evaluations are 3.6–5.4 % of a 300-step update; the plan loads in
+under half a second (the 39.5 s "lifecycle intercept" of the F2 CPU run
+was its two evaluations and the 5-step regression's own fixed costs, not
+the plan). The default `--eval-every auto` evaluates every `steps / 10`
+steps, 30 periodic evaluations plus the two: on this package that is 56 s
+of a 147 s Metal run (38 %) and 293 s of an 807 s CPU run (36 %) — the
+best-state tracking E9 bought is paid for in evaluations, and a product
+run should size `--eval-every` against the 1.75 s (Metal) / 9.2 s (CPU)
+an evaluation of a 53-record split costs. `torch.compile`'s 40–54 s
+Inductor warm-up (6–9 s when its cache is warm) is the counterweight on
+the other side of the table.
+
+**The fixture's under-read, explained.** `tok_smollm135m_q8` compiles
+to a plan of exactly the real package's size (298,663,936 bytes, 3,309
+training instructions, the same arena), so its per-step cost is the
+model's. Run on 2026-10-16 on the same host, the same code and the same
+`--threads 10` as the real-package row above, with the row's own `5→15
+--repeats 1` geometry, the fixture reads 1,603 ms (319 tok/s; forward
+647 ms, backward 934, optimizer 12) against the package's 1,514 ms (338):
+a 6 % gap, inside what a single 5→15-step slope resolves (the fixture's
+own lifecycle intercept came out negative on that run). The 233 and 269
+against 332 of the earlier table were readings of different code states
+— fixture rows from 2026-09-15 and the days after E1 against a package
+row taken on 2026-09-22 — not a property of the fixture. The rule stands
+regardless: the fixture is the canary that moves when the kernels move;
+the real package sets the baseline.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

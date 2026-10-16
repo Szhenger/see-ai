@@ -63,6 +63,37 @@ Step 2's number decides whether the backend gains a **scheduling** phase
 (SeeAI S6): a directory that orders instructions before allocation if the
 time outside kernels is real, a function inside selection if it is not.
 
+## Status 2026-10-15
+
+Steps 1 and 2 landed and measured (`docs/benchmarks.md`, "The loss on the
+GPU, and the dispatch model measured"): opcodes 11 / 12 run on Metal
+(fixed shuffle trees, a compensated single-thread fold of the row losses;
+loss within 1e-5 of the CPU and probabilities within 1e-4 on identical
+inputs, two runs byte-identical; the 300-step endpoint now agrees with
+the CPU's to 1.4e-4 relative, since the gradient descends from GPU
+probabilities). No `cpu opcode 11` / `12` row remains, but the acceptance
+line "no CPU-resident opcode in the train program" is **not met**: the
+RoPE angle table (45) is instruction 14, written into a scratch the
+thirteen GPU instructions before it just used, and drains once per step
+(~4 ms, 1.4 %); the embedding gather (41) is instruction 0 and drains
+nothing. Porting the table is the follow-up. The step did not move with
+the loss on the GPU (287.2 → 288.4 ms exact, 203.3 → 201.2 relaxed): that
+drain was worth ~1 %, not the ≈5 % the review priced.
+`SEEML_METAL_SPANS=1` measures the dispatch model without serializing:
+the CPU is 1.7 ms ahead of the GPU per step (0.6 %), so **encoding is not
+the cost**; the GPU is busy 276 ms per step, and the kernels' own spans
+sum to 221 ms on the post-port profile (tight across four runs) but 260
+on the pre-port one with the same kernels — the serialized profile lets
+the GPU clock down in its gaps — so the inter-dispatch gap is **7–20 % of
+the step**, straddling the 10 % line. Step 3's verdict is therefore
+deferred to the direct experiment: F7 step 1 removes 7,174 `k_scale`
+dispatches with no other change, and the real step's movement is the
+per-dispatch cost. Decided regardless: a concurrent dispatch type is not
+the answer (doctrine); for S6 the time outside kernels is per-dispatch
+latency, not ordering, so scheduling stays a function inside selection.
+Remaining here: the angle-table port, the Metal `kFusedMap` port if F7's
+number says dispatches are dear.
+
 ## Acceptance
 
 - No CPU-resident opcode in the train program of a SmolLM-shaped plan on

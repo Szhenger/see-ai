@@ -697,6 +697,79 @@ TEST(MetalBackend, AttentionMatchesCpuAtModelShape) {
     for (size_t j = r % S + 1; j < S; ++j) EXPECT_EQ(twin->gpu[probs + r * S + j], 0.0f);
 }
 
+TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
+  if (Skip()) return;
+  // The loss pair on the GPU (F8 #139): the LM-head width, a ragged width
+  // and a wider batch; probabilities and the loss at the backend tolerance,
+  // the gradient bitwise (its two operations are the CPU's, in order).
+  struct Shape { uint32_t n, c; };
+  // N = 300 exceeds the 257-float scratch the backend starts with: the
+  // forward ends its encoder, grows the scratch and reopens, mid-Execute.
+  for (const Shape s : {Shape{4, 49152}, Shape{5, 301}, Shape{64, 1000},
+                        Shape{300, 64}}) {
+    const size_t nc = size_t{s.n} * s.c;
+    size_t off = 0;
+    auto slot = [&](size_t n) { const size_t o = off; off += (n + 15) & ~size_t{15}; return o; };
+    const size_t logits = slot(nc), probs = slot(nc), dlogits = slot(nc);
+    const size_t labels = slot(s.n), seed = slot(1), loss = slot(1);
+    std::vector<float> arena(off, 0.0f);
+    std::mt19937_64 rng(s.c);
+    std::normal_distribution<float> normal(0.0f, 3.0f);
+    for (size_t i = 0; i < nc; ++i) arena[logits + i] = normal(rng);
+    for (uint32_t n = 0; n < s.n; ++n)
+      arena[labels + n] = std::bit_cast<float>(static_cast<int32_t>((n * 7919u + 13u) % s.c));
+    arena[seed] = 0.5f;
+    auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
+    UpdateInstruction fwd, bwd;
+    fwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntFwd);
+    fwd.in[0] = ref(logits); fwd.in[1] = ref(labels); fwd.in[2] = ref(loss); fwd.in[3] = ref(probs);
+    fwd.out[0] = s.n; fwd.out[1] = s.c;
+    bwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntBwd);
+    bwd.in[0] = ref(probs); bwd.in[1] = ref(labels); bwd.in[2] = ref(seed); bwd.in[3] = ref(dlogits);
+    bwd.out[0] = s.n; bwd.out[1] = s.c;
+    auto twin = RunTwin({fwd, bwd}, arena, {});
+    ASSERT_OK(twin);
+    // The loss holds the backend-agreement bound; the probabilities and
+    // their gradient get the attention family's 1e-4: the CPU's row sum is
+    // a serial f32 accumulation over C terms (sqrt(C) ulp of drift at the
+    // LM-head width), the GPU's a 32-lane tree, and at C = 49,152 the two
+    // differ by up to ~4e-5 — the GPU is the more accurate of the pair.
+    ExpectRangeClose("xent probs", *twin, probs, nc, 1e-4, 1e-9);
+    ExpectRangeClose("xent loss", *twin, loss, 1, 1e-5, 1e-7);
+    ExpectRangeClose("xent dlogits", *twin, dlogits, nc, 1e-4, 1e-9);
+    EXPECT_TRUE(std::isfinite(twin->gpu[loss]));
+    // Same probabilities in, bit-identical gradient out.
+    std::vector<float> again(arena);
+    std::memcpy(again.data() + probs, twin->cpu.data() + probs, nc * sizeof(float));
+    auto grad = RunTwin({bwd}, again, {});
+    ASSERT_OK(grad);
+    size_t mismatched = 0;
+    for (size_t i = 0; i < nc; ++i)
+      mismatched += std::bit_cast<uint32_t>(grad->gpu[dlogits + i]) !=
+                    std::bit_cast<uint32_t>(grad->cpu[dlogits + i]);
+    EXPECT_EQ(mismatched, size_t{0});
+  }
+  // A NaN logit poisons the loss on both backends (the engine's finite-loss
+  // guard depends on it): no fmax scrubbing on the GPU either.
+  {
+    const uint32_t n = 3, c = 17;
+    std::vector<float> arena(2 * n * c + 2 * 16 + n, 0.1f);
+    const size_t logits = 0, probs = n * c, labels = 2 * n * c, loss = labels + 16, seed = loss + 16;
+    for (uint32_t i = 0; i < n; ++i) arena[labels + i] = std::bit_cast<float>(int32_t{1});
+    arena[logits + c + 2] = std::numeric_limits<float>::quiet_NaN();
+    UpdateInstruction fwd;
+    fwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntFwd);
+    fwd.in[0] = MakeArenaRef(logits * 4); fwd.in[1] = MakeArenaRef(labels * 4);
+    fwd.in[2] = MakeArenaRef(loss * 4); fwd.in[3] = MakeArenaRef(probs * 4);
+    fwd.out[0] = n; fwd.out[1] = c;
+    (void)seed;
+    auto twin = RunTwin({fwd}, arena, {});
+    ASSERT_OK(twin);
+    EXPECT_TRUE(std::isnan(twin->gpu[loss]));
+    EXPECT_TRUE(std::isnan(twin->cpu[loss]));
+  }
+}
+
 TEST(MetalBackend, ActivationsStayFiniteAtLargeMagnitude) {
   // The GPU's *fast* tanh returns NaN above ~44, which through the GELU
   // means NaN for any pre-activation past ~10.25; the library must be

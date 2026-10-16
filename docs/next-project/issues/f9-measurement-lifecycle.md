@@ -61,6 +61,29 @@ bench and step-timing code and runs the tier-2 tests on a runner that has
 the dependencies, the Accelerate path builds on the macOS job, and the
 HF-import check runs after the build and skips visibly.
 
+## Status 2026-10-15
+
+Landed (`docs/benchmarks.md`, "Measurement rules, and the rows they were
+missing"): the profile header counts forward and backward passes at the
+loss opcodes and the train-only mode (`--val-frac 0 --eval-every 0`) is
+documented as *the* profile for kernel decisions (item 1; the SmolLM-135M
+train-only profile, after F8's port, is committed with per-family
+shares); every package's `--report` carries a `lifecycle` object (plan
+load and validation with the source bind, dataset, training, the seconds
+inside every evaluation, merge, commit, wall) and `frontier_run.py` copies
+it into the SeeAI rows — the gate's share is 3.6–5.4 % of a 300-step
+update with two evaluations and would be 36–38 % under `--eval-every
+auto` (item 2); the rule that CPU decisions gate on the real-package row
+is written and the fixture's under-read explained (item 3); the
+per-column int8 row is recorded from the 2026-09-28 study, step-0 gap
+closed, +0.005 nats at step 300, no follow-up needed (item 4). CI: the
+test job builds with `SEEML_BENCH=1` (the step clock and `seeml-bench`)
+and `SEEML_ACCELERATE=1` (the Accelerate path on the macOS entry; N44,
+N43); the e2e job runs every tool suite with torch, NumPy and the built
+tools and fails on a skip that names one of them (N45); the HF-import
+compile check is its own test, named after its build directory, skipping
+visibly and run after the build (F36).
+
 ## Acceptance
 
 - A train-only Metal profile of SmolLM-135M committed to

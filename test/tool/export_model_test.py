@@ -501,6 +501,29 @@ class HfImportTest(unittest.TestCase):
             em.hf_llama_to_seeml(cfg, {k: v for k, v in t.items()
                                        if "o_proj" not in k}, 8)
 
+    def test_the_imported_checkpoint_compiles(self):
+        # The compiler accepts what --hf writes. The check used to hide inside
+        # another test behind a hard-coded build directory and pass silently
+        # without one (2026-09-24 review, F36): it names its build now and a
+        # missing compiler is a reported skip, which CI's e2e job refuses.
+        build = os.environ.get("SEEML_BUILD_DIR", os.path.join(REPO, "build"))
+        compiler = os.path.join(build, "seeml-update-compile")
+        if not os.path.exists(compiler):
+            self.skipTest(f"no built seeml-update-compile under {build}")
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        cfg = hf_tiny_config()
+        write_hf_dir(d, cfg, hf_tiny_tensors(cfg, 5), "BF16")
+        script = os.path.join(REPO, "tool", "export_model.py")
+        out = os.path.join(d, "m.smf")
+        r = subprocess.run([sys.executable, script, "--hf", d, out,
+                            "--seq-len", "8"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = subprocess.run([compiler, "--source", out, "--out",
+                            os.path.join(d, "pkg"), "--data-batch", "16",
+                            "--steps", "2"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_cli_imports_a_checkpoint_directory(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -526,13 +549,6 @@ class HfImportTest(unittest.TestCase):
         subprocess.run([sys.executable, script, "--hf", d, out,
                         "--seq-len", "8"], check=True, capture_output=True)
         self.assertEqual(sha256(out), digest)
-        # The SMF is one the compiler accepts (when a build is present).
-        compiler = os.path.join(REPO, "build", "seeml-update-compile")
-        if os.path.exists(compiler):
-            r = subprocess.run([compiler, "--source", out, "--out",
-                                os.path.join(d, "pkg"), "--data-batch", "16",
-                                "--steps", "2"], capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, r.stderr)
         # A 1e-6 epsilon exports as SMF v6 with the epsilon on every norm
         # (P7, #96) — no flag needed; the old flag is accepted and ignored.
         write_hf_dir(d, hf_tiny_config(eps=1e-6), hf_tiny_tensors(cfg, 5))
