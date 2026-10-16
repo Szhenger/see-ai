@@ -536,6 +536,7 @@ def cmd_seeml(args):
         val_loss=r0.get("validation_loss"), val_acc=r0.get("validation_accuracy"),
         train_loss=r0.get("train_loss"), verdict=r0.get("verdict"),
         committed=r0.get("committed"),
+        lifecycle=r0.get("lifecycle"),  # Tier D split of the quality run (F9)
         committed_sha256=quality["committed_sha256"] if quality else None,
         suspect=suspect,
         wall_quality_s=quality["wall_s"] if quality else None,

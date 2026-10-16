@@ -423,6 +423,83 @@ and for SeeAI S6 (#152) the time outside kernels, whatever its size, is
 per-dispatch latency rather than ordering, so scheduling stays a
 function inside selection and fusion owns the lever.
 
+### Measurement rules, and the rows they were missing (F9 #140, 2026-10-15)
+
+Three rules, each learned from a decision taken on the wrong object
+(the 2026-09-24 systems review):
+
+1. **Kernel decisions are taken on the train-only Metal profile**
+   (`SEEML_METAL_PROFILE=1 --val-frac 0 --eval-every 0`): with validation
+   on, the evaluations' forward passes outnumber the backward ones many to
+   one (30 : 4 in the profile F7 and F8 were first priced from), and every
+   per-family share reads too forward-heavy. The profile's header now counts
+   the passes it saw, so a reader can tell which kind of profile it is.
+2. **CPU decisions are gated on the real-package row** (the SmolLM-135M
+   package from the HF import, `model_update --backend cpu`, the frontier
+   table above); the `tok_smollm135m_q8` bench fixture is a regression
+   canary — it moves when the kernels move — not a baseline. Its under-read
+   is explained below.
+3. **The gate's share of the update is a reported number**: every package's
+   `--report` carries a `lifecycle` object (plan load and validation with
+   the source-model bind, the dataset, training, the seconds inside every
+   evaluation, merge, commit, the whole wall), and `frontier_run.py` copies
+   the 300-step run's split into its SeeAI rows.
+
+**The per-column int8 row, rerun.** Per-tensor int8 cost +0.10–0.14 nats
+of validation loss at step 0 on every model (the 2026-09-22 row); E12
+(#128) landed per-column scales and the row was never rerun. The Real
+Analysis Delta study of 2026-09-28 (`out/realanalysis-2026-09-25/`, not
+committed) ran it on SmolLM-135M, the runtime gate's own validation loss,
+300 steps, the docs corpus:
+
+| base storage | step 0 | step 300 | vs f32 at 300 |
+|---|---:|---:|---:|
+| f32 | 1.7156 | 1.0800 | — |
+| int8, per-column scales (E12) | 1.7156 | 1.0846 | +0.0046 |
+| int8, per-tensor scales (pre-E12) | 1.8335 | 1.0961 | +0.0161 |
+
+Per-column scales close the step-0 gap entirely (the gate scores the
+shipped f32 model plus the update, so the base rounding no longer enters
+the "before") and leave 0.005 nats at step 300, a quarter of the
+per-tensor residual; no follow-up issue is needed.
+
+**Tier D, the gate's share of the update wall.** The real SmolLM-135M
+package, 300 steps, the 10 % held-out split evaluated before and after
+(`--eval-every 0`), from the runner's `lifecycle` object:
+
+| backend | wall (s) | plan load + validate + source bind | dataset | training (incl. evaluations) | the two evaluations | merge | commit | gate's share |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `metal`, exact | 91.0 | 0.29 | 0.00 | 88.9 | 3.51 (1.75 each) | 0.13 | 1.65 | 3.9 % |
+| `metal`, relaxed | 66.2 | 0.45 | 0.01 | 63.9 | 3.56 | 0.13 | 1.69 | 5.4 % |
+| `cpu`, exact | 514.5 | 0.44 | 0.00 | 512.4 | 18.3 (9.15 each) | 0.14 | 1.55 | 3.6 % |
+
+Two evaluations are 3.6–5.4 % of a 300-step update; the plan loads in
+under half a second (the 39.5 s "lifecycle intercept" of the F2 CPU run
+was its two evaluations and the 5-step regression's own fixed costs, not
+the plan). The default `--eval-every auto` evaluates every `steps / 10`
+steps, 30 periodic evaluations plus the two: on this package that is 56 s
+of a 147 s Metal run (38 %) and 293 s of an 807 s CPU run (36 %) — the
+best-state tracking E9 bought is paid for in evaluations, and a product
+run should size `--eval-every` against the 1.75 s (Metal) / 9.2 s (CPU)
+an evaluation of a 53-record split costs. `torch.compile`'s 40–54 s
+Inductor warm-up (6–9 s when its cache is warm) is the counterweight on
+the other side of the table.
+
+**The fixture's under-read, explained.** `tok_smollm135m_q8` compiles
+to a plan of exactly the real package's size (298,663,936 bytes, 3,309
+training instructions, the same arena), so its per-step cost is the
+model's. Run on 2026-10-16 on the same host, the same code and the same
+`--threads 10` as the real-package row above, with the row's own `5→15
+--repeats 1` geometry, the fixture reads 1,603 ms (319 tok/s; forward
+647 ms, backward 934, optimizer 12) against the package's 1,514 ms (338):
+a 6 % gap, inside what a single 5→15-step slope resolves (the fixture's
+own lifecycle intercept came out negative on that run). The 233 and 269
+against 332 of the earlier table were readings of different code states
+— fixture rows from 2026-09-15 and the days after E1 against a package
+row taken on 2026-09-22 — not a property of the fixture. The rule stands
+regardless: the fixture is the canary that moves when the kernels move;
+the real package sets the baseline.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

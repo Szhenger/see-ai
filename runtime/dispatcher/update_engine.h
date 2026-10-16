@@ -156,6 +156,9 @@ struct TrainReport {
   float val_last_accuracy = 0.0f;
   uint64_t evaluations = 0;        // periodic evaluations run (not the two
                                    // bracketing ones)
+  double eval_seconds = 0.0;       // wall seconds inside every evaluation of
+                                   // the run, bracketing ones included (F9
+                                   // #140: the gate's share of the update)
   bool stopped_by_patience = false;
   uint64_t eval_every = 0;
   uint64_t patience = 0;
@@ -242,6 +245,8 @@ class UpdateEngine {
   /// probabilities the eval program's softmax already materializes are
   /// compared against the staged labels; wrapped duplicate samples in the
   /// final batch are excluded, so every sample counts exactly once).
+  [[nodiscard]] std::expected<EvalMetrics, std::string> EvaluateMetricsImpl(
+      Dataset& data);
   [[nodiscard]] std::expected<EvalMetrics, std::string> EvaluateMetrics(
       Dataset& data);
 
@@ -404,6 +409,7 @@ class UpdateEngine {
   float best_accuracy_ = 0.0f;
   uint32_t stale_evals_ = 0;
   std::vector<uint8_t> best_state_;
+  double eval_seconds_ = 0.0;  // accumulated by EvaluateMetrics
   void SnapshotBest(uint64_t step, float loss, float accuracy);
   uint64_t num_classes_ = 0;              // softmax width, 0 = no class loss
   uint64_t vocab_bound_ = 0;              // narrowest embedding table, 0 = none

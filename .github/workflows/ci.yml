@@ -63,6 +63,13 @@ jobs:
     timeout-minutes: 30
     env:
       CXX: ${{ matrix.cxx }}
+      # The measurement code is built where it is tested (2026-09-24
+      # review, N44 / N43): SEEML_BENCH compiles the runtime with the
+      # per-phase step clock and links seeml-bench; SEEML_ACCELERATE (an
+      # Apple-only switch build.sh ignores elsewhere) compiles the relaxed
+      # GEMMs' Accelerate path, which the system suite then exercises.
+      SEEML_BENCH: "1"
+      SEEML_ACCELERATE: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Pin the Linux toolchain
@@ -285,12 +292,16 @@ jobs:
           cache-dependency-path: tool/requirements-pinned.txt
       - name: Install the pinned exporter stack (CPU torch)
         run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r tool/requirements-pinned.txt
-      - name: Exporter suite with torch (oracles, golden digests)
-        run: python3 -m unittest discover -s test/tool -p 'export_model_test.py' -v
       - name: Export the demo model + corpus
         run: python3 -W error tool/export_model.py --demo out/
       - name: Build the compiler
         run: sh build/build.sh
+      # The exporter suite runs after the build so its compile check (the
+      # HF import must be a model the compiler accepts) runs, not skips
+      # (F36). Below, every tool suite on the job that has NumPy, torch and
+      # the built tools (N45): a skip that names one of those is a failure.
+      - name: Exporter suite with torch (oracles, golden digests, the compile check)
+        run: python3 -m unittest discover -s test/tool -p 'export_model_test.py' -v
       # The frontier executor's differential suite (P4, #78): a second,
       # independent implementation of every opcode — NumPy in f64, and
       # PyTorch — against the C++ kernels just built, instruction by
@@ -301,6 +312,14 @@ jobs:
       # granted, refused, voided by a recompile, enforced by pack_update.py.
       - name: Numerics certifier suite
         run: python3 -m unittest discover -s test/tool -p 'certify_numerics_test.py' -v
+      - name: Every tool suite, with nothing this job provides skipped
+        run: |
+          python3 -m unittest discover -s test/tool -p '*_test.py' -v 2>&1 | tee tools.log
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -E "skipped .*(NumPy|PyTorch|no built|no seeml|seeml-abi|C\+\+ (driver|toolchain))" tools.log; then
+            echo "::error::a tool test skipped for a dependency this job installs"
+            exit 1
+          fi
       - name: Compile the plan and build the emitted package
         run: |
           ./build/seeml-update-compile --source out/model.smf --out out/pkg \
