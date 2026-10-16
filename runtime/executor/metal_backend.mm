@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <array>
 #include <map>
 #include <cstdint>
 #include <cstring>
@@ -105,6 +106,7 @@ enum Pipe : int {
   kPReduceRows, kPLnFwd, kPLnBwd, kPRmsFwd, kPRmsBwd,
   kPClipPartials, kPClipFinish, kPClipApply, kPSgdClip, kPAdamWClip,
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
+  kPXentFwd, kPXentFinish, kPXentBwd,
   kPipeCount
 };
 const char* const kPipeNames[kPipeCount] = {
@@ -129,7 +131,8 @@ const char* const kPipeNames[kPipeCount] = {
     "k_layernorm_fwd", "k_layernorm_bwd", "k_rmsnorm_fwd", "k_rmsnorm_bwd",
     "k_clip_partials", "k_clip_finish", "k_clip_apply", "k_sgd_clip",
     "k_adamw_clip", "k_rope_fwd",
-    "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd"};
+    "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
+    "k_xent_fwd", "k_xent_finish", "k_xent_bwd"};
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -226,6 +229,7 @@ class MetalBackend final : public ExecutorBackend {
   ~MetalBackend() override {
     (void)Flush();
     if (profile_) PrintProfile();
+    if (spans_) PrintSpans();
   }
 
   const char* name() const override { return "metal"; }
@@ -265,6 +269,7 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> Encode(const up::UpdateInstruction& ins,
                                           const StepParams& params);
   void PrintProfile() const;
+  void PrintSpans() const;
 
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
@@ -316,6 +321,26 @@ class MetalBackend final : public ExecutorBackend {
   std::map<std::string, ProfRow> prof_;
   std::string prof_pipes_;  // every kernel the current instruction dispatched
   double last_gpu_seconds_ = 0;
+  // Forward and backward passes seen, counted at the loss opcodes (11 / 13
+  // / 15 forward, 12 / 14 / 16 backward): the profile header prints them
+  // so a reader sees how a run weights the two (F9 #140 — a run with
+  // validation on is 7:1 forward).
+  uint64_t fwd_passes_ = 0, bwd_passes_ = 0;
+  // scratch_ holds kScratchFloats floats at creation (the clip partials);
+  // the loss forward needs one float per row and grows it on demand.
+  size_t scratch_floats_ = 0;
+  // SEEML_METAL_SPANS=1 (F8 #139): per command buffer, the GPU's busy
+  // span (GPUStartTime..GPUEndTime), the CPU wall from the first encode to
+  // completion, and the dispatch count — the time outside kernels is the
+  // difference, measured without serializing the stream the way the
+  // profile does. A table on stderr at destruction. Diagnostic only.
+  const bool spans_ = std::getenv("SEEML_METAL_SPANS") != nullptr &&
+                      *std::getenv("SEEML_METAL_SPANS") != '\0' &&
+                      *std::getenv("SEEML_METAL_SPANS") != '0';
+  struct SpanRow { uint64_t dispatches; double gpu_seconds, wall_seconds; };
+  std::vector<SpanRow> spans_rows_;
+  std::chrono::steady_clock::time_point cb_t0_;
+  uint64_t cb_dispatches_ = 0;
   void NoteDispatch(Pipe pipe) {
     if (!profile_) return;
     if (!prof_pipes_.empty()) prof_pipes_ += '+';
@@ -363,6 +388,10 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
       const uint64_t H = hi(ins.out[1]), d = lo(ins.out[1]);
       return B * H * S * S <= kMax && B * S * H * d <= kMax;
     }
+    case up::OpCode::kSoftmaxXEntFwd:
+    case up::OpCode::kSoftmaxXEntBwd:
+      return ins.out[0] <= kMax && ins.out[1] <= kMax &&
+             ins.out[0] * ins.out[1] <= kMax;
     case up::OpCode::kSoftmaxRowsBwd:
     case up::OpCode::kLayerNormFwd:
     case up::OpCode::kRmsNormFwd:
@@ -400,8 +429,9 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
 bool IsGpuOpcode(up::OpCode op) {
   switch (op) {
     case up::OpCode::kNop:
-    case up::OpCode::kSoftmaxXEntFwd:
-    case up::OpCode::kSoftmaxXEntBwd:
+    // The softmax cross-entropy pair (11 / 12) runs on the GPU since F8
+    // (#139); the MSE and KL families stay here (MSE leaves the ISA under
+    // S6; KL is the distillation path, not on the SmolLM step).
     case up::OpCode::kMseFwd:
     case up::OpCode::kMseBwd:
     case up::OpCode::kKLDistillFwd:
@@ -540,6 +570,7 @@ MetalBackend::Create() {
         [be->device_ newBufferWithLength:kScratchFloats * sizeof(float)
                                  options:MTLResourceStorageModeShared];
     if (!be->scratch_) return std::unexpected("scratch allocation failed");
+    be->scratch_floats_ = kScratchFloats;
     be->cpu_ = CreateCpuBackend();
     return std::unique_ptr<ExecutorBackend>(std::move(be));
   }
@@ -669,6 +700,8 @@ std::expected<void, std::string> MetalBackend::EnsureEncoder() {
   if (enc_) return {};
   cmd_ = [queue_ commandBuffer];
   enc_ = cmd_ ? [cmd_ computeCommandEncoder] : nil;  // serial dispatch type
+  if (spans_) cb_t0_ = std::chrono::steady_clock::now();
+  cb_dispatches_ = 0;
   if (!cmd_ || !enc_) {
     cmd_ = nil;
     enc_ = nil;
@@ -689,6 +722,7 @@ std::expected<void, std::string> MetalBackend::EnsureEncoder() {
 void MetalBackend::Dispatch(Pipe pipe, const KArgs& a, uint32_t threads_x,
                             uint32_t group, bool) {
   NoteDispatch(pipe);
+  ++cb_dispatches_;
   [enc_ setComputePipelineState:pipes_[pipe]];
   [enc_ setBytes:&a length:sizeof(a) atIndex:2];
   // 64-bit: DimsFit32 admits counts up to 2^32 - 1, and the round-up must
@@ -756,6 +790,7 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
     if (a.pad0 > 1) [enc_ setBuffer:splitk_ws_ offset:0 atIndex:4];
   }
   NoteDispatch(pipe);
+  ++cb_dispatches_;
   [enc_ setComputePipelineState:pipes_[pipe]];
   [enc_ setBytes:&a length:sizeof(a) atIndex:2];
   [enc_ dispatchThreadgroups:MTLSizeMake(gx, gy, a.pad0 > 1 ? a.pad0 : a.batch)
@@ -1142,6 +1177,29 @@ std::expected<void, std::string> MetalBackend::Encode(
       a.rows = hi(ins.out[0]); a.cols = lo(ins.out[0]);
       Dispatch(kPSoftmaxRowsBwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
+    // Softmax cross-entropy (F8): the row kernel leaves -log p[label] per
+    // row in scratch, the finish kernel folds them into the loss slot.
+    case up::OpCode::kSoftmaxXEntFwd: {
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
+      a.rows = u32(ins.out[0]); a.cols = u32(ins.out[1]);
+      if (a.rows > scratch_floats_) {
+        // The scratch is bound per encoder: end this one, grow, rebind.
+        if (auto r = Flush(); !r) return r;
+        scratch_ = [device_ newBufferWithLength:size_t{a.rows} * sizeof(float)
+                                        options:MTLResourceStorageModeShared];
+        if (!scratch_) return std::unexpected("scratch allocation failed");
+        scratch_floats_ = a.rows;
+        if (auto r = EnsureEncoder(); !r) return r;
+      }
+      Dispatch(kPXentFwd, a, a.rows * 32u, kElementwiseGroup, true);
+      Dispatch(kPXentFinish, a, 1, 1, true);
+      return {};
+    }
+    case up::OpCode::kSoftmaxXEntBwd:
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
+      a.rows = u32(ins.out[0]); a.cols = u32(ins.out[1]);
+      Dispatch(kPXentBwd, a, a.rows * a.cols, kElementwiseGroup);
+      return {};
     default:
       return std::unexpected("opcode " + std::to_string(ins.opcode) +
                              " has no GPU kernel");
@@ -1182,6 +1240,14 @@ std::expected<void, std::string> MetalBackend::Execute(
   @autoreleasepool {
     if (!arena_buf_) return std::unexpected("no plan bound");
     const auto op = static_cast<up::OpCode>(ins.opcode);
+    if (profile_) {
+      if (op == up::OpCode::kSoftmaxXEntFwd || op == up::OpCode::kMseFwd ||
+          op == up::OpCode::kKLDistillFwd)
+        ++fwd_passes_;
+      else if (op == up::OpCode::kSoftmaxXEntBwd ||
+               op == up::OpCode::kMseBwd || op == up::OpCode::kKLDistillBwd)
+        ++bwd_passes_;
+    }
     const InstructionExtents* ex = ExtentsOf(ins);
     if (!ex && op != up::OpCode::kNop)
       return std::unexpected("instruction " + std::to_string(ins.opcode) +
@@ -1229,6 +1295,12 @@ std::expected<void, std::string> MetalBackend::Flush() {
     const MTLCommandBufferStatus status = cmd_.status;
     NSError* err = cmd_.error;
     if (profile_) last_gpu_seconds_ = cmd_.GPUEndTime - cmd_.GPUStartTime;
+    if (spans_)
+      spans_rows_.push_back(
+          {cb_dispatches_, cmd_.GPUEndTime - cmd_.GPUStartTime,
+           std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                         cb_t0_)
+               .count()});
     enc_ = nil;
     cmd_ = nil;
     pending_reads_.clear();
@@ -1248,8 +1320,11 @@ void MetalBackend::PrintProfile() const {
   });
   double total = 0;
   for (const auto& r : rows) total += r.second.seconds;
-  std::fprintf(stderr, "metal profile: %.3f s over %zu keys\n", total,
-               rows.size());
+  std::fprintf(stderr,
+               "metal profile: %.3f s over %zu keys; %llu forward pass(es), "
+               "%llu backward pass(es) (counted at the loss opcodes)\n",
+               total, rows.size(), (unsigned long long)fwd_passes_,
+               (unsigned long long)bwd_passes_);
   for (const auto& r : rows)
     std::fprintf(stderr, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
                  r.second.seconds,
@@ -1257,6 +1332,37 @@ void MetalBackend::PrintProfile() const {
                  (unsigned long long)r.second.count,
                  1e6 * r.second.seconds / (double)r.second.count,
                  r.first.c_str());
+}
+
+void MetalBackend::PrintSpans() const {
+  double gpu = 0, wall = 0;
+  uint64_t dispatches = 0;
+  for (const SpanRow& s : spans_rows_) {
+    gpu += s.gpu_seconds;
+    wall += s.wall_seconds;
+    dispatches += s.dispatches;
+  }
+  std::fprintf(stderr,
+               "metal spans: %zu command buffer(s), %llu dispatch(es); GPU "
+               "busy %.3f s, CPU wall %.3f s, outside the GPU %.3f s "
+               "(%.1f%% of the wall; %.2f us per dispatch)\n",
+               spans_rows_.size(), (unsigned long long)dispatches, gpu, wall,
+               wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
+               dispatches ? 1e6 * (wall - gpu) / (double)dispatches : 0.0);
+  // Per buffer size: the train, eval and merge programs are told apart by
+  // their dispatch counts (one buffer per ExecuteRange).
+  std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall
+  for (const SpanRow& s : spans_rows_) {
+    auto& v = by_size[s.dispatches];
+    v[0] += 1; v[1] += s.gpu_seconds; v[2] += s.wall_seconds;
+  }
+  for (const auto& [n, v] : by_size)
+    std::fprintf(stderr,
+                 "  %7llu dispatches x %4.0f: GPU %8.3f ms, wall %8.3f ms, "
+                 "outside %7.3f ms (%.1f%%) per buffer\n",
+                 (unsigned long long)n, v[0], 1e3 * v[1] / v[0],
+                 1e3 * v[2] / v[0], 1e3 * (v[2] - v[1]) / v[0],
+                 v[2] > 0 ? 100.0 * (v[2] - v[1]) / v[2] : 0.0);
 }
 
 }  // namespace

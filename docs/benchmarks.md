@@ -357,6 +357,72 @@ Raw JSON in `out/frontier-2026-10-15b/` (not committed). The job itself
 still waits on a runner labelled `self-hosted, macOS, ARM64` with the
 checkpoint path passed as `frontier_model_dir` or set in its environment.
 
+### The loss on the GPU, and the dispatch model measured (F8 #139, 2026-10-15)
+
+Softmax cross-entropy (opcodes 11 / 12) runs on Metal: one simdgroup per
+row over the 49,152 logits with the fixed shuffle trees, the row losses
+folded in order by a compensated single-thread kernel into the loss slot
+(the CPU folds in f64; two Metal runs are byte-identical and the loss
+agrees with the CPU inside 1e-5, the probabilities inside 1e-4 — the
+CPU's serial f32 row sum over 49,152 terms is the less accurate of the
+pair). The train-only profile of the SmolLM-135M package now shows **no
+`cpu opcode 11` or `12` row**. Two CPU-resident rows remain, and one of
+them still drains: the embedding gather (41) is instruction 0 of the
+step, with nothing pending; the RoPE angle table (45) is instruction 14,
+written into a transient slot the thirteen GPU instructions before it
+just used, so the backend flushes and waits there every step — the span
+table below shows it as a 16-dispatch command buffer per step, 0.8 ms of
+GPU inside 4.8 ms of wall, about 4 ms (1.4 %) per step. The acceptance
+line "no CPU-resident opcode in the train program" is therefore not met
+yet; porting the angle table (a kernel over B·S·H·d/2 angles) is the
+follow-up, and the gather can go with it. The loss kernels cost 4.0 +
+1.5 ms where the CPU took 7.4 + 1.8 — and the measured step did not move
+(exact 287.2 → 288.4 ms, relaxed 203.3 → 201.2), so the mid-step drain the
+review priced at "≈5 % plus the drain itself" was worth about 1 %. The
+gradient now descends from GPU-computed probabilities: the 300-step
+Metal endpoint moved from 4.013721 to 4.014309 against the CPU's
+4.013742, so the run-level CPU–Metal agreement is 1.4e-4 relative where
+it had been 5e-6 with the loss on the CPU (the twin test's 1e-5 is on
+identical inputs; this is the number the two runs reach by themselves).
+
+The dispatch model, measured without serializing (`SEEML_METAL_SPANS=1`:
+per command buffer, the GPU's busy span against the CPU wall from first
+encode to completion). One command buffer per training step, 3,862
+dispatches (exact) / 3,355 (relaxed):
+
+| package | dispatches / step | GPU busy (ms) | CPU wall (ms) | outside the GPU | Σ per-kernel spans (serialized profile) | gaps inside the busy span |
+|---|---:|---:|---:|---:|---:|---:|
+| exact | 3,862 | 276.2 | 277.9 | 1.7 ms (0.6 %) | 221.5 | 54.7 ms (19.8 %), 14 µs per dispatch |
+| relaxed | 3,355 | 192.4 | 194.2 | 1.7 ms (0.9 %) | 157.6 | 34.8 ms (18.1 %), 10 µs per dispatch |
+
+(The 2,462 + 1,400 pair is the first step, split where the loss forward
+grew the row scratch and reopened the encoder.) One finding is firm:
+**encoding is not the cost**. The CPU hands the GPU a step's worth of
+dispatches 1.7 ms before the GPU finishes them, so the "≈27 % outside any
+kernel" the review inferred from the step-timing split is not CPU time,
+and a scheduling phase that reorders instructions would recover none of
+it. The other needs a denominator the serialized profile does not give.
+The GPU is busy 276 ms per step; the kernels' own spans, summed from the
+profile taken after this port, are 220.8–221.5 ms over four runs (relaxed
+156.6–157.9), which would make the serial encoder's gap between kernels
+~55 ms, 14 µs per dispatch, 20 % of the step. But the profile taken
+before the port — the same GEMM, LoRA and norm kernels, the loss on the
+CPU — summed to 260.2 ms (relaxed 172.4), a 15 % swing with no change to
+those kernels: one command buffer per instruction lets the GPU clock
+down in the gaps, and how far depends on what sat in them (here a 9 ms
+CPU loss per step). Against that profile the gap is ~20 ms, 7 %. So the
+honest statement is a range, **7–20 % of the step between kernels**,
+straddling the issue's 10 % line, and the serialized profile cannot
+resolve it. The direct experiment can: F7's step 1 removes the 7,174
+`k_scale` dispatches a profile counts (one per adapter per pass) with no
+other change to the step, so the real step's movement per dispatch
+removed is the per-dispatch cost; F7 opens with that measurement. What
+is already decided: a concurrent dispatch type is not the answer (the
+serial encoder is what keeps two runs byte-identical without barriers),
+and for SeeAI S6 (#152) the time outside kernels, whatever its size, is
+per-dispatch latency rather than ordering, so scheduling stays a
+function inside selection and fusion owns the lever.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |
