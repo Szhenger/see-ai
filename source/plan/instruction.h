@@ -44,6 +44,10 @@ inline constexpr uint64_t RefOffset(uint64_t ref) {
 enum class OpCode : uint16_t {
   kNop = 0,
   // GEMM family. C[M,N]; refs in in[0..2], dims in out[0..2] = M, N, K.
+  // v19 (F7 #138): the three f32 forms may carry a scalar alpha as f32
+  // bits in `imm` (0 = 1.0, what every earlier plan meant): C = alpha *
+  // A @ B [+ D]. See "The GEMM alpha" below for where each backend
+  // applies it.
   kGemmNN = 1,     // C = A[M,K] @ B[K,N]
   kGemmNT = 2,     // C = A[M,K] @ B[N,K]^T   (VJP: dX = dC @ W^T)
   kGemmTN = 3,     // C = A[K,M]^T @ B[K,N]   (VJP: dW = X^T @ dC)
@@ -293,6 +297,28 @@ inline constexpr uint16_t kFlagQ8ColScale = 1u << 4;  // in[3] = scales ref
 inline constexpr uint16_t kFlagRelaxed = 1u << 5;
 inline constexpr uint16_t kKnownFlagsMask =
     kEpilogueFlagsMask | kFlagGemmAddend | kFlagQ8ColScale | kFlagRelaxed;
+// --- The GEMM alpha (plan v19, F7 #138). -------------------------------------
+// kGemmNN / kGemmNT / kGemmTN may carry a scalar alpha's f32 bits in `imm`
+// (0 = 1.0, so every earlier plan means what it always meant), making the
+// instruction C = alpha * A @ B [+ D]. It replaces the kScale a LoRA site
+// spent on its rank-r activation twice per step — the forward's (alpha/r)*t
+// and the backward's (alpha/r)*(dC @ B^T) — a whole dispatch per site per
+// pass for one scalar the GEMM already multiplies by. Where the CPU
+// applies it is each core's own: the NN and TN cores fold alpha into A's
+// elements as they enter the product (one rounding each — the multiply
+// the forward's and dB's kScale over t performed), the NT core multiplies
+// the finished dot product (the multiply the backward's kScale over
+// dC @ B^T performed), so the CPU's v19 program computes the v18
+// program's bits for every alpha. Metal multiplies the finished dot
+// product in every form, as its GemmAccNN kernel does: identical when
+// alpha is a power of two (the default alpha/r = 16/8) and equal to
+// rounding otherwise. A set alpha must be finite and nonzero; it is
+// corruption on any other opcode, below v19, and beside kFlagRelaxed (the
+// relaxed family is the frozen-weight products; an adapter product is
+// never relaxed).
+inline float GemmAlphaOf(uint32_t imm) {
+  return imm == 0 ? 1.0f : std::bit_cast<float>(imm);
+}
 
 enum class EpilogueAct : uint16_t { kNone = 0, kRelu = 1, kGelu = 2, kSilu = 3 };
 
@@ -321,8 +347,9 @@ inline float NormEpsOf(uint32_t imm) {
 /// pad word every compiler wrote as zero and no runtime read; from v16
 /// kLayerNormFwd and kRmsNormFwd carry the normalization epsilon's f32 bits
 /// there (0 = the classic 1e-5, so every earlier plan means what it always
-/// meant). On any other opcode, and on any opcode below v16, a nonzero imm
-/// is corruption — the flags word's discipline.
+/// meant), and from v19 kGemmNN / kGemmNT / kGemmTN carry a scalar alpha's
+/// f32 bits (0 = 1.0). On any other opcode, and below the version that
+/// defined it, a nonzero imm is corruption — the flags word's discipline.
 struct UpdateInstruction {
   uint16_t opcode = 0;
   uint16_t flags = 0;

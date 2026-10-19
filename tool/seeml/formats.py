@@ -97,7 +97,7 @@ SDS_HEADER_BYTES = SDS_HEADER.size
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 18
+SEEU_VERSION = 19
 SEEU_OLDEST_READABLE = 4
 RODATA_BIT = 1 << 63
 SOURCE_BIT = 1 << 62  # v17: the source model file (E12), eval program only
@@ -130,8 +130,9 @@ PLAN_HEADER = Layout("PlanHeader", [
     ("seq_len", "Q"),
     ("step_instr_offset", "Q"), ("step_instr_count", "Q")])
 
-# `imm` (v16) is an opcode-defined immediate — the normalization forwards'
-# epsilon bits, zero elsewhere; `in`/`out` are operand words.
+# `imm` is an opcode-defined immediate — the normalization forwards'
+# epsilon bits (v16), the three f32 GEMMs' alpha bits (v19; 0 = 1.0), zero
+# elsewhere; `in`/`out` are operand words.
 INSTRUCTION = Layout("UpdateInstruction", [
     ("opcode", "H"), ("flags", "H"), ("imm", "I"), ("in", "4Q"),
     ("out", "3Q")])

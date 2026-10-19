@@ -66,6 +66,45 @@ TEST(Gemm, TNMatchesNNWithExplicitTranspose) {
   for (size_t i = 0; i < M * N; ++i) EXPECT_NEAR(got[i], want[i], 1e-5);
 }
 
+TEST(Gemm, AlphaIsBitwiseTheScaleItReplaces) {
+  // v19 (F7 #138): the NN and TN cores fold alpha into A's elements (the
+  // bits of kScale(A) then the GEMM); the NT core scales the finished dot
+  // product (the bits of the GEMM then kScale(C)). Exact equality, with an
+  // alpha that is not a power of two, on shapes that take every K tail.
+  const size_t M = 7, N = 9, K = 37;
+  const float alpha = 0.3f;
+  const std::vector<float> a = RandnVector(M * K, 21);
+  const std::vector<float> b = RandnVector(K * N, 22);
+  std::vector<float> a_scaled(M * K);
+  for (size_t i = 0; i < M * K; ++i) a_scaled[i] = alpha * a[i];
+  std::vector<float> want(M * N), got(M * N);
+  k::GemmNN(a_scaled.data(), b.data(), want.data(), M, N, K);
+  k::GemmNN(a.data(), b.data(), got.data(), M, N, K, nullptr,
+            seeml::update::EpilogueAct::kNone, k::kDefaultGemmTiles, nullptr,
+            alpha);
+  EXPECT_EQ(std::memcmp(want.data(), got.data(), M * N * sizeof(float)), 0);
+
+  std::vector<float> a_t(K * M), a_t_scaled(K * M);  // [K, M]
+  for (size_t m = 0; m < M; ++m)
+    for (size_t kk = 0; kk < K; ++kk) {
+      a_t[kk * M + m] = a[m * K + kk];
+      a_t_scaled[kk * M + m] = a_scaled[m * K + kk];
+    }
+  k::GemmTN(a_t_scaled.data(), b.data(), want.data(), M, N, K);
+  k::GemmTN(a_t.data(), b.data(), got.data(), M, N, K, k::kDefaultGemmTiles,
+            nullptr, alpha);
+  EXPECT_EQ(std::memcmp(want.data(), got.data(), M * N * sizeof(float)), 0);
+
+  std::vector<float> b_t(N * K);  // [N, K]
+  for (size_t kk = 0; kk < K; ++kk)
+    for (size_t n = 0; n < N; ++n) b_t[n * K + kk] = b[kk * N + n];
+  k::GemmNT(a.data(), b_t.data(), want.data(), M, N, K);
+  for (float& v : want) v = alpha * v;
+  k::GemmNT(a.data(), b_t.data(), got.data(), M, N, K, k::kDefaultGemmTiles,
+            nullptr, alpha);
+  EXPECT_EQ(std::memcmp(want.data(), got.data(), M * N * sizeof(float)), 0);
+}
+
 TEST(Gemm, EpilogueIsBitwiseIdenticalToUnfusedSequence) {
   // The fused write-back must evaluate exactly the floats the standalone
   // kGemmNN + kAddBias + k<Act>Fwd sequence would — fusion is a bandwidth

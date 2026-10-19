@@ -123,6 +123,19 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
       ins.out[2] = static_cast<uint64_t>(                          // K
           m == "sc_low.matmul_tn" ? a->shape().dims.at(0)
                                   : a->shape().dims.at(1));
+      // The GEMM alpha (plan v19): the f32 forms carry it in imm. Only the
+      // LoRA grafter and autodiff set it, on adapter products whose B
+      // operand lives in the arena, so a narrow-weight form here is a
+      // compiler bug, not a plan.
+      if (const float alpha = op->getAttrAs<float>("alpha").value_or(1.0f);
+          alpha != 1.0f) {
+        if (q8 || bf16) {
+          error = "GEMM alpha on a narrow-weight GEMM ('" +
+                  std::string(c->id()) + "')";
+          break;
+        }
+        ins.imm = static_cast<uint32_t>(F32Bits(alpha));
+      }
       // Fused epilogue (plan v5): a third operand is the fused bias, whose
       // ref rides the free in[3]; "epilogue_act" selects the activation.
       // Both are produced only by GemmEpilogueFuser, and only on
@@ -191,6 +204,9 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
       ins.out[2] = static_cast<uint64_t>(                          // K
           form == "tn" ? a->shape().dims.at(0) : a->shape().dims.at(1));
       ins.flags = kFlagGemmAddend;
+      if (const float alpha = op->getAttrAs<float>("alpha").value_or(1.0f);
+          alpha != 1.0f)
+        ins.imm = static_cast<uint32_t>(F32Bits(alpha));
     } else if (m == "sc_high.add") {
       set(OpCode::kAddEW);
       ins.in[0] = ref(op->operand(0));

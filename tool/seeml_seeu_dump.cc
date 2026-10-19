@@ -202,6 +202,12 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
     std::printf("  %4" PRIu64 "  %-18s", i, OpName(ins.opcode));
     if (ins.flags)
       std::printf(" epi(%s)", EpilogueName(ins.flags).c_str());
+    // v19: the three f32 GEMMs' imm word is their alpha (0 = 1.0).
+    if (ins.imm != 0 &&
+        (static_cast<OpCode>(ins.opcode) == OpCode::kGemmNN ||
+         static_cast<OpCode>(ins.opcode) == OpCode::kGemmNT ||
+         static_cast<OpCode>(ins.opcode) == OpCode::kGemmTN))
+      std::printf(" alpha(%g)", static_cast<double>(GemmAlphaOf(ins.imm)));
     const int imm = ImmInSlot(ins.opcode, ins.flags);
     for (int s = 0; s < 4; ++s) {
       if (s == imm)

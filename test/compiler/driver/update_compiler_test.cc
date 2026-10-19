@@ -471,17 +471,26 @@ TEST(UpdateCompiler, LoraSitesCostNoActivationSizedPassOfTheirOwn) {
                        UpdateCompiler(unfolded).Compile(model));
   ASSERT_EQ(folded.adapters.size(), 2u);
 
-  // Every scale in either program is rank-sized: [N, r] = 4 * 4 elements.
-  const uint64_t rank_sized =
-      static_cast<uint64_t>(kBatch) * static_cast<uint64_t>(config.lora.rank);
+  // No scale instruction is left in either program (F7 #138, plan v19):
+  // alpha/r = 2 is the alpha of the three rank-r products at every site —
+  // forward u = t@B (NN), backward dt = dC@B^T (NT) and dB = t^T@dC (TN).
   for (const CompiledUpdate* c : {&folded, &plain}) {
-    size_t scales = 0;
+    EXPECT_EQ(CountOpcode(TrainProgramOf(*c), OpCode::kScale), 0u);
+    size_t nn_alpha = 0, nt_alpha = 0, tn_alpha = 0;
     for (const UpdateInstruction& ins : TrainProgramOf(*c)) {
-      if (ins.opcode != static_cast<uint16_t>(OpCode::kScale)) continue;
-      ++scales;
-      EXPECT_EQ(ins.out[0], rank_sized);
+      if (ins.imm == 0) continue;
+      const auto op = static_cast<OpCode>(ins.opcode);
+      if (op != OpCode::kGemmNN && op != OpCode::kGemmNT &&
+          op != OpCode::kGemmTN)
+        continue;  // the norms' epsilon word
+      EXPECT_EQ(GemmAlphaOf(ins.imm), 2.0f);
+      if (op == OpCode::kGemmNN) ++nn_alpha;
+      if (op == OpCode::kGemmNT) ++nt_alpha;
+      if (op == OpCode::kGemmTN) ++tn_alpha;
     }
-    EXPECT_EQ(scales, 2 * folded.adapters.size());  // forward t, backward dt
+    EXPECT_EQ(nn_alpha, folded.adapters.size());
+    EXPECT_EQ(nt_alpha, folded.adapters.size());
+    EXPECT_EQ(tn_alpha, folded.adapters.size());
   }
 
   // Folded: one forward addend per site (C' = C + ts@B), and one backward

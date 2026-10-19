@@ -117,8 +117,19 @@ TEST(LoraGrafter, GraftsEveryEligibleMatMul) {
                        LoraGrafter(Spec()).Run(block));
   ASSERT_EQ(adapters.size(), 2u);
   EXPECT_TRUE(block.validate());
-  // 6 new ops per adapter: A, B, two matmuls, scale, add.
-  EXPECT_EQ(block.numOps(), ops_before + 12);
+  // 5 new ops per adapter: A, B, two matmuls, add. The scale alpha/r is
+  // the second matmul's own alpha (plan v19, F7 #138): no scale op.
+  EXPECT_EQ(block.numOps(), ops_before + 10);
+  EXPECT_EQ(CountOps(block, "sc_high.scale"), 0u);
+  size_t scaled = 0;
+  block.walk([&](sir::Operation* op) {
+    if (op->mnemonic() != "sc_high.matmul" ||
+        !op->result(0)->id().ends_with(".lora_u"))
+      return;
+    EXPECT_NEAR(op->getAttrAs<float>("alpha").value_or(0.0f), 2.0f, 1e-6);
+    ++scaled;
+  });
+  EXPECT_EQ(scaled, 2u);
 
   // Adapter 0 wraps w1 [6, 10]: A [6, r] randn-init, B [r, 10] zero-init.
   const GraftedAdapter& a0 = adapters[0];
@@ -254,6 +265,55 @@ TEST(TrainableAutodiff, SynthesizesGradientForTrainable) {
   EXPECT_EQ(CountOps(g.block, "sc_low.matmul_nt"), 0u);
   // The dL/dL = 1 seed is materialized exactly once.
   EXPECT_EQ(CountOps(g.block, "sc_low.fill"), 1u);
+}
+
+TEST(TrainableAutodiff, MatmulAlphaRidesBothAdjointProducts) {
+  // C = alpha * X @ W (v19): dX = alpha * dC @ W^T and dW = alpha * X^T @
+  // dC carry the constant as their own alpha — no scale op anywhere.
+  sir::Block block;
+  sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{2, 3});
+  sir::Value* target = block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
+  sir::Operation* w1_op = block.appendOp("sc_mem.param");
+  w1_op->setAttribute("trainable", int64_t{1});
+  sir::Value* w1 = w1_op->addResult("W1", sir::DataType::F32, sir::Shape{3, 4});
+  sir::Operation* w2_op = block.appendOp("sc_mem.param");
+  w2_op->setAttribute("trainable", int64_t{1});
+  sir::Value* w2 = w2_op->addResult("W2", sir::DataType::F32, sir::Shape{4, 2});
+  sir::Operation* mm1 = block.appendOp("sc_high.matmul");
+  mm1->addOperand(x);
+  mm1->addOperand(w1);
+  sir::Value* h = mm1->addResult("h", sir::DataType::F32, sir::Shape{2, 4});
+  sir::Operation* mm2 = block.appendOp("sc_high.matmul");
+  mm2->setAttribute("alpha", 2.0f);
+  mm2->addOperand(h);
+  mm2->addOperand(w2);
+  sir::Value* y = mm2->addResult("y", sir::DataType::F32, sir::Shape{2, 2});
+  sir::Operation* mse = block.appendOp("sc_high.mse");
+  mse->addOperand(y);
+  mse->addOperand(target);
+  sir::Value* loss = mse->addResult("loss", sir::DataType::F32, sir::Shape{});
+
+  TrainableAutodiff ad;
+  ASSERT_OK_AND_ASSIGN(auto grads, ad.Run(block, loss, {w1, w2}));
+  ASSERT_EQ(grads.size(), 2u);
+  EXPECT_EQ(CountOps(block, "sc_high.scale"), 0u);
+  EXPECT_EQ(CountOps(block, "sc_low.scale"), 0u);
+  // dh (nt) and dW2 (tn) carry alpha = 2; dW1 (tn, from the plain matmul)
+  // carries none.
+  size_t nt = 0, tn_scaled = 0, tn_plain = 0;
+  block.walk([&](sir::Operation* op) {
+    const auto alpha = op->getAttrAs<float>("alpha");
+    if (op->mnemonic() == "sc_low.matmul_nt") {
+      EXPECT_NEAR(alpha.value_or(0.0f), 2.0f, 1e-6);
+      ++nt;
+    } else if (op->mnemonic() == "sc_low.matmul_tn") {
+      if (alpha) { EXPECT_NEAR(*alpha, 2.0f, 1e-6); ++tn_scaled; }
+      else ++tn_plain;
+    }
+  });
+  EXPECT_EQ(nt, 1u);
+  EXPECT_EQ(tn_scaled, 1u);
+  EXPECT_EQ(tn_plain, 1u);
 }
 
 TEST(TrainableAutodiff, AccumulatesFanOutGradients) {

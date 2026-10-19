@@ -945,9 +945,19 @@ def _rope(x, t, b, s, h, d, base, sign):
                         even * sin + odd * cos).reshape((b * s, h * d))
 
 
+def _gemm_alpha(ins):
+    """The f32 GEMMs' alpha (v19): the imm word's f32 bits, 1.0 when zero.
+    Applied where the CPU applies it: to A's elements on the NN and TN
+    forms, to the finished product on the NT form (each the multiply the
+    kScale it replaced performed)."""
+    return bits_f32(ins.imm) if ins.imm else 1.0
+
+
 def _gemm_operands(m, x, ins, kind, transposed_b):
     rows, cols, inner = ins.out
     a = m.read(ins.src[0], (rows, inner))
+    if ins.imm and not transposed_b:
+        a = _gemm_alpha(ins) * a
     shape = (cols, inner) if transposed_b else (inner, cols)
     # v18: under the relaxed model the activation is rounded to bf16 once,
     # exactly where the Metal tensor-op kernel rounds it; the stored weight
@@ -995,13 +1005,18 @@ def _gemm_nn(kind):
 def _gemm_nt(kind):
     def op(m, x, ins, step):
         a, b = _gemm_operands(m, x, ins, kind, True)
-        m.write(ins.src[2], _addend(m, ins, x.matmul(a, b)))
+        c = x.matmul(a, b)
+        if ins.imm:
+            c = _gemm_alpha(ins) * c
+        m.write(ins.src[2], _addend(m, ins, c))
     return op
 
 
 def _gemm_tn(m, x, ins, step):
     rows, cols, inner = ins.out
     a, b = m.read(ins.src[0], (inner, rows)), m.read(ins.src[1], (inner, cols))
+    if ins.imm:
+        a = _gemm_alpha(ins) * a
     m.write(ins.src[2], _addend(m, ins, x.matmul(a.T, b)))
 
 

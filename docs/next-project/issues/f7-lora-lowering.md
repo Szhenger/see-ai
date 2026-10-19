@@ -74,6 +74,38 @@ issue is that remainder, now priced.
    old path never emits, admitted under the same certificate as F2's
    relaxed family; the four-op lowering stays the exact reference.
 
+## Status 2026-10-19
+
+Steps 1 and 3 landed and measured (`docs/benchmarks.md`, "The LoRA
+lowering, steps 1 and 3, and the per-dispatch cost"). Step 1: the scale is
+the GEMM's own alpha (plan v19, the instruction's `imm` word on the three
+f32 forms; the grafter sets it on `t@B`, autodiff carries it onto `dt` and
+`dB`, the addend fuser keeps it), so no `kScale` instruction remains —
+3,309 → 2,887 train instructions, 3,862 → 3,443 dispatches per step on
+SmolLM-135M. The CPU applies alpha where the scale instruction it replaces
+sat, so the CPU plan is byte-identical for every alpha (demonstrated on
+the demo MLP at alpha/r = 0.75: main's compiler and this one commit the
+same bytes after 20 CPU steps); Metal applies it in the write-back,
+identical for the power-of-two default and at rounding level otherwise. Step 3, first
+half: the GEMM addend is summed in the exact Metal kernels' write-back
+(flag 2048) instead of a second `k_add_ew` dispatch — 3,027 dispatches per
+step, the LoRA rows 155 → 92 µs (`512x1536x8`), 5,105 → 2,847 µs (the
+head). Every stage commits the same bytes as main's package after 20
+steps on both backends. The step: 285.5 (main's package, re-measured today) → 285.8 → 280.4 ms
+(1,793 → 1,826 tok/s; 0.82× MLX-LM true-f32, 0.40× all-bf16); the LoRA family's
+share of the train-only profile's kernel time 37.3 → 33.6 % with every
+rank-8 shape counted (the ≈36 % above holds on the train-only profile
+too), the head's LoRA 61 → 34 % of the head GEMM. **The per-dispatch cost, the experiment F8 waited on:
+about 3 µs per dispatch at the means** (step 1 removed 422 dispatches
+and 0.72 ms of kernel span, and GPU busy fell 2.0 ms; the run-to-run
+spread allows 0–8 µs, and step 3's 416 dispatches plus their traffic
+bought 2.9 ms, capping it at 7 µs, so 0–7 µs across the two
+experiments), ≈4 % of the step across the 3,443 that remained and ≤8 %
+at the ceiling — F8's verdict is recorded there. Remaining here: the small-N kernel rewrite itself (the
+rows are still occupancy-bound, 65 GB/s on `512x1536x8` against the ≥100
+target), step 2 (needs strided operands in the ISA), step 4 (certified),
+and the relaxed package's row.
+
 ## Acceptance
 
 - Train-only Metal profile of SmolLM-135M: the LoRA family's share of

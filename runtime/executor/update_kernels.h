@@ -48,17 +48,27 @@ void GemmNN(const float* A, const float* B, float* C, size_t M, size_t N,
             seeml::update::EpilogueAct act =
                 seeml::update::EpilogueAct::kNone,
             const GemmTiles& tiles = kDefaultGemmTiles,
-            const float* addend = nullptr);  // C = [D +] A[M,K] @ B[K,N]
+            const float* addend = nullptr,
+            float alpha = 1.0f);  // C = [D +] alpha * A[M,K] @ B[K,N]
 // `addend` (plan v14, kFlagGemmAddend): C = addend[M,N] + A @ B, each
 // element `d + s` over the complete dot product — the bits of the GEMM
 // followed by an elementwise add, without the second pass over the tensor.
 // It excludes the bias / activation epilogue.
+// `alpha` (plan v19, the instruction's imm word): C = alpha * A @ B. The
+// NN and TN cores fold it into A's elements as they enter the product, one
+// rounding each — the multiply a standalone kScale over A performed — so
+// they compute the bits of kScale(A) followed by the GEMM; the NT core
+// multiplies the finished dot product, the bits of the GEMM followed by a
+// kScale over C. Each is the pass the LoRA lowering's scale took at that
+// site, without the pass.
 void GemmNT(const float* A, const float* B, float* C, size_t M, size_t N,
             size_t K, const GemmTiles& tiles = kDefaultGemmTiles,
-            const float* addend = nullptr);  // C = [D +] A[M,K] @ B[N,K]^T
+            const float* addend = nullptr,
+            float alpha = 1.0f);  // C = [D +] alpha * A[M,K] @ B[N,K]^T
 void GemmTN(const float* A, const float* B, float* C, size_t M, size_t N,
             size_t K, const GemmTiles& tiles = kDefaultGemmTiles,
-            const float* addend = nullptr);  // C = [D +] A[K,M]^T @ B[K,N]
+            const float* addend = nullptr,
+            float alpha = 1.0f);  // C = [D +] alpha * A[K,M]^T @ B[K,N]
 void GemmAccNN(const float* A, const float* B, float* C, size_t M, size_t N,
                size_t K, float alpha,
                const GemmTiles& tiles = kDefaultGemmTiles);  // C += alpha * A @ B

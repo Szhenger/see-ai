@@ -112,23 +112,39 @@ std::expected<void, std::string> ValidateInstructionImpl(
           "GEMM addend combined with a bias / activation epilogue (opcode " +
           std::to_string(ins.opcode) + ")");
   }
-  // The imm word (v16): defined on the normalization forwards only, as a
-  // finite positive epsilon's f32 bits (0 = 1e-5). Before v16 it was a pad
+  // The imm word: defined on the normalization forwards (v16) as a finite
+  // positive epsilon's f32 bits (0 = 1e-5), and on the three f32 GEMMs
+  // (v19) as a finite nonzero alpha's (0 = 1.0). Before v16 it was a pad
   // word every compiler wrote as zero; a nonzero value anywhere it is not
   // defined would be ignored by Execute(), so it dies here.
   if (ins.imm != 0) {
     const auto opcode = static_cast<up::OpCode>(ins.opcode);
     const bool norm_fwd = opcode == up::OpCode::kLayerNormFwd ||
                           opcode == up::OpCode::kRmsNormFwd;
-    if (!norm_fwd || plan_version < up::kSeeuNormEpsVersion)
+    const bool gemm_f32 = opcode == up::OpCode::kGemmNN ||
+                          opcode == up::OpCode::kGemmNT ||
+                          opcode == up::OpCode::kGemmTN;
+    const bool defined =
+        (norm_fwd && plan_version >= up::kSeeuNormEpsVersion) ||
+        (gemm_f32 && plan_version >= up::kSeeuGemmAlphaVersion);
+    if (!defined)
       return diag::validating::Error(
           "instruction carries an imm word its opcode does not define "
           "(opcode " + std::to_string(ins.opcode) + ", plan v" +
           std::to_string(plan_version) + ")");
-    const float eps = std::bit_cast<float>(ins.imm);
-    if (!std::isfinite(eps) || !(eps > 0.0f))
+    const float value = std::bit_cast<float>(ins.imm);
+    if (norm_fwd && (!std::isfinite(value) || !(value > 0.0f)))
       return diag::validating::Error(
           "normalization epsilon must be a finite positive float");
+    if (gemm_f32 && (!std::isfinite(value) || value == 0.0f))
+      return diag::validating::Error(
+          "GEMM alpha must be a finite nonzero float");
+    // The relaxed family is the frozen-weight products; an adapter
+    // product never carries the bit, and no relaxed kernel takes an alpha.
+    if (gemm_f32 && (ins.flags & up::kFlagRelaxed))
+      return diag::validating::Error(
+          "GEMM alpha on a relaxed instruction (opcode " +
+          std::to_string(ins.opcode) + ")");
   }
   // Every kernel is compiled with SEEML_RESTRICT pointers: a written range
   // overlapping any *other* operand of the same instruction is undefined

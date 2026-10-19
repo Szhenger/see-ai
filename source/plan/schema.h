@@ -112,7 +112,17 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // Additive, one flag bit, rejected below v18 and in the eval program; the
 // old path never emits it, and a package carries it only beside a numerics
 // certificate. No header change: no spare word remains (see below).
-inline constexpr uint32_t kSeeuVersion = 18;
+// v19: the GEMM alpha (F7 #138) — kGemmNN / kGemmNT / kGemmTN carry a
+// scalar alpha's f32 bits in `imm` (0 = 1.0, what every earlier plan
+// meant): C = alpha * A @ B [+ D]. The LoRA lowering's two rank-r kScale
+// instructions per site per step ride their GEMMs instead. Additive, no
+// header change; a nonzero imm on the three f32 GEMMs below v19, beside
+// kFlagRelaxed, or on the int8 / bf16 forms is corruption; the CPU's v19
+// program computes the v18 program's bits for every alpha.
+inline constexpr uint32_t kSeeuVersion = 19;
+
+// The version that gave the f32 GEMMs' imm word meaning as alpha.
+inline constexpr uint32_t kSeeuGemmAlphaVersion = 19;
 
 // The version that admitted kFlagRelaxed.
 inline constexpr uint32_t kSeeuRelaxedVersion = 18;

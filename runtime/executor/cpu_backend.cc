@@ -176,7 +176,8 @@ std::expected<void, std::string> CpuBackend::Execute(
                                                   : nullptr,
                 up::EpilogueActOf(ins.flags), policy_.gemm_tiles,
                 ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                : nullptr);
+                                                : nullptr,
+                up::GemmAlphaOf(ins.imm));  // v19
       break;
     case up::OpCode::kGemmNT:
 #if SEEML_HAS_ACCELERATE
@@ -192,13 +193,15 @@ std::expected<void, std::string> CpuBackend::Execute(
       k::GemmNT(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                 ins.out[0], ins.out[1], ins.out[2], policy_.gemm_tiles,
                 ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                : nullptr);
+                                                : nullptr,
+                up::GemmAlphaOf(ins.imm));
       break;
     case up::OpCode::kGemmTN:
       k::GemmTN(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                 ins.out[0], ins.out[1], ins.out[2], policy_.gemm_tiles,
                 ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                : nullptr);
+                                                : nullptr,
+                up::GemmAlphaOf(ins.imm));
       break;
     case up::OpCode::kGemmAccNN:
       k::GemmAccNN(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),

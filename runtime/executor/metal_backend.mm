@@ -107,6 +107,7 @@ enum Pipe : int {
   kPClipPartials, kPClipFinish, kPClipApply, kPSgdClip, kPAdamWClip,
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
   kPXentFwd, kPXentFinish, kPXentBwd,
+  kPRopeTable, kPEmbedFwd,
   kPipeCount
 };
 const char* const kPipeNames[kPipeCount] = {
@@ -132,7 +133,8 @@ const char* const kPipeNames[kPipeCount] = {
     "k_clip_partials", "k_clip_finish", "k_clip_apply", "k_sgd_clip",
     "k_adamw_clip", "k_rope_fwd",
     "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
-    "k_xent_fwd", "k_xent_finish", "k_xent_bwd"};
+    "k_xent_fwd", "k_xent_finish", "k_xent_bwd",
+    "k_rope_table", "k_embed_fwd"};
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -421,6 +423,10 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kAdamWStep:
     case up::OpCode::kClipNorm:
       return ins.out[0] <= kMax;
+    case up::OpCode::kRopeTable:
+      return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
+    case up::OpCode::kEmbedFwd:
+      return ins.out[0] * lo(ins.out[1]) <= kMax && hi(ins.out[1]) <= kMax;
     default:
       return true;
   }
@@ -436,12 +442,11 @@ bool IsGpuOpcode(up::OpCode op) {
     case up::OpCode::kMseBwd:
     case up::OpCode::kKLDistillFwd:
     case up::OpCode::kKLDistillBwd:
-    case up::OpCode::kEmbedFwd:
-    // The RoPE angle table (v12) is a CPU-side convenience the GPU rotation
-    // kernels do not read — one thread per (b, s, h) unit recomputes its
-    // angles, as before — so the table is built on the CPU, where the
-    // rotations that do read it run.
-    case up::OpCode::kRopeTable:
+    // The embedding gather (41) and the RoPE angle table (45) run on the
+    // GPU since F8 (#139) step 1's follow-up: the table was the last
+    // CPU-resident instruction of a SmolLM-shaped train program, written
+    // into a transient the GPU had just used, so the backend flushed and
+    // waited there every step; the gather, instruction 0, went with it.
     // The tiled attention family (v15) runs on the CPU until #63 ports it:
     // it exists for sequence lengths whose probability cache would not fit
     // the device at all, and its CPU form is the bit-for-bit reference.
@@ -815,6 +820,7 @@ bool MetalBackend::EncodeRelaxedGemm(up::OpCode op,
   if (a.batch > 1 || a.m <= kGemmSkinnyDim || a.n <= kGemmSkinnyDim ||
       a.k <= kGemmSkinnyDim)
     return false;
+  if (a.f[0] != 1.0f) return false;  // v19 alpha: the validator refuses it here
   const bool nt = op == up::OpCode::kGemmNT || op == up::OpCode::kGemmNTQ8 ||
                   op == up::OpCode::kGemmNTBF16;
   RxPipe pipe;
@@ -906,16 +912,15 @@ std::expected<void, std::string> MetalBackend::Encode(
     Dispatch(kPClipFinish, c, 1, 1, true);
     return true;
   };
-  // The GEMM addend (v14): C = D + C, in place, one thread per element —
-  // the two dispatches the GEMM + kAddEW pair always was on this backend.
-  auto EncodeAddend = [&](uint32_t count) {
+  // The GEMM addend (v14): since F7 (#138) step 3 the exact kernels sum D
+  // into their write-back (flag 2048, slot 3) — `d + s` over the finished
+  // dot product, the bits of the GEMM + kAddEW pair this used to dispatch
+  // on this backend, without the second dispatch and its pass over C. The
+  // relaxed path sets its own flag (1024) for the same sum.
+  auto FoldAddend = [&]() {
     if (!(ins.flags & up::kFlagGemmAddend)) return;
-    KArgs sum;
-    sum.off[0] = up::RefOffset(ins.in[3]);
-    if (up::IsRodataRef(ins.in[3])) sum.space |= 1u;
-    sum.off[1] = sum.off[2] = up::RefOffset(ins.in[2]);
-    sum.n = count;
-    Dispatch(kPAddEW, sum, sum.n, kElementwiseGroup);
+    ref(3, ins.in[3]);
+    a.flags |= 2048u;
   };
   const auto op = static_cast<up::OpCode>(ins.opcode);
   switch (op) {
@@ -923,26 +928,26 @@ std::expected<void, std::string> MetalBackend::Encode(
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
       if (ins.flags & up::kFlagEpilogueBias) ref(3, ins.in[3]);
       a.m = u32(ins.out[0]); a.n = u32(ins.out[1]); a.k = u32(ins.out[2]);
-      a.f[0] = 1.0f;
+      a.f[0] = up::GemmAlphaOf(ins.imm);  // v19: the write-back's alpha
       // flags: bit 3 = bias present, low bits = EpilogueAct (1..3)
       a.flags = static_cast<uint32_t>(up::EpilogueActOf(ins.flags)) |
                 ((ins.flags & up::kFlagEpilogueBias) ? 8u : 0u);
       if (EncodeRelaxedGemm(op, ins, a)) return {};
+      FoldAddend();
       DispatchGemm(kPGemmNN, a, false, false, 4);
-      EncodeAddend(a.m * a.n);
       return {};
     case up::OpCode::kGemmNT:
     case up::OpCode::kGemmTN:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
       a.m = u32(ins.out[0]); a.n = u32(ins.out[1]); a.k = u32(ins.out[2]);
-      a.f[0] = 1.0f;
+      a.f[0] = up::GemmAlphaOf(ins.imm);
       if (op == up::OpCode::kGemmNT && EncodeRelaxedGemm(op, ins, a))
         return {};
+      FoldAddend();
       if (op == up::OpCode::kGemmNT)
         DispatchGemm(kPGemmNT, a, false, true, 4);
       else
         DispatchGemm(kPGemmTN, a, true, false, 4);
-      EncodeAddend(a.m * a.n);
       return {};
     case up::OpCode::kGemmAccNN:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
@@ -1116,10 +1121,29 @@ std::expected<void, std::string> MetalBackend::Encode(
       a.H = hi(ins.out[1]); a.D = lo(ins.out[1]);
       const float base = BitsToF32(ins.out[2]);
       a.f[0] = std::pow(base, -2.0f / static_cast<float>(a.D));
+      // v12: slot 2 names the angle table (built by k_rope_table with this
+      // same recurrence step, so reading it changes no bit); flag 1 says so.
+      if (ins.in[2] != up::kNullRef) {
+        ref(2, ins.in[2]);
+        a.flags = 1u;
+      }
       Dispatch(op == up::OpCode::kRopeFwd ? kPRopeFwd : kPRopeBwd, a,
                a.B * a.S * a.H, kElementwiseGroup);
       return {};
     }
+    case up::OpCode::kRopeTable: {
+      ref(0, ins.in[0]);
+      a.S = hi(ins.out[0]); a.D = lo(ins.out[0]);
+      const float base = BitsToF32(ins.out[1]);
+      a.f[0] = std::pow(base, -2.0f / static_cast<float>(a.D));
+      Dispatch(kPRopeTable, a, a.S, kElementwiseGroup);
+      return {};
+    }
+    case up::OpCode::kEmbedFwd:
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
+      a.rows = u32(ins.out[0]); a.cols = lo(ins.out[1]); a.k = hi(ins.out[1]);
+      Dispatch(kPEmbedFwd, a, a.rows * a.cols, kElementwiseGroup);
+      return {};
     // The attention family (docs/runtime.md): each primitive is one or
     // more batched GEMMs over the [B*S, H*d] activations plus a row
     // softmax kernel — the same tile machinery as the projections.
