@@ -610,6 +610,42 @@ For SeeAI S6 (#152): scheduling stays a function inside selection,
 decided. Not measured this round: the per-program (train / eval / merge)
 table and the `dec_wide` row.
 
+### The int8 base on the CPU matrix units (F4 #132, 2026-10-19)
+
+The shipped package is the int8-base one, and until today only an
+f32-weight relaxed GEMM took the Accelerate exception (#136). Now a
+relaxed `kGemmNNQ8` / `kGemmNTQ8` widens its weight panel by panel —
+K × nc columns of W for the forward, nc rows of W read as [N, K] for dX,
+at most 4 MiB of f32 at a time, the per-column scale applied as each
+element widens — into one backend-owned buffer and hands each panel to
+SGEMM (the AMX / SME units). The products are f32 over the exact int8
+levels, so they sit inside the bound the certificate priced for the
+relaxed site (Metal rounds the activation to bf16 first; SGEMM rounds
+nothing); a bf16 base stays on the portable kernels. The emitted
+`build.sh` of a relaxed plan already sets `SEEML_ACCELERATE` on Apple
+hosts, so the int8 package takes the path with no new switch.
+
+Measured with `frontier_run.py` (the 40→160 slope, one repeat, then the
+300-step quality run), the SmolLM-135M int8-base package compiled exact
+and relaxed from this tree, certified (`gemm.relaxed` observed 6.2e-3
+against 2⁻⁷, site tolerance 1e-4 as on 2026-10-15), same M5, 10 threads:
+
+| package | step (ms) | tok/s | validation 0 → 300 | committed model |
+|---|---:|---:|---|---|
+| exact int8 (the shipped path until today) | 1,591.6 | 322 | 4.5743 → 4.01374 | `bac5fa02…` |
+| relaxed int8 on Accelerate, run 1 | 776.8 | 659 | 4.5743 → 4.01378 | `d459b541…` |
+| relaxed int8 on Accelerate, run 2 | 761.3 | 673 | 4.5743 → 4.01378 | `d459b541…` |
+
+**2.05–2.09× the exact package**, the two relaxed runs commit
+byte-identical models, and the 300-step endpoint is 1.0e-5 relative
+from the exact one. Against F1's `torch.compile` CPU row (852 tok/s,
+601 ms) that is **0.77–0.79×** — the f32-base package's 0.85–0.89×
+(#136) less the cost of widening 262 MB of int8 twice a step — just
+under the issue's ≥ 0.8× line. What would cross it is widening the head
+once per step instead of once per GEMM (the forward and the dX product
+widen the same 113 MB), or SME kernels that consume int8 directly
+(option A); both stay open in the issue.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

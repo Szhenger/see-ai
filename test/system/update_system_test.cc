@@ -1244,16 +1244,18 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
       }
       EXPECT_GT(compiled.relaxed_gemms, 0u);
       ASSERT_EQ(report.loss_curve.size(), want_curve.size());
-      if (seeml::update_rt::CpuBackendRelaxedIsExact() || storage != 0) {
-        // The reference build, and the int8 / bf16 bases everywhere: the
-        // bit is inert.
+      if (seeml::update_rt::CpuBackendRelaxedIsExact() || storage == 2) {
+        // The reference build, and the bf16 base everywhere: the bit is
+        // inert. (The int8 base takes SGEMM through a widened panel since
+        // F4 #132, so it joins the f32 base below.)
         EXPECT_EQ(val, want_val);
         for (size_t i = 0; i < want_curve.size(); ++i)
           EXPECT_EQ(report.loss_curve[i], want_curve[i]);
         EXPECT_TRUE(state == want_state);
       } else {
-        // SEEML_ACCELERATE: the f32-weight GEMMs ran on SGEMM — close to
-        // the exact run, and reproducible against itself.
+        // SEEML_ACCELERATE: the f32-weight GEMMs (and, since F4, the int8
+        // weights widened panel by panel) ran on SGEMM — close to the
+        // exact run, and reproducible against itself.
         EXPECT_NEAR(val, want_val, 1e-3f * std::fabs(want_val) + 1e-4f);
         for (size_t i = 0; i < want_curve.size(); ++i)
           EXPECT_NEAR(report.loss_curve[i], want_curve[i],
