@@ -94,6 +94,36 @@ latency, not ordering, so scheduling stays a function inside selection.
 Remaining here: the angle-table port, the Metal `kFusedMap` port if F7's
 number says dispatches are dear.
 
+## Status 2026-10-19
+
+The remaining CPU-resident instructions are on the GPU: `k_rope_table`
+builds the angle table (45) with the rotation kernels' own recurrence and
+`cos` / `sin` (so a rotation through the table computes the bits of one
+that recomputes — asserted bitwise by the twin test), the rotation
+kernels read it, and `k_embed_fwd` is the gather (41). The train-only
+profile shows no `cpu opcode` row; the 13-dispatch command buffer the
+table's drain split off every step is gone — one command buffer per
+step, 3,039 dispatches, GPU busy 272.6–274.1 ms, the step 278.8 ms (1,837
+tok/s against main's package's 285.5 and 1,793 today). The acceptance line "no CPU-resident opcode in the
+train program" is met for the SmolLM shape; the MSE and KL losses and
+the tiled attention family (F3) stay on the CPU (`seeml-plan-probe`
+has no such listing; the profile is the witness). **The fusion verdict
+for the GPU (step 3), from F7's experiment:** a dispatch costs about 3
+µs on the M5 (F7 step 1 removed 422 per step with no other change: 0.72
+ms of kernel span and 2.0 ms of GPU busy; 0–7 µs once the run-to-run
+spread and step 3's independent ceiling are taken together), so the
+serial encoder's gaps are ≈4 % of the step at the means and ≤8 % at the
+ceiling — the "7–20 %" resolves at its low end, below the issue's 10 %
+line across the range. `kFusedMap` is therefore *not* extended to Metal for
+the dispatch count's sake; the lever on the GPU is bytes per kernel —
+the addend fold (F7 step 3's first half, 416 dispatches and one
+activation-sized pass per site gone, −5.4 ms) bought more than the scale
+removal (−2.6 ms) because it removed traffic, not dispatches — and the
+E4 CPU number (2–6 %) stays the fusion case on both backends. For S6
+(#152): scheduling stays a function inside selection, confirmed. Not
+done: the per-program (train / eval / merge) dispatch-overhead table
+and the `dec_wide` row.
+
 ## Acceptance
 
 - No CPU-resident opcode in the train program of a SmolLM-shaped plan on

@@ -269,16 +269,18 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
   if (Skip()) return;
   auto metal = CreateMetalBackend();
   ASSERT_OK(metal);
-  // A 16 KiB arena; slots (floats): a @0, c @512, tokens @1024 (i32),
-  // b @2048 (zeros), loss @3072, d @4096. Rodata: a [4][8] table.
+  // A 16 KiB arena; slots (bytes): a @0, c @512, b @2048 (zeros), loss
+  // @3072, d @4096, e @5120 (the table's 32 values), seed @6144 (16.0).
+  // Rodata: a [4][8] table (bound; nothing reads it).
   constexpr size_t kArenaBytes = 16384;
   uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, kArenaBytes));
   ASSERT_TRUE(arena != nullptr);
   std::memset(arena, 0, kArenaBytes);
   std::vector<float> table(32);
   for (size_t i = 0; i < 32; ++i) table[i] = 0.25f * static_cast<float>(i);
-  int32_t tokens[4] = {3, 0, 2, 1};
-  std::memcpy(arena + 1024, tokens, sizeof(tokens));
+  std::memcpy(arena + 5120, table.data(), 32 * sizeof(float));
+  const float seed = 16.0f;
+  std::memcpy(arena + 6144, &seed, sizeof(seed));
   ASSERT_OK((*metal)->Bind(arena, kArenaBytes,
                            reinterpret_cast<const uint8_t*>(table.data()),
                            table.size() * sizeof(float),
@@ -291,11 +293,14 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
   scale.opcode = static_cast<uint16_t>(OpCode::kScale);
   scale.in[0] = MakeArenaRef(0); scale.in[1] = MakeArenaRef(512);
   scale.in[2] = f32(3.0f); scale.out[0] = 32;
-  UpdateInstruction embed;  // CPU: a = table[tokens] (WRITES a: must wait)
-  embed.opcode = static_cast<uint16_t>(OpCode::kEmbedFwd);
-  embed.in[0] = MakeArenaRef(1024); embed.in[1] = MakeRodataRef(0);
-  embed.in[2] = MakeArenaRef(0); embed.out[0] = 4;
-  embed.out[1] = (uint64_t{4} << 32) | 8;
+  // CPU-resident (the MSE family stays on the CPU; the gather moved to
+  // the GPU with F8): a = 2 * seed * (e - b) / 32 = e (WRITES a: must
+  // wait for the scale that reads it).
+  UpdateInstruction grad;
+  grad.opcode = static_cast<uint16_t>(OpCode::kMseBwd);
+  grad.in[0] = MakeArenaRef(5120); grad.in[1] = MakeArenaRef(2048);
+  grad.in[2] = MakeArenaRef(6144); grad.in[3] = MakeArenaRef(0);
+  grad.out[0] = 32;
   UpdateInstruction mse;  // CPU: loss = mean((a - b)^2) (reads a)
   mse.opcode = static_cast<uint16_t>(OpCode::kMseFwd);
   mse.in[0] = MakeArenaRef(0); mse.in[1] = MakeArenaRef(2048);
@@ -305,7 +310,7 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
   half.in[0] = MakeArenaRef(512); half.in[1] = MakeArenaRef(4096);
   half.in[2] = f32(0.5f); half.out[0] = 32;
   StepParams params;
-  for (const UpdateInstruction* ins : {&fill, &scale, &embed, &mse, &half})
+  for (const UpdateInstruction* ins : {&fill, &scale, &grad, &mse, &half})
     ASSERT_OK((*metal)->Execute(*ins, params));
   ASSERT_OK((*metal)->Flush());
   const float* a = reinterpret_cast<const float*>(arena);
@@ -314,8 +319,8 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
   double want_loss = 0.0;
   for (size_t r = 0; r < 4; ++r)
     for (size_t j = 0; j < 8; ++j) {
-      const float t = table[static_cast<size_t>(tokens[r]) * 8 + j];
-      EXPECT_EQ(a[r * 8 + j], t);  // the gather landed after the scale read
+      const float t = table[r * 8 + j];
+      EXPECT_EQ(a[r * 8 + j], t);  // the CPU write landed after the scale read
       want_loss += static_cast<double>(t) * t;
     }
   for (size_t i = 0; i < 32; ++i) {
@@ -387,6 +392,63 @@ void ExpectRangeClose(const char* what, const Twin& t, size_t first,
 }
 
 uint64_t F32Bits(float v) { return uint64_t{std::bit_cast<uint32_t>(v)}; }
+
+TEST(MetalBackend, RopeTableAndEmbeddingGatherRunOnTheGpu) {
+  if (Skip()) return;
+  // F8 (#139): the angle table (45) and the gather (41) were the last
+  // CPU-resident instructions of a SmolLM-shaped train program — the
+  // table, written into a transient the GPU had just used, drained the
+  // queue every step. On the GPU the table is the rotation kernels' own
+  // recurrence, so a rotation through it computes the bits of one that
+  // recomputes; the gather is exact on both backends.
+  constexpr uint32_t B = 2, S = 16, H = 3, d = 8, V = 5, T = 6;
+  const float base = 10000.0f;
+  // Arena (floats): x @0 [B*S, H*d] = 384, table @512 [S, d/2, 2] = 128,
+  // y via the table @1024, y recomputed @2048, tokens @3072 (i32 [T]),
+  // the gathered rows @3584 [T, d].
+  std::vector<float> arena(4096, 0.0f);
+  std::mt19937_64 rng(2026);
+  std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+  for (size_t i = 0; i < size_t{B} * S * H * d; ++i) arena[i] = unit(rng);
+  const int32_t tokens[T] = {4, 0, 2, 2, 1, 3};
+  for (size_t t = 0; t < T; ++t) arena[3072 + t] = std::bit_cast<float>(tokens[t]);
+  std::vector<uint8_t> rodata(size_t{V} * d * 4);
+  std::vector<float> rows(size_t{V} * d);
+  for (size_t i = 0; i < rows.size(); ++i) {
+    rows[i] = unit(rng);
+    std::memcpy(rodata.data() + i * 4, &rows[i], 4);
+  }
+  UpdateInstruction table;
+  table.opcode = static_cast<uint16_t>(OpCode::kRopeTable);
+  table.in[0] = MakeArenaRef(512 * 4);
+  table.out[0] = (uint64_t{S} << 32) | d;
+  table.out[1] = F32Bits(base);
+  UpdateInstruction via;
+  via.opcode = static_cast<uint16_t>(OpCode::kRopeFwd);
+  via.in[0] = MakeArenaRef(0); via.in[1] = MakeArenaRef(1024 * 4);
+  via.in[2] = MakeArenaRef(512 * 4);
+  via.out[0] = (uint64_t{B} << 32) | S;
+  via.out[1] = (uint64_t{H} << 32) | d;
+  via.out[2] = F32Bits(base);
+  UpdateInstruction direct = via;
+  direct.in[1] = MakeArenaRef(2048 * 4);
+  direct.in[2] = kNullRef;
+  UpdateInstruction embed;
+  embed.opcode = static_cast<uint16_t>(OpCode::kEmbedFwd);
+  embed.in[0] = MakeArenaRef(3072 * 4); embed.in[1] = MakeRodataRef(0);
+  embed.in[2] = MakeArenaRef(3584 * 4);
+  embed.out[0] = T; embed.out[1] = (uint64_t{V} << 32) | d;
+  auto twin = RunTwin({table, via, direct, embed}, arena, rodata);
+  ASSERT_OK(twin);
+  EXPECT_EQ(std::memcmp(&twin->gpu[1024], &twin->gpu[2048], 384 * 4), 0);
+  ExpectRangeClose("rope table", *twin, 512, 128, 1e-5, 1e-5);
+  ExpectRangeClose("rope through the table", *twin, 1024, 384, 1e-5, 1e-5);
+  EXPECT_EQ(std::memcmp(&twin->gpu[3584], &twin->cpu[3584], size_t{T} * d * 4), 0);
+  for (size_t t = 0; t < T; ++t)
+    for (size_t j = 0; j < d; ++j)
+      EXPECT_EQ(twin->gpu[3584 + t * d + j],
+                rows[static_cast<size_t>(tokens[t]) * d + j]);
+}
 
 TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
   if (Skip()) return;

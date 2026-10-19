@@ -566,6 +566,50 @@ certified) remain. Against F1's rows the exact Metal package now stands
 at 1,826 tok/s: 0.82× MLX-LM's true-f32 2,240 and 0.40× its all-bf16
 4,590; the relaxed package was not re-measured this round.
 
+### No CPU-resident opcode in the train step, and the fusion verdict (F8 #139, 2026-10-19)
+
+The two CPU-resident instructions the 2026-10-15 port left — the RoPE
+angle table (45), instruction 14 of the step, whose write into a
+transient the GPU had just used flushed and drained the queue every
+step, and the embedding gather (41), instruction 0 — run on the GPU:
+`k_rope_table` is one thread per position running the rotation kernels'
+own recurrence through the same `cos` / `sin`, so a rotation through the
+table computes the bits of one that recomputes (the twin test asserts
+it bitwise), the rotation kernels read it, and `k_embed_fwd` is the
+gather. The train-only profile of SmolLM-135M shows no `cpu opcode` row,
+and the step is one command buffer:
+
+| state (train-only, M5, this session) | command buffers / step | dispatches / step | GPU busy (ms) | wall per step's buffers (ms) | step (ms) | tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| F7 steps 1 + 3 | 2 (the table's drain: 13 dispatches, 0.8 ms GPU inside 4.9–5.0 ms wall) | 3,027 + 13 | 271.0–271.6 + 0.8 | 277.2–278.0 | 280.4 | 1,826 |
+| F8: table and gather on the GPU | 1 | 3,039 | 272.6–274.1 | 274.0–275.5 | 278.8 | 1,837 |
+
+The drain was worth the 4 ms its wall said (the 13-dispatch buffer's
+82 % outside the GPU) and the step moved 1.6 ms; the table kernel is 9
+µs, the gather 13 µs — the busy column's rise against step 3 is the ~2
+ms run-to-run spread, not those 22 µs. Committed models are byte-identical to main's
+package on both backends. What stays on the CPU: the MSE and KL losses
+(not on the SmolLM step) and the tiled attention family (F3).
+
+**The fusion verdict for the GPU, from F7's experiment.** Step 2's
+"7–20 % of the step between kernels" could not be resolved by the
+serialized profile; F7 step 1 resolved it directly — 422 dispatches
+removed per step with no other change, 0.72 ms of kernel span, 2.0 ms
+of GPU busy, so **about 3 µs per dispatch at the means**, and 0–7 µs
+once the run-to-run spread and step 3's independent ceiling (416
+dispatches plus their traffic bought 2.9 ms) are taken together — ≈10 ms
+across the 3,443 that remained, **≈4 % of the step**, ≤8 % at the
+ceiling, below the issue's 10 % line across the range. `kFusedMap` is
+therefore not extended to
+Metal for the dispatch count's sake. The lever on the GPU is bytes per
+kernel: the addend fold (416 dispatches and one activation-sized pass
+per LoRA site gone) moved the step 5.4 ms where the scale removal moved
+it 0.3–2.6 ms, because it removed traffic — and that is the E4 case
+(2–6 % on the CPU) on both backends, keyed on memory, not dispatches.
+For SeeAI S6 (#152): scheduling stays a function inside selection,
+decided. Not measured this round: the per-program (train / eval / merge)
+table and the `dec_wide` row.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

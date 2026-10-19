@@ -65,6 +65,7 @@ struct KArgs {
                   : (p.space & (1u << (i))) ? ro : (device const uchar*)ar)
 #define RF(i) ((device const float*)(RBASE(i) + p.off[i]))
 #define RQ(i) ((device const char*)(RBASE(i) + p.off[i]))
+#define RI(i) ((device const int*)(RBASE(i) + p.off[i]))
 #define WF(i) ((device float*)(ar + p.off[i]))
 
 // --- Activation expressions (kernel_policy.h) ------------------------------
@@ -787,7 +788,27 @@ kernel void k_clip_apply(KSIG, device float* scratch [[buffer(3)]],
 }
 
 // --- Transformer family --------------------------------------------------
+// The RoPE angle table (plan v12; on the GPU since F8 #139): one thread per
+// position s running the rotation kernels' own recurrence through the same
+// cos / sin, so a rotation that reads the table computes the bits of one
+// that recomputes its angles. p.S = S, p.D = d, p.f[0] = base^(-2/d).
+// Until F8 it was built on the CPU — the last CPU-resident instruction of
+// a SmolLM-shaped train program, written into a transient the GPU had just
+// used, so the backend flushed and waited there every step.
+kernel void k_rope_table(KSIG, uint s [[thread_position_in_grid]]) {
+  if (s >= p.S) return;
+  const uint pairs = p.D / 2u;  // `half` is a type name in MSL
+  device float* row = WF(0) + s * pairs * 2u;
+  float freq = 1.0f;
+  for (uint c = 0; c < pairs; ++c) {
+    const float theta = (float)s * freq;
+    row[2u * c] = cos(theta);
+    row[2u * c + 1u] = sin(theta);
+    freq *= p.f[0];
+  }
+}
 // One thread per (b, s, h) unit; p.f[0] = base^(-2/d), the recurrence step.
+// flag 1: slot 2 names the angle table, read instead of recomputed.
 kernel void k_rope_fwd(KSIG, uint u [[thread_position_in_grid]]) {
   const uint B = p.B, S = p.S, H = p.H, d = p.D;
   if (u >= B * S * H) return;
@@ -795,14 +816,23 @@ kernel void k_rope_fwd(KSIG, uint u [[thread_position_in_grid]]) {
   const uint s = (u / H) % S;
   device const float* xr = RF(0) + (u / H) * D + (u % H) * d;
   device float* yr = WF(1) + (u / H) * D + (u % H) * d;
+  device const float* row =
+      (p.flags & 1u) ? RF(2) + s * (d / 2u) * 2u : (device const float*)0;
   float freq = 1.0f;
   for (uint c = 0; c + 1 < d; c += 2) {
-    const float theta = (float)s * freq;
-    const float cs = cos(theta), sn = sin(theta);
+    float cs, sn;
+    if (row) {
+      cs = row[c];  // pair c/2 lives at [c, c + 1]
+      sn = row[c + 1];
+    } else {
+      const float theta = (float)s * freq;
+      cs = cos(theta);
+      sn = sin(theta);
+      freq *= p.f[0];
+    }
     const float a = xr[c], b2 = xr[c + 1];
     yr[c] = a * cs - b2 * sn;
     yr[c + 1] = a * sn + b2 * cs;
-    freq *= p.f[0];
   }
 }
 kernel void k_rope_bwd(KSIG, uint u [[thread_position_in_grid]]) {
@@ -812,15 +842,36 @@ kernel void k_rope_bwd(KSIG, uint u [[thread_position_in_grid]]) {
   const uint s = (u / H) % S;
   device const float* gr = RF(0) + (u / H) * D + (u % H) * d;
   device float* dr = WF(1) + (u / H) * D + (u % H) * d;
+  device const float* row =
+      (p.flags & 1u) ? RF(2) + s * (d / 2u) * 2u : (device const float*)0;
   float freq = 1.0f;
   for (uint c = 0; c + 1 < d; c += 2) {
-    const float theta = (float)s * freq;
-    const float cs = cos(theta), sn = sin(theta);
+    float cs, sn;
+    if (row) {
+      cs = row[c];
+      sn = row[c + 1];
+    } else {
+      const float theta = (float)s * freq;
+      cs = cos(theta);
+      sn = sin(theta);
+      freq *= p.f[0];
+    }
     const float a = gr[c], b2 = gr[c + 1];
     dr[c] = a * cs + b2 * sn;
     dr[c + 1] = -a * sn + b2 * cs;
-    freq *= p.f[0];
   }
+}
+// The embedding gather (plan v7; on the GPU since F8 #139): one thread per
+// output element, out[t, :] = table[tokens[t], :]. p.rows = T, p.cols = D,
+// p.k = V. A token outside the table is a feeder-contract violation the
+// runtime bound refuses before anything executes; here it leaves its row
+// unwritten rather than reading past the table.
+kernel void k_embed_fwd(KSIG, uint g [[thread_position_in_grid]]) {
+  if (g >= p.rows * p.cols) return;
+  const uint t = g / p.cols, j = g % p.cols;
+  const int tok = RI(0)[t];
+  if (tok < 0 || (uint)tok >= p.k) return;
+  WF(2)[g] = RF(1)[(ulong)tok * p.cols + j];
 }
 // Causal row softmax over the scores the QK^T GEMM left in the P cache:
 // one simdgroup per row (b, h, i), four columns per lane when S = 128,
