@@ -116,12 +116,14 @@ What SeeAI can train today, stated up front:
   runtime's defaults — throughput only, never bits. Execution is
   CPU by default — the bitwise-deterministic reference — and, on Apple
   hosts, an opt-in Metal backend (`model_update --backend metal|auto`):
-  zero-copy residency, batched dispatch, every opcode but the losses on the
-  GPU, compared against the CPU at tolerance (roadmap Project 5). On
-  SmolLM-135M (q8 base, LoRA r8, 512-token steps, Apple M5) the Metal
-  backend trains at ≈ 1,749 tok/s, 7.5× the CPU backend (≈ 233 tok/s
-  after #104), with the
-  300-step validation loss within 0.0004% of the CPU's and every run
+  zero-copy residency, batched dispatch, every opcode of a SmolLM-shaped
+  train step on the GPU (since F8; the MSE / KL losses and the tiled
+  attention family still run on the CPU), compared against the CPU at
+  tolerance (roadmap Project 5). On SmolLM-135M (q8 base, LoRA r8,
+  512-token steps, Apple M5) the Metal backend trains at ≈ 2,085 tok/s
+  (2026-10-19; 1,749 on 2026-09-15), 6.5× the exact CPU package's ≈ 322
+  and 3.1× its certified int8-on-Accelerate path's ≈ 660 (F4), with the
+  300-step validation loss within 0.01 % of the CPU's and every run
   bitwise-reproducible against itself.
 - **Integrity, not authenticity.** All hashing is FNV-1a — a corruption and
   mismatch detector, not a signature. Authenticate plans in your update

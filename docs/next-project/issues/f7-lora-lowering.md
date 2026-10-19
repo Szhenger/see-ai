@@ -106,6 +106,21 @@ rows are still occupancy-bound, 65 GB/s on `512x1536x8` against the ≥100
 target), step 2 (needs strided operands in the ISA), step 4 (certified),
 and the relaxed package's row.
 
+Step 3, second half, later the same day (`docs/benchmarks.md`, "The LoRA
+family's Metal kernels, off the issue floor"): the K ≤ 16 form computes
+four outputs per thread and moves B, D and C as 16-byte vectors; the
+rows and columns forms keep 8 accumulators at a rank-8 site and read an
+8-wide B row as two vectors; two staged forms (`_rows_tg`, `_colsg_tg`)
+load the [32 k × 8] block of the strided operand through threadgroup
+memory at the dB and dA sites. Per-output reduction orders unchanged, so
+the committed model stays byte-identical on both backends. GPU busy per
+step 272.6–274.1 → 238.1–242.8 ms, the step 278.8 → 245.5 ms, 1,837 →
+**2,085 tok/s** (0.93× MLX-LM true-f32, 0.45× all-bf16); the family
+33.6 → 24.1 % of kernel time; `512x1536x8` 92 → 44 µs, the head's 2,855
+→ 1,882, the A-projection 36 → 16. Left: the `nt_rows` sites (dt, 42 →
+38 µs: latency-bound at 512 simdgroups), step 2, step 4, the relaxed
+row.
+
 ## Acceptance
 
 - Train-only Metal profile of SmolLM-135M: the LoRA family's share of

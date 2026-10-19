@@ -63,11 +63,13 @@ trainer reaches 4,605 tok/s in bf16 (9.0 it/s; 1.34 GB Metal-allocator
 peak, 1.01 GB resident) and 2,240 in
 true f32; `torch.compile` reaches 3,761 tok/s on MPS in bf16, 2,099 in f32,
 and 847 on the CPU in f32 (Accelerate/AMX). SeeAI's Metal backend trains
-the same model at 1,802 tok/s (f32 math, int8 base) — 0.80–0.86× the f32
-frontier and 0.39–0.48× the bf16 one (MLX-LM's bf16 is all bf16;
-`torch.compile`'s is a bf16 base under f32 adapters) — and its CPU
-package at 332, 0.39× of `torch.compile`. Half precision (F2) and the CPU
-matrix units (F4) are the gaps those ratios price. (The v1.2.4 report's M4 anchors — MLX ~1,600
+the same model at 2,085 tok/s as of 2026-10-19 (f32 math, int8 base; it
+was 1,802 on 2026-09-22) — 0.93–0.99× the f32 frontier and 0.45–0.55× the
+bf16 one (MLX-LM's bf16 is all bf16; `torch.compile`'s is a bf16 base
+under f32 adapters) — and its CPU package at 322 exact, 659–673 under
+the certified int8-on-Accelerate path (F4), 0.38× / 0.77–0.79× of
+`torch.compile`. Half precision (F2, 2,519 tok/s relaxed on 2026-10-15)
+and the CPU matrix units (F4) are the gaps those ratios price. (The v1.2.4 report's M4 anchors — MLX ~1,600
 tok/s "bf16", torch.compile ~40% MFU — were carried from another machine;
 the MLX run was f32, since SmolLM-135M's safetensors store F32.)
 
@@ -645,6 +647,45 @@ under the issue's ≥ 0.8× line. What would cross it is widening the head
 once per step instead of once per GEMM (the forward and the dX product
 widen the same 113 MB), or SME kernels that consume int8 directly
 (option A); both stay open in the issue.
+
+### The LoRA family's Metal kernels, off the issue floor (F7 #138 step 3, second half, 2026-10-19)
+
+The rank-8 family's kernels were load-issue-bound and, at two sites,
+reading one cache line per lane: the K ≤ 16 form moved C and the addend
+one float per thread; the N ≤ 16 form issued 16 clamped loads of B per
+k per lane for 8 columns; the transposed-A rows form (`dB = tᵀ@dC`,
+`A[k, m]` with the lanes striding k) and the untransposed-B columns
+form (`dA = Xᵀ@dt`, `B[k, n]` likewise) touched a line per lane per
+step. Now: the K ≤ 16 form computes four consecutive outputs per thread
+and moves B's row, D and C as 16-byte vectors where aligned; the rows
+and columns forms keep 8 accumulators at a rank-8 site and read an
+8-wide B row as two vectors; and two staged forms (`_rows_tg`,
+`_colsg_tg`: 8 simdgroups own 8 rows or columns and load the [32 k × 8]
+block through threadgroup memory) replace the strided reads. Every form
+keeps its per-output reduction order — serial k, or lane l over k ≡ l
+(mod 32) and the same shuffle tree — so the 20-step committed model is
+**byte-identical** on Metal (`0fef91ef…`, the same bytes as main's
+package) and on the CPU.
+
+| row (`SEEML_METAL_PROFILE=1`, µs per dispatch) | before | after |
+|---|---:|---:|
+| `k_gemm_nn_small 512x1536x8` (forward u, with the addend) | 92.1 | 43.7 |
+| `k_gemm_nn_small 512x576x8` | 36.7 | 19.9 |
+| `k_gemm_nt_small 512x576x8` (dX's adapter term) | 42.1 | 23.6 |
+| `k_gemm_nn_rows 512x8x576` (the A-projection) | 35.7 | 16.4 |
+| `k_gemm_tn_rows 576x8x512` → `_rows_tg` (dB) | 38.1 | 26.5 |
+| `k_gemm_tn_colsg 8x576x512` → `_colsg_tg` (dA) | 38.6 | 25.7 |
+| `k_gemm_nn_small 512x49152x8` (the head's forward) | 2,855 | 1,882 |
+| `k_gemm_nt_rows 512x8x576` (dt = dC@Bᵀ, scalar B loads) | 42.3 | 37.7 |
+
+Train-only, M5, this session: GPU busy per step 272.6–274.1 → **238.1–242.8
+ms**, the measured step 278.8 → **245.5 ms**, **1,837 → 2,085 tok/s**; the
+LoRA family 33.6 → 24.1 % of kernel time (every rank-8 shape counted);
+3,039 dispatches as before. Against F1's rows the exact Metal package
+now stands at 0.93× MLX-LM's true-f32 2,240 and 0.45× its all-bf16
+4,590. The `nt_rows` sites (`dt`, B transposed: 8 scalar loads per k
+per lane, 512 simdgroups in flight) moved least and are the next floor,
+with step 2 (one A-projection per block) and step 4.
 
 ## Tier C — Memory (the gate that refuses compiles)
 

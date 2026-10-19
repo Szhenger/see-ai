@@ -317,28 +317,62 @@ kernel void k_gemm_splitk_fin(KSIG, device const float* ws [[buffer(4)]],
   }
 }
 
-// K <= 16: one thread per output element, serial K.
+// K <= 16: one thread per FOUR consecutive outputs of a row (the row's
+// last thread takes the ragged tail), serial K per output — exactly the
+// per-output order of the one-thread-per-output form this was, so the
+// bits are unchanged; what changes is that the B row, D and C move as
+// 16-byte vectors where the host found them aligned (flag 32 for B, 4096
+// for C and D). F7 #138 step 3: the per-element form moved a LoRA site's
+// 6 MB of C and D at 65 GB/s.
 template <bool AT, bool BT, typename EB, bool ACC>
 static inline void gemm_small(device const float* A, device const EB* B,
                               device float* C, device const float* bias,
                               device const float* cs, device const float* D,
                               uint M, uint N, uint K, uint lda, uint ldb,
-                              uint ldc, float alpha, uint act, uint g) {
-  const uint m = g / N, n = g % N;
-  float acc = 0.0f;
+                              uint ldc, float alpha, uint act, uint g,
+                              bool vecB, bool vecC) {
+  const uint quads = (N + 3u) / 4u;
+  const uint m = g / quads, n0 = (g % quads) * 4u;
+  const uint w = min(4u, N - n0);
+  const bool vb = !BT && vecB && w == 4u;
+  float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
   for (uint k = 0; k < K; ++k) {
     const float a = AT ? A[k * lda + m] : A[m * lda + k];
-    float b = widen(BT ? B[n * ldb + k] : B[k * ldb + n]);
+    float4 b;
+    if (vb) {
+      b = widen4(*(device const ::vec<EB, 4>*)(B + k * ldb + n0));
+    } else {
+      b = float4(0.0f);
+      for (uint t = 0; t < 4u; ++t)
+        if (t < w) b[t] = widen(BT ? B[(n0 + t) * ldb + k] : B[k * ldb + n0 + t]);
+    }
     if (BT && cs) b *= cs[k];
-    acc += a * b;
+    acc0 += a * b[0];
+    acc1 += a * b[1];
+    acc2 += a * b[2];
+    acc3 += a * b[3];
   }
+  float4 acc = float4(acc0, acc1, acc2, acc3);
   if (ACC) {
-    C[m * ldc + n] += alpha * acc;
-  } else {
-    float v = (!BT && cs) ? cs[n] * acc : alpha * acc;
-    if (D) v = D[m * N + n] + v;
-    if (bias) v += bias[n];
-    C[m * ldc + n] = apply_act(v, act);
+    for (uint t = 0; t < w; ++t) C[m * ldc + n0 + t] += alpha * acc[t];
+    return;
+  }
+  float4 v;
+  for (uint t = 0; t < 4u; ++t)
+    v[t] = (!BT && cs) ? cs[min(n0 + t, N - 1u)] * acc[t] : alpha * acc[t];
+  if (vecC && w == 4u) {
+    if (D) v = *(device const float4*)(D + m * N + n0) + v;
+    if (bias)
+      for (uint t = 0; t < 4u; ++t) v[t] += bias[n0 + t];
+    for (uint t = 0; t < 4u; ++t) v[t] = apply_act(v[t], act);
+    *(device float4*)(C + m * ldc + n0) = v;
+    return;
+  }
+  for (uint t = 0; t < w; ++t) {
+    float x = v[t];
+    if (D) x = D[m * N + n0 + t] + x;
+    if (bias) x += bias[n0 + t];
+    C[m * ldc + n0 + t] = apply_act(x, act);
   }
 }
 // N <= 16: one simdgroup per output row, the lanes striding K, the lane
@@ -346,28 +380,50 @@ static inline void gemm_small(device const float* A, device const EB* B,
 // keeps 16 accumulators in registers: the column index is clamped (never
 // branched on) so the unrolled loop stays register-only; columns past N
 // compute a harmless duplicate that is never stored.
-template <bool AT, bool BT, typename EB, bool ACC>
-static inline void gemm_rows(device const float* A, device const EB* B,
-                             device float* C, device const float* bias,
-                             device const float* cs, device const float* D,
-                             uint M, uint N, uint K, uint lda, uint ldb,
-                             uint ldc, float alpha, uint act, uint m,
-                             uint lane) {
-  float acc[16];
-#pragma clang loop unroll(full)
-  for (uint n = 0; n < 16u; ++n) acc[n] = 0.0f;
+// F7 #138 step 3: a rank-8 site keeps 8 accumulators, not 16 (half the
+// loads the clamped loop issued), the NN form reads its 8-wide B row as
+// two vectors where aligned, and the transposed-A form (dB = t^T @ dC:
+// A[k, m] with the lanes striding k — one cache line per lane per step)
+// stages A through threadgroup memory in the _rows_tg kernel below. The
+// lane-to-k assignment and the shuffle tree are the same in every form,
+// so every output is the same bits.
+template <bool AT, bool BT, typename EB, bool ACC, uint NCAP>
+static inline void gemm_rows_accumulate(device const float* A,
+                                        device const EB* B,
+                                        device const float* cs, uint N,
+                                        uint K, uint lda, uint ldb, uint m,
+                                        uint lane, bool vecB,
+                                        thread float* acc) {
+  const bool vb = !BT && NCAP == 8u && vecB && N == 8u;
   for (uint k = lane; k < K; k += 32u) {
     const float a = AT ? A[k * lda + m] : A[m * lda + k];
+    if (vb) {
+      const float4 b0 = widen4(*(device const ::vec<EB, 4>*)(B + k * ldb));
+      const float4 b1 = widen4(*(device const ::vec<EB, 4>*)(B + k * ldb + 4u));
+      acc[0] += a * b0[0]; acc[1] += a * b0[1];
+      acc[2] += a * b0[2]; acc[3] += a * b0[3];
+      acc[4] += a * b1[0]; acc[5] += a * b1[1];
+      acc[6] += a * b1[2]; acc[7] += a * b1[3];
+    } else {
 #pragma clang loop unroll(full)
-    for (uint n = 0; n < 16u; ++n) {
-      const uint nc = min(n, N - 1u);
-      float b = widen(BT ? B[nc * ldb + k] : B[k * ldb + nc]);
-      if (BT && cs) b *= cs[k];
-      acc[n] += a * b;
+      for (uint n = 0; n < NCAP; ++n) {
+        const uint nc = min(n, N - 1u);
+        float b = widen(BT ? B[nc * ldb + k] : B[k * ldb + nc]);
+        if (BT && cs) b *= cs[k];
+        acc[n] += a * b;
+      }
     }
   }
+}
+template <bool AT, bool BT, typename EB, bool ACC, uint NCAP>
+static inline void gemm_rows_finish(device float* C,
+                                    device const float* bias,
+                                    device const float* cs,
+                                    device const float* D, uint N, uint ldc,
+                                    float alpha, uint act, uint m, uint lane,
+                                    thread float* acc) {
 #pragma clang loop unroll(full)
-  for (uint n = 0; n < 16u; ++n) {
+  for (uint n = 0; n < NCAP; ++n) {
     float v = acc[n];
     v += simd_shuffle_down(v, 16u);
     v += simd_shuffle_down(v, 8u);
@@ -387,6 +443,99 @@ static inline void gemm_rows(device const float* A, device const EB* B,
       C[m * ldc + n] = apply_act(v, act);
     }
   }
+}
+template <bool AT, bool BT, typename EB, bool ACC, uint NCAP>
+static inline void gemm_rows_impl(device const float* A, device const EB* B,
+                                  device float* C, device const float* bias,
+                                  device const float* cs,
+                                  device const float* D, uint M, uint N,
+                                  uint K, uint lda, uint ldb, uint ldc,
+                                  float alpha, uint act, uint m, uint lane,
+                                  bool vecB) {
+  float acc[NCAP];
+#pragma clang loop unroll(full)
+  for (uint n = 0; n < NCAP; ++n) acc[n] = 0.0f;
+  gemm_rows_accumulate<AT, BT, EB, ACC, NCAP>(A, B, cs, N, K, lda, ldb, m,
+                                              lane, vecB, acc);
+  gemm_rows_finish<AT, BT, EB, ACC, NCAP>(C, bias, cs, D, N, ldc, alpha,
+                                          act, m, lane, acc);
+}
+template <bool AT, bool BT, typename EB, bool ACC>
+static inline void gemm_rows(device const float* A, device const EB* B,
+                             device float* C, device const float* bias,
+                             device const float* cs, device const float* D,
+                             uint M, uint N, uint K, uint lda, uint ldb,
+                             uint ldc, float alpha, uint act, uint m,
+                             uint lane, bool vecB) {
+  if (N <= 8u)
+    gemm_rows_impl<AT, BT, EB, ACC, 8u>(A, B, C, bias, cs, D, M, N, K, lda,
+                                        ldb, ldc, alpha, act, m, lane, vecB);
+  else
+    gemm_rows_impl<AT, BT, EB, ACC, 16u>(A, B, C, bias, cs, D, M, N, K, lda,
+                                         ldb, ldc, alpha, act, m, lane, vecB);
+}
+// The staged form: a threadgroup of 8 simdgroups owns 8 consecutive rows
+// and, 32 k at a time, loads the [32 k x 8 m] block of A cooperatively
+// (eight lanes per 32-byte row segment instead of one cache line per
+// lane) into threadgroup memory; simdgroup s then takes row m0 + s with
+// lane l reading k0 + l — the lane-to-k assignment of gemm_rows, so the
+// same bits. Rows past M load zeros and store nothing; every thread
+// reaches every barrier.
+template <bool AT, bool BT, typename EB, bool ACC, uint NCAP>
+static inline void gemm_rows_tg_impl(device const float* A,
+                                     device const EB* B, device float* C,
+                                     device const float* bias,
+                                     device const float* cs,
+                                     device const float* D, uint M, uint N,
+                                     uint K, uint lda, uint ldb, uint ldc,
+                                     float alpha, uint act, uint m0,
+                                     uint tid, uint sgid, uint lane,
+                                     threadgroup float* tile) {
+  const uint m = m0 + sgid;
+  const bool live = m < M;
+  float acc[NCAP];
+#pragma clang loop unroll(full)
+  for (uint n = 0; n < NCAP; ++n) acc[n] = 0.0f;
+  for (uint k0 = 0; k0 < K; k0 += 32u) {
+    const uint kk = tid >> 3, mm = tid & 7u;
+    const uint kt = k0 + kk, mt = m0 + mm;
+    tile[kk * 8u + mm] =
+        (kt < K && mt < M) ? (AT ? A[kt * lda + mt] : A[mt * lda + kt]) : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint k = k0 + lane;
+    if (live && k < K) {
+      const float a = tile[lane * 8u + sgid];
+#pragma clang loop unroll(full)
+      for (uint n = 0; n < NCAP; ++n) {
+        const uint nc = min(n, N - 1u);
+        float b = widen(BT ? B[nc * ldb + k] : B[k * ldb + nc]);
+        if (BT && cs) b *= cs[k];
+        acc[n] += a * b;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (!live) return;
+  gemm_rows_finish<AT, BT, EB, ACC, NCAP>(C, bias, cs, D, N, ldc, alpha,
+                                          act, m, lane, acc);
+}
+template <bool AT, bool BT, typename EB, bool ACC>
+static inline void gemm_rows_tg(device const float* A, device const EB* B,
+                                device float* C, device const float* bias,
+                                device const float* cs,
+                                device const float* D, uint M, uint N,
+                                uint K, uint lda, uint ldb, uint ldc,
+                                float alpha, uint act, uint m0, uint tid,
+                                uint sgid, uint lane,
+                                threadgroup float* tile) {
+  if (N <= 8u)
+    gemm_rows_tg_impl<AT, BT, EB, ACC, 8u>(A, B, C, bias, cs, D, M, N, K, lda,
+                                           ldb, ldc, alpha, act, m0, tid,
+                                           sgid, lane, tile);
+  else
+    gemm_rows_tg_impl<AT, BT, EB, ACC, 16u>(A, B, C, bias, cs, D, M, N, K,
+                                            lda, ldb, ldc, alpha, act, m0,
+                                            tid, sgid, lane, tile);
 }
 // M <= 16: one thread per output column, serial K, all rows in registers
 // (row index clamped, as gemm_rows).
@@ -422,27 +571,14 @@ static inline void gemm_cols(device const float* A, device const EB* B,
 
 // M <= 16, N below the coalescing threshold: one simdgroup per column,
 // lanes striding K, the same fixed shuffle tree as gemm_rows.
-template <bool AT, bool BT, typename EB, bool ACC>
-static inline void gemm_colsg(device const float* A, device const EB* B,
-                              device float* C, device const float* bias,
-                              device const float* cs, device const float* D,
-                              uint M, uint N, uint K, uint lda, uint ldb,
-                              uint ldc, float alpha, uint act, uint n,
-                              uint lane) {
-  float acc[16];
+template <bool AT, bool BT, typename EB, bool ACC, uint MCAP>
+static inline void gemm_colsg_finish(device float* C, device const float* bias,
+                                     device const float* cs,
+                                     device const float* D, uint M, uint N,
+                                     uint ldc, float alpha, uint act, uint n,
+                                     uint lane, thread float* acc) {
 #pragma clang loop unroll(full)
-  for (uint m = 0; m < 16u; ++m) acc[m] = 0.0f;
-  for (uint k = lane; k < K; k += 32u) {
-    float b = widen(BT ? B[n * ldb + k] : B[k * ldb + n]);
-    if (BT && cs) b *= cs[k];
-#pragma clang loop unroll(full)
-    for (uint m = 0; m < 16u; ++m) {
-      const uint mc = min(m, M - 1u);
-      acc[m] += (AT ? A[k * lda + mc] : A[mc * lda + k]) * b;
-    }
-  }
-#pragma clang loop unroll(full)
-  for (uint m = 0; m < 16u; ++m) {
+  for (uint m = 0; m < MCAP; ++m) {
     float v = acc[m];
     v += simd_shuffle_down(v, 16u);
     v += simd_shuffle_down(v, 8u);
@@ -462,6 +598,108 @@ static inline void gemm_colsg(device const float* A, device const EB* B,
       C[m * ldc + n] = apply_act(v + bv, act);
     }
   }
+}
+template <bool AT, bool BT, typename EB, bool ACC, uint MCAP>
+static inline void gemm_colsg_impl(device const float* A, device const EB* B,
+                                   device float* C, device const float* bias,
+                                   device const float* cs,
+                                   device const float* D, uint M, uint N,
+                                   uint K, uint lda, uint ldb, uint ldc,
+                                   float alpha, uint act, uint n, uint lane) {
+  float acc[MCAP];
+#pragma clang loop unroll(full)
+  for (uint m = 0; m < MCAP; ++m) acc[m] = 0.0f;
+  for (uint k = lane; k < K; k += 32u) {
+    float b = widen(BT ? B[n * ldb + k] : B[k * ldb + n]);
+    if (BT && cs) b *= cs[k];
+#pragma clang loop unroll(full)
+    for (uint m = 0; m < MCAP; ++m) {
+      const uint mc = min(m, M - 1u);
+      acc[m] += (AT ? A[k * lda + mc] : A[mc * lda + k]) * b;
+    }
+  }
+  gemm_colsg_finish<AT, BT, EB, ACC, MCAP>(C, bias, cs, D, M, N, ldc, alpha,
+                                           act, n, lane, acc);
+}
+// F7 #138 step 3: 8 accumulators at a rank-8 site (M <= 8), and the
+// staged form below for the untransposed B (B[k, n] with the lanes
+// striding k — one cache line per lane per step, the dA = X^T @ dt site).
+template <bool AT, bool BT, typename EB, bool ACC>
+static inline void gemm_colsg(device const float* A, device const EB* B,
+                              device float* C, device const float* bias,
+                              device const float* cs, device const float* D,
+                              uint M, uint N, uint K, uint lda, uint ldb,
+                              uint ldc, float alpha, uint act, uint n,
+                              uint lane) {
+  if (M <= 8u)
+    gemm_colsg_impl<AT, BT, EB, ACC, 8u>(A, B, C, bias, cs, D, M, N, K, lda,
+                                         ldb, ldc, alpha, act, n, lane);
+  else
+    gemm_colsg_impl<AT, BT, EB, ACC, 16u>(A, B, C, bias, cs, D, M, N, K, lda,
+                                          ldb, ldc, alpha, act, n, lane);
+}
+// The staged form: 8 simdgroups own 8 consecutive columns and load the
+// [32 k x 8 n] block of B cooperatively (a per-k scale, when B carries
+// one, applied as the block is staged — before the product, as the
+// unstaged form applies it); simdgroup s then takes column n0 + s with
+// lane l reading k0 + l, the assignment of gemm_colsg, so the same bits.
+template <bool AT, bool BT, typename EB, bool ACC, uint MCAP>
+static inline void gemm_colsg_tg_impl(device const float* A,
+                                      device const EB* B, device float* C,
+                                      device const float* bias,
+                                      device const float* cs,
+                                      device const float* D, uint M, uint N,
+                                      uint K, uint lda, uint ldb, uint ldc,
+                                      float alpha, uint act, uint n0,
+                                      uint tid, uint sgid, uint lane,
+                                      threadgroup float* tile) {
+  const uint n = n0 + sgid;
+  const bool live = n < N;
+  float acc[MCAP];
+#pragma clang loop unroll(full)
+  for (uint m = 0; m < MCAP; ++m) acc[m] = 0.0f;
+  for (uint k0 = 0; k0 < K; k0 += 32u) {
+    const uint kk = tid >> 3, nn = tid & 7u;
+    const uint kt = k0 + kk, nt = n0 + nn;
+    float b = 0.0f;
+    if (kt < K && nt < N) {
+      b = widen(BT ? B[nt * ldb + kt] : B[kt * ldb + nt]);
+      if (BT && cs) b *= cs[kt];
+    }
+    tile[kk * 8u + nn] = b;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint k = k0 + lane;
+    if (live && k < K) {
+      const float bk = tile[lane * 8u + sgid];
+#pragma clang loop unroll(full)
+      for (uint m = 0; m < MCAP; ++m) {
+        const uint mc = min(m, M - 1u);
+        acc[m] += (AT ? A[k * lda + mc] : A[mc * lda + k]) * bk;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (!live) return;
+  gemm_colsg_finish<AT, BT, EB, ACC, MCAP>(C, bias, cs, D, M, N, ldc, alpha,
+                                           act, n, lane, acc);
+}
+template <bool AT, bool BT, typename EB, bool ACC>
+static inline void gemm_colsg_tg(device const float* A, device const EB* B,
+                                 device float* C, device const float* bias,
+                                 device const float* cs,
+                                 device const float* D, uint M, uint N,
+                                 uint K, uint lda, uint ldb, uint ldc,
+                                 float alpha, uint act, uint n0, uint tid,
+                                 uint sgid, uint lane,
+                                 threadgroup float* tile) {
+  if (M <= 8u)
+    gemm_colsg_tg_impl<AT, BT, EB, ACC, 8u>(A, B, C, bias, cs, D, M, N, K,
+                                            lda, ldb, ldc, alpha, act, n0,
+                                            tid, sgid, lane, tile);
+  else
+    gemm_colsg_tg_impl<AT, BT, EB, ACC, 16u>(A, B, C, bias, cs, D, M, N, K,
+                                             lda, ldb, ldc, alpha, act, n0,
+                                             tid, sgid, lane, tile);
 }
 
 // flags 128 / 256 (v17): per-column int8 scales in slot 3, for the NN / NT
@@ -488,15 +726,39 @@ static inline void gemm_colsg(device const float* A, device const EB* B,
                                tid, sgid);                                    \
   }                                                                           \
   kernel void NAME##_small(KSIG, uint g [[thread_position_in_grid]]) {        \
-    const uint per = p.m * p.n, z = g / per;                                  \
+    const uint per = p.m * ((p.n + 3u) / 4u), z = g / per;                    \
     if (z >= p.batch) return;                                                 \
-    gemm_small<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), g - z * per);               \
+    gemm_small<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), g - z * per,                \
+                                (p.flags & 32u) != 0u, (p.flags & 4096u) != 0u);             \
   }                                                                           \
   kernel void NAME##_rows(KSIG, uint g [[thread_position_in_grid]],           \
                           uint lane [[thread_index_in_simdgroup]]) {          \
     const uint row = g >> 5, z = row / p.m;                                   \
     if (z >= p.batch) return;                                                 \
-    gemm_rows<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), row - z * p.m, lane);        \
+    gemm_rows<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), row - z * p.m, lane,         \
+                               (p.flags & 32u) != 0u);                                       \
+  }                                                                           \
+  kernel void NAME##_rows_tg(KSIG, uint g [[thread_position_in_grid]],        \
+                             uint tid [[thread_index_in_threadgroup]],        \
+                             uint sgid [[simdgroup_index_in_threadgroup]],    \
+                             uint lane [[thread_index_in_simdgroup]]) {       \
+    threadgroup float tile[256];                                              \
+    const uint group = g >> 8, groups_m = (p.m + 7u) / 8u;                    \
+    const uint z = group / groups_m, m0 = (group % groups_m) * 8u;            \
+    if (z >= p.batch) return;                                                 \
+    gemm_rows_tg<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), m0, tid, sgid, lane,      \
+                                  tile);                                                     \
+  }                                                                           \
+  kernel void NAME##_colsg_tg(KSIG, uint g [[thread_position_in_grid]],       \
+                              uint tid [[thread_index_in_threadgroup]],       \
+                              uint sgid [[simdgroup_index_in_threadgroup]],   \
+                              uint lane [[thread_index_in_simdgroup]]) {      \
+    threadgroup float tile[256];                                              \
+    const uint group = g >> 8, groups_n = (p.n + 7u) / 8u;                    \
+    const uint z = group / groups_n, n0 = (group % groups_n) * 8u;            \
+    if (z >= p.batch) return;                                                 \
+    gemm_colsg_tg<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), n0, tid, sgid, lane,     \
+                                   tile);                                                    \
   }                                                                           \
   kernel void NAME##_cols(KSIG, uint g [[thread_position_in_grid]]) {         \
     const uint z = g / p.n;                                                   \

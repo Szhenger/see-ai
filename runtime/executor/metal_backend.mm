@@ -100,6 +100,14 @@ enum Pipe : int {
   kPGemmNNQ8Cols, kPGemmNTQ8Cols, kPGemmNNBF16Cols, kPGemmNTBF16Cols,
   kPGemmNNColsG, kPGemmNTColsG, kPGemmTNColsG, kPGemmAccColsG,
   kPGemmNNQ8ColsG, kPGemmNTQ8ColsG, kPGemmNNBF16ColsG, kPGemmNTBF16ColsG,
+  // F7 step 3: the staged skinny forms — _rows_tg (N <= 16, A transposed:
+  // the [32 k x 8 m] block of A through threadgroup memory) and _colsg_tg
+  // (M <= 16, B untransposed: the [32 k x 8 n] block of B likewise).
+  kPGemmNNRowsTg, kPGemmNTRowsTg, kPGemmTNRowsTg, kPGemmAccRowsTg,
+  kPGemmNNQ8RowsTg, kPGemmNTQ8RowsTg, kPGemmNNBF16RowsTg, kPGemmNTBF16RowsTg,
+  kPGemmNNColsGTg, kPGemmNTColsGTg, kPGemmTNColsGTg, kPGemmAccColsGTg,
+  kPGemmNNQ8ColsGTg, kPGemmNTQ8ColsGTg, kPGemmNNBF16ColsGTg,
+  kPGemmNTBF16ColsGTg,
   kPGemmSplitKFin,
   kPAddEW, kPMulEW, kPAddBias, kPReluFwd, kPReluBwd, kPGeluFwd, kPGeluBwd,
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
@@ -125,6 +133,12 @@ const char* const kPipeNames[kPipeCount] = {
     "k_gemm_nn_colsg", "k_gemm_nt_colsg", "k_gemm_tn_colsg",
     "k_gemm_acc_colsg", "k_gemm_nn_q8_colsg", "k_gemm_nt_q8_colsg",
     "k_gemm_nn_bf16_colsg", "k_gemm_nt_bf16_colsg",
+    "k_gemm_nn_rows_tg", "k_gemm_nt_rows_tg", "k_gemm_tn_rows_tg",
+    "k_gemm_acc_rows_tg", "k_gemm_nn_q8_rows_tg", "k_gemm_nt_q8_rows_tg",
+    "k_gemm_nn_bf16_rows_tg", "k_gemm_nt_bf16_rows_tg",
+    "k_gemm_nn_colsg_tg", "k_gemm_nt_colsg_tg", "k_gemm_tn_colsg_tg",
+    "k_gemm_acc_colsg_tg", "k_gemm_nn_q8_colsg_tg", "k_gemm_nt_q8_colsg_tg",
+    "k_gemm_nn_bf16_colsg_tg", "k_gemm_nt_bf16_colsg_tg",
     "k_gemm_splitk_fin", "k_add_ew", "k_mul_ew", "k_add_bias", "k_relu_fwd",
     "k_relu_bwd", "k_gelu_fwd", "k_gelu_bwd", "k_silu_fwd", "k_silu_bwd",
     "k_scale", "k_fused_map", "k_fill", "k_copy", "k_accumulate", "k_sgd", "k_adamw",
@@ -157,6 +171,9 @@ constexpr int kGemmSmall = kPGemmNNSmall - kPGemmNN;
 constexpr int kGemmRows = kPGemmNNRows - kPGemmNN;
 constexpr int kGemmCols = kPGemmNNCols - kPGemmNN;
 constexpr int kGemmColsG = kPGemmNNColsG - kPGemmNN;
+constexpr int kGemmRowsTg = kPGemmNNRowsTg - kPGemmNN;
+constexpr int kGemmColsGTg = kPGemmNNColsGTg - kPGemmNN;
+constexpr uint32_t kGemmStagedGroup = 256;  // 8 simdgroups: 8 rows or columns
 // M <= 16: below this N a simdgroup per column (lanes striding K) beats a
 // thread per column; above it the per-thread form's coalesced B reads win.
 constexpr uint32_t kGemmColsPerThreadN = 4096;
@@ -755,19 +772,32 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
       a.bs[3] % 4 == 0)
     a.flags |= 32u;
   if (a.k <= kGemmSkinnyDim) {
-    Dispatch(static_cast<Pipe>(pipe + kGemmSmall), a, a.batch * a.m * a.n,
-             kElementwiseGroup);
+    // Four outputs per thread (F7 step 3); flag 4096 = C and the addend
+    // move as 16-byte vectors.
+    if (a.off[2] % 16 == 0 && a.ldc % 4 == 0 && a.n % 4 == 0 &&
+        a.bs[4] % 4 == 0 && a.bs[5] % 4 == 0 &&
+        (!(a.flags & 2048u) || a.off[3] % 16 == 0))
+      a.flags |= 4096u;
+    Dispatch(static_cast<Pipe>(pipe + kGemmSmall), a,
+             a.batch * a.m * ((a.n + 3) / 4), kElementwiseGroup);
     return;
   }
   if (a.n <= kGemmSkinnyDim) {
-    Dispatch(static_cast<Pipe>(pipe + kGemmRows), a, a.batch * a.m * 32u,
-             kElementwiseGroup);
+    if (at)  // A[k, m] with the lanes striding k: stage it (F7 step 3)
+      Dispatch(static_cast<Pipe>(pipe + kGemmRowsTg), a,
+               a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
+    else
+      Dispatch(static_cast<Pipe>(pipe + kGemmRows), a, a.batch * a.m * 32u,
+               kElementwiseGroup);
     return;
   }
   if (a.m <= kGemmSkinnyDim) {
     if (a.n >= kGemmColsPerThreadN)
       Dispatch(static_cast<Pipe>(pipe + kGemmCols), a, a.batch * a.n,
                kElementwiseGroup);
+    else if (!bt)  // B[k, n] with the lanes striding k: stage it
+      Dispatch(static_cast<Pipe>(pipe + kGemmColsGTg), a,
+               a.batch * ((a.n + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
     else
       Dispatch(static_cast<Pipe>(pipe + kGemmColsG), a, a.batch * a.n * 32u,
                kElementwiseGroup);
