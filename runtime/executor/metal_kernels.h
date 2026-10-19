@@ -176,7 +176,7 @@ static inline ulong batch_off(constant KArgs& p, uint z, uint which) {
 template <bool AT, bool BT, typename EB, bool ACC>
 static inline void gemm_tile(device const float* A, device const EB* B,
                              device float* C, device const float* bias,
-                             device const float* cs,
+                             device const float* cs, device const float* D,
                              uint M, uint N, uint K, uint lda, uint ldb,
                              uint ldc, float alpha, uint act, bool vecA,
                              bool vecB, uint splits, device float* ws,
@@ -287,6 +287,7 @@ static inline void gemm_tile(device const float* A, device const EB* B,
           C[gm * ldc + gn] += alpha * v;
         } else {
           v = (!BT && cs) ? cs[gn] * v : alpha * v;  // v17 column scale
+          if (D) v = D[gm * N + gn] + v;  // the addend: d + the finished product
           if (bias) v += bias[gn];
           C[gm * ldc + gn] = apply_act(v, act);
         }
@@ -309,6 +310,7 @@ kernel void k_gemm_splitk_fin(KSIG, device const float* ws [[buffer(4)]],
     *C += p.f[0] * v;
   } else {
     v = (p.flags & 128u) ? RF(3)[gn] * v : p.f[0] * v;  // v17 NN col scale
+    if (p.flags & 2048u) v = RF(3)[g] + v;  // the addend (v14), F7 step 3
     if (p.flags & 8u) v += RF(3)[gn];
     *C = apply_act(v, p.flags & 7u);
   }
@@ -318,7 +320,7 @@ kernel void k_gemm_splitk_fin(KSIG, device const float* ws [[buffer(4)]],
 template <bool AT, bool BT, typename EB, bool ACC>
 static inline void gemm_small(device const float* A, device const EB* B,
                               device float* C, device const float* bias,
-                              device const float* cs,
+                              device const float* cs, device const float* D,
                               uint M, uint N, uint K, uint lda, uint ldb,
                               uint ldc, float alpha, uint act, uint g) {
   const uint m = g / N, n = g % N;
@@ -333,6 +335,7 @@ static inline void gemm_small(device const float* A, device const EB* B,
     C[m * ldc + n] += alpha * acc;
   } else {
     float v = (!BT && cs) ? cs[n] * acc : alpha * acc;
+    if (D) v = D[m * N + n] + v;
     if (bias) v += bias[n];
     C[m * ldc + n] = apply_act(v, act);
   }
@@ -345,7 +348,7 @@ static inline void gemm_small(device const float* A, device const EB* B,
 template <bool AT, bool BT, typename EB, bool ACC>
 static inline void gemm_rows(device const float* A, device const EB* B,
                              device float* C, device const float* bias,
-                             device const float* cs,
+                             device const float* cs, device const float* D,
                              uint M, uint N, uint K, uint lda, uint ldb,
                              uint ldc, float alpha, uint act, uint m,
                              uint lane) {
@@ -378,6 +381,7 @@ static inline void gemm_rows(device const float* A, device const EB* B,
       C[m * ldc + n] += alpha * acc[n];
     } else {
       float v = (!BT && cs) ? cs[n] * acc[n] : alpha * acc[n];
+      if (D) v = D[m * N + n] + v;
       if (bias) v += bias[n];
       C[m * ldc + n] = apply_act(v, act);
     }
@@ -388,7 +392,7 @@ static inline void gemm_rows(device const float* A, device const EB* B,
 template <bool AT, bool BT, typename EB, bool ACC>
 static inline void gemm_cols(device const float* A, device const EB* B,
                              device float* C, device const float* bias,
-                             device const float* cs,
+                             device const float* cs, device const float* D,
                              uint M, uint N, uint K, uint lda, uint ldb,
                              uint ldc, float alpha, uint act, uint n) {
   float acc[16];
@@ -408,8 +412,9 @@ static inline void gemm_cols(device const float* A, device const EB* B,
     if (ACC) {
       C[m * ldc + n] += alpha * acc[m];
     } else {
-      C[m * ldc + n] = apply_act(
-          ((!BT && cs) ? cs[n] * acc[m] : alpha * acc[m]) + bv, act);
+      float v = (!BT && cs) ? cs[n] * acc[m] : alpha * acc[m];
+      if (D) v = D[m * N + n] + v;
+      C[m * ldc + n] = apply_act(v + bv, act);
     }
   }
 }
@@ -419,7 +424,7 @@ static inline void gemm_cols(device const float* A, device const EB* B,
 template <bool AT, bool BT, typename EB, bool ACC>
 static inline void gemm_colsg(device const float* A, device const EB* B,
                               device float* C, device const float* bias,
-                              device const float* cs,
+                              device const float* cs, device const float* D,
                               uint M, uint N, uint K, uint lda, uint ldb,
                               uint ldc, float alpha, uint act, uint n,
                               uint lane) {
@@ -451,19 +456,24 @@ static inline void gemm_colsg(device const float* A, device const EB* B,
     if (ACC) {
       C[m * ldc + n] += alpha * acc[m];
     } else {
-      C[m * ldc + n] = apply_act(
-          ((!BT && cs) ? cs[n] * acc[m] : alpha * acc[m]) + bv, act);
+      float v = (!BT && cs) ? cs[n] * acc[m] : alpha * acc[m];
+      if (D) v = D[m * N + n] + v;
+      C[m * ldc + n] = apply_act(v + bv, act);
     }
   }
 }
 
 // flags 128 / 256 (v17): per-column int8 scales in slot 3, for the NN / NT
 // form — the NT form applies them as B widens, the NN form in the epilogue.
+// flag 2048 (F7 #138, step 3): the GEMM addend D [M, N] in slot 3, summed
+// into the write-back as `d + s` over the finished dot product — the bits
+// of the GEMM followed by the kAddEW dispatch this used to be, without it.
 #define GEMM_OPERANDS(Z, EB, BIAS_EXPR)                                       \
   RF(0) + batch_off(p, (Z), 0u),                                              \
       (device const EB*)(RBASE(1) + p.off[1]) + batch_off(p, (Z), 1u),        \
       WF(2) + batch_off(p, (Z), 2u), BIAS_EXPR,                               \
-      ((p.flags & 384u) ? RF(3) : (device const float*)0), p.m, p.n, p.k,     \
+      ((p.flags & 384u) ? RF(3) : (device const float*)0),                    \
+      ((p.flags & 2048u) ? RF(3) : (device const float*)0), p.m, p.n, p.k,    \
       p.lda, p.ldb, p.ldc, p.f[0], p.flags & 7u
 #define GEMM_KERNELS(NAME, AT, BT, EB, ACC, BIAS_EXPR)                        \
   kernel void NAME(KSIG, device float* ws [[buffer(4)]],                      \

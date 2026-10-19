@@ -600,6 +600,54 @@ TEST(PlanValidator, TheImmWordIsANormEpsilonAndNothingElse) {
   EXPECT_STR_CONTAINS(r.error(), "imm");
 }
 
+TEST(PlanValidator, TheGemmImmWordIsAFiniteNonzeroAlphaFromV19) {
+  // v19 (F7 #138): the three f32 GEMMs carry a scalar alpha's f32 bits in
+  // imm (0 = 1.0); below v19, beside kFlagRelaxed, zero / non-finite, or on
+  // a narrow-weight GEMM it is corruption.
+  for (const up::OpCode op : {up::OpCode::kGemmNN, up::OpCode::kGemmNT,
+                              up::OpCode::kGemmTN}) {
+    up::UpdateInstruction gemm;
+    gemm.opcode = static_cast<uint16_t>(op);
+    gemm.in[0] = up::MakeArenaRef(0);
+    gemm.in[1] = up::MakeArenaRef(256);
+    gemm.in[2] = up::MakeArenaRef(512);
+    gemm.out[0] = 4; gemm.out[1] = 4; gemm.out[2] = 4;
+    EXPECT_OK(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+    gemm.imm = std::bit_cast<uint32_t>(2.0f);
+    EXPECT_OK(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+    EXPECT_EQ(up::GemmAlphaOf(gemm.imm), 2.0f);
+    const auto old = ValidateInstruction(gemm, kArena, kRodata,
+                                         up::kSeeuGemmAlphaVersion - 1);
+    ASSERT_FALSE(old.has_value());
+    EXPECT_STR_CONTAINS(old.error(), "imm");
+    for (const float bad : {INFINITY, NAN}) {
+      gemm.imm = std::bit_cast<uint32_t>(bad);
+      EXPECT_ERROR(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+    }
+    gemm.imm = std::bit_cast<uint32_t>(-0.0f);  // nonzero bits, zero value
+    EXPECT_ERROR(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+  }
+  EXPECT_EQ(up::GemmAlphaOf(0), 1.0f);
+  // Alpha beside the relaxed bit: the relaxed family is the frozen-weight
+  // products and no relaxed kernel takes an alpha.
+  up::UpdateInstruction relaxed = GemmNN(up::MakeArenaRef(0), up::MakeRodataRef(0),
+                                         up::MakeArenaRef(512), 4, 4, 4);
+  relaxed.flags = up::kFlagRelaxed;
+  EXPECT_OK(ValidateInstruction(relaxed, kArena, kRodata, up::kSeeuVersion));
+  relaxed.imm = std::bit_cast<uint32_t>(2.0f);
+  const auto r = ValidateInstruction(relaxed, kArena, kRodata, up::kSeeuVersion);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STR_CONTAINS(r.error(), "relaxed");
+  // A narrow-weight GEMM defines no imm word.
+  up::UpdateInstruction q8 = GemmNN(up::MakeArenaRef(0), up::MakeRodataRef(0),
+                                    up::MakeArenaRef(512), 4, 4, 4);
+  q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
+  q8.in[3] = std::bit_cast<uint32_t>(0.5f);
+  EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
+  q8.imm = std::bit_cast<uint32_t>(2.0f);
+  EXPECT_ERROR(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
+}
+
 TEST(PlanValidator, RejectsFlagsOnPreFlagsPlans) {
   // A pre-v5 plan predates the flags vocabulary: any nonzero word there is
   // corruption, not a feature.

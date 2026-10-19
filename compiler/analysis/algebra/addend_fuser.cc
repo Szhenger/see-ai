@@ -105,6 +105,9 @@ std::expected<AddendFusion, std::string> GemmAddendFuser::Run(
     add->setOperand(1, best->operand(0));
     add->addOperand(best->operand(1));
     add->setAttribute("gemm_addend", std::string(best_form));
+    // The GEMM's alpha (v19) is part of the product the add now IS.
+    if (const auto alpha = best->getAttrAs<float>("alpha"))
+      add->setAttribute("alpha", *alpha);
     fusion.fused_away.push_back(best);
     ++fusion.fused;
   }

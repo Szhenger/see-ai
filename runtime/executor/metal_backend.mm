@@ -815,6 +815,7 @@ bool MetalBackend::EncodeRelaxedGemm(up::OpCode op,
   if (a.batch > 1 || a.m <= kGemmSkinnyDim || a.n <= kGemmSkinnyDim ||
       a.k <= kGemmSkinnyDim)
     return false;
+  if (a.f[0] != 1.0f) return false;  // v19 alpha: the validator refuses it here
   const bool nt = op == up::OpCode::kGemmNT || op == up::OpCode::kGemmNTQ8 ||
                   op == up::OpCode::kGemmNTBF16;
   RxPipe pipe;
@@ -906,16 +907,15 @@ std::expected<void, std::string> MetalBackend::Encode(
     Dispatch(kPClipFinish, c, 1, 1, true);
     return true;
   };
-  // The GEMM addend (v14): C = D + C, in place, one thread per element —
-  // the two dispatches the GEMM + kAddEW pair always was on this backend.
-  auto EncodeAddend = [&](uint32_t count) {
+  // The GEMM addend (v14): since F7 (#138) step 3 the exact kernels sum D
+  // into their write-back (flag 2048, slot 3) — `d + s` over the finished
+  // dot product, the bits of the GEMM + kAddEW pair this used to dispatch
+  // on this backend, without the second dispatch and its pass over C. The
+  // relaxed path sets its own flag (1024) for the same sum.
+  auto FoldAddend = [&]() {
     if (!(ins.flags & up::kFlagGemmAddend)) return;
-    KArgs sum;
-    sum.off[0] = up::RefOffset(ins.in[3]);
-    if (up::IsRodataRef(ins.in[3])) sum.space |= 1u;
-    sum.off[1] = sum.off[2] = up::RefOffset(ins.in[2]);
-    sum.n = count;
-    Dispatch(kPAddEW, sum, sum.n, kElementwiseGroup);
+    ref(3, ins.in[3]);
+    a.flags |= 2048u;
   };
   const auto op = static_cast<up::OpCode>(ins.opcode);
   switch (op) {
@@ -923,26 +923,26 @@ std::expected<void, std::string> MetalBackend::Encode(
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
       if (ins.flags & up::kFlagEpilogueBias) ref(3, ins.in[3]);
       a.m = u32(ins.out[0]); a.n = u32(ins.out[1]); a.k = u32(ins.out[2]);
-      a.f[0] = 1.0f;
+      a.f[0] = up::GemmAlphaOf(ins.imm);  // v19: the write-back's alpha
       // flags: bit 3 = bias present, low bits = EpilogueAct (1..3)
       a.flags = static_cast<uint32_t>(up::EpilogueActOf(ins.flags)) |
                 ((ins.flags & up::kFlagEpilogueBias) ? 8u : 0u);
       if (EncodeRelaxedGemm(op, ins, a)) return {};
+      FoldAddend();
       DispatchGemm(kPGemmNN, a, false, false, 4);
-      EncodeAddend(a.m * a.n);
       return {};
     case up::OpCode::kGemmNT:
     case up::OpCode::kGemmTN:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
       a.m = u32(ins.out[0]); a.n = u32(ins.out[1]); a.k = u32(ins.out[2]);
-      a.f[0] = 1.0f;
+      a.f[0] = up::GemmAlphaOf(ins.imm);
       if (op == up::OpCode::kGemmNT && EncodeRelaxedGemm(op, ins, a))
         return {};
+      FoldAddend();
       if (op == up::OpCode::kGemmNT)
         DispatchGemm(kPGemmNT, a, false, true, 4);
       else
         DispatchGemm(kPGemmTN, a, true, false, 4);
-      EncodeAddend(a.m * a.n);
       return {};
     case up::OpCode::kGemmAccNN:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);

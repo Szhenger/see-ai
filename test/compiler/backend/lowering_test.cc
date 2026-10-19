@@ -151,6 +151,21 @@ TEST(InstructionLowering, QuantizedWeightsLowerToQ8WithTheirScale) {
             static_cast<uint64_t>(std::bit_cast<uint32_t>(0.5f)));
 }
 
+TEST(InstructionLowering, MatmulAlphaLowersToTheImmWord) {
+  // v19 (F7 #138): a matmul's alpha rides the instruction's imm word as f32
+  // bits on the f32 forms; a narrow-weight form never carries one.
+  MatmulFixture fx;
+  fx.y->definingOp()->setAttribute("alpha", 2.0f);
+  ASSERT_OK_AND_ASSIGN(std::vector<UpdateInstruction> instrs,
+                       LowerOps(fx.Ops(), fx.Resolve(), {}));
+  ASSERT_EQ(instrs.size(), 1u);
+  EXPECT_EQ(instrs[0].opcode, static_cast<uint16_t>(OpCode::kGemmNN));
+  EXPECT_EQ(instrs[0].imm, std::bit_cast<uint32_t>(2.0f));
+  EXPECT_EQ(GemmAlphaOf(instrs[0].imm), 2.0f);
+  const std::unordered_map<const sir::Value*, float> quant{{fx.w, 0.5f}};
+  EXPECT_ERROR_CONTAINS(LowerOps(fx.Ops(), fx.Resolve(), quant), "alpha");
+}
+
 TEST(InstructionLowering, RejectsOpsWithoutAnEncoding) {
   sir::Block block;
   sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{4});

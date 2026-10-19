@@ -11,6 +11,9 @@
 // =============================================================================
 // LoraGrafter — the low-rank adapter algebra: rewrites C = X@W into
 // C' = X@W + (α/r)·(X@A)@B, injecting randomized trainable adapters A, B.
+// The scale α/r is the second matmul's own `alpha` attribute (plan v19):
+// three ops per site — t = X@A, u = (α/r)·t@B, C' = C + u — and the add
+// then rides its GEMM (GemmAddendFuser).
 // Part of analysis/algebra/ — the matmul-structure rewrites whose merge
 // counterpart (merge_builder.h) materializes Δ = (α/r)·A@B.
 // =============================================================================

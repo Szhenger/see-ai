@@ -500,6 +500,72 @@ row taken on 2026-09-22 — not a property of the fixture. The rule stands
 regardless: the fixture is the canary that moves when the kernels move;
 the real package sets the baseline.
 
+### The LoRA lowering, steps 1 and 3, and the per-dispatch cost (F7 #138, 2026-10-19)
+
+The rank-r scale is the GEMM's own alpha (plan v19): the grafter sets
+`alpha` on the `t@B` matmul, autodiff carries it onto `dt = dC@Bᵀ` and
+`dB = tᵀ@dC`, and the lowering writes it into the instruction's `imm`
+word — no `kScale` instruction remains in the train program (3,309 →
+2,887 instructions on SmolLM-135M, one per adapter per pass). The CPU
+applies it where the scale instruction it replaces sat (folded into A on
+the NN and TN cores, on the finished product on the NT core), so the CPU
+plan is byte-identical for every alpha; Metal applies it in the write-back,
+identical for the default power-of-two 16/8. Step 3 then folds the GEMM
+addend into the exact Metal kernels' write-back (flag 2048; `d + s` over
+the finished dot product, the bits of the GEMM + `k_add_ew` pair it
+replaces), so a LoRA site's forward and the dX backward are one dispatch
+each instead of two. Every stage below commits the same bytes as main's
+package after 20 steps on both backends (CPU
+`beb98417…`, Metal `0fef91ef…`; `out/f7-2026-10-19/*/id_sha.txt`), and
+the "every alpha" claim was demonstrated, not argued: the demo MLP
+compiled with `--lora-alpha 3 --lora-rank 4` (0.75, no power of two)
+under main's compiler and this one commits the same bytes after 20 CPU
+steps, while the two Metal runs differ at rounding level with the same
+loss to six decimals (`out/f7-2026-10-19/alpha3/sha.txt`).
+
+Train-only (`--val-frac 0 --eval-every 0`), the SmolLM-135M int8-base exact
+package, Apple M5, every number from this session; GPU busy per step is
+the training step's command buffer under `SEEML_METAL_SPANS=1` over three
+runs, the step time the 40→160 slope with two repeats (`frontier_run.py`):
+
+| state | train instr. | dispatches / step | GPU busy / step (ms) | outside the GPU (ms) | step (ms) | tok/s | LoRA family, share of kernel time | head LoRA / head GEMM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| main (`ee979e7`), the 2026-10-15 package | 3,309 | 3,862 | 275.4–277.7 | 1.72 | 288.4 (10-15) / 285.5 (today) | 1,775 / 1,793 | 37.3 % | 61 % |
+| step 1: alpha in the GEMM | 2,887 | 3,443 | 273.6–275.5 | 1.50 | 285.8 | 1,791 | 37.0 % | 61 % |
+| step 3: the addend in the write-back | 2,887 | 3,027 | 271.0–271.6 | 1.38 | 280.4 | 1,826 | 33.6 % | 34 % |
+
+**The per-dispatch cost, measured** (the experiment F8's dispatch model
+waited on). Step 1 removes 422 dispatches per step and nothing else: the
+`k_scale` rows of the profile (8,440 over the 40-pass profile, 1.7 µs
+each) were 0.72 ms of kernel span per step, and the GPU's busy span fell
+2.0 ms (276.3 → 274.3 ms, means of three runs), so the serial encoder's
+gap costs **about 3 µs per dispatch at the means**; the CPU's side of it
+is 0.5 µs (outside-the-GPU time 1.72 → 1.50 ms per buffer). The
+run-to-run spread is ~2 ms, so this experiment alone allows 0–8 µs; step
+3 below bounds it independently — 416 dispatches *and* their traffic
+bought 2.9 ms, so a dispatch costs at most 7 µs even if the traffic were
+free — and the two together put it at **0–7 µs**. Over the 3,443
+dispatches of the step-1 step that is ≈10 ms at the means, **≈4 % of
+the step**, and ≤8 % at the ceiling — the "7–20 %" the serialized
+profile could not resolve lands at its low end, below the 10 % line
+across the whole range. The
+train-only profile prices the family at 37 % of kernel time with every
+rank-8 shape counted (the A-projections' `512x8x576` and dB's `576x8x512`
+rows included) — the ≈36 % the forward-weighted profile read (F9) holds.
+
+**Step 3's rows** (`SEEML_METAL_PROFILE=1`, µs per dispatch, before →
+after the fold): `512x1536x8` nn 155 → 92, `512x576x8` nt 51 → 42, nn
+46 → 37, `512x1536x8` nt 154 → 107, the head's `512x49152x8` 5,105 →
+2,847; 416 dispatches and one activation-sized pass per site gone, GPU
+busy −2.9 ms, the measured step −5.4 ms. The rows are still
+occupancy-bound — `512x1536x8` moves its 6 MB of C and D in 92 µs, 65
+GB/s against the issue's ≥100 GB/s target — so the small-N kernel
+rewrite proper (step 3's second half), step 2 (batched A-projections,
+which needs strided operands in the ISA) and step 4 (the K-extension,
+certified) remain. Against F1's rows the exact Metal package now stands
+at 1,826 tok/s: 0.82× MLX-LM's true-f32 2,240 and 0.40× its all-bf16
+4,590; the relaxed package was not re-measured this round.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

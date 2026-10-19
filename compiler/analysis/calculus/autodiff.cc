@@ -68,16 +68,21 @@ const std::unordered_map<std::string_view, VjpRule>& VjpRegistry() {
                                                               VjpRule>{
       // C[N,M] = X[N,K] @ W[K,M]
       // dX = dC @ W^T (GemmNT), dW = X^T @ dC (GemmTN)
+      // C = alpha * X @ W (alpha = 1 when unset, plan v19): dX = alpha *
+      // dC @ W^T, dW = alpha * X^T @ dC — the constant rides each adjoint
+      // product's own alpha, never a pass of its own.
       {"sc_high.matmul",
        [](sir::Operation* op, AdContext& ctx) {
          sir::Value* x = op->operand(0);
          sir::Value* w = op->operand(1);
          sir::Value* dc = ctx.GradOf(op->result(0));
+         const auto alpha = op->getAttrAs<float>("alpha");
          if (ctx.Needs(x)) {
            sir::Value* dx = Emit1(
                ctx, "sc_low.matmul_nt", {dc, w},
                std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
                x->shape());
+           if (alpha) dx->definingOp()->setAttribute("alpha", *alpha);
            ctx.Accumulate(x, dx);
          }
          if (ctx.Needs(w)) {
@@ -85,6 +90,7 @@ const std::unordered_map<std::string_view, VjpRule>& VjpRegistry() {
                ctx, "sc_low.matmul_tn", {x, dc},
                std::string(w->id()) + ".d" + std::to_string(ctx.fresh_counter++),
                w->shape());
+           if (alpha) dw->definingOp()->setAttribute("alpha", *alpha);
            ctx.Accumulate(w, dw);
          }
          return true;

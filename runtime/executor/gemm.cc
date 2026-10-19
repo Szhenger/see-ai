@@ -581,11 +581,11 @@ void AddendRows(float* SEEML_RESTRICT C, const float* SEEML_RESTRICT D,
 
 void GemmNN(const float* A, const float* B, float* C, size_t M, size_t N,
             size_t K, const float* bias, up::EpilogueAct act,
-            const GemmTiles& tiles, const float* addend) {
+            const GemmTiles& tiles, const float* addend, float alpha) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
                     ZeroCell(C, N, m0, m1, n0, n1);
-                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, 1.0f, K,
+                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, K,
                               /*a_transposed=*/false, tiles);
                     if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
                     EpilogueRows(C, bias, m0, m1, n0, n1, N, act);
@@ -593,20 +593,22 @@ void GemmNN(const float* A, const float* B, float* C, size_t M, size_t N,
 }
 
 void GemmNT(const float* A, const float* B, float* C, size_t M, size_t N,
-            size_t K, const GemmTiles& tiles, const float* addend) {
+            size_t K, const GemmTiles& tiles, const float* addend,
+            float alpha) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    BlockedNT(A, B, C, m0, m1, n0, n1, N, K, 1.0f, tiles.n);
+                    BlockedNT(A, B, C, m0, m1, n0, n1, N, K, alpha, tiles.n);
                     if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
                   });
 }
 
 void GemmTN(const float* A, const float* B, float* C, size_t M, size_t N,
-            size_t K, const GemmTiles& tiles, const float* addend) {
+            size_t K, const GemmTiles& tiles, const float* addend,
+            float alpha) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
                     ZeroCell(C, N, m0, m1, n0, n1);
-                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, 1.0f, M,
+                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, M,
                               /*a_transposed=*/true, tiles);
                     if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
                   });

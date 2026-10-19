@@ -416,6 +416,7 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
     bool at, bt, acc;
     uint16_t flags;
     const char* name;
+    float alpha = 1.0f;  // v19: the f32 forms' imm word
   };
   const Variant variants[] = {
       {OpCode::kGemmNN, kF32, false, false, false, 0, "nn"},
@@ -431,6 +432,13 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
       {OpCode::kGemmNN, kF32, false, false, false, kFlagGemmAddend, "nn+addend"},
       {OpCode::kGemmNT, kF32, false, true, false, kFlagGemmAddend, "nt+addend"},
       {OpCode::kGemmTN, kF32, true, false, false, kFlagGemmAddend, "tn+addend"},
+      // The GEMM alpha (v19): the f32 forms' imm word, on its own and
+      // beside the addend (a LoRA site's forward).
+      {OpCode::kGemmNN, kF32, false, false, false, 0, "nn+alpha", 2.0f},
+      {OpCode::kGemmNN, kF32, false, false, false, kFlagGemmAddend,
+       "nn+alpha+addend", 0.75f},
+      {OpCode::kGemmNT, kF32, false, true, false, 0, "nt+alpha", 2.0f},
+      {OpCode::kGemmTN, kF32, true, false, false, 0, "tn+alpha", 0.75f},
       {OpCode::kGemmAccNN, kF32, false, false, true, 0, "acc"},
       {OpCode::kGemmNNQ8, kQ8, false, false, false, 0, "nn.q8"},
       {OpCode::kGemmNTQ8, kQ8, false, true, false, 0, "nt.q8"},
@@ -484,6 +492,7 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
         UpdateInstruction ins;
         ins.opcode = static_cast<uint16_t>(v.op);
         ins.flags = v.flags;
+        if (v.alpha != 1.0f) ins.imm = std::bit_cast<uint32_t>(v.alpha);
         ins.in[0] = MakeArenaRef(a_off);
         ins.in[1] = MakeRodataRef(skew);
         ins.in[2] = MakeArenaRef(c_off);
