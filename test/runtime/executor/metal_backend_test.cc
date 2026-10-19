@@ -470,6 +470,13 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
       {8, 576, 512, "M<=16 simdgroup columns"},
       {8, 4200, 64, "M<=16 per-thread columns"},
       {33, 17, 20, "tiled, tiny ragged"},
+      // F7 step 3: the four-output small form's ragged tail (N % 4 != 0)
+      // and scalar write-back, the 8-accumulator rows form below rank 8
+      // (N < 8: clamped columns, the vector B path refused), and the
+      // staged columns form's clamp (M < 8).
+      {100, 70, 8, "K<=16, ragged N"},
+      {512, 5, 576, "N<8 simdgroup rows (staged for tn)"},
+      {5, 576, 512, "M<8 simdgroup columns (staged for nn/tn)"},
   };
   enum Kind { kF32, kQ8, kBF16 };
   struct Variant {

@@ -53,6 +53,25 @@ consume int8 directly (option A). Measure against the real-package row
 (332 tok/s), never the `tok_smollm135m_q8` fixture, which under-reads it
 (233–269; F9).
 
+## Status 2026-10-19
+
+The executable next step above landed: a relaxed int8 GEMM on the CPU
+widens its weight panel by panel (≤ 4 MiB of f32, the per-column scale
+applied as it widens) into a backend-owned buffer and runs each panel on
+SGEMM — option B extended to the int8 base, behind the same certificate
+(f32 products over the exact levels sit inside the bound priced for the
+bf16-rounding kernel). Measured (`docs/benchmarks.md`, "The int8 base on
+the CPU matrix units"): the shipped SmolLM-135M int8 package goes from
+1,591.6 ms/step (322 tok/s) to 761–777 ms (659–673 tok/s), 2.05–2.09×,
+two runs byte-identical, the 300-step validation 1.0e-5 relative from
+the exact run — **0.77–0.79× of `torch.compile`'s CPU row**, just under
+the ≥ 0.8× acceptance line. The gap to the f32-base package's 0.85–0.89×
+is the widening of the 262 MB int8 base twice per step (the head's 113
+MB for the forward and again for dX); widening it once, or SME kernels
+over int8 (option A), is what remains. Not done: the GEMM GFLOP/s table
+per shape and the serial-vs-8-thread identity on the new path (SGEMM's
+threading is Accelerate's; the two 10-thread runs above are identical).
+
 ## Acceptance
 
 - GEMM GFLOP/s at SmolLM shapes (q8 and f32, NN/NT/TN) vs the committed

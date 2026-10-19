@@ -716,8 +716,9 @@ std::string BuildScript(bool relaxed_plan) {
   if (relaxed_plan) {
     s += "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
     s += "# v18, certified at packaging): on Apple hosts the CPU backend runs\n";
-    s += "# their f32-weight forms on Accelerate's SGEMM (the AMX / SME matrix\n";
-    s += "# units). SEEML_NO_ACCELERATE=1 keeps every kernel portable.\n";
+    s += "# their f32- and int8-weight forms on Accelerate's SGEMM (the AMX /\n";
+    s += "# SME matrix units; an int8 weight is widened panel by panel).\n";
+    s += "# SEEML_NO_ACCELERATE=1 keeps every kernel portable.\n";
     s += "if [ \"$(uname -s)\" = \"Darwin\" ] && [ -z \"${SEEML_NO_ACCELERATE:-}\" ]; then\n";
     s += "  ACCEL_FLAGS=\"-DSEEML_ACCELERATE\"\n";
     s += "  ACCEL_LDFLAGS=\"-framework Accelerate\"\n";

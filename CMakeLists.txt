@@ -152,7 +152,7 @@ option(SEEML_NO_METAL "Build the Metal executor backend's stub on Apple hosts to
 # The relaxed GEMM family on the CPU (plan v18, F4): a relaxed plan's
 # f32-weight GEMMs on Accelerate's SGEMM. Off in the tree by default — the
 # emitted package's build.sh turns it on for a relaxed plan on Apple hosts.
-option(SEEML_ACCELERATE "CPU backend: run relaxed f32-weight GEMMs on Accelerate (Apple hosts)" OFF)
+option(SEEML_ACCELERATE "CPU backend: run relaxed f32- and int8-weight GEMMs on Accelerate (Apple hosts)" OFF)
 if(APPLE AND SEEML_ACCELERATE)
     target_compile_definitions(seeml_update_rt PRIVATE SEEML_ACCELERATE)
     target_link_libraries(seeml_update_rt PUBLIC "-framework Accelerate")
