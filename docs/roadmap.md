@@ -183,6 +183,22 @@ the instruction stream just gets longer. Verify: gradients bitwise-equal
 with remat on/off (recomputed expressions are identical per element);
 arena high-water strictly smaller on the fixture MLPs.
 
+> **Status: Phase 2b SHIPPED (2026-10-20, F5 #133 step 2).** `--remat
+> auto|off|on`: `Rematerializer` (`analysis/algebra/`) re-emits the cheap
+> forward ops whose results the backward reads — norms, activations,
+> elementwise arithmetic, folded chains, the embedding gather; never a
+> GEMM or attention — as they stand, right before their first backward
+> reader, and only where the bytes freed exceed the operands newly kept
+> (so the RoPE outputs are declined); the transient segment alone is
+> rescanned. `auto` fires when the plain binding's arena plus the plan
+> would fail the memory gate; `on` forces it. Verified bit-identical:
+> the system suite trains both plans for 20 steps and compares the loss
+> curve and the persistent segment byte for byte; the shipped SmolLM-135M
+> package commits the same SHA-256 either way (`docs/benchmarks.md`,
+> "Rematerialization at three rungs"). The report carries the segment
+> split (`persistent_bytes` / `io_bytes` / `transient_bytes`) and
+> `remat: {policy, applied, recomputed_values, bytes_saved}`.
+
 > **Status: Phase 2c SHIPPED for frozen weights (2026-09-15, #71).**
 > `--bf16-base`: the reviewer selects every matmul-only frozen weight, the
 > packer rounds it to nearest-even bf16 (round-on-store), and two widening

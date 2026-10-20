@@ -761,6 +761,62 @@ A blocked kernel (K / V blocks staged once per 128 query rows) is the
 next step; the numbers above are the honest state of the port.
 
 ## Tier C — Memory (the gate that refuses compiles)
+### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
+
+The compile report now states the arena's three segments, and on every
+rung the transient segment — the forward activations the backward reads,
+held across the whole forward, plus adjoints and the merged deltas — is
+98 % of the arena. `--remat on` (roadmap 2b) re-emits the cheap forward
+ops whose results the backward reads — the RMSNorm outputs, `silu(gate)`,
+the SwiGLU product, the embedding gather under the first norm; never a
+GEMM or attention output — right before their first backward reader,
+with the same opcode over the same operands, and rescans the transient
+segment. The RoPE outputs and the residual adds are declined by the
+pass's own rule (recomputing them would keep as many bytes alive as it
+frees: pre-rotation Q and K, the o- and down-projection outputs, have no
+backward reader). Compiled with `--data-batch 512 --loss xent
+--lora-rank 8 --lora-alpha 16 --optimizer adamw --lr 1e-4 --lr-schedule
+const --quantize-base --steps 300 --no-embed`, the shipped recipe, on
+this host (`out/f5-2026-10-20/`, the six `report.json`s):
+
+| model | remat | arena | persistent | IO | transient | train instrs | eval instrs | recomputed values / ops | declined |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SmolLM-135M (30 layers) | off | 1,665,464,320 | 36,292,608 | 4,096 | 1,629,167,616 | 2,887 | 907 | — | — |
+| SmolLM-135M | on | **1,327,667,200** (−337.8 MB, −20.3 %) | 36,292,608 | 4,096 | 1,291,370,496 | 3,009 (+122) | 907 | 182 / 122 | 120 |
+| SmolLM2-360M (32 layers) | off | 3,273,209,856 | 60,844,032 | 4,096 | 3,212,361,728 | 3,079 | 967 | — | — |
+| SmolLM2-360M | on | **2,753,247,232** (−520.0 MB, −15.9 %) | 60,844,032 | 4,096 | 2,692,399,104 | 3,209 (+130) | 967 | 194 / 130 | 128 |
+| Qwen2.5-0.5B (24 layers) | off | 4,513,902,592 | 71,000,064 | 4,096 | 4,442,898,432 | 2,383 | 799 | — | — |
+| Qwen2.5-0.5B | on | **3,661,705,216** (−852.2 MB, −18.9 %) | 71,000,064 | 4,096 | 3,590,701,056 | 2,481 (+98) | 799 | 146 / 98 | 120 |
+
+The recomputed ops are exactly four per block plus two (the first norm's
+embedding gather and the final norm): 30 × 4 + 2 = 122, 32 × 4 + 2 =
+130, 24 × 4 + 2 = 98. The eval program is the untouched primal snapshot
+(same count, same opcodes); the persistent segment and the plan bytes
+(rodata) do not move — the plan grows by the recomputes' instructions,
+0–16 KB after page padding (unchanged at 135M). `--remat auto` left all three plans alone on this 16 GB host
+(every plain arena plus its plan fits), which is why the rows are
+`on`. Compile time is unchanged (0.8–3.2 s wall across the six).
+
+Both SmolLM-135M plans packaged (`tool/pack_update.py --build`) and
+trained 20 steps on the CPU (`SEEML_THREADS=10`, `--val-frac 0
+--eval-every 0`): the committed models are **the same file**, SHA-256
+`beb984171359a0a54fcffd892d6b8a710a5b81280c1ece86f3d2144e42b59e3a` for
+both, and the runtime's `--report` lifecycle prices the trade:
+
+| SmolLM-135M, int8 base, CPU, 20 steps | remat off | remat on |
+|---|---:|---:|
+| `train_s` (20 steps) | 32.81 | 35.60 |
+| ms / step | 1,641 | 1,780 (+8.5 %) |
+| peak RSS (`/usr/bin/time -l`) | 2,688 MB | 2,350 MB (−338 MB) |
+| committed model SHA-256 | `beb98417…` | `beb98417…` |
+
+The RSS falls by the arena saving to the megabyte (337.8 MB), the
+one-allocation doctrine holding; the step costs the 122 recomputes — a
+norm, a silu, a product and a gather per block, each one pass over an
+activation — about 140 ms on this run, a single sample, so a bound, not a row.
+Metal was not run (the GPU was in use by another session): the pass is
+backend-neutral by construction (the same opcodes over the same
+operands), and the Metal byte-identity run is the next session's.
 
 | metric | definition | what it gates |
 |---|---|---|

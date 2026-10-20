@@ -25,6 +25,12 @@
 //                                      certificate (tool/certify_numerics.py)
 //                                      (2x smaller, f32 compute; exclusive with
 //                                      --quantize-base)
+//       [--remat auto|off|on]          recompute the cheap forward activations
+//                                      in the backward instead of keeping them
+//                                      across the forward (roadmap 2b; same
+//                                      bits, a longer train program); auto =
+//                                      only when the arena would exceed the
+//                                      memory gate's budget
 //       [--steps 1000]                 default optimizer-step count baked into the plan
 //       [--grad-accum 1]               micro-batches accumulated per optimizer step
 //                                      (activations scale with --data-batch, the
@@ -99,6 +105,7 @@ void PrintUsage() {
                "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
+               "  [--remat auto|off|on]\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -387,6 +394,14 @@ int main(int argc, char** argv) {
       return Fail("--attention-cache-budget-mib applies to --attention auto only");
     config.attention_cache_budget_bytes = mib << 20;
   }
+  // Rematerialization (roadmap 2b, F5 #133): the same bits either way, so
+  // this too is a memory decision alone — auto takes it on the bound arena.
+  if (auto v = args.TakeValue("--remat")) {
+    if (*v == "auto") config.remat = RematKind::kAuto;
+    else if (*v == "off") config.remat = RematKind::kOff;
+    else if (*v == "on") config.remat = RematKind::kOn;
+    else return Fail("unknown --remat '" + *v + "' (auto, off or on)");
+  }
   if (config.quantize_base && config.bf16_base)
     return Fail("--quantize-base and --bf16-base are mutually exclusive "
                 "(one storage precision per weight)");
@@ -559,6 +574,9 @@ int main(int argc, char** argv) {
                  "  \"persistent_bytes\": %" PRIu64 ",\n"
                  "  \"io_bytes\": %" PRIu64 ",\n"
                  "  \"transient_bytes\": %" PRIu64 ",\n"
+                 "  \"remat\": {\"policy\": \"%s\", \"applied\": %s, "
+                 "\"recomputed_values\": %" PRIu64 ", \"bytes_saved\": %" PRIu64
+                 "},\n"
                  "  \"rodata_bytes\": %" PRIu64 ",\n"
                  "  \"train_instructions\": %" PRIu64 ",\n"
                  "  \"eval_instructions\": %" PRIu64 ",\n"
@@ -586,9 +604,13 @@ int main(int argc, char** argv) {
                  host_arch.l2_bytes, host_arch.simd_width_f32,
                  compiled->arena_size,
                  compiled->persistent_size, compiled->io_size,
-                 compiled->arena_size - compiled->persistent_size -
-                     compiled->io_size,
-                 compiled->rodata_size,
+                 compiled->transient_size,
+                 compiled->remat_policy == RematKind::kAuto  ? "auto"
+                 : compiled->remat_policy == RematKind::kOn ? "on"
+                                                             : "off",
+                 compiled->remat_applied ? "true" : "false",
+                 compiled->remat_recomputed_values,
+                 compiled->remat_bytes_saved, compiled->rodata_size,
                  compiled->train_instruction_count,
                  compiled->eval_instruction_count,
                  compiled->merge_instruction_count,

@@ -723,6 +723,9 @@ TEST(UpdateCompiler, RegatesTheBudgetOnTheExactCompiledFootprint) {
   // bytes the runtime actually keeps resident — arena + plan blob.
   SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
   UpdateConfig config = BaseConfig(kBatch);
+  // The gate alone: under `auto` a budget one byte short would turn
+  // rematerialization on and shrink the arena into it (see the remat test).
+  config.remat = RematKind::kOff;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
                        UpdateCompiler(config).Compile(model));
   const uint64_t need = compiled.arena_size + compiled.plan.size();
@@ -875,6 +878,84 @@ TEST(UpdateCompiler, RefusesSchedulesThatWouldMisbehaveSilently) {
   ASSERT_OK_AND_ASSIGN(CompiledUpdate constant, compile([](UpdateConfig&) {}));
   EXPECT_EQ(HeaderOf(constant).min_lr_factor, 0.0f);
   EXPECT_EQ(HeaderOf(constant).warmup_steps, 0u);
+}
+
+TEST(UpdateCompiler, RematerializationShrinksTheArenaAndLeavesEvalAlone) {
+  // Roadmap 2b (F5, #133). The forward activations the backward reads stay
+  // resident across the whole forward; --remat on re-emits the cheap ones
+  // (the norm outputs, silu(gate), the SwiGLU product) right before their
+  // backward readers, so the binder frees the originals in the forward.
+  // The train program grows by exactly those recomputes, the eval program
+  // — the primal snapshot — is the same instruction sequence, and the
+  // persistent segment is untouched.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  UpdateConfig plain = BaseConfig(batch);
+  plain.remat = RematKind::kOff;
+  UpdateConfig remat = plain;
+  remat.remat = RematKind::kOn;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate off, UpdateCompiler(plain).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate on, UpdateCompiler(remat).Compile(model));
+
+  EXPECT_FALSE(off.remat_applied);
+  EXPECT_EQ(off.remat_recomputed_values, 0u);
+  EXPECT_EQ(off.remat_bytes_saved, 0u);
+  EXPECT_TRUE(on.remat_applied);
+  EXPECT_GT(on.remat_recomputed_values, 0u);
+  EXPECT_LT(on.arena_size, off.arena_size);
+  EXPECT_EQ(on.remat_bytes_saved, off.arena_size - on.arena_size);
+  EXPECT_EQ(on.persistent_size, off.persistent_size);
+  EXPECT_EQ(on.io_size, off.io_size);
+  EXPECT_LT(on.transient_size, off.transient_size);
+  EXPECT_EQ(on.persistent_size + on.io_size + on.transient_size,
+            on.arena_size);
+  // Every recompute is one more train instruction, none of them a GEMM.
+  const auto train_off = TrainProgramOf(off);
+  const auto train_on = TrainProgramOf(on);
+  EXPECT_GT(train_on.size(), train_off.size());
+  for (OpCode gemm : {OpCode::kGemmNN, OpCode::kGemmNT, OpCode::kGemmTN,
+                      OpCode::kGemmNNQ8, OpCode::kGemmNTQ8})
+    EXPECT_EQ(CountOpcode(train_on, gemm), CountOpcode(train_off, gemm));
+  // All three norms (the first one's input is the embedding gather, itself
+  // recomputed for free from storage), silu(gate) and the SwiGLU product;
+  // not the RoPE rotations (pre-rotation Q and K have no backward reader,
+  // so recomputing them would only swap which tensor stays live).
+  EXPECT_EQ(CountOpcode(train_on, OpCode::kRmsNormFwd),
+            2 * CountOpcode(train_off, OpCode::kRmsNormFwd));
+  EXPECT_EQ(CountOpcode(train_on, OpCode::kEmbedFwd),
+            2 * CountOpcode(train_off, OpCode::kEmbedFwd));
+  EXPECT_EQ(CountOpcode(train_on, OpCode::kRopeFwd),
+            CountOpcode(train_off, OpCode::kRopeFwd));
+  EXPECT_EQ(on.remat_recomputed_values, 8u);  // 3 x (y, rstd), silu, product
+  EXPECT_EQ(on.merge_instruction_count, off.merge_instruction_count);
+  // The eval program: the same opcodes, flags and immediates in the same
+  // order (its transient refs move with the rescan, so not the same bytes).
+  const auto eval_off = EvalProgramOf(off);
+  const auto eval_on = EvalProgramOf(on);
+  ASSERT_EQ(eval_on.size(), eval_off.size());
+  for (size_t i = 0; i < eval_on.size(); ++i) {
+    EXPECT_EQ(eval_on[i].opcode, eval_off[i].opcode);
+    EXPECT_EQ(eval_on[i].flags, eval_off[i].flags);
+    EXPECT_EQ(eval_on[i].imm, eval_off[i].imm);
+  }
+
+  // `auto` is the memory gate's decision: with the budget one byte short
+  // of the plain footprint it recomputes, and the plan is the forced one
+  // byte for byte; with room to spare it does not, and the plan is the
+  // plain one.
+  UpdateConfig automatic = plain;
+  automatic.remat = RematKind::kAuto;
+  automatic.memory_budget_bytes = off.arena_size + off.plan.size() - 1;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate squeezed,
+                       UpdateCompiler(automatic).Compile(model));
+  EXPECT_TRUE(squeezed.remat_applied);
+  EXPECT_TRUE(squeezed.plan == on.plan);
+  automatic.memory_budget_bytes = 2 * (off.arena_size + off.plan.size());
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate roomy,
+                       UpdateCompiler(automatic).Compile(model));
+  EXPECT_FALSE(roomy.remat_applied);
+  EXPECT_TRUE(roomy.plan == off.plan);
 }
 
 }  // namespace

@@ -56,6 +56,11 @@ class Operation {
 
     void setAttribute(std::string key, AttributeValue val);
     const AttributeValue* getAttribute(std::string_view key) const;
+    /// Every attribute, in key order — for a pass that re-emits an op as it
+    /// stands (rematerialization copies the whole set, whatever the mnemonic).
+    const std::map<std::string, AttributeValue, std::less<>>& attributes() const {
+        return attributes_;
+    }
     bool hasAttribute(std::string_view key) const { return getAttribute(key) != nullptr; }
 
     template <typename T>

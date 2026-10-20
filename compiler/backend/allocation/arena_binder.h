@@ -100,6 +100,16 @@ uint64_t LinearScanTransients(
     const std::unordered_set<const seeml::sir::Value*>& pinned,
     std::unordered_map<const seeml::sir::Value*, uint64_t>& refs_out);
 
+/// Re-runs the transient scan of a bound block whose stream changed after
+/// binding (rematerialization, roadmap 2b): every transient ref is dropped
+/// and assigned afresh; the persistent, IO and rodata refs — storage, which
+/// no pass moves — stay as they are, so no weight is laid out or scaled
+/// twice. Returns the new high-water mark, also written to `arena_size`.
+uint64_t RebindTransients(
+    seeml::sir::Block& train_block,
+    const std::unordered_set<const seeml::sir::Value*>& pinned,
+    ArenaBinding& binding);
+
 /// Binds the training block: persistent params, IO slots, the rodata layout
 /// (int8 for weights in `quant_scales`), then the transient scan.
 /// `bf16_weights`: frozen weights packed as bfloat16 rodata (half of f32,

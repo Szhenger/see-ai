@@ -31,6 +31,10 @@ enum class LrSchedule : uint32_t { kConstant = 0, kCosineWithWarmup = 1 };
 // Which attention family a plan compiles to (E11, #94): see
 // UpdateConfig::attention.
 enum class AttentionKind : uint8_t { kAuto = 0, kCached = 1, kTiled = 2 };
+// Whether a plan recomputes cheap forward activations in the backward
+// instead of keeping them across the forward (roadmap 2b, F5 #133): see
+// UpdateConfig::remat.
+enum class RematKind : uint8_t { kAuto = 0, kOff = 1, kOn = 2 };
 
 struct LoRASpec {
   int64_t rank = 8;
@@ -108,6 +112,19 @@ struct UpdateConfig {
   // way (the tiled kernels reproduce the cached kernels' expressions).
   AttentionKind attention = AttentionKind::kAuto;
   uint64_t attention_cache_budget_bytes = 256ull << 20;
+  // Rematerialization (roadmap 2b, F5 #133). The forward activations the
+  // backward reads stay resident across the whole forward; the transient
+  // segment they make up is about 98 % of a decoder's arena. kOn re-emits
+  // the cheap ones — the norm outputs, the SwiGLU hidden, every folded
+  // elementwise chain, never a GEMM or attention output — right before the
+  // backward instruction that reads them, with the same opcode over the
+  // same operands, so the originals are freed in the forward and the bits
+  // are identical to the non-remat plan's (the train program is longer by
+  // the recomputes; the eval program is untouched). kAuto turns it on only
+  // when the plain binding's arena plus the plan would exceed the budget
+  // the memory gate applies (memory_budget_bytes, or the host's memory);
+  // kOff never does. Reported in the compile report as `remat`.
+  RematKind remat = RematKind::kAuto;
   // The bitwise-safe kernel batch (E3, plan v12), each exposed for the same
   // reason: so a compilation with and without it can be compared
   // bit-for-bit. rope_table hoists the RoPE angles into one device-built

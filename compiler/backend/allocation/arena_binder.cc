@@ -199,6 +199,26 @@ void PackRodata(const RodataPack& pack, uint8_t* dst) {
   }
 }
 
+uint64_t RebindTransients(
+    sir::Block& train_block,
+    const std::unordered_set<const sir::Value*>& pinned,
+    ArenaBinding& binding) {
+  std::unordered_map<const sir::Value*, uint64_t> storage;
+  for (const auto& arg : train_block.arguments())
+    storage[arg.get()] = binding.refs.at(arg.get());
+  train_block.walk([&](sir::Operation* op) {
+    if (!op->isMemoryOp()) return;
+    for (const auto& r : op->results())
+      if (auto it = binding.refs.find(r.get()); it != binding.refs.end())
+        storage[r.get()] = it->second;
+  });
+  binding.refs = std::move(storage);
+  binding.arena_size =
+      LinearScanTransients(train_block, AlignUp(binding.io_end), binding.refs,
+                           pinned, binding.refs);
+  return binding.arena_size;
+}
+
 std::expected<ArenaBinding, std::string> BindArena(
     sir::Block& train_block, const GraphBuild& build,
     const std::unordered_set<const sir::Value*>& pinned,

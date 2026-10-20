@@ -1564,4 +1564,60 @@ TEST(UpdateSystem, ElementwiseChainFusionChangesNoTrainingBits) {
   seeml::update::SetParallelThreadCount(0);
 }
 
+TEST(UpdateSystem, RematerializationChangesNoBits) {
+  // Roadmap 2b (F5, #133): the remat plan recomputes the cheap forward
+  // activations in the backward with the same opcodes over the same
+  // operands, so it trains the same losses, the same validation loss and
+  // the same persistent segment as the plain plan, byte for byte — in a
+  // smaller arena. Both plans on the CPU, 20 steps, the int8 base (the
+  // shipped configuration) and the f32 one.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  for (int storage = 0; storage < 2; ++storage) {
+    std::vector<float> want_curve;
+    std::vector<uint8_t> want_state;
+    float want_val = 0.0f;
+    uint64_t plain_arena = 0;
+    for (int remat = 0; remat < 2; ++remat) {
+      UpdateConfig config = BaseConfig(batch);
+      config.optimizer.lr = 5e-3f;
+      config.optimizer.kind = OptimizerKind::kAdamW;
+      config.quantize_base = storage == 1;
+      config.remat = remat ? RematKind::kOn : RematKind::kOff;
+      ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                           UpdateCompiler(config).Compile(model));
+      const PlanHeader h = HeaderOf(compiled);
+      UpdateEngine engine;
+      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
+                                      compiled.plan.size()));
+      ASSERT_OK_AND_ASSIGN(Dataset data,
+                           seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
+      data.EnableShuffle(9);
+      TrainOptions options = Quiet();
+      options.record_loss_curve = true;
+      ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 20, options));
+      ASSERT_OK_AND_ASSIGN(float val, engine.Evaluate(data));
+      std::vector<uint8_t> state(engine.arena(),
+                                 engine.arena() + h.persistent_size);
+      if (!remat) {
+        EXPECT_FALSE(compiled.remat_applied);
+        want_curve = report.loss_curve;
+        want_state = state;
+        want_val = val;
+        plain_arena = compiled.arena_size;
+        continue;
+      }
+      EXPECT_TRUE(compiled.remat_applied);
+      EXPECT_GT(compiled.remat_recomputed_values, 0u);
+      EXPECT_LT(compiled.arena_size, plain_arena);
+      EXPECT_EQ(val, want_val);
+      ASSERT_EQ(report.loss_curve.size(), want_curve.size());
+      for (size_t i = 0; i < want_curve.size(); ++i)
+        EXPECT_EQ(report.loss_curve[i], want_curve[i]);
+      EXPECT_TRUE(state == want_state);
+    }
+  }
+}
+
 }  // namespace
