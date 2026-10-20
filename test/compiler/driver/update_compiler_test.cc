@@ -956,6 +956,13 @@ TEST(UpdateCompiler, RematerializationShrinksTheArenaAndLeavesEvalAlone) {
                        UpdateCompiler(automatic).Compile(model));
   EXPECT_FALSE(roomy.remat_applied);
   EXPECT_TRUE(roomy.plan == off.plan);
+  // With no budget configured, `auto` never consults the host's memory:
+  // the plan is the plain one, byte for byte, on every machine.
+  automatic.memory_budget_bytes = 0;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate unconfigured,
+                       UpdateCompiler(automatic).Compile(model));
+  EXPECT_FALSE(unconfigured.remat_applied);
+  EXPECT_TRUE(unconfigured.plan == off.plan);
 }
 
 }  // namespace

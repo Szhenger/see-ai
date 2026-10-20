@@ -105,7 +105,7 @@ void PrintUsage() {
                "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
-               "  [--remat auto|off|on]\n"
+               "  [--remat auto|off|on] [--memory-budget-mib N]\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -402,6 +402,16 @@ int main(int argc, char** argv) {
     else if (*v == "on") config.remat = RematKind::kOn;
     else return Fail("unknown --remat '" + *v + "' (auto, off or on)");
   }
+  // The memory gate's budget. Without it the gate uses the host's memory,
+  // which is fine for a refusal but not for a decision that changes the
+  // plan's bytes: --remat auto decides against this budget only.
+  if (auto v = args.TakeValue("--memory-budget-mib")) {
+    uint64_t mib = 0;
+    if (!ParseU64(*v, &mib) || mib == 0 || mib > (1ull << 40))
+      return Fail("--memory-budget-mib must be a positive whole number of "
+                  "MiB, got '" + *v + "'");
+    config.memory_budget_bytes = mib << 20;
+  }
   if (config.quantize_base && config.bf16_base)
     return Fail("--quantize-base and --bf16-base are mutually exclusive "
                 "(one storage precision per weight)");
@@ -433,9 +443,10 @@ int main(int argc, char** argv) {
     return Fail(*m + " requires a value");
   if (auto unknown = args.FirstUnknown())
     return Fail("unknown argument '" + *unknown + "' (see --help)");
-  // Without an embedded TU the generated build.sh has nothing to link the
-  // plan from; the packer is the step that supplies it, and it drives the
-  // build itself. Refuse here rather than let build.sh fail after emission.
+  // Without an embedded TU, build.sh would build the disk mode (#158)
+  // regardless of the plan's size; the packer owns that choice (embed
+  // below its limit, disk from it) and drives the build itself. Refuse
+  // here so a --no-embed package is always packed before it is built.
   if (no_embed && want_build)
     return Fail("--build needs the embedded plan TU that --no-embed skips; "
                 "run `python3 tool/pack_update.py <out> --build` instead (it "

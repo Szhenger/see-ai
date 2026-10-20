@@ -374,14 +374,24 @@ class UpdateEngine {
   [[maybe_unused]] size_t train_bwd_begin_ = 0;  // first instr after loss fwd
   [[maybe_unused]] size_t train_opt_begin_ = 0;  // first clip/optimizer instr
   std::vector<uint8_t> owned_plan_;       // LoadFromFile: a heap copy
-  // LoadFromFileMapped: the plan file's private mapping (#158), released
-  // with the engine or when another load supersedes it.
-  struct PlanMapping {
+  // An mmap'd file region owned by the engine: unmapped on Release, on
+  // destruction, or when a move-assignment supersedes it. Move-only, so
+  // the mapping can be handed over (`member = std::move(candidate)`)
+  // without a second owner ever unmapping it.
+  struct Mapping {
     const uint8_t* data = nullptr;
     size_t bytes = 0;
-    ~PlanMapping();
+    Mapping() = default;
+    Mapping(const Mapping&) = delete;
+    Mapping& operator=(const Mapping&) = delete;
+    Mapping(Mapping&& other) noexcept;
+    Mapping& operator=(Mapping&& other) noexcept;
+    ~Mapping();
     void Release();
-  } plan_map_;
+  };
+  // LoadFromFileMapped: the plan file's private mapping (#158), released
+  // with the engine or when another load supersedes it.
+  Mapping plan_map_;
   const uint8_t* plan_ = nullptr;  // borrowed, plan_map_.data, or owned
   size_t plan_size_ = 0;
 
@@ -405,12 +415,7 @@ class UpdateEngine {
   std::string backend_note_;
   // The bound source model (v17): a read-only mmap of the file, and the
   // byte extent the eval program's source refs need from it (0 = none).
-  struct SourceMapping {
-    const uint8_t* data = nullptr;
-    uint64_t bytes = 0;
-    ~SourceMapping();
-    void Release();
-  } source_;
+  Mapping source_;
   uint64_t source_required_ = 0;
   uint64_t step_ = 0;                     // 1-indexed AdamW timestep
   uint64_t horizon_ = 0;                  // run LR horizon; 0 = plan default

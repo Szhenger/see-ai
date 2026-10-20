@@ -98,7 +98,7 @@ frees exceed the operand bytes it would newly keep (an operand the
 backward reads anyway, or one whose own producer is free to recompute,
 costs nothing) — on the decoder that admits the RMSNorm outputs,
 `silu(gate)`, the SwiGLU product and the first norm's embedding input,
-and declines the RoPE outputs and the residual adds. `auto` fires when
+and declines the RoPE outputs and the residual adds. `auto` fires (against a configured `--memory-budget-mib`, never the compiling host's memory: the plan's bytes depend on its inputs alone) when
 the plain binding's arena plus the plan (bounded from above before
 lowering) would fail the memory gate; `on` forces it. The compile report
 states the three segments (`persistent_bytes` / `io_bytes` /

@@ -603,6 +603,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // report: bytes_saved is a measurement, not the pass's estimate.
   const uint64_t plain_arena = AlignUp(binding->arena_size);
   bool remat_on = config_.remat == RematKind::kOn;
+  std::string over_budget;  // auto: the gate's verdict, with its numbers
   if (config_.remat == RematKind::kAuto) {
     auto instructions_of = [](const auto& ops) {
       uint64_t n = 0;
@@ -622,9 +623,24 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
         2 * kSeeuRodataAlignment + AlignUp(binding->rodata_size) +
         AlignUp(binding->persistent_size) +
         merge->outputs.size() * sizeof(EmitEntry) + kSeeuRodataAlignment;
-    remat_on = !CheckPlanFitsLocally(plain_arena, plan_bound,
-                                     config_.memory_budget_bytes)
-                    .has_value();
+    // Against a CONFIGURED budget only: the plan's bytes, offsets and
+    // hash must depend on its inputs, never on the compiling host, and
+    // the gate's fallback is the host's memory. With no budget, auto is
+    // off and says so once; --remat on forces it, --memory-budget-mib N
+    // gives auto a budget the plan can be reproduced against.
+    if (config_.memory_budget_bytes == 0) {
+      seeml::diag::Note(generating::kDriver,
+                        "rematerialization (auto): no memory budget is "
+                        "configured, so the plan stays plain — the decision "
+                        "would otherwise follow the compiling host's memory; "
+                        "--remat on forces it, --memory-budget-mib N decides "
+                        "it against a budget");
+    } else if (auto fits = CheckPlanFitsLocally(plain_arena, plan_bound,
+                                                config_.memory_budget_bytes);
+               !fits) {
+      remat_on = true;
+      over_budget = std::move(fits.error());
+    }
   }
   Rematerialization remat;
   if (remat_on) {
@@ -644,8 +660,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     seeml::diag::Note(
         generating::kDriver,
         std::string("rematerialization ") +
-            (config_.remat == RematKind::kAuto ? "(auto: over the budget)"
-                                               : "(forced)") +
+            (config_.remat == RematKind::kAuto
+                 ? "(auto: the plain binding fails the configured gate — " +
+                       over_budget + ")"
+                 : std::string("(forced)")) +
             ": " + std::to_string(remat.recomputed_values) +
             " forward value(s) of " + std::to_string(remat.recomputed_ops) +
             " op(s) recomputed in the backward, " +
