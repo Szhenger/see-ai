@@ -116,6 +116,7 @@ enum Pipe : int {
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
   kPXentFwd, kPXentFinish, kPXentBwd,
   kPRopeTable, kPEmbedFwd,
+  kPAttnFwdTiled, kPAttnDQTiled, kPAttnDKTiled, kPAttnDVTiled,
   kPipeCount
 };
 const char* const kPipeNames[kPipeCount] = {
@@ -148,7 +149,9 @@ const char* const kPipeNames[kPipeCount] = {
     "k_adamw_clip", "k_rope_fwd",
     "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
     "k_xent_fwd", "k_xent_finish", "k_xent_bwd",
-    "k_rope_table", "k_embed_fwd"};
+    "k_rope_table", "k_embed_fwd",
+    "k_attn_fwd_tiled", "k_attn_dq_tiled", "k_attn_dk_tiled",
+    "k_attn_dv_tiled"};
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -442,6 +445,19 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
       return ins.out[0] <= kMax;
     case up::OpCode::kRopeTable:
       return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
+    // The tiled family: one simdgroup per row, no S x S matrix anywhere.
+    case up::OpCode::kAttnFwdTiled: {
+      const uint64_t B = hi(ins.out[1]), S = lo(ins.out[1]);
+      const uint64_t H = hi(ins.out[2]), d = lo(ins.out[2]);
+      return B * S * H * d <= kMax && B * H * S * 32 <= kMax;
+    }
+    case up::OpCode::kAttnDQTiled:
+    case up::OpCode::kAttnDKTiled:
+    case up::OpCode::kAttnDVTiled: {
+      const auto geo = up::UnpackAttnGeometry(ins.out[2]);
+      return geo.B * geo.S * geo.H * geo.d <= kMax &&
+             geo.B * geo.H * geo.S * 32 <= kMax;
+    }
     case up::OpCode::kEmbedFwd:
       return ins.out[0] * lo(ins.out[1]) <= kMax && hi(ins.out[1]) <= kMax;
     default:
@@ -464,13 +480,8 @@ bool IsGpuOpcode(up::OpCode op) {
     // CPU-resident instruction of a SmolLM-shaped train program, written
     // into a transient the GPU had just used, so the backend flushed and
     // waited there every step; the gather, instruction 0, went with it.
-    // The tiled attention family (v15) runs on the CPU until #63 ports it:
-    // it exists for sequence lengths whose probability cache would not fit
-    // the device at all, and its CPU form is the bit-for-bit reference.
-    case up::OpCode::kAttnFwdTiled:
-    case up::OpCode::kAttnDQTiled:
-    case up::OpCode::kAttnDKTiled:
-    case up::OpCode::kAttnDVTiled:
+    // The tiled attention family (v15) runs on the GPU since F3 (#131);
+    // the CPU form stays the reference.
       return false;
     default:
       return true;
@@ -908,6 +919,16 @@ bool MetalBackend::EncodeRelaxedGemm(up::OpCode op,
   return true;
 }
 
+// The tiled attention kernels read a head's rows as float4 (flag 1) when
+// every operand's byte offset is 16-byte aligned and the head width and
+// the row stride keep every row so.
+static uint32_t TiledRowsVectorizable(const KArgs& a) {
+  if (a.D % 4 != 0 || (a.H * a.D) % 4 != 0) return 0;
+  for (int i = 0; i < 6; ++i)
+    if (a.off[i] % 16 != 0) return 0;
+  return 1u;
+}
+
 std::expected<void, std::string> MetalBackend::Encode(
     const up::UpdateInstruction& ins, const StepParams& params) {
   KArgs a;
@@ -1159,6 +1180,31 @@ std::expected<void, std::string> MetalBackend::Encode(
       }
       Dispatch(op == up::OpCode::kRopeFwd ? kPRopeFwd : kPRopeBwd, a,
                a.B * a.S * a.H, kElementwiseGroup);
+      return {};
+    }
+    case up::OpCode::kAttnFwdTiled: {
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
+      ref(4, ins.out[0]);
+      a.B = hi(ins.out[1]); a.S = lo(ins.out[1]);
+      a.H = hi(ins.out[2]); a.D = lo(ins.out[2]);
+      a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
+      a.flags = TiledRowsVectorizable(a);
+      Dispatch(kPAttnFwdTiled, a, a.B * a.H * a.S * 32u, kElementwiseGroup);
+      return {};
+    }
+    case up::OpCode::kAttnDQTiled:
+    case up::OpCode::kAttnDKTiled:
+    case up::OpCode::kAttnDVTiled: {
+      const auto geo = up::UnpackAttnGeometry(ins.out[2]);
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
+      ref(4, ins.out[0]); ref(5, ins.out[1]);
+      a.B = u32(geo.B); a.S = u32(geo.S); a.H = u32(geo.H); a.D = u32(geo.d);
+      a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
+      a.flags = TiledRowsVectorizable(a);
+      Dispatch(op == up::OpCode::kAttnDQTiled   ? kPAttnDQTiled
+               : op == up::OpCode::kAttnDKTiled ? kPAttnDKTiled
+                                                : kPAttnDVTiled,
+               a, a.B * a.H * a.S * 32u, kElementwiseGroup);
       return {};
     }
     case up::OpCode::kRopeTable: {

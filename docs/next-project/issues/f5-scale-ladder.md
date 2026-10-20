@@ -59,6 +59,30 @@ The review's N29 — the early memory gate's "lower bound" over-estimates and
 rejects compiles that fit — is the accountant's to fix (S1); this ladder
 reads the estimate-vs-exact ratio at each rung from that fix.
 
+## Status 2026-10-20
+
+Step 1 measured on both rungs, with torch parity (`docs/benchmarks.md`,
+"The scale ladder's first two rungs"): SmolLM2-360M compiles in 1.45 s
+to a 3.19 GB arena (225 adapters) and trains at 971 tok/s on Metal
+(0.86× `torch.compile` MPS f32) and 129 on the CPU; Qwen2.5-0.5B in 2.59
+s to 4.23 GB (169 adapters), 726 tok/s on Metal (0.92×), 95 on the CPU;
+both start from the torch row's validation loss to five decimals and end
+within 0.013 nats of it. Peak RSS is 1.8× the arena at both rungs — the
+mapped f32 source file the eval program scores, the bytes the frameworks
+hold as weights. The executable order's first item landed: the compile
+report states the arena's persistent / io / transient split
+(`UpdateCompiler` exposes `io_size`), and at these rungs the transient
+segment is 98 % of the arena — the number step 2 works against. The
+split also exposed a binder flaw: a pinned value (the loss slot) placed
+first-fit at its birth could split the hole a dead 100 MB buffer left,
+and did on the F7 step-1 layout (+100 MB at 135M); pinned values are
+now bound first, below the scan — no bit changes, and the arenas above
+are 80 MB (360M), 288 MB (0.5B) and 390 MB (135M at S=2048) smaller
+than before it. Left: adjoint liveness beyond that, rematerialization
+(step 2), 8-bit optimizer states (step 3), the 1.5B rung (step 4, which also
+needs #158's plan loading above the 1.8 GB link limit), and the
+estimate-vs-exact ratio once S1 fixes N29.
+
 ## Acceptance
 
 - A field-report table per model: arena, peak RSS / arena, tok/s,

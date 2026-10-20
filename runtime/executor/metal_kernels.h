@@ -1187,6 +1187,227 @@ kernel void k_softmax_rows_bwd(KSIG, uint g [[thread_position_in_grid]],
   dot += simd_shuffle_xor(dot, 1u);
   for (uint c = lane; c < cols; c += 32u) dsr[c] = pr[c] * (dpr[c] - dot);
 }
+// --- Tiled attention (plan v15; on the GPU since F3 #131) -------------------
+// One simdgroup per unit — a query row (b, h, i) for the forward and dQ, a
+// key row (b, h, j) for dK and dV: the CPU kernels' units, each writing
+// only what it owns. No S x S matrix and no threadgroup memory either: a
+// unit's probabilities are recomputed from Q, K and the stats row on
+// every pass that needs them (the forward's three, dQ's two) rather than
+// kept, so every simdgroup is resident at once at any S. The lanes stride
+// the OTHER row index (j for a query row, i for a key row), each lane
+// accumulating its share of the unit's d outputs in registers, and the
+// shares are combined by the xor butterfly (every lane the same sum, in
+// the same order), 64 columns at a time, every 64-wide register loop
+// fully unrolled (left rolled, the accumulator array is indexed
+// dynamically and spills to private memory, and the kernel runs at memory
+// speed instead of register speed). The expressions are the CPU
+// kernels': s = dot / sqrt(d), p = exp(s - m) * (1 / l), ds = p * (dp -
+// delta), g = ds / sqrt(d); the summation orders are this backend's own
+// (lane partials in lane order, then the tree), fixed, so a dispatch is
+// bitwise run-to-run and agrees with the CPU — double-accumulated dots
+// and sums, serial j — at tolerance like every kernel here.
+static inline float simd_xor_sum(float v) {
+  v += simd_shuffle_xor(v, 16u);
+  v += simd_shuffle_xor(v, 8u);
+  v += simd_shuffle_xor(v, 4u);
+  v += simd_shuffle_xor(v, 2u);
+  v += simd_shuffle_xor(v, 1u);
+  return v;
+}
+// The row dot product, the elements in order; with flag 1 (the host saw
+// every row 16-byte aligned and d a multiple of 4) the rows are read as
+// float4 — the same products summed in the same order, a quarter of the
+// memory transactions.
+static inline float row_dot(device const float* a, device const float* b,
+                            uint d, bool vec) {
+  float dot = 0.0f;
+  if (vec) {
+    for (uint c = 0; c < d; c += 4u) {
+      const float4 x = *(device const float4*)(a + c);
+      const float4 y = *(device const float4*)(b + c);
+      dot += x[0] * y[0];
+      dot += x[1] * y[1];
+      dot += x[2] * y[2];
+      dot += x[3] * y[3];
+    }
+  } else {
+    for (uint c = 0; c < d; ++c) dot += a[c] * b[c];
+  }
+  return dot;
+}
+// acc[t] += s * row[t] over a 64-column block, as vectors when aligned.
+static inline void row_axpy64(thread float* acc, float s, device const float* row,
+                              uint c0, uint d, bool vec) {
+  if (vec && c0 + 64u <= d) {
+#pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; t += 4u) {
+      const float4 r = *(device const float4*)(row + t);
+      acc[t] += s * r[0];
+      acc[t + 1u] += s * r[1];
+      acc[t + 2u] += s * r[2];
+      acc[t + 3u] += s * r[3];
+    }
+    return;
+  }
+#pragma clang loop unroll(full)
+  for (uint t = 0; t < 64u; ++t)
+    if (c0 + t < d) acc[t] += s * row[t];
+}
+// p.B, p.S, p.H, p.D = d; p.f[0] = 1 / sqrt(d). Slots: 0 q, 1 k, 2 v,
+// 3 o (forward) / dO (backward), 4 stats [B*H*S, 4], 5 the backward's
+// result. The grid is one simdgroup per unit.
+kernel void k_attn_fwd_tiled(KSIG, uint g [[thread_position_in_grid]],
+                             uint lane [[thread_index_in_simdgroup]]) {
+  const uint B = p.B, S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint u = g >> 5;
+  if (u >= B * H * S) return;
+  const uint b = u / (H * S), rem = u % (H * S), h = rem / S, i = rem % S;
+  device const float* q = RF(0) + (b * S + i) * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  device float* o = WF(3) + (b * S + i) * D + h * d;
+  device float* st = WF(4) + u * 4u;
+  const float inv_sqrt_d = p.f[0];
+  const bool vec = (p.flags & 1u) != 0u;
+  float lmax = -INFINITY;
+  for (uint j = lane; j <= i; j += 32u)
+    lmax = max(lmax, row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d);
+  const float m = simd_max(lmax);
+  float lsum = 0.0f;
+  for (uint j = lane; j <= i; j += 32u)
+    lsum += exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m);
+  const float inv = 1.0f / simd_xor_sum(lsum);
+  for (uint c0 = 0; c0 < d; c0 += 64u) {
+    float acc[64];
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) acc[t] = 0.0f;
+    for (uint j = lane; j <= i; j += 32u) {
+      const float pj = exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m) * inv;
+      device const float* vj = vbase + j * D + c0;
+      row_axpy64(acc, pj, vj, c0, d, vec);
+    }
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) {
+      const float v = simd_xor_sum(acc[t]);
+      if (lane == 0u && c0 + t < d) o[c0 + t] = v;
+    }
+  }
+  if (lane == 0u) {
+    st[0] = m;
+    st[1] = inv;
+    st[2] = 0.0f;
+    st[3] = 0.0f;
+  }
+}
+kernel void k_attn_dq_tiled(KSIG, uint g [[thread_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+  const uint B = p.B, S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint u = g >> 5;
+  if (u >= B * H * S) return;
+  const uint b = u / (H * S), rem = u % (H * S), h = rem / S, i = rem % S;
+  device const float* q = RF(0) + (b * S + i) * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  device const float* dout = RF(3) + (b * S + i) * D + h * d;
+  device float* st = WF(4) + u * 4u;
+  device float* dq = WF(5) + (b * S + i) * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  const bool vec = (p.flags & 1u) != 0u;
+  const float m = st[0], inv = st[1];
+  float ldot = 0.0f;
+  for (uint j = lane; j <= i; j += 32u) {
+    const float pj = exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m) * inv;
+    const float dp = row_dot(dout, vbase + j * D, d, vec);
+    ldot += dp * pj;
+  }
+  const float delta = simd_xor_sum(ldot);
+  for (uint c0 = 0; c0 < d; c0 += 64u) {
+    float acc[64];
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) acc[t] = 0.0f;
+    for (uint j = lane; j <= i; j += 32u) {
+      const float pj = exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m) * inv;
+      const float dp = row_dot(dout, vbase + j * D, d, vec);
+      const float ds = pj * (dp - delta);
+      const float gg = ds * inv_sqrt_d;
+      device const float* kj = kbase + j * D + c0;
+      row_axpy64(acc, gg, kj, c0, d, vec);
+    }
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) {
+      const float v = simd_xor_sum(acc[t]);
+      if (lane == 0u && c0 + t < d) dq[c0 + t] = v;
+    }
+  }
+  if (lane == 0u) st[2] = delta;
+}
+// dK and dV: a key row j, the lanes striding the query rows i >= j.
+kernel void k_attn_dk_tiled(KSIG, uint g [[thread_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+  const uint B = p.B, S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint u = g >> 5;
+  if (u >= B * H * S) return;
+  const uint b = u / (H * S), rem = u % (H * S), h = rem / S, j = rem % S;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kj = RF(1) + (b * S + j) * D + h * d;
+  device const float* vj = RF(2) + (b * S + j) * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device const float* stats = RF(4) + (b * H + h) * S * 4u;
+  device float* dk = WF(5) + (b * S + j) * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  const bool vec = (p.flags & 1u) != 0u;
+  for (uint c0 = 0; c0 < d; c0 += 64u) {
+    float acc[64];
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) acc[t] = 0.0f;
+    for (uint i = j + lane; i < S; i += 32u) {
+      device const float* qi = qbase + i * D;
+      device const float* doi = dobase + i * D;
+      device const float* st = stats + i * 4u;
+      const float pij = exp(row_dot(qi, kj, d, vec) * inv_sqrt_d - st[0]) * st[1];
+      const float ds = pij * (row_dot(doi, vj, d, vec) - st[2]);
+      const float gg = ds * inv_sqrt_d;
+      row_axpy64(acc, gg, qi + c0, c0, d, vec);
+    }
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) {
+      const float v = simd_xor_sum(acc[t]);
+      if (lane == 0u && c0 + t < d) dk[c0 + t] = v;
+    }
+  }
+}
+kernel void k_attn_dv_tiled(KSIG, uint g [[thread_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+  const uint B = p.B, S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint u = g >> 5;
+  if (u >= B * H * S) return;
+  const uint b = u / (H * S), rem = u % (H * S), h = rem / S, j = rem % S;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kj = RF(1) + (b * S + j) * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device const float* stats = RF(4) + (b * H + h) * S * 4u;
+  device float* dv = WF(5) + (b * S + j) * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  const bool vec = (p.flags & 1u) != 0u;
+  for (uint c0 = 0; c0 < d; c0 += 64u) {
+    float acc[64];
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) acc[t] = 0.0f;
+    for (uint i = j + lane; i < S; i += 32u) {
+      device const float* qi = qbase + i * D;
+      device const float* doi = dobase + i * D;
+      device const float* st = stats + i * 4u;
+      const float pij = exp(row_dot(qi, kj, d, vec) * inv_sqrt_d - st[0]) * st[1];
+      row_axpy64(acc, pij, doi + c0, c0, d, vec);
+    }
+    #pragma clang loop unroll(full)
+    for (uint t = 0; t < 64u; ++t) {
+      const float v = simd_xor_sum(acc[t]);
+      if (lane == 0u && c0 + t < d) dv[c0 + t] = v;
+    }
+  }
+}
+
 // --- Softmax cross-entropy (opcodes 11 / 12; F8 #139) ----------------------
 // The loss ran on the CPU until F8, draining the GPU every pass. One
 // simdgroup per row over C columns (49,152 at an LM head), max and sum by

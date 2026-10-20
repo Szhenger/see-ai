@@ -81,6 +81,12 @@ struct CompiledUpdate {
   std::vector<AdapterDebugInfo> adapters;
   uint64_t arena_size = 0;
   uint64_t persistent_size = 0;
+  // The arena's three segments (F5 #133): [persistent | io | transient].
+  // io_size is the staged batch, labels and the loss slot; the transient
+  // segment is arena_size - persistent_size - io_size — activations,
+  // adjoints and the merge program's deltas, the part that scales with
+  // the batch and the model, the part rematerialization would shrink.
+  uint64_t io_size = 0;
   uint64_t train_instruction_count = 0;
   uint64_t merge_instruction_count = 0;
   uint64_t eval_instruction_count = 0;

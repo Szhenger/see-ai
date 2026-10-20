@@ -77,6 +77,28 @@ TEST(ArenaBinder, PinnedValuesAreNeverReclaimed) {
   EXPECT_EQ(high, 3u * 4096u);
 }
 
+TEST(ArenaBinder, PinnedValuesAreBoundBelowTheTransientsAndSplitNoHole) {
+  // F5 (#133): a tiny pinned value born just after a big transient died
+  // used to be placed first-fit into that transient's hole, so the next
+  // big value could not reuse it. Pinned values are bound first, below
+  // the scan, and the hole stays whole.
+  sir::Block block;
+  sir::Operation* o1 = block.appendOp("sc_high.relu");
+  sir::Value* a = o1->addResult("a", sir::DataType::F32, sir::Shape{1024});
+  sir::Operation* o2 = block.appendOp("sc_high.relu");
+  o2->addOperand(a);
+  sir::Value* p = o2->addResult("p", sir::DataType::F32, sir::Shape{4});
+  sir::Operation* o3 = block.appendOp("sc_high.relu");
+  o3->addOperand(p);
+  sir::Value* c = o3->addResult("c", sir::DataType::F32, sir::Shape{1024});
+  std::unordered_map<const sir::Value*, uint64_t> bound, refs;
+  std::unordered_set<const sir::Value*> pinned{p};
+  const uint64_t high = LinearScanTransients(block, /*base=*/0, bound, pinned, refs);
+  EXPECT_EQ(refs.at(p), MakeArenaRef(0));          // first, at the base
+  EXPECT_EQ(refs.at(c), refs.at(a));               // the hole is whole
+  EXPECT_EQ(high, AlignUp(16) + 4096u);            // one slot above the pinned region
+}
+
 TEST(ArenaBinder, AlreadyBoundValuesAreSkipped) {
   Chain chain;
   std::unordered_map<const sir::Value*, uint64_t> bound{

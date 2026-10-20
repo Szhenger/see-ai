@@ -977,6 +977,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
 
   result.arena_size = header.arena_size;
   result.persistent_size = header.persistent_size;
+  result.io_size = binding->io_end - binding->persistent_size;
   result.train_instruction_count = header.train_instr_count;
   result.step_instruction_count = step_instrs.size();
   result.grad_accum_steps = recorded_accum;

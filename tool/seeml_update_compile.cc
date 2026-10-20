@@ -537,6 +537,8 @@ int main(int argc, char** argv) {
                  ", \"l2_bytes\": %" PRIu64 ", \"simd_width_f32\": %zu},\n"
                  "  \"arena_bytes\": %" PRIu64 ",\n"
                  "  \"persistent_bytes\": %" PRIu64 ",\n"
+                 "  \"io_bytes\": %" PRIu64 ",\n"
+                 "  \"transient_bytes\": %" PRIu64 ",\n"
                  "  \"rodata_bytes\": %" PRIu64 ",\n"
                  "  \"train_instructions\": %" PRIu64 ",\n"
                  "  \"eval_instructions\": %" PRIu64 ",\n"
@@ -563,7 +565,10 @@ int main(int argc, char** argv) {
                  host_arch.physical_cores, host_arch.l1d_bytes,
                  host_arch.l2_bytes, host_arch.simd_width_f32,
                  compiled->arena_size,
-                 compiled->persistent_size, compiled->rodata_size,
+                 compiled->persistent_size, compiled->io_size,
+                 compiled->arena_size - compiled->persistent_size -
+                     compiled->io_size,
+                 compiled->rodata_size,
                  compiled->train_instruction_count,
                  compiled->eval_instruction_count,
                  compiled->merge_instruction_count,

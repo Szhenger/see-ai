@@ -53,12 +53,28 @@ uint64_t LinearScanTransients(
     ++tick;
   });
 
+  // Pinned values (the loss slot, the parameter gradients, the merge
+  // program's deltas) live from their birth to the end of the program, so
+  // they are bound FIRST, back to back from `base`, and the scan below
+  // starts above them. Scanned in program order with everything else, a
+  // pinned value is placed first-fit at its birth — and a 64-byte loss
+  // slot born right after a 100 MB logits buffer died landed at that
+  // buffer's offset, splitting the hole so the probabilities buffer the
+  // next instruction writes could not take it: 100 MB of arena on
+  // SmolLM-135M for one slot that never moves (F5 #133). A value's
+  // offset is where it lives, not what it holds, so this changes no bit.
   std::vector<Interval> intervals;
   intervals.reserve(order.size());
-  for (const sir::Value* v : order)
-    intervals.push_back({v, birth[v],
-                         pinned.contains(v) ? SIZE_MAX : death[v],
-                         ValueBytes(v)});
+  uint64_t pinned_end = base;
+  for (const sir::Value* v : order) {
+    if (pinned.contains(v)) {
+      refs_out[v] = MakeArenaRef(pinned_end);
+      pinned_end += ValueBytes(v);
+      continue;
+    }
+    intervals.push_back({v, birth[v], death[v], ValueBytes(v)});
+  }
+  base = AlignUp(pinned_end);
   // stable_sort, not sort: same-tick births (a LayerNorm's result + mean +
   // rstd, say) tie on start, and an unspecified equal-key order would let
   // first-fit offsets — and with them the plan bytes and plan_hash — differ
