@@ -298,6 +298,13 @@ This job performs the entire documented user journey, for real:
    trace on the device path), and the stub-built binary commits the
    *same bytes* as the decimal-built one — the two embeddings are one
    plan, proven at the artifact level.
+7. Pack the same plan a third time in the disk mode (`pack_update.py
+   --no-embed`, #158): the package links with no plan TU at all, the
+   binary finds `update_plan.seeu` beside itself (not in the working
+   directory), fails closed — exit 1, the mode named — when the file is
+   missing or swapped, honours `--plan`, and commits the *same bytes* a
+   third time. This is the form for plans the macOS arm64 linker and
+   loader cannot carry embedded.
 
 One design decision deserves a highlight. The demo's regression gate
 might (deterministically) decide the training didn't improve and refuse

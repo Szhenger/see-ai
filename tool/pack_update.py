@@ -3,8 +3,9 @@
 
 Embeds a compiled update plan into an emitted package as an `.incbin`
 assembly stub — `update_plan_embedded.S` — in place of the compiler's decimal
-byte-array C++ translation unit, and optionally drives the package's own
-`build.sh`.
+byte-array C++ translation unit, or — above the embed limit (#158) — leaves
+the plan beside the binary for the generated driver to map at start-up; and
+optionally drives the package's own `build.sh`.
 
     seeml-update-compile --source m.smf --out pkg/ ... --no-embed
     python3 tool/pack_update.py pkg/ --build
@@ -15,6 +16,17 @@ of C++ that the host compiler must then parse at -O2 — 16.5 minutes and a
 bytes of assembly that tells the assembler to splice the `.seeu` file in
 verbatim: the host compiler never parses weight bytes again, the plan lands
 on disk exactly once, and embedding takes well under a second at any size.
+
+Two package modes (#158). An embedded plan is the binary's size, and on
+macOS arm64 that breaks near 1.8 GB: the default linker segfaults on a
+1.85 GB plan, and a 2.72 GB image linked with -ld_classic runs past the
+address where dyld maps the shared cache, so it cannot be loaded at all
+(-image_base cannot help: arm64 executables are PIE). So by default a plan
+of EMBED_LIMIT bytes or more is not embedded: no stub is written, build.sh
+compiles a two-line TU with an empty plan, and the binary maps
+`update_plan.seeu` beside itself (or `--plan FILE`) at start-up — the same
+page-aligned, writable bytes the stub provides, validated in full (version
+gate, seal, source-model hash). `--embed` / `--no-embed` force either mode.
 
 The emitted package is unchanged in kind: still dependency-free C++ that
 builds anywhere the generated build.sh already ran — the stub needs only
@@ -64,17 +76,27 @@ PLAN_MAGIC = formats.SEEU_MAGIC.to_bytes(4, "little")
 # of padding per package. Every 4 KiB host is aligned a fortiori.
 DEFAULT_PAGE_ALIGN = 16384
 
-# The two compile lines the compiler's build.sh template can carry for the
-# embedded TU (BuildScript in compiler/backend/packaging/native_emitter.cc;
-# test/tool/pack_update_test.py asserts both appear there verbatim). A
+# The three compile lines the compiler's build.sh template can carry for the
+# plan TU (BuildScript in compiler/backend/packaging/native_emitter.cc;
+# test/tool/pack_update_test.py asserts all three appear there verbatim). A
 # script that lacks the stub line — one a pre-P1 compiler emitted, whose
 # only line is the decimal one — gets that one line rewritten, so the packer
-# upgrades any unmodified package ever emitted, not only fresh ones.
+# upgrades any unmodified package ever emitted, not only fresh ones. The
+# disk line (#158) is the else-branch's: a script without it (pre-#158) can
+# build only an embedded plan, and the disk mode refuses it.
 DECIMAL_COMPILE_LINE = (
     "$CXX $FLAGS -c update_plan_embedded.cc -o update_plan_embedded.o\n")
 STUB_COMPILE_LINE = "$CXX -c update_plan_embedded.S -o update_plan_embedded.o\n"
+DISK_COMPILE_LINE = "$CXX $FLAGS -c update_plan_none.cc -o update_plan_embedded.o\n"
 
-REPORT_SCHEMA = 1
+# The plan size from which the packer leaves the plan beside the binary
+# instead of embedding it (#158). Measured on macOS arm64 (2026-09-28): a
+# 1.15 GB embedded plan links and runs; 1.85 GB segfaults the default
+# linker; 2.72 GB links with -ld_classic but dyld cannot load the image.
+# 1 GiB keeps a margin under the first failure.
+EMBED_LIMIT = 1 << 30
+
+REPORT_SCHEMA = 2
 
 
 class PackError(Exception):
@@ -88,6 +110,17 @@ class Options:
     cxx: Optional[str]
     page_align: int
     report: Optional[str]
+    # "auto" (embed below EMBED_LIMIT, disk from it), "embed" or "disk".
+    mode: str = "auto"
+
+
+def choose_mode(mode: str, plan_bytes: int) -> str:
+    """The package mode for a plan of `plan_bytes`: the forced one, or by
+    size — the embedded image breaks at the linker and the loader well
+    before twice EMBED_LIMIT (#158)."""
+    if mode != "auto":
+        return mode
+    return "disk" if plan_bytes >= EMBED_LIMIT else "embed"
 
 
 def render_stub(page_align: int) -> str:
@@ -225,6 +258,18 @@ def adapt_build_script(text: str) -> Optional[str]:
     return text.replace(DECIMAL_COMPILE_LINE, STUB_COMPILE_LINE)
 
 
+def check_disk_capable(text: str) -> None:
+    """The disk mode needs a build.sh whose else-branch compiles the empty
+    plan TU (#158). A script without that line — from a compiler before
+    the mode existed — would stop at "no embedded-plan TU here", so the
+    packer refuses up front rather than build nothing."""
+    if DISK_COMPILE_LINE not in text:
+        raise PackError(
+            f"{BUILD_SCRIPT} cannot build without an embedded plan (its "
+            f"emitter predates the disk mode, #158); re-emit the package "
+            f"with a current seeml-update-compile, or pass --embed")
+
+
 def run_build(package_dir: str, cxx: Optional[str]) -> float:
     """Run the package's own build.sh from inside the package; return the
     wall seconds it took. Output streams through unchanged."""
@@ -252,13 +297,27 @@ def parse_args(argv: Sequence[str]) -> Options:
         prog="pack_update.py",
         allow_abbrev=False,
         description="Embed an emitted package's update plan as an .incbin "
-                    "assembly stub (replacing the decimal C++ TU) and "
-                    "optionally build the package.")
+                    "assembly stub (replacing the decimal C++ TU) — or, "
+                    f"from {EMBED_LIMIT} bytes, leave it beside the binary "
+                    "for the driver to map at start-up — and optionally "
+                    "build the package.")
     parser.add_argument("package_dir",
                         help="directory seeml-update-compile emitted "
                              "(contains update_plan.seeu and build.sh)")
     parser.add_argument("--build", action="store_true",
-                        help="run the package's build.sh after embedding")
+                        help="run the package's build.sh after packaging")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--embed", dest="mode", action="store_const",
+                      const="embed",
+                      help="embed the plan (the .incbin stub) at any size; "
+                           "above the limit the image may fail to link or "
+                           "load on macOS arm64 (#158)")
+    mode.add_argument("--no-embed", dest="mode", action="store_const",
+                      const="disk",
+                      help="leave the plan on disk at any size: no stub, "
+                           "model_update maps update_plan.seeu beside "
+                           "itself (or --plan FILE) at start-up")
+    parser.set_defaults(mode="auto")
     parser.add_argument("--cxx", metavar="COMPILER", default=None,
                         help="C++ driver for build.sh (sets CXX; default: "
                              "the environment's CXX, else c++)")
@@ -279,7 +338,8 @@ def parse_args(argv: Sequence[str]) -> Options:
     if not os.path.isdir(args.package_dir):
         parser.error(f"package_dir '{args.package_dir}' is not a directory")
     return Options(package_dir=args.package_dir, build=args.build,
-                   cxx=args.cxx, page_align=align, report=args.report)
+                   cxx=args.cxx, page_align=align, report=args.report,
+                   mode=args.mode)
 
 
 def check_certificate(package_dir: str, plan_path: str) -> Optional[dict]:
@@ -310,7 +370,8 @@ def check_certificate(package_dir: str, plan_path: str) -> Optional[dict]:
 
 
 def pack(opts: Options) -> dict:
-    """Embed, adapt build.sh if needed, drop the decimal TU, maybe build.
+    """Choose the mode, embed (adapting build.sh if needed) or leave the
+    plan on disk, drop whichever plan TUs the mode supersedes, maybe build.
     Returns the report dictionary."""
     pkg = opts.package_dir
     plan_path = os.path.join(pkg, PLAN_FILE)
@@ -337,35 +398,58 @@ def pack(opts: Options) -> dict:
             script = f.read()
     except OSError as e:
         raise PackError(f"cannot read '{script_path}': {e.strerror}") from e
-    adapted = adapt_build_script(script)
 
-    stub = render_stub(opts.page_align)
-    try:
-        write_atomic(stub_path, stub.encode("utf-8"))
-        if adapted is not None:
-            write_atomic(script_path, adapted.encode("utf-8"),
-                         executable=True)
-    except OSError as e:
-        raise PackError(f"cannot write into '{pkg}': {e.strerror}") from e
-
-    # The stub supersedes the decimal TU; a package carries exactly one
-    # embedded TU, so build.sh's choice is never ambiguous.
-    decimal_removed = False
-    if os.path.exists(decimal_path):
+    mode = choose_mode(opts.mode, plan_bytes)
+    adapted: Optional[str] = None
+    if mode == "embed":
+        adapted = adapt_build_script(script)
+        stub = render_stub(opts.page_align)
         try:
-            os.unlink(decimal_path)
+            write_atomic(stub_path, stub.encode("utf-8"))
+            if adapted is not None:
+                write_atomic(script_path, adapted.encode("utf-8"),
+                             executable=True)
         except OSError as e:
-            raise PackError(
-                f"cannot remove '{decimal_path}': {e.strerror}") from e
-        decimal_removed = True
+            raise PackError(f"cannot write into '{pkg}': {e.strerror}") from e
+    else:
+        check_disk_capable(script)
 
-    print(f"pack_update: embedded {PLAN_FILE} ({plan_bytes} bytes) as "
-          f"{STUB_FILE}, {opts.page_align}-byte aligned", file=sys.stderr)
+    # A package carries exactly one plan TU, so build.sh's choice is never
+    # ambiguous: the stub supersedes the decimal TU, and the disk mode
+    # ships neither (a stale stub from an earlier pack would embed the plan
+    # the mode is meant to keep out of the binary).
+    removed = []
+    for stale in ([decimal_path] if mode == "embed"
+                  else [stub_path, decimal_path]):
+        if not os.path.exists(stale):
+            continue
+        try:
+            os.unlink(stale)
+        except OSError as e:
+            raise PackError(f"cannot remove '{stale}': {e.strerror}") from e
+        removed.append(os.path.basename(stale))
+
+    if mode == "embed":
+        print(f"pack_update: embedded {PLAN_FILE} ({plan_bytes} bytes) as "
+              f"{STUB_FILE}, {opts.page_align}-byte aligned", file=sys.stderr)
+        if opts.mode == "embed" and plan_bytes >= EMBED_LIMIT:
+            print(f"pack_update: warning: --embed at {plan_bytes} bytes, at "
+                  f"or above the {EMBED_LIMIT}-byte embed limit — the image "
+                  f"may fail to link or load on macOS arm64 (#158)",
+                  file=sys.stderr)
+    else:
+        why = ("--no-embed" if opts.mode == "disk"
+               else f"{plan_bytes} bytes, at or above the {EMBED_LIMIT}-byte "
+                    f"embed limit, #158")
+        print(f"pack_update: {PLAN_FILE} stays on disk ({why}): no embedded "
+              f"TU; model_update maps {PLAN_FILE} beside itself at start-up "
+              f"— ship the two together", file=sys.stderr)
     if adapted is not None:
         print(f"pack_update: rewrote {BUILD_SCRIPT} (pre-P1 emitter) to "
               f"assemble the stub", file=sys.stderr)
-    if decimal_removed:
-        print(f"pack_update: removed {DECIMAL_TU} (superseded by the stub)",
+    for name in removed:
+        print(f"pack_update: removed {name} (superseded by "
+              f"{'the stub' if mode == 'embed' else 'the disk mode'})",
               file=sys.stderr)
 
     build_seconds: Optional[float] = None
@@ -380,10 +464,16 @@ def pack(opts: Options) -> dict:
         "package_dir": pkg,
         "plan_file": plan_path,
         "plan_bytes": plan_bytes,
-        "embedded_tu": stub_path,
+        # Schema 2 (#158): the mode, how it was chosen, and the limit; the
+        # embedded TU is null in the disk mode.
+        "mode": mode,
+        "mode_forced": opts.mode != "auto",
+        "embed_limit": EMBED_LIMIT,
+        "embedded_tu": stub_path if mode == "embed" else None,
         "page_align": opts.page_align,
         "build_script_rewritten": adapted is not None,
-        "decimal_tu_removed": decimal_removed,
+        "decimal_tu_removed": DECIMAL_TU in removed,
+        "stub_removed": STUB_FILE in removed,
         "built": opts.build,
         "build_seconds": (None if build_seconds is None
                           else round(build_seconds, 3)),

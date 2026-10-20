@@ -38,8 +38,10 @@
 //       [--gemm-tiles K,N]             set the CPU GEMM tiles explicitly
 //                                      (throughput only, never bits)
 //       [--report report.json]         machine-readable compile report
-//       [--no-embed]                   skip the decimal byte-array TU; embed
-//                                      the plan with tool/pack_update.py
+//       [--no-embed]                   skip the decimal byte-array TU; let
+//                                      tool/pack_update.py embed the plan
+//                                      (.incbin) or, above its embed limit,
+//                                      leave it beside the binary (#158)
 //       [--build]                      run build.sh after emission
 //       [--version]                    print the release version
 //
@@ -50,7 +52,10 @@
 // build.sh; with --build, the linked self-contained `model_update` binary.
 // --no-embed leaves the plan on disk once (the .seeu) and no embedded TU:
 // `python3 tool/pack_update.py <out> --build` then embeds it as an .incbin
-// assembly stub, which is the route that scales past 100M parameters.
+// assembly stub, which is the route that scales past 100M parameters — or,
+// for a plan above the packer's embed limit (1 GiB; the linker and loader
+// fail near 1.8 GB on macOS arm64), builds the disk mode, whose binary maps
+// update_plan.seeu beside itself at start-up (#158).
 // =============================================================================
 
 #include <cerrno>
@@ -418,7 +423,9 @@ int main(int argc, char** argv) {
   // build itself. Refuse here rather than let build.sh fail after emission.
   if (no_embed && want_build)
     return Fail("--build needs the embedded plan TU that --no-embed skips; "
-                "run `python3 tool/pack_update.py <out> --build` instead");
+                "run `python3 tool/pack_update.py <out> --build` instead (it "
+                "embeds the plan, or leaves it beside the binary above its "
+                "embed limit)");
   // A relaxed plan (v18) is buildable only beside a numerics certificate,
   // and only the Python plane issues one: --build here would link an
   // uncertified relaxed binary (2026-09-24 review, N17). The emitted
@@ -497,6 +504,19 @@ int main(int argc, char** argv) {
 
   std::fprintf(stderr, "seeml-update-compile: emitted %s\n",
                paths->plan_file.c_str());
+  // The decimal TU of a plan this large is ~4x its bytes of C++ and, once
+  // linked, an image the macOS arm64 linker and loader refuse near 1.8 GB
+  // (#158); the packer's disk mode is the form for it. A note, not a
+  // refusal: the emission is complete and the package is still a package.
+  constexpr size_t kEmbedLimitBytes = size_t{1} << 30;
+  if (!no_embed && compiled->plan.size() >= kEmbedLimitBytes)
+    std::fprintf(stderr,
+                 "seeml-update-compile: note: the plan is %zu bytes, at or "
+                 "above the 1 GiB embed limit — an embedded image this large "
+                 "may not link or load (macOS arm64 fails near 1.8 GB); "
+                 "prefer --no-embed and `python3 tool/pack_update.py %s "
+                 "--build`, which leaves such a plan beside the binary\n",
+                 compiled->plan.size(), out_dir->c_str());
   if (no_embed)
     std::fprintf(stderr,
                  "seeml-update-compile: no embedded TU (--no-embed); next:"

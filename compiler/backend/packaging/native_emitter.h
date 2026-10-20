@@ -20,12 +20,17 @@
 //   build.sh                  compiles the TUs + the update runtime into a
 //                             set of object files and links `model_update`;
 //                             it assembles update_plan_embedded.S when the
-//                             packer has written one, else compiles the .cc
+//                             packer has written one, else compiles the .cc,
+//                             else (#158) a two-line TU with an empty plan:
+//                             the disk mode, whose binary maps
+//                             update_plan.seeu beside itself at start-up
 //
 // The result is the deliverable the user ships to devices: a self-contained
 // C++ executable whose training program, memory plan, and adapter
 // initialization are baked in as data — no compiler, no allocator, no
-// framework on the device.
+// framework on the device. Plans too large for the linker and the loader
+// (above ~1.8 GB on macOS arm64) ship as the binary plus the plan file
+// beside it; the driver validates a disk plan exactly as an embedded one.
 // =============================================================================
 
 namespace seeml::update {
@@ -47,7 +52,8 @@ struct EmitOptions {
   /// Render the plan as the decimal byte-array TU. The default keeps every
   /// package buildable with a C++ compiler alone; false leaves the plan on
   /// disk once (the .seeu) for tool/pack_update.py to embed with .incbin —
-  /// the only route that stays seconds and ~1x plan size at 100M+ params.
+  /// the only route that stays seconds and ~1x plan size at 100M+ params —
+  /// or, above the packer's embed limit, to leave beside the binary (#158).
   bool embed_plan_tu = true;
   /// The plan carries relaxed GEMMs (v18, --precision certified-bf16): the
   /// build script then compiles the CPU backend with SEEML_ACCELERATE on

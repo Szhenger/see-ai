@@ -16,13 +16,18 @@
 // .seeu Update Plan on-device.
 //
 // Lifecycle (the ML analog of an OS software update):
-//   Load       the plan is read whole into one heap buffer (LoadFromFile:
-//              a buffered read, not a mapping) or borrowed from the binary
-//              image (LoadFromMemory: the package's .incbin blob, which a
-//              GPU backend may wrap zero-copy); then one aligned arena
-//              allocation. A loaded update therefore holds the plan plus
-//              the arena — the figure the final memory gate and the field
-//              reports' RSS / (arena + plan) ratio both count.
+//   Load       the plan is borrowed from the binary image (LoadFromMemory:
+//              the package's .incbin blob, which a GPU backend may wrap
+//              zero-copy), mapped from the file beside the binary
+//              (LoadFromFileMapped: a private, page-aligned mapping the
+//              page cache serves — the disk-resident package mode of
+//              #158, the same (pointer, size) the embedded form hands over
+//              and the same zero-copy residency), or read whole into one
+//              heap buffer (LoadFromFile: a buffered read, for tools and
+//              tests); then one aligned arena allocation. A loaded update
+//              therefore holds the plan plus the arena — the figure the
+//              final memory gate and the field reports' RSS / (arena +
+//              plan) ratio both count.
 //   Train      N steps of {feed batch → execute instruction stream}; each
 //              step is forward + backward + optimizer, fully pre-compiled.
 //              Interruptible: the persistent segment checkpoints atomically.
@@ -230,7 +235,18 @@ class UpdateEngine {
   /// Loads a plan the caller keeps alive (embedded object-file byte arrays).
   [[nodiscard]] std::expected<void, std::string> LoadFromMemory(
       const uint8_t* plan, size_t size);
+  /// Reads the plan file whole into a heap buffer the engine owns.
   [[nodiscard]] std::expected<void, std::string> LoadFromFile(
+      const std::string& path);
+  /// Maps the plan file (#158): a private copy-on-write mapping, so the
+  /// bytes are page-aligned, the page cache serves them (no copy, no
+  /// second resident image), the file is never written through it, and
+  /// the pages are writable in the sense the Metal backend's zero-copy
+  /// residency requires — exactly the memory the `.incbin` embedding
+  /// provides. Validated as every load is: magic, version gate, the seal
+  /// (plan_hash), both contracts. A file that is absent, not a plan, or
+  /// corrupt is refused and leaves any previously loaded plan usable.
+  [[nodiscard]] std::expected<void, std::string> LoadFromFileMapped(
       const std::string& path);
 
   [[nodiscard]] std::expected<TrainReport, std::string> Train(
@@ -290,6 +306,9 @@ class UpdateEngine {
 
   // --- Introspection / test hooks -------------------------------------------
   const seeml::update::PlanHeader& header() const { return header_; }
+  /// The loaded plan's bytes and their count (borrowed, mapped or owned).
+  const uint8_t* plan_data() const { return plan_; }
+  size_t plan_size() const { return plan_size_; }
   float LossValue() const;
   uint8_t* arena() { return arena_; }
   uint64_t step() const { return step_; }
@@ -354,8 +373,16 @@ class UpdateEngine {
   StepTimings timings_{};
   [[maybe_unused]] size_t train_bwd_begin_ = 0;  // first instr after loss fwd
   [[maybe_unused]] size_t train_opt_begin_ = 0;  // first clip/optimizer instr
-  std::vector<uint8_t> owned_plan_;       // file-loaded plans
-  const uint8_t* plan_ = nullptr;         // borrowed or owned_plan_.data()
+  std::vector<uint8_t> owned_plan_;       // LoadFromFile: a heap copy
+  // LoadFromFileMapped: the plan file's private mapping (#158), released
+  // with the engine or when another load supersedes it.
+  struct PlanMapping {
+    const uint8_t* data = nullptr;
+    size_t bytes = 0;
+    ~PlanMapping();
+    void Release();
+  } plan_map_;
+  const uint8_t* plan_ = nullptr;  // borrowed, plan_map_.data, or owned
   size_t plan_size_ = 0;
 
   std::vector<seeml::update::UpdateInstruction> train_program_;

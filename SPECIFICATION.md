@@ -176,10 +176,18 @@ behind `__cpp_concepts >= 202002L`, a macro Clang only defines from 19.
 
 **The generated package build** — the third, outward-facing build system:
 `EmitNativePackage` writes `update_plan.seeu`, the same plan embedded as an
-aligned C array TU (emission parallelized, byte-identical to serial), a
-generated driver `update_main.cc`, 35 vendored runtime/`source/` files, and a
-`build.sh` that compiles them with `-std=c++23 -O2 -pthread` (no `-Werror` in
-the field). Host-derived GEMM tile geometry is baked in as
+aligned C array TU (emission parallelized, byte-identical to serial; skipped
+by `--no-embed`), a generated driver `update_main.cc`, 35 vendored
+runtime/`source/` files, and a `build.sh` that compiles them with
+`-std=c++23 -O2 -pthread` (no `-Werror` in the field). The script takes the
+plan from whichever TU the package carries — the C array, the packer's
+`.incbin` stub — or, with neither (#158), compiles a two-line empty-plan TU:
+the disk mode, in which the driver maps `update_plan.seeu` beside the
+executable (or `--plan FILE`) at start-up through
+`UpdateEngine::LoadFromFileMapped` and validates it exactly as an embedded
+plan. The packer picks that mode from 1 GiB, because an embedded image
+cannot be linked (the default linker segfaults at 1.85 GB) or loaded (a
+2.72 GB classic-linked image overlaps dyld's shared region) on macOS arm64. Host-derived GEMM tile geometry is baked in as
 `-DSEEML_GEMM_TILE_K/N` defines, overridable via `SEEML_TILE_FLAGS` when
 cross-compiling with `CXX`. The Metal backend *is* vendored: `build.sh`
 compiles its Objective-C++ unit and links the frameworks on Darwin, and the
@@ -408,7 +416,10 @@ test of the compiler-emitted GEMM source.
 suite → export → compile → package
 build → plan-seal grep → device run → serial re-run → `cmp` bitwise, with an
 exit-3 gate-rejection retry path, then the `--no-embed` + `pack_update.py`
-route whose stub-built binary must commit the same bytes); `python-tools`
+route whose stub-built binary must commit the same bytes, then the disk
+mode — `pack_update.py --no-embed` — whose binary links with no plan TU,
+finds the plan beside itself, fails closed without it or with a swapped
+one, honours `--plan`, and commits the same bytes again); `python-tools`
 (torch-free `py_compile` of every script + the packer's unit suite, on
 3.9 and 3.14.7); `exporter-compat` (NumPy-only exporter suite on NumPy 1.x
 / 3.9 and NumPy 2.5 / 3.14.7). Linux jobs install clang 19 from apt.llvm.org (see toolchain
@@ -433,10 +444,12 @@ no release automation; versioning is a manual edit of
 - **`tool/pack_update.py`** — the package assembler (Two-Plane Overhaul
   P1): embeds `update_plan.seeu` as a page-aligned `.incbin` assembly stub
   (`update_plan_embedded.S`) in place of the decimal C-array TU the compiler
-  emits by default (`seeml-update-compile --no-embed` skips that TU), and
-  with `--build` drives the package's `build.sh`, which assembles the stub
-  when present. Stdlib only; strict CLI (exit 2); atomic temp-and-rename
-  writes; exit 1 on any packaging or build failure.
+  emits by default (`seeml-update-compile --no-embed` skips that TU) — or,
+  from its 1 GiB `EMBED_LIMIT` (#158; `--embed` / `--no-embed` force either
+  way), writes no TU and leaves the plan beside the binary for the driver
+  to map — and with `--build` drives the package's `build.sh`, which
+  assembles the stub when present. Stdlib only; strict CLI (exit 2); atomic
+  temp-and-rename writes; exit 1 on any packaging or build failure.
 - **`tool/autotune.py`** — the offline autotuner (Two-Plane Overhaul P2):
   sweeps CPU GEMM tile arms through `seeml-bench --gemm-tiles`, round-robin
   over rounds, scores each arm by the geometric mean of its rows/s relative
