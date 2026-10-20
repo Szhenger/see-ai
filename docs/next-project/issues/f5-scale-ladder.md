@@ -117,7 +117,8 @@ rungs"): the arena 1.67 → 1.33 GB at SmolLM-135M (−20.3 %), 3.27 → 2.75
 GB at SmolLM2-360M (−15.9 %), 4.51 → 3.66 GB at Qwen2.5-0.5B (−18.9 %),
 for 98–130 extra train instructions and an unchanged eval program; the
 packaged SmolLM-135M plans commit the same SHA-256 after 20 CPU steps
-(`beb98417…`), the run's peak RSS falling by the arena saving to the
+(`beb98417…`; on Metal too, `0fef91ef…`, the baseline's bytes on both
+backends), the run's peak RSS falling by the arena saving to the
 megabyte (2,688 → 2,350 MB) for a step 1,641 → 1,780 ms (+8.5 %, one
 sample).
 What remains of the transient segment is the GEMM outputs the backward

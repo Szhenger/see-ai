@@ -760,7 +760,6 @@ per kernel on the serialized profile against 1.4 ms for a frozen GEMM.
 A blocked kernel (K / V blocks staged once per 128 query rows) is the
 next step; the numbers above are the honest state of the port.
 
-## Tier C — Memory (the gate that refuses compiles)
 ### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
 
 The compile report now states the arena's three segments, and on every
@@ -814,9 +813,17 @@ The RSS falls by the arena saving to the megabyte (337.8 MB), the
 one-allocation doctrine holding; the step costs the 122 recomputes — a
 norm, a silu, a product and a gather per block, each one pass over an
 activation — about 140 ms on this run, a single sample, so a bound, not a row.
-Metal was not run (the GPU was in use by another session): the pass is
-backend-neutral by construction (the same opcodes over the same
-operands), and the Metal byte-identity run is the next session's.
+Metal, run afterwards on the combined tree: the remat SmolLM-135M package
+commits the baseline's bytes after 20 steps on Metal (`0fef91ef…`) and on
+the CPU (`beb98417…`), the same SHA-256 as main's package. The table above
+was measured before the binder fix of the previous section landed on the
+same branch; with both, the arenas are 1.58 → 1.34 GB at SmolLM-135M
+(−15.0 %), 3.19 → 2.77 GB at SmolLM2-360M (−13.1 %) and 4.23 → 3.69 GB at
+Qwen2.5-0.5B (−12.8 %) — the two savings overlap by the part of the dead
+buffers' holes the binder now reuses — with 182 / 194 / 146 recomputed
+values as before (`out/f7-2026-10-19/gpu_checks`).
+
+## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |
 |---|---|---|
