@@ -65,9 +65,14 @@ directory the compiler emitted with `--no-embed`, it embeds the plan as an
 of the decimal C-array TU, and with `--build` runs the package's own
 `build.sh`. The host compiler never parses weight bytes, so a 135M-parameter
 package builds in seconds instead of minutes and the plan lands on disk
-once. Standard library only (it sits on the compile path), strict CLI
-(exit 2 on any unknown flag), atomic writes. `build.sh` prefers the stub
-when present, so it also upgrades unmodified packages from older compilers.
+once. From 1 GiB (`EMBED_LIMIT`, #158) it embeds nothing: an embedded
+image that large cannot be linked or loaded on macOS arm64, so the plan
+stays beside the binary and the generated driver maps it at start-up —
+page-aligned and validated exactly as an embedded plan; `--embed` /
+`--no-embed` force either mode. Standard library only (it sits on the
+compile path), strict CLI (exit 2 on any unknown flag), atomic writes.
+`build.sh` prefers the stub when present, so it also upgrades unmodified
+packages from older compilers.
 
 **`seeml_seeu_dump.cc`** is the disassembler: point it at any plan and it
 verifies the integrity seal and prints the header and instruction streams in

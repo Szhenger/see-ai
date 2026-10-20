@@ -44,6 +44,31 @@ that costs the softmax cross-entropy its drain every pass in F8. The port
 is therefore a pipeline fix before it is a kernel fix: the acceptance adds
 that a long-S train program on Metal contains no CPU-resident opcode.
 
+## Status 2026-10-20
+
+Step 1 landed: the four tiled opcodes run on Metal (`k_attn_fwd_tiled`,
+`k_attn_dq_tiled`, `k_attn_dk_tiled`, `k_attn_dv_tiled`: one simdgroup per
+query or key row, every probability recomputed from Q, K and the stats
+row with the CPU kernels' expressions, no S × S matrix and no threadgroup
+memory), bitwise run-to-run and against the CPU family at tolerance (the
+twin test, three shapes; a tiled decoder in the program-family test). A
+SmolLM-135M step at S = 2048 (2,048 tokens per step) runs entirely on the
+GPU with a 4.12 GB arena against the cached family's 9.03 GB (peak RSS
+5.5 vs 10.1 GB; MLX-LM bf16 peaks at 6.2 GB of device memory, torch.compile
+MPS at 10.3). **But it is slow**: 9.8 s per step against the cached
+family's 1.7 s on the same 20-step run (MLX-LM bf16 789 ms, f32 1,823 ms;
+torch.compile MPS bf16 998 ms). The serialized profile puts every tiled
+kernel at 75–90 ms per layer against 1.4 ms for a frozen GEMM, and the
+cause is traffic, not arithmetic: each lane streams whole K / V (or Q /
+dO) rows from L2 — about 14 GB per kernel at this length — and
+vectorizing those reads (float4, same order) changed nothing. Step 2 is
+therefore the whole of the remaining work: a blocked kernel that stages
+K / V blocks in threadgroup memory once per 128 query rows (lane = query
+row, serial j — the CPU's own per-output order) divides the traffic by
+the block size; the fused flash-style form follows from it. The
+acceptance's "runs entirely on the GPU" line is met; its tok/s line is
+reported, not met.
+
 ## Acceptance
 
 - GPU and CPU tiled attention agree bit-for-bit (unfused port) or within

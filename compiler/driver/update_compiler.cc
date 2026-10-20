@@ -571,19 +571,90 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     merge_pinned.insert(delta);
 
   std::unordered_map<const sir::Value*, uint64_t> merge_bound;
-  for (const auto& [mirror, original] : merge->aliases) {
-    auto it = binding->refs.find(original);
-    if (it == binding->refs.end())
-      return generating::Error(generating::kDriver,
-                               "merge alias to unbound value");
-    merge_bound[mirror] = it->second;
-  }
-  const uint64_t merge_high = LinearScanTransients(
-      *merge->block, AlignUp(binding->arena_size), merge_bound, merge_pinned,
-      merge_bound);
-  binding->arena_size = std::max(binding->arena_size, merge_high);
+  auto bind_merge = [&]() -> std::expected<void, std::string> {
+    merge_bound.clear();
+    for (const auto& [mirror, original] : merge->aliases) {
+      auto it = binding->refs.find(original);
+      if (it == binding->refs.end())
+        return generating::Error(generating::kDriver,
+                                 "merge alias to unbound value");
+      merge_bound[mirror] = it->second;
+    }
+    const uint64_t merge_high = LinearScanTransients(
+        *merge->block, AlignUp(binding->arena_size), merge_bound,
+        merge_pinned, merge_bound);
+    binding->arena_size = std::max(binding->arena_size, merge_high);
+    return {};
+  };
+  if (auto ok = bind_merge(); !ok) return std::unexpected(ok.error());
 
   phase("bind-arena", block.numOps());
+  // --- 8b. Rematerialization (roadmap 2b, F5 #133). --------------------------
+  // Decided on the plain binding, which is the only way to know the arena:
+  // `auto` recomputes when that arena plus the plan — bounded from above
+  // here, before lowering, by one instruction per op over the rodata and
+  // the persistent image — would fail the gate the sealed plan must pass
+  // (CheckPlanFitsLocally, below); `on` recomputes regardless, so the
+  // trade can be measured and tested at any size. The pass re-emits the
+  // cheap forward ops before their backward readers (same opcodes, same
+  // operands: the same bits), then the transient segment alone is scanned
+  // again — storage keeps its refs — and the deltas re-pinned above the
+  // new high-water mark. What the plain binding took is kept for the
+  // report: bytes_saved is a measurement, not the pass's estimate.
+  const uint64_t plain_arena = AlignUp(binding->arena_size);
+  bool remat_on = config_.remat == RematKind::kOn;
+  if (config_.remat == RematKind::kAuto) {
+    auto instructions_of = [](const auto& ops) {
+      uint64_t n = 0;
+      for (const sir::Operation* op : ops)
+        if (!op->isMemoryOp()) ++n;
+      return n;
+    };
+    std::vector<const sir::Operation*> stream, merge_stream;
+    block.walk([&](sir::Operation* op) { stream.push_back(op); });
+    merge->block->walk(
+        [&](sir::Operation* op) { merge_stream.push_back(op); });
+    const uint64_t plan_bound =
+        AlignUp(sizeof(PlanHeader)) +
+        (instructions_of(stream) + instructions_of(primal_ops) +
+         instructions_of(merge_stream)) *
+            sizeof(UpdateInstruction) +
+        2 * kSeeuRodataAlignment + AlignUp(binding->rodata_size) +
+        AlignUp(binding->persistent_size) +
+        merge->outputs.size() * sizeof(EmitEntry) + kSeeuRodataAlignment;
+    remat_on = !CheckPlanFitsLocally(plain_arena, plan_bound,
+                                     config_.memory_budget_bytes)
+                    .has_value();
+  }
+  Rematerialization remat;
+  if (remat_on) {
+    PassManager pm;
+    pm.Add("rematerialize",
+           [&](sir::Block& b) -> std::expected<void, std::string> {
+             auto done = Rematerializer().Run(b, primal_ops, pinned);
+             if (!done) return std::unexpected(done.error());
+             remat = *done;
+             return {};
+           });
+    if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
+    timings.insert(timings.end(), pm.timings().begin(), pm.timings().end());
+    phase_start = PhaseClock::now();  // passes are timed by their manager
+    RebindTransients(block, pinned, *binding);
+    if (auto ok = bind_merge(); !ok) return std::unexpected(ok.error());
+    seeml::diag::Note(
+        generating::kDriver,
+        std::string("rematerialization ") +
+            (config_.remat == RematKind::kAuto ? "(auto: over the budget)"
+                                               : "(forced)") +
+            ": " + std::to_string(remat.recomputed_values) +
+            " forward value(s) of " + std::to_string(remat.recomputed_ops) +
+            " op(s) recomputed in the backward, " +
+            std::to_string(remat.declined) +
+            " declined (no net saving); arena " +
+            std::to_string(plain_arena) + " -> " +
+            std::to_string(AlignUp(binding->arena_size)) + " B");
+    phase("rebind-arena", block.numOps());
+  }
   // --- 9. Lowering: train, eval (primal prefix), and merge programs. ---------
   auto resolve_train =
       [&](const sir::Value* v) -> std::expected<uint64_t, std::string> {
@@ -977,6 +1048,13 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
 
   result.arena_size = header.arena_size;
   result.persistent_size = header.persistent_size;
+  result.io_size = binding->io_end - binding->persistent_size;
+  result.transient_size = header.arena_size - binding->io_end;
+  result.remat_policy = config_.remat;
+  result.remat_applied = remat_on;
+  result.remat_recomputed_values = remat.recomputed_values;
+  result.remat_bytes_saved =
+      plain_arena > header.arena_size ? plain_arena - header.arena_size : 0;
   result.train_instruction_count = header.train_instr_count;
   result.step_instruction_count = step_instrs.size();
   result.grad_accum_steps = recorded_accum;

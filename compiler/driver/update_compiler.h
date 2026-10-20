@@ -81,6 +81,20 @@ struct CompiledUpdate {
   std::vector<AdapterDebugInfo> adapters;
   uint64_t arena_size = 0;
   uint64_t persistent_size = 0;
+  // The arena's other two segments (F5, #133): the IO slots, and the
+  // transient segment — the liveness-scanned workspace of activations,
+  // adjoints and optimizer temporaries, plus the merged deltas pinned above
+  // its high-water mark. persistent + io + transient = arena.
+  uint64_t io_size = 0;
+  uint64_t transient_size = 0;
+  // Rematerialization (roadmap 2b, F5 #133): the policy asked for, whether
+  // the pass ran, how many forward values the backward now recomputes, and
+  // the arena bytes that freed — the plain binding's high-water mark less
+  // this plan's, both over the training stream and the merged deltas.
+  RematKind remat_policy = RematKind::kAuto;
+  bool remat_applied = false;
+  uint64_t remat_recomputed_values = 0;
+  uint64_t remat_bytes_saved = 0;
   uint64_t train_instruction_count = 0;
   uint64_t merge_instruction_count = 0;
   uint64_t eval_instruction_count = 0;

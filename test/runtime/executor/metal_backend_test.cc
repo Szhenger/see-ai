@@ -171,6 +171,13 @@ std::vector<Family> Families() {
     add("decoder_rmsnorm_rope_attention", UpdateCompiler(c).Compile(m),
         DecoderData);
   }
+  {  // the same decoder with the tiled attention family (F3): the four
+     // tiled opcodes on the GPU, the stats row in place of the P cache
+    SmfModel m = MakeTinyDecoder(8, 2, 4, 16, 2, 34);
+    UpdateConfig c = BaseConfig(16);
+    c.attention = AttentionKind::kTiled;
+    add("decoder_tiled_attention", UpdateCompiler(c).Compile(m), DecoderData);
+  }
   {  // token-native decoder: the embedding gather stays on the CPU
     SmfModel m = MakeTinyTokenDecoder(16, 8, 2, 4, 16, 35);
     UpdateConfig c = BaseConfig(16);
@@ -448,6 +455,66 @@ TEST(MetalBackend, RopeTableAndEmbeddingGatherRunOnTheGpu) {
     for (size_t j = 0; j < d; ++j)
       EXPECT_EQ(twin->gpu[3584 + t * d + j],
                 rows[static_cast<size_t>(tokens[t]) * d + j]);
+}
+
+TEST(MetalBackend, TiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
+  if (Skip()) return;
+  // F3 (#131): the four tiled opcodes on the GPU — one simdgroup per
+  // query or key row, every probability recomputed, the lanes' shares
+  // combined by a fixed tree — against the CPU family at tolerance (the
+  // CPU accumulates its dots and sums in double, serially), and bitwise
+  // against themselves. Ragged S (> 32, not a multiple of 32), a head
+  // width above 64 (two column blocks), and one of 16.
+  struct Shape { uint32_t B, S, H, d; };
+  for (const Shape sh : {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48},
+                         Shape{1, 70, 2, 96}}) {
+    const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
+    const size_t rows = size_t{sh.B} * sh.H * sh.S;
+    // Arena (floats): q, k, v, dO, o, stats [rows, 4], dq, dk, dv.
+    const size_t q_at = 0, k_at = n, v_at = 2 * n, do_at = 3 * n, o_at = 4 * n;
+    const size_t st_at = 5 * n, dq_at = st_at + rows * 4, dk_at = dq_at + n,
+                 dv_at = dk_at + n, total = dv_at + n;
+    std::vector<float> arena(total, 0.0f);
+    std::mt19937_64 rng(2028 + sh.S);
+    std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+    for (size_t i = 0; i < 4 * n; ++i) arena[i] = unit(rng);
+    auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
+    UpdateInstruction fwd;
+    fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdTiled);
+    fwd.in[0] = ref(q_at); fwd.in[1] = ref(k_at); fwd.in[2] = ref(v_at);
+    fwd.in[3] = ref(o_at);
+    fwd.out[0] = ref(st_at);
+    fwd.out[1] = (uint64_t{sh.B} << 32) | sh.S;
+    fwd.out[2] = (uint64_t{sh.H} << 32) | sh.d;
+    auto bwd = [&](OpCode op, size_t result) {
+      UpdateInstruction ins;
+      ins.opcode = static_cast<uint16_t>(op);
+      ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+      ins.in[3] = ref(do_at);
+      ins.out[0] = ref(st_at);
+      ins.out[1] = ref(result);
+      ins.out[2] = PackAttnGeometry(sh.B, sh.S, sh.H, sh.d);
+      return ins;
+    };
+    const std::vector<UpdateInstruction> program = {
+        fwd, bwd(OpCode::kAttnDQTiled, dq_at), bwd(OpCode::kAttnDKTiled, dk_at),
+        bwd(OpCode::kAttnDVTiled, dv_at)};
+    auto twin = RunTwin(program, arena, {});
+    ASSERT_OK(twin);
+    auto again = RunTwin(program, arena, {});
+    ASSERT_OK(again);
+    const std::string tag = std::to_string(sh.B) + "x" + std::to_string(sh.S) +
+                            "x" + std::to_string(sh.H) + "x" +
+                            std::to_string(sh.d);
+    ExpectRangeClose((tag + " o").c_str(), *twin, o_at, n, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " stats").c_str(), *twin, st_at, rows * 4, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " dv").c_str(), *twin, dv_at, n, 1e-4, 1e-5);
+    EXPECT_EQ(std::memcmp(&twin->gpu[o_at], &again->gpu[o_at],
+                          (total - o_at) * sizeof(float)),
+              0);
+  }
 }
 
 TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {

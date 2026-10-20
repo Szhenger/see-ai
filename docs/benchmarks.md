@@ -687,6 +687,142 @@ now stands at 0.93× MLX-LM's true-f32 2,240 and 0.45× its all-bf16
 per lane, 512 simdgroups in flight) moved least and are the next floor,
 with step 2 (one A-projection per block) and step 4.
 
+### The scale ladder's first two rungs (F5 #133, 2026-10-20)
+
+SmolLM2-360M and Qwen2.5-0.5B through `export_model.py --hf` over today's
+docs tree (603 records of 129 ids), compiled int8-base with the SmolLM-135M
+recipe (LoRA r8, 512 tokens per step), packaged with `.incbin`, and run
+by `frontier_run.py` on the M5 beside `torch.compile` on MPS in f32 over
+the same records — the first time either rung has a parity row. The
+compile report now states the arena's three segments (`persistent_bytes`,
+`io_bytes`, `transient_bytes`; F5's first executable item), so the part
+rematerialization would shrink is a number, not an inference:
+
+| rung | adapters | plan | int8 rodata | arena | persistent / io / transient | peak RSS | compile |
+|---|---:|---:|---:|---:|---|---:|---:|
+| SmolLM-135M (S=128) | 211 | 299 MB | 262 MB | 1.58 GB | 36.3 MB / 4 KB / 1.54 GB (97.7 %) | 1.9 GB | 0.6 s |
+| SmolLM2-360M | 225 | 653 MB | 592 MB | 3.19 GB | 60.8 MB / 4 KB / 3.13 GB (98.1 %) | 5.75 GB | 1.45 s |
+| Qwen2.5-0.5B | 169 | 1.15 GB | 1.07 GB | 4.23 GB | 71.0 MB / 4 KB / 4.16 GB (98.3 %) | 8.34 GB | 2.59 s |
+
+The arena column is the binder after one fix the split exposed: the
+F7 step-1 package had grown SmolLM-135M's arena from 1.565 to 1.665 GB,
+and the plan's layout showed why — the 64-byte loss slot, a pinned value
+placed first-fit at its birth, landed in the hole the dead 100 MB
+base-logits buffer had just left, so the probabilities buffer the next
+instruction writes could not take it. Pinned values (the loss slot, the
+parameter gradients, the merge deltas) are now bound first, below the
+transient scan, which changes no bit (the 20-step committed model is the
+baseline's on both backends) and gives 1.58 GB at 135M, 3.19 at 360M
+(−80 MB), 4.23 at 0.5B (−288 MB) and 4.12 at 135M/S=2048 (−390 MB); the
+peak RSS column was measured before the fix. Peak RSS is arena + plan +
+the mapped f32 source file the eval program scores (1.8 GB at 360M, 2.65
+GB at 0.5B), so it runs 1.8× the arena at these rungs — the same bytes
+MLX-LM and PyTorch hold as their f32 weights. The transient segment is
+the ladder's problem: it is 98 % of the arena at every rung and grows
+with width × depth × tokens, so a linear read puts 1.5B past 12 GB and a
+16 GB device needs rematerialization (step 2) or a smaller batch to hold
+it.
+
+| rung | SeeAI `metal` (ms / tok/s) | SeeAI `cpu` | `torch.compile` MPS f32 | validation 0 → 300: SeeAI metal / torch |
+|---|---:|---:|---:|---|
+| SmolLM2-360M | 527.3 / 971 (09-22: 830) | 3,971 / 129 (100-step quality run) | 455.5 / 1,124 | 4.09896 → 3.6443 / 4.09896 → 3.6310 |
+| Qwen2.5-0.5B | 705.4 / 726 (09-22: 636) | 5,396 / 95 (slope marked suspect) | 649.3 / 789 | 4.35057 → 3.9566 / 4.35058 → 3.9510 |
+
+Every rung starts from the same validation loss as the torch row to five
+decimals and ends within 0.013 nats of it after 300 steps, the same band
+as the 135M row (F1). The Metal rows are 0.86× and 0.92× of
+`torch.compile`'s f32 MPS rows — closer than at 135M (0.99×... see the
+intro) because the frozen GEMMs grow faster than the LoRA family that F7
+has been working on. The CPU rows carry the exact kernels; the relaxed
+int8 path (F4) would halve them. Not done: the 1.5B rung (needs step 2
+and 3 of the issue, and #158's plan loading above the 1.8 GB link limit),
+and the step-0 estimate-vs-exact ratio (the accountant's N29, S1).
+
+### Tiled attention on Metal at S = 2048: the port, and why it is slow (F3 #131, 2026-10-20)
+
+SmolLM-135M exported at S = 2048 over the docs tree (37 records), 2,048
+tokens per step, compiled tiled and cached; MLX-LM and torch.compile at
+the same tokens per step on the same M5 (`out/f7-2026-10-19/f3`):
+
+| run | step (ms) | tok/s | arena / peak | validation 0 → 300 |
+|---|---:|---:|---|---|
+| SeeAI `metal`, tiled (this port, 20-step run) | 9,763 | 210 | 4.12 GB / 5.5 GB RSS | 3.7054 → 3.4855 (300-step row, first port) |
+| SeeAI `metal`, cached | 1,531 (row) / 1,709 (20-step) | 1,338 | 9.03 GB / 10.1 GB RSS | 3.7054 → 3.4855 |
+| MLX-LM all-bf16 | 789 | 2,596 | 6.2 GB device peak | 3.7069 → 3.4748 |
+| MLX-LM true f32 | 1,823 | 1,123 | 10.6 GB device peak | 3.7055 → 3.4801 |
+| `torch.compile` MPS, bf16 base | 998 | 2,053 | 10.3 GB device peak | 3.7070 → 3.4741 |
+
+The tiled family holds the memory line (less than half the cached arena,
+below both frameworks' f32 peaks) and the step runs with no CPU-resident
+opcode, but the per-row kernels are traffic-bound: every lane streams
+whole rows from L2, ~14 GB per kernel at this length, 75–90 ms per layer
+per kernel on the serialized profile against 1.4 ms for a frozen GEMM.
+A blocked kernel (K / V blocks staged once per 128 query rows) is the
+next step; the numbers above are the honest state of the port.
+
+### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
+
+The compile report now states the arena's three segments, and on every
+rung the transient segment — the forward activations the backward reads,
+held across the whole forward, plus adjoints and the merged deltas — is
+98 % of the arena. `--remat on` (roadmap 2b) re-emits the cheap forward
+ops whose results the backward reads — the RMSNorm outputs, `silu(gate)`,
+the SwiGLU product, the embedding gather under the first norm; never a
+GEMM or attention output — right before their first backward reader,
+with the same opcode over the same operands, and rescans the transient
+segment. The RoPE outputs and the residual adds are declined by the
+pass's own rule (recomputing them would keep as many bytes alive as it
+frees: pre-rotation Q and K, the o- and down-projection outputs, have no
+backward reader). Compiled with `--data-batch 512 --loss xent
+--lora-rank 8 --lora-alpha 16 --optimizer adamw --lr 1e-4 --lr-schedule
+const --quantize-base --steps 300 --no-embed`, the shipped recipe, on
+this host (`out/f5-2026-10-20/`, the six `report.json`s):
+
+| model | remat | arena | persistent | IO | transient | train instrs | eval instrs | recomputed values / ops | declined |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SmolLM-135M (30 layers) | off | 1,665,464,320 | 36,292,608 | 4,096 | 1,629,167,616 | 2,887 | 907 | — | — |
+| SmolLM-135M | on | **1,327,667,200** (−337.8 MB, −20.3 %) | 36,292,608 | 4,096 | 1,291,370,496 | 3,009 (+122) | 907 | 182 / 122 | 120 |
+| SmolLM2-360M (32 layers) | off | 3,273,209,856 | 60,844,032 | 4,096 | 3,212,361,728 | 3,079 | 967 | — | — |
+| SmolLM2-360M | on | **2,753,247,232** (−520.0 MB, −15.9 %) | 60,844,032 | 4,096 | 2,692,399,104 | 3,209 (+130) | 967 | 194 / 130 | 128 |
+| Qwen2.5-0.5B (24 layers) | off | 4,513,902,592 | 71,000,064 | 4,096 | 4,442,898,432 | 2,383 | 799 | — | — |
+| Qwen2.5-0.5B | on | **3,661,705,216** (−852.2 MB, −18.9 %) | 71,000,064 | 4,096 | 3,590,701,056 | 2,481 (+98) | 799 | 146 / 98 | 120 |
+
+The recomputed ops are exactly four per block plus two (the first norm's
+embedding gather and the final norm): 30 × 4 + 2 = 122, 32 × 4 + 2 =
+130, 24 × 4 + 2 = 98. The eval program is the untouched primal snapshot
+(same count, same opcodes); the persistent segment and the plan bytes
+(rodata) do not move — the plan grows by the recomputes' instructions,
+0–16 KB after page padding (unchanged at 135M). `--remat auto` left all three plans alone on this 16 GB host
+(every plain arena plus its plan fits), which is why the rows are
+`on`. Compile time is unchanged (0.8–3.2 s wall across the six).
+
+Both SmolLM-135M plans packaged (`tool/pack_update.py --build`) and
+trained 20 steps on the CPU (`SEEML_THREADS=10`, `--val-frac 0
+--eval-every 0`): the committed models are **the same file**, SHA-256
+`beb984171359a0a54fcffd892d6b8a710a5b81280c1ece86f3d2144e42b59e3a` for
+both, and the runtime's `--report` lifecycle prices the trade:
+
+| SmolLM-135M, int8 base, CPU, 20 steps | remat off | remat on |
+|---|---:|---:|
+| `train_s` (20 steps) | 32.81 | 35.60 |
+| ms / step | 1,641 | 1,780 (+8.5 %) |
+| peak RSS (`/usr/bin/time -l`) | 2,688 MB | 2,350 MB (−338 MB) |
+| committed model SHA-256 | `beb98417…` | `beb98417…` |
+
+The RSS falls by the arena saving to the megabyte (337.8 MB), the
+one-allocation doctrine holding; the step costs the 122 recomputes — a
+norm, a silu, a product and a gather per block, each one pass over an
+activation — about 140 ms on this run, a single sample, so a bound, not a row.
+Metal, run afterwards on the combined tree: the remat SmolLM-135M package
+commits the baseline's bytes after 20 steps on Metal (`0fef91ef…`) and on
+the CPU (`beb98417…`), the same SHA-256 as main's package. The table above
+was measured before the binder fix of the previous section landed on the
+same branch; with both, the arenas are 1.58 → 1.34 GB at SmolLM-135M
+(−15.0 %), 3.19 → 2.77 GB at SmolLM2-360M (−13.1 %) and 4.23 → 3.69 GB at
+Qwen2.5-0.5B (−12.8 %) — the two savings overlap by the part of the dead
+buffers' holes the binder now reuses — with 182 / 194 / 146 recomputed
+values as before (`out/f7-2026-10-19/gpu_checks`).
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

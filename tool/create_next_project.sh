@@ -45,7 +45,7 @@ case "${1:-}" in
 esac
 [ $# -le 1 ] || usage
 
-REPO="Szhenger/see-ml"
+REPO="Szhenger/see-ai"  # renamed from see-ml on GitHub; the board item URLs carry the new slug
 OWNER="Szhenger"
 PROJECT_TITLE="SeeAI Two-Plane Overhaul"
 ISSUE_DIR="$(cd "$(dirname "$0")/../docs/next-project/issues" && pwd)"

@@ -16,7 +16,9 @@
 //                  Δ = (α/r)·A@B via sc_low.gemm_acc), GemmEpilogueFuser /
 //                  GemmAddendFuser / ElementwiseChainFuser (chains folded
 //                  where the use-lists prove no other reader), RopeTable,
-//                  ConvLowering (conv2d -> im2col-GEMM form)
+//                  ConvLowering (conv2d -> im2col-GEMM form),
+//                  Rematerializer (cheap forward values re-emitted before
+//                  their backward readers; roadmap 2b)
 //   calculus/      TrainableAutodiff (reverse-mode AD pruned to the
 //                  trainable set)
 //   statistics/    decisions from measured numbers: SelectQuantizedWeights
@@ -40,6 +42,7 @@
 #include "compiler/analysis/statistics/attention_tiling.h"  // IWYU pragma: export
 #include "compiler/analysis/algebra/chain_fuser.h"    // IWYU pragma: export
 #include "compiler/analysis/algebra/rope_table.h"     // IWYU pragma: export
+#include "compiler/analysis/algebra/rematerializer.h"  // IWYU pragma: export
 #include "compiler/analysis/algebra/lora_grafter.h"   // IWYU pragma: export
 #include "compiler/analysis/algebra/merge_builder.h"  // IWYU pragma: export
 #include "compiler/analysis/calculus/autodiff.h"      // IWYU pragma: export

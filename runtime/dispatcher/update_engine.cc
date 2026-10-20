@@ -1,6 +1,7 @@
 #include "runtime/dispatcher/update_engine.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <bit>
 #ifdef SEEML_STEP_TIMING
 #include <chrono>
@@ -49,6 +50,14 @@ kernels::GemmTiles UpdateEngine::gemm_tiles() const {
 }
 
 UpdateEngine::SourceMapping::~SourceMapping() { Release(); }
+
+UpdateEngine::PlanMapping::~PlanMapping() { Release(); }
+
+void UpdateEngine::PlanMapping::Release() {
+  if (data) ::munmap(const_cast<uint8_t*>(data), bytes);
+  data = nullptr;
+  bytes = 0;
+}
 
 void UpdateEngine::SourceMapping::Release() {
   if (data) ::munmap(const_cast<uint8_t*>(data), static_cast<size_t>(bytes));
@@ -109,6 +118,7 @@ UpdateEngine::~UpdateEngine() {
   // memory.
   backend_.reset();
   source_.Release();
+  plan_map_.Release();
   std::free(arena_);
 }
 
@@ -161,10 +171,11 @@ float* UpdateEngine::WritePtr(uint64_t ref) {
 std::expected<void, std::string> UpdateEngine::LoadFromMemory(
     const uint8_t* plan, size_t size) {
   if (auto r = Initialize(plan, size); !r) return r;
-  // The committed plan is borrowed; a previously file-owned plan is no
-  // longer referenced by plan_/rodata_ and can be released.
+  // The committed plan is borrowed; a previously file-owned or mapped plan
+  // is no longer referenced by plan_/rodata_ and can be released.
   owned_plan_.clear();
   owned_plan_.shrink_to_fit();
+  plan_map_.Release();
   return {};
 }
 
@@ -178,6 +189,52 @@ std::expected<void, std::string> UpdateEngine::LoadFromFile(
   // the heap buffer (and the just-committed plan_/rodata_) stable.
   if (auto r = Initialize(bytes->data(), bytes->size()); !r) return r;
   owned_plan_ = std::move(*bytes);
+  plan_map_.Release();
+  return {};
+}
+
+std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
+    const std::string& path) {
+  const int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd < 0)
+    return diag::executing::Error("cannot open the update plan '" + path +
+                                  "' (" + std::strerror(errno) + ")");
+  struct stat st {};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+    ::close(fd);
+    return diag::executing::Error("cannot size the update plan '" + path +
+                                  "' (not a non-empty regular file)");
+  }
+  const auto bytes = static_cast<size_t>(st.st_size);
+  // MAP_PRIVATE with PROT_WRITE: copy-on-write, so the file is never
+  // modified through the mapping and a stray write costs one private page
+  // instead of the package — the same protection the .incbin embedding's
+  // writable data section gives (the runtime re-seals the plan before
+  // merge and commit either way). The pages are page-aligned and writable,
+  // which is what the Metal backend asks before wrapping the frozen
+  // weights zero-copy; the page cache backs them, so a multi-GB plan costs
+  // no copy and no second resident image.
+  void* map = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE,
+                     fd, 0);
+  ::close(fd);
+  if (map == MAP_FAILED)
+    return diag::executing::Error("cannot map the update plan '" + path +
+                                  "' (" + std::strerror(errno) + ")");
+  PlanMapping candidate;
+  candidate.data = static_cast<const uint8_t*>(map);
+  candidate.bytes = bytes;
+  // Validate the candidate first: a rejected file must leave the previous
+  // plan (borrowed, owned or mapped) exactly as it was. The candidate's
+  // destructor unmaps it on the error path; the error names the contract
+  // that refused the bytes, and the caller names the file.
+  if (auto r = Initialize(candidate.data, candidate.bytes); !r) return r;
+  owned_plan_.clear();
+  owned_plan_.shrink_to_fit();
+  plan_map_.Release();
+  plan_map_.data = candidate.data;
+  plan_map_.bytes = candidate.bytes;
+  candidate.data = nullptr;  // ownership moved; do not unmap twice
+  candidate.bytes = 0;
   return {};
 }
 

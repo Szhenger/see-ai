@@ -4,6 +4,7 @@
 // round-trips, and the merge-before-commit protocol.
 // =============================================================================
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -12,10 +13,13 @@
 #include <string>
 #include <vector>
 
+#include <unistd.h>
+
 #include "compiler/driver/update_compiler.h"
 #include "source/plan/update_types.h"
 #include "runtime/pipeline/dataset.h"
 #include "runtime/storage/checkpoint.h"
+#include "runtime/storage/durable_io.h"
 #include "runtime/dispatcher/update_engine.h"
 #include "source/identity/hash.h"
 #include "source/parallel/parallel_for.h"
@@ -342,6 +346,87 @@ TEST(UpdateEngineLoad, LoadFromFileMatchesLoadFromMemory) {
 
   EXPECT_ERROR_CONTAINS(from_file.LoadFromFile(dir.File("missing.seeu")),
                         "cannot open");
+}
+
+TEST(UpdateEngineLoad, MappedPlanIsTheEmbeddedPlanAndFailsClosed) {
+  // The disk-resident package mode (#158): the plan file beside the binary
+  // is mapped, not copied — page-aligned like the .incbin embedding, so
+  // the frozen weights can be wrapped zero-copy — and validated exactly as
+  // the embedded form is. A file that is absent, not a plan, corrupt or
+  // truncated is refused and leaves the loaded plan untouched.
+  ScopedTempDir dir;
+  const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
+  ASSERT_FALSE(plan.empty());
+  auto write = [&](const std::string& path, const std::vector<uint8_t>& b) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    f.write(reinterpret_cast<const char*>(b.data()),
+            static_cast<std::streamsize>(b.size()));
+  };
+  const std::string path = dir.File("update_plan.seeu");
+  write(path, plan);
+
+  UpdateEngine mapped, embedded;
+  ASSERT_OK(mapped.LoadFromFileMapped(path));
+  ASSERT_OK(embedded.LoadFromMemory(plan.data(), plan.size()));
+  EXPECT_EQ(mapped.plan_size(), plan.size());
+  EXPECT_TRUE(mapped.plan_data() != nullptr);
+  const auto page = static_cast<uintptr_t>(::sysconf(_SC_PAGESIZE));
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(mapped.plan_data()) % page, 0u);
+  EXPECT_EQ(std::memcmp(mapped.plan_data(), plan.data(), plan.size()), 0);
+  EXPECT_EQ(mapped.header().plan_hash, embedded.header().plan_hash);
+  EXPECT_EQ(std::memcmp(mapped.arena(), embedded.arena(),
+                        mapped.header().persistent_size),
+            0);
+  // Same bits from either source.
+  ASSERT_OK_AND_ASSIGN(Dataset data, MakeClassificationData(32, kInDim, 1));
+  ASSERT_OK_AND_ASSIGN(const auto r1, mapped.Train(data, 3, Quiet()));
+  ASSERT_OK_AND_ASSIGN(Dataset again, MakeClassificationData(32, kInDim, 1));
+  ASSERT_OK_AND_ASSIGN(const auto r2, embedded.Train(again, 3, Quiet()));
+  EXPECT_EQ(r1.final_avg_loss, r2.final_avg_loss);
+
+  // Fails closed, and a refusal leaves the loaded plan usable.
+  EXPECT_ERROR_CONTAINS(mapped.LoadFromFileMapped(dir.File("absent.seeu")),
+                        "cannot open the update plan");
+  std::vector<uint8_t> corrupt = plan;
+  corrupt[corrupt.size() / 2] ^= 0x5a;
+  write(dir.File("corrupt.seeu"), corrupt);
+  EXPECT_ERROR_CONTAINS(mapped.LoadFromFileMapped(dir.File("corrupt.seeu")),
+                        "plan hash mismatch");
+  write(dir.File("model.smf"), std::vector<uint8_t>(4096, 0x41));
+  EXPECT_ERROR_CONTAINS(mapped.LoadFromFileMapped(dir.File("model.smf")),
+                        "bad plan magic");
+  write(dir.File("short.seeu"),
+        std::vector<uint8_t>(plan.begin(), plan.begin() + 16));
+  EXPECT_ERROR_CONTAINS(mapped.LoadFromFileMapped(dir.File("short.seeu")),
+                        "smaller than its header");
+  write(dir.File("empty.seeu"), {});
+  EXPECT_ERROR_CONTAINS(mapped.LoadFromFileMapped(dir.File("empty.seeu")),
+                        "cannot size");
+  EXPECT_ERROR_CONTAINS(mapped.LoadFromFileMapped(dir.path().string()),
+                        "cannot size");
+  EXPECT_EQ(mapped.plan_size(), plan.size());
+  EXPECT_EQ(std::memcmp(mapped.plan_data(), plan.data(), plan.size()), 0);
+  ASSERT_OK_AND_ASSIGN(Dataset more, MakeClassificationData(32, kInDim, 1));
+  EXPECT_OK(mapped.Train(more, 1, Quiet()));
+  // The file itself was never written through the private mapping.
+  {
+    const std::vector<uint8_t> file =
+        seeml::update_rt::ReadFileBytes(path).value();
+    EXPECT_EQ(file.size(), plan.size());
+    size_t first_diff = 0;
+    while (first_diff < std::min(file.size(), plan.size()) &&
+           file[first_diff] == plan[first_diff])
+      ++first_diff;
+    EXPECT_EQ(first_diff, plan.size());
+  }
+
+  // A later load from memory or from a heap read supersedes the mapping,
+  // and a mapping supersedes them — every order leaves one plan loaded.
+  ASSERT_OK(mapped.LoadFromMemory(plan.data(), plan.size()));
+  ASSERT_OK(mapped.LoadFromFileMapped(path));
+  ASSERT_OK(mapped.LoadFromFile(path));
+  ASSERT_OK(mapped.LoadFromFileMapped(path));
+  EXPECT_EQ(mapped.plan_size(), plan.size());
 }
 
 TEST(UpdateEngineTrain, ValidatesDatasetAgainstPlan) {

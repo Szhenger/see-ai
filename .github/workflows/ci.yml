@@ -386,6 +386,62 @@ jobs:
             --out out/updated_incbin.smf --seed 7 --val-frac 0.1 ${E2E_FORCE}
           cmp out/updated.smf out/updated_incbin.smf
           echo ".incbin and decimal packages commit bitwise-identical models"
+      # The disk-resident package mode (#158): from the packer's embed limit
+      # a plan is not embedded at all — build.sh compiles an empty plan TU
+      # and model_update maps update_plan.seeu beside itself at start-up,
+      # validated exactly as an embedded plan (version gate, seal, source
+      # hash). Forced here with --no-embed on the small plan: the package
+      # links with no plan TU and nothing Python, the binary finds the plan
+      # beside itself (not in the working directory), fails closed with
+      # exit 1 when it is missing or swapped, honours --plan, and commits
+      # the very same bytes as the two embedded forms.
+      - name: Pack the plan in the disk mode (no embedded TU)
+        run: |
+          ./build/seeml-update-compile --source out/model.smf --out out/pkg3 \
+            --data-batch 16 --loss xent --lora-rank 8 --lr 5e-3 --steps 300 \
+            --report out/pkg3/report.json --no-embed
+          cmp out/pkg/update_plan.seeu out/pkg3/update_plan.seeu
+          python3 tool/pack_update.py out/pkg3 --no-embed --build --report out/pack3.json
+          test -x out/pkg3/model_update
+          test ! -e out/pkg3/update_plan_embedded.S
+          test ! -e out/pkg3/update_plan_embedded.cc
+          test ! -e out/pkg3/update_plan_none.cc
+          grep -q '"mode": "disk"' out/pack3.json
+          ! grep -q -i python out/pkg3/model_update
+      - name: Disk-mode package commits the same bytes and fails closed without its plan
+        run: |
+          out/pkg3/model_update --model out/model.smf --data out/corpus.sds \
+            --out out/updated_disk.smf --seed 7 --val-frac 0.1 ${E2E_FORCE} \
+            --report out/run_disk.json 2> out/disk.log
+          grep -q "plan from '.*/out/pkg3/update_plan.seeu'" out/disk.log
+          grep -q '"source": "file"' out/run_disk.json
+          cmp out/updated.smf out/updated_disk.smf
+          echo "disk-mode, .incbin and decimal packages commit bitwise-identical models"
+          # The binary alone, away from its plan: exit 1, the mode named.
+          mkdir -p out/alone && cp out/pkg3/model_update out/alone/
+          set +e
+          out/alone/model_update --model out/model.smf --data out/corpus.sds \
+            --out out/never.smf --seed 7 2> out/alone.log
+          rc=$?
+          set -e
+          test "$rc" -eq 1
+          grep -q "cannot open the update plan" out/alone.log
+          grep -q "no embedded plan" out/alone.log
+          test ! -e out/never.smf
+          # --plan names the file wherever it is ...
+          out/alone/model_update --model out/model.smf --data out/corpus.sds \
+            --out out/updated_plan_flag.smf --seed 7 --val-frac 0.1 ${E2E_FORCE} \
+            --plan out/pkg3/update_plan.seeu
+          cmp out/updated.smf out/updated_plan_flag.smf
+          # ... and a swapped file is refused before anything runs.
+          set +e
+          out/alone/model_update --model out/model.smf --data out/corpus.sds \
+            --out out/never.smf --plan out/model.smf 2> out/swapped.log
+          rc=$?
+          set -e
+          test "$rc" -eq 1
+          grep -q "bad plan magic" out/swapped.log
+          test ! -e out/never.smf
       # The packer also upgrades a package from a pre-P1 compiler by
       # rewriting its one decimal compile line. Exercised against the real
       # emitter's text (this package's build.sh with the stub branch folded

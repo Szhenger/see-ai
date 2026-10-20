@@ -116,7 +116,7 @@ against frontier LoRA practice: AdamW already; learning rate 1e-3 constant →
 | **selection** | SIR op → one 64-byte instruction; ISA loses MSE and conv, gains masked xent and the attention segment operand | `selection/instruction_lowering.cc` |
 | **scheduling** (candidate) | instruction order for the target; earns a directory only if F8 (#139) measures the step time outside kernels as real; schedule before allocate | none — F8 measured it on 2026-10-15: the CPU is 0.6 % ahead of the GPU per step, so ordering recovers nothing; F7 step 1 (2026-10-19) then pinned the serial encoder's gap at about 3 µs per dispatch, ≈4 % of the step, below the 10 % line; the lever on the GPU is bytes per kernel, not dispatch count; scheduling stays a function inside selection — decided |
 | **assembly** | plan layout: header with the identity manifest, kernel policy and reduction-order ledger; streams; rodata written once; seeded persistent image; emit table; seal | the driver's persist-init / assemble / seal phases (misfiled) |
-| **packaging** | the self-contained package: embedded plan, generated main, vendored runtime **plus the shared `source/` contract check, sanitizer and tokenizer**, build script | `packaging/native_emitter.cc`; Python twin `tool/pack_update.py` |
+| **packaging** | the self-contained package: embedded plan (or, above the linker's and loader's limit, the plan beside the binary, #158), generated main, vendored runtime **plus the shared `source/` contract check, sanitizer and tokenizer**, build script | `packaging/native_emitter.cc`; Python twin `tool/pack_update.py` |
 
 `tuner/` folds into architecture; `kernel_emitter.cc` (tests only since the
 runtime owns the kernel library) retires or moves its GPU tiling clamp under

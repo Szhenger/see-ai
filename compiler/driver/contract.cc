@@ -23,6 +23,8 @@ constexpr std::string_view kRegisteredUnits[] = {
     diag::updating::kLoraGrafter,      diag::updating::kMergeBuilder,
     diag::updating::kOptimizer,        diag::updating::kEpilogueFuser,
     diag::updating::kRopeTable,        diag::updating::kChainFuser,
+    diag::updating::kAddendFuser,      diag::updating::kAttentionTiling,
+    diag::updating::kRematerializer,
     diag::architecting::kHostArch,
     diag::architecting::kKernelPolicy, diag::generating::kDriver,
     diag::generating::kArenaBinder,    diag::generating::kInstructionLowering,

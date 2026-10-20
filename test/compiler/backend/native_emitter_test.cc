@@ -5,6 +5,7 @@
 // =============================================================================
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -67,6 +68,20 @@ TEST(NativeEmitter, EmitsCompletePackage) {
 
   const std::string main_tu = ReadText(paths.main_tu);
   EXPECT_STR_CONTAINS(main_tu, "UpdateEngine");
+  // The two package modes (#158) meet in the driver: an embedded plan
+  // (a nonzero kSeemlUpdatePlanSize) loads from memory; otherwise the
+  // plan file beside the executable — or --plan FILE — is mapped, through
+  // the same validation, and a missing file fails closed with the mode
+  // spelled out.
+  EXPECT_STR_CONTAINS(main_tu, "kSeemlUpdatePlanSize > 0");
+  EXPECT_STR_CONTAINS(main_tu, "\"--plan\"");
+  EXPECT_STR_CONTAINS(main_tu, "ExecutableDir(argv[0]) + \"/\" + kPlanFileName");
+  EXPECT_STR_CONTAINS(main_tu, "kPlanFileName = \"update_plan.seeu\"");
+  EXPECT_STR_CONTAINS(main_tu, "engine.LoadFromFileMapped(plan_path)");
+  EXPECT_STR_CONTAINS(main_tu,
+                      "engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize)");
+  EXPECT_STR_CONTAINS(main_tu, "this package carries no embedded plan");
+  EXPECT_STR_CONTAINS(main_tu, "[--plan update_plan.seeu]");
 
   // The package is self-contained: the runtime sources are vendored in and
   // the build script compiles them from the package directory, never from
@@ -116,6 +131,19 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   EXPECT_STR_CONTAINS(
       script, "$CXX $FLAGS -c update_plan_embedded.cc -o update_plan_embedded.o");
   EXPECT_STR_CONTAINS(script, "update_main.o update_plan_embedded.o");
+  // ... and with neither TU present, the disk mode (#158): the script
+  // writes the two-line TU that defines an empty plan, compiles it under
+  // the same name, and never stops the build for a missing embed TU.
+  EXPECT_STR_CONTAINS(script, "elif [ -f update_plan_embedded.cc ]; then");
+  EXPECT_STR_CONTAINS(script,
+                      "$CXX $FLAGS -c update_plan_none.cc -o update_plan_embedded.o");
+  EXPECT_STR_CONTAINS(script,
+                      "const unsigned char kSeemlUpdatePlan[1] = {0}; "
+                      "const size_t kSeemlUpdatePlanSize = 0;");
+  EXPECT_STR_CONTAINS(script, "ship update_plan.seeu beside it");
+  EXPECT_EQ(script.find("run tool/pack_update.py on this directory first"),
+            std::string::npos);
+  EXPECT_EQ(script.find("exit 1"), std::string::npos);
 
   // The build script is marked executable.
   const auto perms = std::filesystem::status(paths.build_script).permissions();
@@ -159,7 +187,61 @@ TEST(NativeEmitter, SkipsTheDecimalTUOnRequest) {
                          }));
   const std::string script = ReadText(paths.build_script);
   EXPECT_STR_CONTAINS(script, "update_plan_embedded.S");
-  EXPECT_STR_CONTAINS(script, "run tool/pack_update.py");
+  // ... or that builds the disk mode as it stands, with no TU at all
+  // (#158): the packer leaves a plan above its embed limit beside the
+  // binary, and this script must then build without complaint.
+  EXPECT_STR_CONTAINS(script, "update_plan_none.cc");
+  EXPECT_STR_CONTAINS(script, "tool/pack_update.py chooses");
+}
+
+TEST(NativeEmitter, TheDiskModeBranchOfBuildScriptCompilesAnEmptyPlan) {
+  // The else-branch of the emitted script, run for real: with neither
+  // plan TU in the directory it must write and compile the two-line TU,
+  // leave no trace of it, and produce an object that defines both symbols
+  // the driver links against — the part of the disk mode that a text
+  // assertion cannot prove. Everything after that branch is the ordinary
+  // runtime build, which the end-to-end suites exercise.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(6, 10, 3, 4);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  EmitOptions options;
+  options.embed_plan_tu = false;
+  ASSERT_OK_AND_ASSIGN(
+      EmitPaths paths,
+      EmitNativePackage(compiled.plan, dir.path().string(), RepoRoot(),
+                        options));
+  std::string script = ReadText(paths.build_script);
+  // Cut the script after the plan-TU branch: "fi" closes it, and the first
+  // compile of the driver follows.
+  const size_t cut = script.find("$CXX $FLAGS -c update_main.cc");
+  ASSERT_TRUE(cut != std::string::npos);
+  script.resize(cut);
+  script += "echo \"note:$PLAN_NOTE\"\n";
+  const std::string probe = dir.File("branch.sh");
+  {
+    std::ofstream f(probe, std::ios::binary);
+    f << script;
+  }
+  const std::string log = dir.File("branch.log");
+  const int rc = std::system(("sh \"" + probe + "\" > \"" + log +
+                              "\" 2>&1")
+                                 .c_str());
+  EXPECT_EQ(rc, 0);
+  EXPECT_STR_CONTAINS(ReadText(log),
+                      "note: (no embedded plan: ship update_plan.seeu beside it)");
+  EXPECT_TRUE(std::filesystem::exists(dir.File("update_plan_embedded.o")));
+  EXPECT_FALSE(std::filesystem::exists(dir.File("update_plan_none.cc")));
+  // The object defines both symbols (nm's spelling is per platform; the
+  // names are what matter).
+  const std::string syms = dir.File("syms.txt");
+  if (std::system(("nm \"" + dir.File("update_plan_embedded.o") + "\" > \"" +
+                   syms + "\" 2>/dev/null")
+                      .c_str()) == 0) {
+    const std::string names = ReadText(syms);
+    EXPECT_STR_CONTAINS(names, "kSeemlUpdatePlan");
+    EXPECT_STR_CONTAINS(names, "kSeemlUpdatePlanSize");
+  }
 }
 
 TEST(NativeEmitter, RelaxedPlanBuildScriptDemandsTheCertificate) {
