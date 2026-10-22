@@ -60,12 +60,50 @@ issue is the record.
    the log. `docs/benchmarks.md`, "Measurement discipline", states the
    rule.
 
+## Status 2026-10-22
+
+Variance, of the host class. The 40 nightly `bench` jobs since
+2026-09-13 sorted by the runner's CPU model (`host_key`): every FAIL and
+every Intel WARN is an Intel Xeon (8573C ×5, 8370C, 6973P-C) measured
+against an AMD EPYC 7763 baseline — the Xeons run the decoder fixtures
+at 0.63–0.73× of the 7763 and the MLP fixtures at 0.83–0.85× while the
+calibration kernel reads 1.0–1.15× of it, so the P5 normalization adds
+to the red; the 19 calibrated 7763 nights are within ±1.4 % across four
+commits. The 10-20 → 10-22 runs were Xeon 8370C, Xeon 8573C, EPYC 7763:
+two different Intel hosts made the "two consecutive" reds. On one host
+(Apple M5) `ee979e7`, `32c8ac6` and `4b7ce89` read the named rows within
+±2.2 % of each other (one 4-thread cell re-measured quiet: +0.6 %).
+Numbers in `docs/benchmarks.md`, "The nightly gate's reds were the
+runner's CPU model, not the commit"; raw in `docs/ledger/p8-2026-10-22/`.
+
+The rule: `bench_compare.py` names a report's CPU model (the host_key's
+second field) and refuses a baseline from another model unless
+`--across-hosts`; `--host-slug` prints the model's cache-key slug;
+`nightly.yml` benches first and restores the rolling baseline, the epoch
+(`bench-epoch-v3-<model>`) and the gate state under it, one of each per
+model — the first night on a model seeds. What clears a red: a green on
+the same model; the state carries the commit (`--sha`, `$GITHUB_SHA`),
+and a cleared key is announced with both commits — the same commit twice
+is the runner's variance on record, a later one is a fix. The design's
+calibration-ratio band is not needed once the comparison is within a
+model (the 9V74 at 712k and 889k rows/s normalizes to the same row).
+Tests: `test/tool/bench_compare_test.py` (the 10-08 → 10-22 replay red
+on one baseline and green keyed by model, the refusal, the slug, the
+cleared-red record, the schema-1 state). Written into "Measurement
+discipline". The next nights seed each model's baseline; until a model
+has met itself twice its gate is a seed, not a verdict.
+
 ## Acceptance
 
-- [ ] The 2026-10-20 and 10-21 rows reproduced or refuted on one host at
-  the two commits, the numbers in `docs/benchmarks.md` beside the runner's.
-- [ ] Real: the commit named and an issue under its root cause. Variance:
+- [x] The 2026-10-20 and 10-21 rows reproduced or refuted on one host at
+  the two commits, the numbers in `docs/benchmarks.md` beside the runner's
+  — refuted: three commits within ±2.2 % on the M5 (2026-10-22).
+- [x] Real: the commit named and an issue under its root cause. Variance:
   the P5 (#79) assumption restated with this incident, and the gate's
-  band or normalization changed so the same readings would not fail.
-- [ ] The promotion rule decided, implemented and tested in
-  `tool/bench_compare.py`, and written into "Measurement discipline".
+  band or normalization changed so the same readings would not fail —
+  variance of the host class; the gate compares within a CPU model only,
+  so an Intel night never meets an AMD baseline (2026-10-22).
+- [x] The promotion rule decided, implemented and tested in
+  `tool/bench_compare.py`, and written into "Measurement discipline" — a
+  red is cleared by a green on the same model, both commits named
+  (2026-10-22).

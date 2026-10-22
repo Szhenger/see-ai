@@ -35,13 +35,19 @@ def wobble(i, amplitude):
     return amplitude * (((i * 37) % 11) / 5.0 - 1.0)
 
 
+AMD = "AMD EPYC 7763 64-Core Processor"
+INTEL = "INTEL(R) XEON(R) PLATINUM 8573C"
+
+
 def report(runner=1.0, schema=4, noise=0.03, night=0, regress=None,
            per_key=None, calibration=True, kernel="sgemm_ikj_128_f32_v1",
-           policy=None, version="test"):
+           policy=None, version="test", host=AMD):
     """One night's report on a runner `runner` times the reference speed.
     `regress` {fixture: factor} is a REAL regression (the calibration
     kernel does not see it); `per_key` overrides the runner factor per key
-    index (a non-uniform slowdown the calibration sees only on average)."""
+    index (a non-uniform slowdown the calibration sees only on average);
+    `host` is the CPU model the host_key names (None: a report from before
+    the key)."""
     fixtures, i = {}, 0
     for name, base in FIXTURES.items():
         cells = {}
@@ -55,6 +61,8 @@ def report(runner=1.0, schema=4, noise=0.03, night=0, regress=None,
         fixtures[name] = {"threads": cells}
     out = {"seeml_version": version, "schema": schema, "backend": "cpu",
            "fixtures": fixtures}
+    if host is not None:
+        out["host_key"] = f"x86_64;{host};cores=2;l1d=32768;l2=524288;simd=4"
     if policy:
         out["kernel_policy"] = {"source": "table", "gemm_tile_k": policy[0],
                                 "gemm_tile_n": policy[1]}
@@ -235,6 +243,109 @@ class GateTest(unittest.TestCase):
             statuses.append(gate.night(rep))
         self.assertEqual(statuses, [0, 0, 0, 1, 1])  # -17% warns, -22% fails
         self.assertIn("vs epoch", gate.log)
+
+    # --- The runner's CPU model (P8, #165) ----------------------------------
+
+    # The nightly from 2026-10-08 to 10-22: the Intel Xeon runners read the
+    # decoder fixtures at ~0.65x of the AMD EPYC 7763's rows/s and the MLP
+    # fixtures at ~0.85x while the calibration kernel read 1.0-1.15x, so
+    # the normalized deltas were the microarchitecture. The 7763 nights
+    # were within +-2% of each other at a fixed commit.
+    INTEL_SHAPE = {"dec_v256_d128_s32": 0.64, "dec_v256_d128_s128": 0.63,
+                   "dec_v512_d192_s32": 0.73, "mlp_64x512x3": 0.85,
+                   "mlp_128x1024x2": 0.83, "tok_v64_d64_s16": 0.9}
+
+    def test_replay_1008_to_1022_one_baseline_reads_the_runner_as_a_regression(self):
+        # Teeth: against one shared baseline the Intel night is red on the
+        # decoder rows although the commit is the same (the recorded gate).
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0, night=0, host=AMD)), 0)
+        intel = report(1.1, night=1, regress=self.INTEL_SHAPE, host=AMD)
+        self.assertEqual(gate.night(intel), 0)
+        self.assertIn("WARN dec_v256_d128_s128@1t/cpu", gate.log)
+
+    def test_a_baseline_from_another_cpu_model_is_refused(self):
+        gate = Gate(self.tmp)
+        self.assertEqual(gate.night(report(1.0, host=AMD)), 0)  # seeds
+        intel = report(1.1, night=1, regress=self.INTEL_SHAPE, host=INTEL)
+        self.assertEqual(gate.night(intel), 1)
+        self.assertIn(AMD, gate.log)
+        self.assertIn(INTEL, gate.log)
+        self.assertIn("P8 #165", gate.log)
+        self.assertNotIn("WARN", gate.log)  # refused, not measured
+        self.assertEqual(gate.baseline_report()["host_key"].split(";")[1], AMD)
+        # Asked for, the comparison runs, announced, and reads as before.
+        self.assertEqual(gate.night(intel, extra=["--across-hosts"]), 0)
+        self.assertIn("comparing across hosts as asked", gate.log)
+        self.assertIn("WARN dec_v256_d128_s128@1t/cpu", gate.log)
+
+    def test_keyed_by_cpu_model_every_night_is_green(self):
+        # The workflow's fix: one cache directory per model, so each runner
+        # meets its own baseline and the calibration transfers within it.
+        gates = {}
+        for name, host in (("amd", AMD), ("intel", INTEL)):
+            os.makedirs(os.path.join(self.tmp, name))
+            gates[host] = Gate(os.path.join(self.tmp, name))
+        nights = [(AMD, 1.0), (INTEL, 1.1), (INTEL, 1.0), (AMD, 0.95),
+                  (INTEL, 1.15), (AMD, 1.2), (AMD, 1.0)]
+        for n, (host, speed) in enumerate(nights):
+            regress = self.INTEL_SHAPE if host == INTEL else None
+            rep = report(speed, night=n, regress=regress, host=host)
+            self.assertEqual(gates[host].night(rep), 0, gates[host].log)
+            self.assertNotIn("WARN", gates[host].log)
+
+    def test_a_report_without_a_host_key_compares_with_a_note(self):
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0, host=None)), 0)
+        self.assertEqual(gate.night(report(1.0, night=1, host=AMD)), 0)
+        self.assertIn("predates host_key", gate.log)
+
+    def test_the_host_slug(self):
+        self.assertEqual(bench_compare.host_slug(AMD),
+                         "amd-epyc-7763-64-core-processor")
+        self.assertEqual(bench_compare.host_slug(INTEL),
+                         "intel-r-xeon-r-platinum-8573c")
+        self.assertEqual(bench_compare.host_slug(None), "unknown-host")
+        self.assertEqual(bench_compare.host_model(
+            {"host_key": "arm64;Apple M5;cores=10;l1d=65536"}), "Apple M5")
+        path = os.path.join(self.tmp, "r.json")
+        with open(path, "w") as f:
+            json.dump(report(1.0, host=INTEL), f)
+        buf, old = io.StringIO(), sys.argv
+        sys.argv = ["bench_compare.py", "--host-slug", path]
+        try:
+            with redirect_stdout(buf):
+                self.assertEqual(bench_compare.main(), 0)
+        finally:
+            sys.argv = old
+        self.assertEqual(buf.getvalue().strip(), "intel-r-xeon-r-platinum-8573c")
+
+    def test_a_cleared_red_names_both_commits(self):
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0), extra=["--sha", "aaa1111"]), 0)
+        bad = {"dec_v512_d192_s32": 0.75}
+        self.assertEqual(gate.night(report(1.0, night=1, regress=bad),
+                                    extra=["--sha", "bbb2222"]), 0)
+        self.assertIn("WARN", gate.log)
+        with open(gate.state) as f:
+            state = json.load(f)
+        self.assertEqual(state["sha"], "bbb2222")
+        self.assertEqual(state["host"], AMD)
+        # Green at the same commit: variance, on record with both commits.
+        self.assertEqual(gate.night(report(1.0, night=2),
+                                    extra=["--sha", "bbb2222"]), 0)
+        self.assertIn("CLEARED dec_v512_d192_s32@1t/cpu vs baseline (red at "
+                      "bbb2222 on the previous run, green at bbb2222)", gate.log)
+        self.assertIn("promoted", gate.log)
+
+    def test_a_schema1_state_still_reads(self):
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0)), 0)
+        with open(gate.state, "w") as f:
+            json.dump({"schema": 1, "red": {"baseline": ["mlp_64x512x3@1t/cpu"]}}, f)
+        self.assertEqual(gate.night(report(1.0, night=1)), 0)
+        self.assertIn("CLEARED mlp_64x512x3@1t/cpu vs baseline (red at an "
+                      "unrecorded commit", gate.log)
 
     # --- Fail closed ---------------------------------------------------------
 

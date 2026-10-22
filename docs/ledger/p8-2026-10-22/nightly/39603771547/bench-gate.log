@@ -1,0 +1,40 @@
+bench_compare: NOTE runner calibrates at 1.214x the baseline's, median raw key ratio 1.185x; deltas below are normalized
+bench_compare: OK   dec_v256_d128_s32@1t/cpu: 3159 -> 3699 (normalized 3047) rows/s (-3.5%) vs baseline
+bench_compare: OK   dec_v256_d128_s32@2t/cpu: 4413 -> 5312 (normalized 4376) rows/s (-0.8%) vs baseline
+bench_compare: OK   dec_v256_d128_s32@4t/cpu: 4237 -> 5324 (normalized 4386) rows/s (+3.5%) vs baseline
+bench_compare: OK   dec_v512_d192_s32@4t/cpu: 2453 -> 2738 (normalized 2255) rows/s (-8.1%) vs baseline
+bench_compare: OK   mlp_128x1024x2@4t/cpu: 6064 -> 7188 (normalized 5921) rows/s (-2.4%) vs baseline
+bench_compare: OK   mlp_64x512x3@1t/cpu: 7388 -> 8784 (normalized 7236) rows/s (-2.1%) vs baseline
+bench_compare: OK   mlp_64x512x3@2t/cpu: 11013 -> 14112 (normalized 11625) rows/s (+5.6%) vs baseline
+bench_compare: OK   mlp_64x512x3@4t/cpu: 11063 -> 14644 (normalized 12063) rows/s (+9.0%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@1t/cpu: 40901 -> 59365 (normalized 48902) rows/s (+19.6%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@2t/cpu: 47092 -> 57111 (normalized 47045) rows/s (-0.1%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@4t/cpu: 34635 -> 49916 (normalized 41118) rows/s (+18.7%) vs baseline
+bench_compare: FAIL dec_v256_d128_s128@1t/cpu: 2400 -> 1820 (normalized 1499) rows/s (-37.5%) vs baseline (second consecutive red)
+bench_compare: FAIL dec_v256_d128_s128@2t/cpu: 3496 -> 3052 (normalized 2514) rows/s (-28.1%) vs baseline (second consecutive red)
+bench_compare: FAIL dec_v256_d128_s128@4t/cpu: 3655 -> 3602 (normalized 2967) rows/s (-18.8%) vs baseline (second consecutive red)
+bench_compare: FAIL dec_v512_d192_s32@1t/cpu: 1543 -> 1370 (normalized 1129) rows/s (-26.9%) vs baseline (second consecutive red)
+bench_compare: FAIL dec_v512_d192_s32@2t/cpu: 2528 -> 2387 (normalized 1966) rows/s (-22.2%) vs baseline (second consecutive red)
+bench_compare: FAIL mlp_128x1024x2@1t/cpu: 3766 -> 3750 (normalized 3089) rows/s (-18.0%) vs baseline (second consecutive red)
+bench_compare: FAIL mlp_128x1024x2@2t/cpu: 5864 -> 6013 (normalized 4953) rows/s (-15.5%) vs baseline (second consecutive red)
+bench_compare: 7 Tier A metric(s) regressed more than 10% vs the rolling baseline
+bench_compare: NOTE runner calibrates at 1.138x the epoch's, median raw key ratio 1.089x; deltas below are normalized
+bench_compare: OK   dec_v256_d128_s32@1t/cpu: 3202 -> 3699 (normalized 3250) rows/s (+1.5%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@2t/cpu: 4879 -> 5312 (normalized 4666) rows/s (-4.4%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@4t/cpu: 4475 -> 5324 (normalized 4677) rows/s (+4.5%) vs epoch
+bench_compare: OK   dec_v512_d192_s32@4t/cpu: 2705 -> 2738 (normalized 2405) rows/s (-11.1%) vs epoch
+bench_compare: OK   mlp_128x1024x2@1t/cpu: 3867 -> 3750 (normalized 3294) rows/s (-14.8%) vs epoch
+bench_compare: OK   mlp_128x1024x2@4t/cpu: 6909 -> 7188 (normalized 6315) rows/s (-8.6%) vs epoch
+bench_compare: OK   mlp_64x512x3@1t/cpu: 7635 -> 8784 (normalized 7717) rows/s (+1.1%) vs epoch
+bench_compare: OK   mlp_64x512x3@2t/cpu: 11822 -> 14112 (normalized 12397) rows/s (+4.9%) vs epoch
+bench_compare: OK   mlp_64x512x3@4t/cpu: 12421 -> 14644 (normalized 12864) rows/s (+3.6%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@1t/cpu: 42734 -> 59365 (normalized 52151) rows/s (+22.0%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@2t/cpu: 43909 -> 57111 (normalized 50171) rows/s (+14.3%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@4t/cpu: 37252 -> 49916 (normalized 43850) rows/s (+17.7%) vs epoch
+bench_compare: FAIL dec_v256_d128_s128@1t/cpu: 2463 -> 1820 (normalized 1599) rows/s (-35.1%) vs epoch (second consecutive red)
+bench_compare: FAIL dec_v256_d128_s128@2t/cpu: 3963 -> 3052 (normalized 2681) rows/s (-32.3%) vs epoch (second consecutive red)
+bench_compare: FAIL dec_v256_d128_s128@4t/cpu: 3860 -> 3602 (normalized 3164) rows/s (-18.0%) vs epoch (second consecutive red)
+bench_compare: FAIL dec_v512_d192_s32@1t/cpu: 1605 -> 1370 (normalized 1204) rows/s (-25.0%) vs epoch (second consecutive red)
+bench_compare: FAIL dec_v512_d192_s32@2t/cpu: 2688 -> 2387 (normalized 2097) rows/s (-22.0%) vs epoch (second consecutive red)
+bench_compare: FAIL mlp_128x1024x2@2t/cpu: 6509 -> 6013 (normalized 5282) rows/s (-18.8%) vs epoch (second consecutive red)
+bench_compare: 6 Tier A metric(s) regressed more than 15% vs the pinned epoch baseline (compounding drift)

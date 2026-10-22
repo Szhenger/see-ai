@@ -30,6 +30,17 @@ keeps numbers comparable across commits.
   (next section). A metric only this repository defines cannot be set
   beside an MLX-LM or llama.cpp log, so it cannot answer "how far behind
   the frontier are we" — the question the whole program exists to answer.
+- **Same CPU model, or no comparison.** The nightly gate's calibration
+  (P5, #79) divides a runner's speed out of every delta, and that
+  transfers within one CPU model only: between an AMD EPYC 7763 and an
+  Intel Xeon 8573C the frozen kernel reads 1.0–1.15× while the decoder
+  fixtures read 0.65×, so a normalized delta across models is the
+  microarchitecture, not the commit (P8, #165, below). `bench_compare.py`
+  refuses a baseline from another model, and the nightly caches one
+  rolling baseline, one epoch and one gate state per model. A red is
+  cleared by a green on the same model; the gate names both commits, so
+  a clear at the same commit is variance on record and a clear at a
+  later one is a fix.
 - **The ledger beside the document.** Every dated section below names the
   `out/` directory its run wrote. `out/` is ignored by git and lives on one
   machine, so the summaries a section's numbers are read from — the
@@ -842,6 +853,64 @@ same branch; with both, the arenas are 1.58 → 1.34 GB at SmolLM-135M
 Qwen2.5-0.5B (−12.8 %) — the two savings overlap by the part of the dead
 buffers' holes the binder now reuses — with 182 / 194 / 146 recomputed
 values as before (`out/f7-2026-10-19/gpu_checks`).
+
+### The nightly gate's reds were the runner's CPU model, not the commit (P8 #165, 2026-10-22)
+
+The Tier A gate went WARN on 2026-10-20 (`32c8ac6`), FAIL on 10-21
+(`4b7ce89`) and green on 10-22 at the same `4b7ce89`, promoting the
+baseline. Two measurements decide it. First, the 40 nightly `bench`
+jobs from 2026-09-13 to 10-22 by the runner's CPU model (`host_key`,
+`docs/ledger/p8-2026-10-22/nightly/runs-by-host.csv`); the commit was
+`0832bdd` for the 21 nights from 09-25 to 10-15 and changed nothing on
+the CPU path after:
+
+| runner CPU model (`ubuntu-latest`) | nights | `dec_v256_d128_s128` @1t rows/s | calibration rows/s | gate |
+|---|---:|---:|---:|---|
+| AMD EPYC 7763 | 19 (+1 before calibration) | 2,457 – 2,526 | 732k – 750k | 19 green |
+| AMD EPYC 9V74 | 7 | 2,381 – 2,997 | 712k – 892k | 4 green, 3 WARN |
+| AMD EPYC 9V45 | 2 | 3,688 – 4,034 | 1,186k – 1,215k | 2 WARN |
+| Intel Xeon 8573C | 5 (+1 before calibration) | 1,551 – 1,820 | 740k – 853k | 4 FAIL, 1 WARN |
+| Intel Xeon 8370C | 1 | 1,532 | 720k | WARN |
+| Intel Xeon 6973P-C | 1 | 2,033 | 1,038k | WARN |
+
+Every FAIL and every Intel WARN is an Intel host measured against an
+AMD 7763 baseline: the Intel parts run the decoder fixtures at 0.63 –
+0.73× of the 7763 and the MLP fixtures at 0.83 – 0.85× while the
+calibration kernel reads 1.0 – 1.15× of it, so the normalization *adds*
+to the red. Within a model the calibration holds — the 9V74 at 712k and
+at 889k reads `dec_v256_d128_s128` @1t at 2,395 and 2,997, the same
+1.25× — and the 19 calibrated 7763 nights sit within ±1.4 % of each
+other across four commits. The 10-20 → 10-22 sequence was Xeon 8370C,
+Xeon 8573C, EPYC 7763; the two "consecutive" reds were two different
+Intel hosts.
+
+Second, the three commits on one host: `seeml-bench --threads 1,2,4` on
+the Apple M5 (10 cores, macOS 26.6.2, `build/build.sh` with
+`SEEML_BENCH=1`), the rows the gate named, calibration 854.0k / 853.6k /
+853.8k rows/s (`docs/ledger/p8-2026-10-22/m5/`):
+
+| fixture @ threads, rows/s | `ee979e7` (10-19 green) | `32c8ac6` (10-20 WARN) | `4b7ce89` (10-21 FAIL) |
+|---|---:|---:|---:|
+| `dec_v256_d128_s128` @1 / 2 / 4 | 4,709 / 7,597 / 10,546 | 4,685 / 7,646 / 10,545 | 4,718 / 7,694 / 10,576 |
+| `dec_v512_d192_s32` @1 / 2 / 4 | 3,415 / 5,613 / 8,045 | 3,421 / 5,732 / 8,062 | 3,447 / 5,690 / 8,025 |
+| `mlp_128x1024x2` @1 / 2 / 4 | 7,488 / 12,246 / 17,824 | 7,597 / 12,391 / 18,031 | 7,620 / 12,377 / 15,506 † |
+
+Every delta between commits is within ±2.2 % except the one marked †,
+which read with four artifact downloads running beside it; re-measured
+quiet, twice, the fixture alone (`m5/mlp4-*.json`): `ee979e7` 17,900 /
+17,910, `4b7ce89` 18,024 / 17,997 — +0.6 %. The reds were variance of
+the host class, not a regression; nothing is filed under a root cause.
+
+What changed, the same day: `bench_compare.py` names a report's CPU
+model and refuses a baseline from another (`--across-hosts` to compare
+anyway); `nightly.yml` runs the harness first and restores the rolling
+baseline, the epoch (`v3`) and the gate state under the model's slug
+(`--host-slug`), so each of the five runners in rotation meets its own
+baseline — the first night on a model seeds it; the gate state carries
+the commit and a cleared red is announced with both. The P5 assumption
+is restated in "Measurement discipline": the calibration normalizes a
+runner's speed within a CPU model, not the ratio between models. Raw
+artifacts of the four runs in `docs/ledger/p8-2026-10-22/nightly/`.
 
 ## Tier C — Memory (the gate that refuses compiles)
 

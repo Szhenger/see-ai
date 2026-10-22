@@ -29,9 +29,11 @@
 # Every label and milestone a body names is upserted; the issue list and
 # the board are each fetched once, paginated, so nothing stops at a page
 # boundary; a board field is written only when its value differs. A
-# single-select option that an existing field lacks cannot be added by the
-# Projects CLI (the option-edit mutation refuses to append): the script
-# names it as an ACTION for the web UI and carries on.
+# single-select option that an existing field lacks is appended through
+# the GraphQL field mutation (the Projects CLI has no command for it): the
+# field's options are read with their ids, colors and descriptions and
+# written back whole with the new names at the end, so nothing existing
+# moves or loses its id.
 #
 #     tool/create_next_project.sh              # reconcile
 #     tool/create_next_project.sh --dry-run    # print every write it would make, touch nothing
@@ -320,12 +322,25 @@ ensure_field() {  # ensure_field <name> <comma-separated options>
     [ "$DRY_RUN" = 1 ] && PENDING_FIELDS="$PENDING_FIELDS $1 "
     return 0
   fi
-  # The field exists: an option it lacks has to be added by hand (the
-  # Projects option-edit mutation refuses to append). Say which.
-  missing=$(jq -r --arg n "$1" --argjson want "$(list_json <<< "$2")" \
-    '[.fields[] | select(.name == $n) | .options[].name] as $have | ($want - $have) | join(", ")' \
+  # The field exists: an option it lacks is appended. The mutation takes
+  # the whole option list, each with its color and description, so the
+  # existing ones are read back in full (field-list omits both) and kept
+  # by id; the new ones follow with no id and the field's plain look.
+  missing=$(jq -c --arg n "$1" --argjson want "$(list_json <<< "$2")" \
+    '[.fields[] | select(.name == $n) | .options[].name] as $have | ($want - $have)' \
     <<< "$fields_json")
-  [ -z "$missing" ] || echo "   ACTION: field '$1' lacks option(s) '$missing' — add in the web UI (project settings → $1), then rerun" >&2
+  [ "$missing" != "[]" ] || return 0
+  local existing all
+  existing=$(gh api graphql -f query="{ node(id: \"$have\") { ... on ProjectV2SingleSelectField { options { id name color description } } } }" \
+    --jq '.data.node.options')
+  all=$(jq -r --argjson new "$missing" \
+    '(. + ($new | map({name: ., color: "GRAY", description: ""})))
+     | map("{" + (if .id then "id: " + (.id | @json) + ", " else "" end)
+             + "name: " + (.name | @json) + ", color: " + .color
+             + ", description: " + (.description | @json) + "}")
+     | join(", ")' <<< "$existing")
+  mutate "append option(s) $(jq -r 'join(", ")' <<< "$missing") to field '$1'" api graphql \
+    -f query="mutation { updateProjectV2Field(input: { fieldId: \"$have\", singleSelectOptions: [$all] }) { clientMutationId } }" >/dev/null
 }
 # The option sets are the union of what the bodies and the roadmap rows
 # name, so a new origin or plane in a body is never silently unset.
@@ -362,8 +377,8 @@ set_field() {  # set_field <item-id> <item-url> <field-name> <option-name>
   oid=$(jq -r --arg n "$3" --arg o "$4" \
     '.fields[] | select(.name == $n) | .options[] | select(.name == $o) | .id' \
     <<< "$fields_json")
-  if [ -z "$fid" ] || [ -z "$oid" ]; then  # said once per missing option; the ACTION line above names the fix
-    case "$WARNED" in *"|$3=$4|"*) ;; *) WARNED="$WARNED|$3=$4|"; echo "   warn: '$4' not set on any item: field '$3' lacks it (see ACTION above)" >&2 ;; esac
+  if [ -z "$fid" ] || [ -z "$oid" ]; then  # a dry run: the option would be appended first
+    case "$WARNED" in *"|$3=$4|"*) ;; *) WARNED="$WARNED|$3=$4|"; echo "   note: '$4' would be set once field '$3' carries it" >&2 ;; esac
     return 0
   fi
   # item-list keys a field's value by its lower-cased name.

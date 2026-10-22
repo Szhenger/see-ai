@@ -208,6 +208,14 @@ jobs:
   # first >10% regression is a warning and its second consecutive one fails
   # the job. bench_compare.py --promote owns the baseline roll: only a fully
   # green gate replaces it, so a warned night is never the next reference.
+  # The calibration transfers within one CPU model, not between them (P8,
+  # #165: ubuntu-latest rotates across five, and every red from 2026-10-08
+  # to 10-22 was an Intel Xeon measured against an AMD EPYC's baseline at
+  # an unchanged commit), so the baselines, the epoch and the gate state
+  # are cached per model: the harness runs first, bench_compare.py names
+  # the model's slug, and the caches restore under it. A model's first
+  # night seeds its own baseline; bench_compare.py refuses a baseline from
+  # another model, so a wrong key fails loudly rather than compares.
   bench:
     name: bench (Tier A regression gate)
     runs-on: ubuntu-latest
@@ -234,23 +242,6 @@ jobs:
             sleep 20
           done
           exit 1
-      - name: Restore baseline
-        uses: actions/cache@v4
-        with:
-          path: bench-baseline
-          key: bench-baseline-${{ github.run_id }}
-          restore-keys: bench-baseline-
-      # The pinned epoch: a fixed cache key is saved once and never
-      # overwritten, so the gate also diffs against a reference that does
-      # not roll forward (a <10%/night drift cannot compound past it).
-      # Bump the key suffix to start a new epoch deliberately (v2: the
-      # first epoch that carries a calibration block — v1 was an
-      # un-normalizable high-water mark from one fast runner).
-      - name: Restore epoch baseline
-        uses: actions/cache@v4
-        with:
-          path: bench-epoch
-          key: bench-epoch-v2
       - name: Configure
         run: >
           cmake -S . -B build-bench
@@ -260,6 +251,31 @@ jobs:
         run: cmake --build build-bench -j "$(nproc)" --target seeml-bench
       - name: Bench
         run: ./build-bench/seeml-bench --out bench.json --threads 1,2,4
+      # The runner's CPU model, as the report names it, keys every cache
+      # below: one rolling baseline, epoch and gate state per model.
+      - name: Name the runner's CPU model
+        run: |
+          slug=$(python3 tool/bench_compare.py --host-slug bench.json)
+          echo "runner model: $slug ($(python3 -c 'import json; print(json.load(open("bench.json")).get("host_key"))'))"
+          echo "BENCH_HOST=$slug" >> "$GITHUB_ENV"
+      - name: Restore baseline (this CPU model's)
+        uses: actions/cache@v4
+        with:
+          path: bench-baseline
+          key: bench-baseline-${{ env.BENCH_HOST }}-${{ github.run_id }}
+          restore-keys: bench-baseline-${{ env.BENCH_HOST }}-
+      # The pinned epoch: a fixed cache key is saved once and never
+      # overwritten, so the gate also diffs against a reference that does
+      # not roll forward (a <10%/night drift cannot compound past it).
+      # Bump the key suffix to start a new epoch deliberately (v2: the
+      # first epoch that carries a calibration block — v1 was an
+      # un-normalizable high-water mark from one fast runner; v3: one
+      # epoch per CPU model, seeded by each model's first green night).
+      - name: Restore epoch baseline (this CPU model's)
+        uses: actions/cache@v4
+        with:
+          path: bench-epoch
+          key: bench-epoch-v3-${{ env.BENCH_HOST }}
       # A reseed drops the rolling baseline and the pending reds, never the
       # epoch (bump its key instead); the gate step then seeds from this run.
       - name: Drop the baseline (reseed only)
@@ -271,6 +287,7 @@ jobs:
           if [ "${{ inputs.reseed_baseline }}" = "true" ]; then epoch=""; fi
           python3 tool/bench_compare.py bench-baseline/bench.json bench.json \
             $epoch --state bench-baseline/gate_state.json --promote \
+            --sha "${{ github.sha }}" \
             | tee bench-gate.log
           exit "${PIPESTATUS[0]}"
       - name: Upload run

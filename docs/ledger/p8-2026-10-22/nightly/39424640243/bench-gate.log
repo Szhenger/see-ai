@@ -1,0 +1,61 @@
+bench_compare: NOTE runner calibrates at 1.024x the baseline's, median raw key ratio 0.868x; deltas below are normalized
+bench_compare: OK   dec_v256_d128_s32@2t/cpu: 4413 -> 4207 (normalized 4109) rows/s (-6.9%) vs baseline
+bench_compare: OK   mlp_64x512x3@1t/cpu: 7388 -> 6871 (normalized 6711) rows/s (-9.2%) vs baseline
+bench_compare: OK   mlp_64x512x3@2t/cpu: 11013 -> 10586 (normalized 10339) rows/s (-6.1%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@1t/cpu: 40901 -> 42188 (normalized 41205) rows/s (+0.7%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@2t/cpu: 47092 -> 48381 (normalized 47254) rows/s (+0.3%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@4t/cpu: 34635 -> 33269 (normalized 32494) rows/s (-6.2%) vs baseline
+bench_compare: WARN dec_v256_d128_s128@1t/cpu: 2400 -> 1532 (normalized 1496) rows/s (-37.7%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s128@1t/cpu: 2400 -> 1532 (normalized 1496) rows/s (-37.7%) vs baseline
+bench_compare: WARN dec_v256_d128_s128@2t/cpu: 3496 -> 2582 (normalized 2522) rows/s (-27.9%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s128@2t/cpu: 3496 -> 2582 (normalized 2522) rows/s (-27.9%) vs baseline
+bench_compare: WARN dec_v256_d128_s128@4t/cpu: 3655 -> 2660 (normalized 2598) rows/s (-28.9%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s128@4t/cpu: 3655 -> 2660 (normalized 2598) rows/s (-28.9%) vs baseline
+bench_compare: WARN dec_v256_d128_s32@1t/cpu: 3159 -> 2777 (normalized 2712) rows/s (-14.1%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s32@1t/cpu: 3159 -> 2777 (normalized 2712) rows/s (-14.1%) vs baseline
+bench_compare: WARN dec_v256_d128_s32@4t/cpu: 4237 -> 3676 (normalized 3590) rows/s (-15.3%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s32@4t/cpu: 4237 -> 3676 (normalized 3590) rows/s (-15.3%) vs baseline
+bench_compare: WARN dec_v512_d192_s32@1t/cpu: 1543 -> 1123 (normalized 1097) rows/s (-28.9%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v512_d192_s32@1t/cpu: 1543 -> 1123 (normalized 1097) rows/s (-28.9%) vs baseline
+bench_compare: WARN dec_v512_d192_s32@2t/cpu: 2528 -> 1933 (normalized 1888) rows/s (-25.3%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v512_d192_s32@2t/cpu: 2528 -> 1933 (normalized 1888) rows/s (-25.3%) vs baseline
+bench_compare: WARN dec_v512_d192_s32@4t/cpu: 2453 -> 1979 (normalized 1933) rows/s (-21.2%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v512_d192_s32@4t/cpu: 2453 -> 1979 (normalized 1933) rows/s (-21.2%) vs baseline
+bench_compare: WARN mlp_128x1024x2@1t/cpu: 3766 -> 3143 (normalized 3070) rows/s (-18.5%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_128x1024x2@1t/cpu: 3766 -> 3143 (normalized 3070) rows/s (-18.5%) vs baseline
+bench_compare: WARN mlp_128x1024x2@2t/cpu: 5864 -> 4933 (normalized 4818) rows/s (-17.8%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_128x1024x2@2t/cpu: 5864 -> 4933 (normalized 4818) rows/s (-17.8%) vs baseline
+bench_compare: WARN mlp_128x1024x2@4t/cpu: 6064 -> 5148 (normalized 5028) rows/s (-17.1%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_128x1024x2@4t/cpu: 6064 -> 5148 (normalized 5028) rows/s (-17.1%) vs baseline
+bench_compare: WARN mlp_64x512x3@4t/cpu: 11063 -> 10126 (normalized 9890) rows/s (-10.6%) vs baseline (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_64x512x3@4t/cpu: 11063 -> 10126 (normalized 9890) rows/s (-10.6%) vs baseline
+bench_compare: NOTE runner calibrates at 0.960x the epoch's, median raw key ratio 0.815x; deltas below are normalized
+bench_compare: OK   dec_v256_d128_s32@1t/cpu: 3202 -> 2777 (normalized 2893) rows/s (-9.7%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@2t/cpu: 4879 -> 4207 (normalized 4382) rows/s (-10.2%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@4t/cpu: 4475 -> 3676 (normalized 3829) rows/s (-14.4%) vs epoch
+bench_compare: OK   mlp_64x512x3@1t/cpu: 7635 -> 6871 (normalized 7157) rows/s (-6.3%) vs epoch
+bench_compare: OK   mlp_64x512x3@2t/cpu: 11822 -> 10586 (normalized 11026) rows/s (-6.7%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@1t/cpu: 42734 -> 42188 (normalized 43943) rows/s (+2.8%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@2t/cpu: 43909 -> 48381 (normalized 50394) rows/s (+14.8%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@4t/cpu: 37252 -> 33269 (normalized 34653) rows/s (-7.0%) vs epoch
+bench_compare: WARN dec_v256_d128_s128@1t/cpu: 2463 -> 1532 (normalized 1596) rows/s (-35.2%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s128@1t/cpu: 2463 -> 1532 (normalized 1596) rows/s (-35.2%) vs epoch
+bench_compare: WARN dec_v256_d128_s128@2t/cpu: 3963 -> 2582 (normalized 2689) rows/s (-32.1%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s128@2t/cpu: 3963 -> 2582 (normalized 2689) rows/s (-32.1%) vs epoch
+bench_compare: WARN dec_v256_d128_s128@4t/cpu: 3860 -> 2660 (normalized 2771) rows/s (-28.2%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v256_d128_s128@4t/cpu: 3860 -> 2660 (normalized 2771) rows/s (-28.2%) vs epoch
+bench_compare: WARN dec_v512_d192_s32@1t/cpu: 1605 -> 1123 (normalized 1170) rows/s (-27.1%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v512_d192_s32@1t/cpu: 1605 -> 1123 (normalized 1170) rows/s (-27.1%) vs epoch
+bench_compare: WARN dec_v512_d192_s32@2t/cpu: 2688 -> 1933 (normalized 2013) rows/s (-25.1%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v512_d192_s32@2t/cpu: 2688 -> 1933 (normalized 2013) rows/s (-25.1%) vs epoch
+bench_compare: WARN dec_v512_d192_s32@4t/cpu: 2705 -> 1979 (normalized 2061) rows/s (-23.8%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::dec_v512_d192_s32@4t/cpu: 2705 -> 1979 (normalized 2061) rows/s (-23.8%) vs epoch
+bench_compare: WARN mlp_128x1024x2@1t/cpu: 3867 -> 3143 (normalized 3274) rows/s (-15.3%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_128x1024x2@1t/cpu: 3867 -> 3143 (normalized 3274) rows/s (-15.3%) vs epoch
+bench_compare: WARN mlp_128x1024x2@2t/cpu: 6509 -> 4933 (normalized 5138) rows/s (-21.1%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_128x1024x2@2t/cpu: 6509 -> 4933 (normalized 5138) rows/s (-21.1%) vs epoch
+bench_compare: WARN mlp_128x1024x2@4t/cpu: 6909 -> 5148 (normalized 5362) rows/s (-22.4%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_128x1024x2@4t/cpu: 6909 -> 5148 (normalized 5362) rows/s (-22.4%) vs epoch
+bench_compare: WARN mlp_64x512x3@4t/cpu: 12421 -> 10126 (normalized 10547) rows/s (-15.1%) vs epoch (first red — fails if it repeats next run)
+::warning title=bench gate, first red::mlp_64x512x3@4t/cpu: 12421 -> 10126 (normalized 10547) rows/s (-15.1%) vs epoch
+bench_compare: 22 Tier A metric(s) red for the first time — warning only; the baseline is not rolled forward

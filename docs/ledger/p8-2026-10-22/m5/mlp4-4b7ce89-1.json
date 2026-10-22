@@ -1,0 +1,32 @@
+{
+  "seeml_version": "1.2.4",
+  "schema": 4,
+  "host": "Darwin arm64",
+  "backend": "cpu",
+  "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+  "host_arch": {"isa": "arm64", "cpu_model": "Apple M5", "physical_cores": 10, "l1d_bytes": 65536, "l2_bytes": 6291456, "simd_width_f32": 4},
+  "kernel_policy": {"source": "default", "gemm_tile_k": 64, "gemm_tile_n": 256},
+  "walked_gemm_tiles": {"k": 64, "n": 128},
+  "analytic_gemm_tiles": {"k": 64, "n": 128},
+  "config": {"steps_lo": 20, "steps_hi": 80, "repeats": 3, "threads": "1,2,4", "peak_gflops": 0.0},
+  "fixtures": {
+    "mlp_128x1024x2": {
+      "kind": "feature", "batch_rows": 32, "seq": 1,
+      "plan_bytes": 5177344, "arena_bytes": 5953728, "persistent_bytes": 405888, "rodata_bytes": 4743184,
+      "train_instructions": 38, "gemm_flops_per_step": 149559296, "trainable_params": 33824,
+      "compile_ms": 5.49, "load_ms": 1.231,
+      "threads": {
+        "1": {"step_ms": 4.196, "lifecycle_ms": 0.04, "rows_per_s": 7626, "gemm_gflops": 35.6, "fwd_ms": 2.071, "bwd_ms": 2.111, "opt_ms": 0.015,
+              "samples_per_s": 7626, "it_per_s": 238.316, "step_ms_min": 4.193, "step_ms_max": 4.200},
+        "2": {"step_ms": 2.580, "lifecycle_ms": 0.04, "rows_per_s": 12403, "gemm_gflops": 58.0, "fwd_ms": 1.130, "bwd_ms": 1.428, "opt_ms": 0.021,
+              "samples_per_s": 12403, "it_per_s": 387.587, "step_ms_min": 2.577, "step_ms_max": 2.583},
+        "4": {"step_ms": 1.775, "lifecycle_ms": 0.27, "rows_per_s": 18024, "gemm_gflops": 84.2, "fwd_ms": 0.659, "bwd_ms": 1.078, "opt_ms": 0.038,
+              "samples_per_s": 18024, "it_per_s": 563.250, "step_ms_min": 1.775, "step_ms_max": 1.778}
+      },
+      "merge_ms": 1.320, "checkpoint_save_ms": 0.785,
+      "train_loss_first": 20.723267, "train_loss_last": 1.224875, "trained_tokens": 29184,
+      "peak_rss_bytes": 31080448, "rss_over_planned": 2.792
+    }
+  },
+  "calibration": {"kernel": "sgemm_ikj_128_f32_v1", "calib_rows_per_s": 855918.8, "pre_rows_per_s": 855034.6, "post_rows_per_s": 856192.9, "samples": 10, "spread": 0.0040}
+}

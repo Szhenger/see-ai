@@ -5,6 +5,8 @@ Usage:
     python3 bench_compare.py baseline.json current.json
         [--max-regression F] [--epoch-baseline epoch.json]
         [--max-epoch-regression F] [--state gate_state.json] [--promote]
+        [--sha COMMIT] [--across-hosts]
+    python3 bench_compare.py --host-slug current.json
 
 Compares the Tier A throughput metric — rows_per_s, per fixture per thread
 width — and exits 1 if any pair regressed by more than --max-regression
@@ -50,6 +52,20 @@ report WITHOUT a usable calibration block, two different calibration
 kernels, or a ratio outside [1/3, 3] (not the same host class) are errors,
 never silent raw comparisons.
 
+Host model. Calibration normalizes a runner's speed within one CPU model,
+not the ratio between models: the nightly's hosted runners rotate across
+five, and from 2026-10-08 to 10-22 every WARN and FAIL landed on an Intel
+Xeon (8573C, 8370C, 6973P-C: the decoder fixtures at 0.65x of an AMD EPYC
+7763's rows/s while the calibration kernel read 1.0-1.15x of it) and every
+promoted baseline came from an AMD EPYC, at commits that changed nothing
+on the CPU path — P8 (#165), the three commits re-measured on one host
+within +-2%. So the gate compares like with like a second way: a report
+names its CPU model (the host_key's second field) and a baseline measured
+on another model is refused (exit 1) unless --across-hosts is passed;
+`--host-slug REPORT` prints the model as a cache-key slug so the workflow
+keeps one rolling baseline, one epoch and one gate state per model. A
+report without a host_key (schema < 3) compares with a NOTE.
+
 Two-consecutive-red. With --state PATH a key that regresses for the first
 time is a WARNING (exit 0; a `::warning::` annotation under GitHub Actions)
 and is recorded; the gate fails only when the same key regresses against
@@ -59,6 +75,10 @@ tool the one that rolls the baseline forward: the current report replaces
 the baseline only on a fully green gate (or when no baseline exists), so a
 warned run is never what the second night is compared against; a missing
 --epoch-baseline is seeded under the same condition and never rewritten.
+The state carries the commit the run measured (--sha, else GITHUB_SHA), and
+a key that was red on the previous run and is green now is announced as
+CLEARED with both commits: cleared at the same commit is the runner's
+variance on record, cleared at a later one is a fix.
 
 Schema-3 reports name the kernel policy they ran under (the CPU GEMM
 tiles the compiler wrote into every plan); two reports with different
@@ -68,6 +88,7 @@ measures, not a regression — and the gate exits 1 telling you to re-seed.
 import argparse
 import json
 import os
+import re
 import sys
 
 
@@ -124,6 +145,25 @@ def calibration(report, path):
     return kernel, rate
 
 
+def host_model(report):
+    """The CPU model a report measured on: the second field of its
+    host_key ("x86_64;AMD EPYC 7763 64-Core Processor;cores=2;...", the
+    kernel-policy table's key), or None for a report that predates the
+    key (schema < 3)."""
+    key = report.get("host_key")
+    if not key:
+        return None
+    parts = str(key).split(";")
+    model = (parts[1] if len(parts) > 1 else parts[0]).strip()
+    return model or None
+
+
+def host_slug(model):
+    """The model as a cache-key slug: lower case, every run of other
+    characters one dash ("amd-epyc-7763-64-core-processor")."""
+    return re.sub(r"[^a-z0-9]+", "-", (model or "unknown host").lower()).strip("-")
+
+
 class Report:
     def __init__(self, path):
         with open(path) as f:
@@ -133,6 +173,7 @@ class Report:
         self.policy = kernel_policy(raw)
         self.calibration = calibration(raw, path)
         self.version = raw.get("seeml_version")
+        self.host = host_model(raw)
 
 
 def runner_ratio(label, ref, cur):
@@ -202,21 +243,23 @@ def compare(label, ref, cur, max_regression):
     return failures, compared
 
 
-STATE_SCHEMA = 1
+STATE_SCHEMA = 2  # 2: carries the commit the reds were measured at
 
 
 def load_state(path):
-    """{label: [key_name, ...]} — the keys that were red on the previous
-    run. A missing file is an empty state; an unreadable one is an error
-    (a gate that forgets its reds silently never fails)."""
+    """({label: [key_name, ...]}, sha) — the keys that were red on the
+    previous run and the commit it measured (None for a schema-1 state).
+    A missing file is an empty state; an unreadable one is an error (a
+    gate that forgets its reds silently never fails)."""
     if path is None or not os.path.exists(path):
-        return {}
+        return {}, None
     try:
         with open(path) as f:
             state = json.load(f)
-        if state.get("schema") != STATE_SCHEMA:
+        if state.get("schema") not in (1, STATE_SCHEMA):
             raise ValueError(f"schema {state.get('schema')!r}")
-        return {label: list(keys) for label, keys in state["red"].items()}
+        return ({label: list(keys) for label, keys in state["red"].items()},
+                state.get("sha"))
     except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
         raise GateError(f"cannot read the gate state {path}: {e}")
 
@@ -229,10 +272,18 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def judge(label, failures, previous, use_state):
+def judge(label, failures, previous, use_state, shas=(None, None)):
     """Splits one reference's regressed keys into (fatal, warned) lines and
-    prints them. Without --state every red is fatal."""
+    prints them. Without --state every red is fatal. A key red on the
+    previous run and green now is announced with both commits (shas =
+    (previous, current)): the same commit twice is the runner's variance
+    on record, a later one is a fix."""
     fatal, warned = [], []
+    for name in sorted(previous.get(label, [])):
+        if name not in failures:
+            prev_sha, cur_sha = (s or "an unrecorded commit" for s in shas)
+            print(f"bench_compare: CLEARED {name} vs {label} (red at "
+                  f"{prev_sha} on the previous run, green at {cur_sha})")
     for name, line in sorted(failures.items()):
         if not use_state or name in previous.get(label, []):
             fatal.append(line)
@@ -250,8 +301,8 @@ def judge(label, failures, previous, use_state):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("baseline")
-    p.add_argument("current")
+    p.add_argument("baseline", nargs="?")
+    p.add_argument("current", nargs="?")
     p.add_argument("--max-regression", type=float, default=0.10,
                    help="fractional Tier A loss vs the rolling baseline "
                         "that fails the gate (0.10)")
@@ -271,7 +322,23 @@ def main():
     p.add_argument("--across-releases", action="store_true",
                    help="compare against a rolling baseline measured on a "
                         "different seeml_version (refused by default)")
+    p.add_argument("--across-hosts", action="store_true",
+                   help="compare against baselines measured on a different "
+                        "CPU model (refused by default: calibration does "
+                        "not transfer between models, P8 #165)")
+    p.add_argument("--sha", metavar="COMMIT", default=None,
+                   help="the commit the current report measured, recorded "
+                        "in the state (default: $GITHUB_SHA)")
+    p.add_argument("--host-slug", metavar="REPORT", default=None,
+                   help="print REPORT's CPU model as a cache-key slug and "
+                        "exit (the workflow keys its baselines by it)")
     args = p.parse_args()
+    if args.host_slug is not None:
+        with open(args.host_slug) as f:
+            print(host_slug(host_model(json.load(f))))
+        return 0
+    if args.baseline is None or args.current is None:
+        p.error("baseline and current are required")
     try:
         return gate(args)
     except GateError as e:
@@ -315,14 +382,40 @@ def gate(args):
                             "--across-releases to compare anyway")
         print(f"bench_compare: NOTE {said}")
 
-    previous = load_state(args.state)
+    def check_host(label, ref):
+        """A baseline from another CPU model must not compare at all
+        (P8, #165): the calibration kernel reads 1.0-1.15x between an AMD
+        EPYC 7763 and an Intel Xeon 8573C while the decoder fixtures read
+        0.65x, so the normalized delta is the microarchitecture, not the
+        commit. Both anchors fail closed; the workflow keys them by
+        model so each runner meets its own. A report without a host_key
+        predates the field and compares with a note."""
+        if ref.host == cur.host:
+            return
+        if ref.host is None or cur.host is None:
+            print(f"bench_compare: NOTE the {label if ref.host is None else 'current report'} "
+                  "predates host_key (no CPU model) — comparing across hosts")
+            return
+        said = (f"the {label} was measured on '{ref.host}' but the current "
+                f"report on '{cur.host}'")
+        if not args.across_hosts:
+            raise GateError(f"{said}; calibration does not transfer between "
+                            "CPU models (P8 #165) — the nightly keys its "
+                            "baselines by model, so this is a wrong cache "
+                            "key or a hand-run comparison; pass "
+                            "--across-hosts to compare anyway")
+        print(f"bench_compare: NOTE {said}; comparing across hosts as asked")
+
+    previous, previous_sha = load_state(args.state)
     use_state = args.state is not None
+    sha = args.sha or os.environ.get("GITHUB_SHA") or None
     red, fatal, warned = {}, [], []
 
     def against(label, path, max_regression, what):
         ref = Report(path)
         check_release(label, ref)
         check_policy(label, ref)
+        check_host(label, ref)
         failures, compared = compare(label.split()[0], ref, cur,
                                      max_regression)
         if compared == 0:
@@ -331,7 +424,8 @@ def gate(args):
                             f"{label} and the current report — the gate "
                             "would be blind; re-seed the baseline "
                             "deliberately if the keys were renamed")
-        f, w = judge(label.split()[0], failures, previous, use_state)
+        f, w = judge(label.split()[0], failures, previous, use_state,
+                     (previous_sha, sha))
         if f:
             print(f"bench_compare: {len(f)} Tier A metric(s) regressed more "
                   f"than {max_regression:.0%} vs {what}")
@@ -358,8 +452,8 @@ def gate(args):
 
     if use_state:
         write_atomic(args.state, json.dumps(
-            {"schema": STATE_SCHEMA, "red": red}, indent=2, sort_keys=True)
-            + "\n")
+            {"schema": STATE_SCHEMA, "red": red, "sha": sha,
+             "host": cur.host}, indent=2, sort_keys=True) + "\n")
     if fatal:
         return 1
     if warned:
