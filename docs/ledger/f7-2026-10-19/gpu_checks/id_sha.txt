@@ -1,0 +1,3 @@
+beb984171359a0a54fcffd892d6b8a710a5b81280c1ece86f3d2144e42b59e3a  ~/SeeAI/see-ml/out/f7-2026-10-19/gpu_checks/id_cpu.smf
+0fef91ef987d76b54d5676244bc934e5351a02b86a56489e6a929a7417821a24  ~/SeeAI/see-ml/out/f7-2026-10-19/gpu_checks/id_metal.smf
+0fef91ef987d76b54d5676244bc934e5351a02b86a56489e6a929a7417821a24  ~/SeeAI/see-ml/out/f7-2026-10-19/gpu_checks/disk.smf

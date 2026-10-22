@@ -1,0 +1,5 @@
+{"rows": [
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f4/pkg_relaxed", "--model", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.smf", "--data", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.sds", "--backend", "cpu", "--lo", "40", "--hi", "160", "--repeats", "1", "--quality-steps", "300", "--threads", "10"]},
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f4/pkg_relaxed", "--model", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.smf", "--data", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.sds", "--backend", "cpu", "--lo", "40", "--hi", "160", "--repeats", "1", "--quality-steps", "300", "--threads", "10"]},
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f8/pkg", "--model", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.smf", "--data", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.sds", "--backend", "cpu", "--lo", "40", "--hi", "160", "--repeats", "1", "--quality-steps", "300", "--threads", "10"]}
+]}

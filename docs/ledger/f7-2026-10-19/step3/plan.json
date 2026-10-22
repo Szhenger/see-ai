@@ -1,0 +1,1 @@
+{"rows": [{"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/step3/pkg", "--model", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.smf", "--data", "~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.sds", "--backend", "metal", "--lo", "40", "--hi", "160", "--repeats", "2", "--quality-steps", "300", "--threads", "10"]}]}

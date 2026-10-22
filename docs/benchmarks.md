@@ -30,6 +30,15 @@ keeps numbers comparable across commits.
   (next section). A metric only this repository defines cannot be set
   beside an MLX-LM or llama.cpp log, so it cannot answer "how far behind
   the frontier are we" — the question the whole program exists to answer.
+- **The ledger beside the document.** Every dated section below names the
+  `out/` directory its run wrote. `out/` is ignored by git and lives on one
+  machine, so the summaries a section's numbers are read from — the
+  harness JSON, the compile reports, one profile and one span table per
+  state, the identity hashes — are committed under
+  [`docs/ledger/`](ledger/README.md) by the same directory name (2026-10-22,
+  for every section from the 2026-09-22 row on). A number in this
+  document that cannot be found in the ledger is a claim, not a
+  measurement.
 
 ## External standards the harness reports in
 
@@ -256,7 +265,7 @@ faster and not f32); adapt the head in the frameworks too (the importer
 writes the tied head as its own weight and SeeAI adapts it); and note that
 `mlx_lm`'s `evaluate` drops the ragged validation tail (48 of 50 records).
 The harness, raw JSON and loss curves are in `out/frontier-2026-09-22/`
-(not committed); the full report is the SeeAI Frontier Harness page of
+(its `summary.json` in `docs/ledger/frontier-2026-09-22/`); the full report is the SeeAI Frontier Harness page of
 2026-09-22.
 
 ### The relaxed GEMM family on Metal, measured (F2 #130, 2026-10-15)
@@ -325,7 +334,8 @@ relaxed step. After F2 the rank-8 family is half the kernel time and the
 time outside kernels (the measured step less the sum, 27–31 ms, including
 the 9 ms the CPU-resident loss costs plus its drain) is the next
 sixth — F7 and F8 by name. Raw JSON, profiles and logs in
-`out/f2-2026-10-15/` (not committed).
+`out/f2-2026-10-15/` (the harness JSON, the two compile reports and the
+certificate in `docs/ledger/f2-2026-10-15/`).
 
 ### The nightly frontier row's recipe, run by hand (F1 #129, 2026-10-15)
 
@@ -355,7 +365,7 @@ records, so 300 steps of 4 are 23 epochs, every stack's validation loss
 *rose* (SeeAI 4.19 → 5.72, torch 4.19 → 5.30, MLX 4.19 → 5.23) and the
 gate declined — and its CPU row ran no 300-step pass, so the parity check
 refused it as "not a measurement" and the matrix exited 3 on every run.
-Raw JSON in `out/frontier-2026-10-15b/` (not committed). The job itself
+Raw JSON in `out/frontier-2026-10-15b/` (`docs/ledger/frontier-2026-10-15b/`). The job itself
 still waits on a runner labelled `self-hosted, macOS, ARM64` with the
 checkpoint path passed as `frontier_model_dir` or set in its environment.
 
@@ -450,8 +460,8 @@ Three rules, each learned from a decision taken on the wrong object
 **The per-column int8 row, rerun.** Per-tensor int8 cost +0.10–0.14 nats
 of validation loss at step 0 on every model (the 2026-09-22 row); E12
 (#128) landed per-column scales and the row was never rerun. The Real
-Analysis Delta study of 2026-09-28 (`out/realanalysis-2026-09-25/`, not
-committed) ran it on SmolLM-135M, the runtime gate's own validation loss,
+Analysis Delta study of 2026-09-28 (`out/realanalysis-2026-09-25/`; its
+`results.json` and manifest in `docs/ledger/realanalysis-2026-09-25/`) ran it on SmolLM-135M, the runtime gate's own validation loss,
 300 steps, the docs corpus:
 
 | base storage | step 0 | step 300 | vs f32 at 300 |

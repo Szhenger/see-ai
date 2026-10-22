@@ -1,0 +1,13 @@
+{
+  "schema": 3,
+  "backend": "metal",
+  "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+  "plan": {"source": "file", "path": "~/SeeAI/see-ml/out/f7-2026-10-19/gpu_checks/pkg_disk/update_plan.seeu", "bytes": 298631168},
+  "steps": 20,
+  "train_loss": [4.650939, 4.4593835],
+  "validation_scores": "shipped",
+  "lifecycle": {"load_s": 0.1714, "data_s": 0.0002, "train_s": 5.1670, "eval_s": 0.0000, "evaluations": 0, "merge_s": 0.1072, "commit_s": 1.6406, "wall_s": 8.1699},
+  "gate": {"min_improvement": 0, "require_accuracy": false, "loss_ok": true, "accuracy_measured": false, "accuracy_ok": true, "forced": false},
+  "verdict": "accepted",
+  "committed": true
+}

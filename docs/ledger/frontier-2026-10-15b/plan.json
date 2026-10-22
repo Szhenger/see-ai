@@ -1,0 +1,7 @@
+{"model_dir": "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM-135M/snapshots/1d461723eec654e65efdc40cf49301c89c0c92f4", "rank": 8, "rows": [
+  {"kind": "seeml", "args": ["--package", "out/frontier-2026-10-15b/pkg", "--model", "out/frontier-2026-10-15b/smollm135.smf", "--data", "out/frontier-2026-10-15b/docs.sds", "--backend", "metal", "--threads", "10"]},
+  {"kind": "seeml", "args": ["--package", "out/frontier-2026-10-15b/pkg", "--model", "out/frontier-2026-10-15b/smollm135.smf", "--data", "out/frontier-2026-10-15b/docs.sds", "--backend", "cpu", "--lo", "5", "--hi", "15", "--repeats", "1", "--quality-steps", "0", "--threads", "10"]},
+  {"kind": "torch", "args": ["--model-dir", "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM-135M/snapshots/1d461723eec654e65efdc40cf49301c89c0c92f4", "--corpus", "out/frontier-2026-10-15b/corpus.txt", "--device", "mps", "--compile", "1", "--dtype", "bf16"]},
+  {"kind": "torch", "args": ["--model-dir", "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM-135M/snapshots/1d461723eec654e65efdc40cf49301c89c0c92f4", "--corpus", "out/frontier-2026-10-15b/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32"]},
+  {"kind": "mlx", "args": ["--model-dir", "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM-135M/snapshots/1d461723eec654e65efdc40cf49301c89c0c92f4", "--corpus", "out/frontier-2026-10-15b/corpus.txt", "--dtype", "bf16"]}
+]}

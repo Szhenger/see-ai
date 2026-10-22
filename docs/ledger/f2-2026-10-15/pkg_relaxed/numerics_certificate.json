@@ -1,0 +1,119 @@
+{
+  "contract": {
+    "bf16_unit_roundoff": 0.001953125,
+    "family": "relaxed-reductions-f32",
+    "model_lanes": 8,
+    "sites": [
+      "attn.dp",
+      "attn.fwd",
+      "gemm.relaxed",
+      "rms_norm.bwd",
+      "rms_norm.fwd",
+      "softmax_rows.bwd",
+      "softmax_xent.fwd"
+    ],
+    "unit_roundoff": 5.960464477539063e-08
+  },
+  "corpus": {
+    "file": "smollm135.sds",
+    "sha256": "f9a9f5578f119bd534b850b9ff584d3505845038c7ac82b80768cece00119c13"
+  },
+  "digest": "a3cdd9a95f081bc4517bb60874b4b6bc181bbdadad661111912e5f998798b7b5",
+  "evidence": {
+    "free_run": {
+      "gate_improved_reference": true,
+      "gate_improved_relaxed": true,
+      "loss_final_reference": 4.606598854064941,
+      "loss_final_relaxed": 4.607285499572754,
+      "loss_max_rel_dev": 0.00023482234966334153,
+      "val_final_reference": 4.565628342229606,
+      "val_final_relaxed": 4.565617427440341,
+      "val_initial": 4.574422318044764,
+      "val_rel_dev": 2.39064340026293e-06
+    },
+    "seed": 0,
+    "sites": {
+      "attn.dp": {
+        "bound_rel": 1.0618547581308875e-05,
+        "by_opcode": {
+          "attn.dp": 1.5783309055973453e-07
+        },
+        "instances": 60,
+        "observed_rel": 1.5783309055973453e-07
+      },
+      "attn.fwd": {
+        "bound_rel": 9.842365995445725e-06,
+        "by_opcode": {
+          "attn.fwd": 6.854534149169922e-07
+        },
+        "instances": 840,
+        "observed_rel": 6.854534149169922e-07
+      },
+      "gemm.relaxed": {
+        "bound_rel": 0.030808714410382982,
+        "by_opcode": {
+          "gemm.nn.q8": 0.006223474465390551,
+          "gemm.nt.q8": 0.005381972472238801
+        },
+        "instances": 838,
+        "observed_rel": 0.006223474465390551
+      },
+      "rms_norm.bwd": {
+        "bound_rel": 0.0004633897764117521,
+        "by_opcode": {
+          "rms_norm.bwd": 1.4109110548972794e-07
+        },
+        "instances": 120,
+        "observed_rel": 1.4109110548972794e-07
+      },
+      "rms_norm.fwd": {
+        "bound_rel": 3.4333474064290385e-05,
+        "by_opcode": {
+          "rms_norm.fwd": 4.005232168289175e-07
+        },
+        "instances": 1708,
+        "observed_rel": 4.005232168289175e-07
+      },
+      "softmax_rows.bwd": {
+        "bound_rel": 1.267635607065965e-05,
+        "by_opcode": {
+          "softmax_rows.bwd": 4.383600199371793e-07
+        },
+        "instances": 60,
+        "observed_rel": 4.383600199371793e-07
+      },
+      "softmax_xent.fwd": {
+        "bound_rel": 0.002938302075834778,
+        "by_opcode": {
+          "softmax_xent.fwd": 3.946492487633627e-05
+        },
+        "instances": 28,
+        "observed_rel": 3.946492487633627e-05
+      }
+    },
+    "steps": 2,
+    "val_fraction": 0.1
+  },
+  "kind": "seeml-numerics-certificate",
+  "plan": {
+    "file": "update_plan.seeu",
+    "plan_hash": "12a25add58faee3f",
+    "relaxed_gemms": 419,
+    "sha256": "c9c571ce031500f4144b8770a8062a30fb8e960f35ff9d95ada9c82f5ab22c13",
+    "source_model_hash": "0a4fa32d34ad1ff6",
+    "version": 18
+  },
+  "reasons": [],
+  "schema": 1,
+  "seeml_tool": "certify_numerics",
+  "source": {
+    "file": "smollm135.smf",
+    "sha256": "7b40a1048763a02c88441b02811ac1bd3b86d845cb8c8899398623c0ad18de2c"
+  },
+  "tolerances": {
+    "loss_rel": 0.01,
+    "relaxed_gemm_rel": 0.0078125,
+    "site_rel": 0.0001
+  },
+  "verdict": "granted"
+}

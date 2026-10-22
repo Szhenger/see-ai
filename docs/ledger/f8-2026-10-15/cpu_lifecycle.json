@@ -1,0 +1,14 @@
+{
+  "schema": 3,
+  "backend": "cpu",
+  "device": "host CPU",
+  "steps": 300,
+  "train_loss": [4.4769015, 3.6254117],
+  "validation_loss": [4.574264, 4.0137415],
+  "validation_scores": "shipped",
+  "validation_accuracy": [0.28125, 0.31453124],
+  "lifecycle": {"load_s": 0.4382, "data_s": 0.0002, "train_s": 512.3950, "eval_s": 18.3005, "evaluations": 2, "merge_s": 0.1397, "commit_s": 1.5487, "wall_s": 514.5224},
+  "gate": {"min_improvement": 0, "require_accuracy": false, "loss_ok": true, "accuracy_measured": true, "accuracy_ok": true, "forced": false},
+  "verdict": "accepted",
+  "committed": true
+}
