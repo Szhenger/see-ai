@@ -42,8 +42,19 @@ those guesses; it must be priced against measurements instead.
 
 ## Acceptance
 
-- Same-host table for SmolLM-135M (r8, S=128, 512 tok/step) and dec_wide:
-  SeeAI cpu/metal, MLX-LM f32/default, torch.compile cpu, torch mps.
-- Every row names device, precision mode, library versions and host key.
-- Loss-agreement check fails loudly on a mismatched configuration (tested
-  with a deliberately wrong rank).
+- [x] Same-host table for SmolLM-135M (r8, S=128, 512 tok/step): SeeAI
+  cpu/metal, MLX-LM true-f32/all-bf16, torch.compile cpu, torch mps —
+  `docs/benchmarks.md`, "The frontier row, measured (2026-09-22)" and
+  "The nightly frontier row's recipe, run by hand (2026-10-15)". (MLX-LM's
+  *default* mode on this F32-stored checkpoint is f32 under TF32-class
+  matmul, so the rows are labelled true-f32 and all-bf16 instead.)
+- [ ] The `dec_wide` column of that table — never run through the harness.
+- [x] Every row names device, precision mode, library versions and host
+  key — the harness's schema-versioned rows (`tool/frontier_run.py`).
+- [x] Loss-agreement check fails loudly on a mismatched configuration —
+  `test/tool/frontier_run_test.py`, `test_a_wrong_rank_is_refused_by_name`.
+- [ ] The nightly frontier row (design item 3) — the job is in
+  `nightly.yml` and has been skipped on every run since 2026-09-23 (29 as
+  of 2026-10-22): no runner labelled `self-hosted, macOS, ARM64` is
+  registered. Its recipe was run by hand on 2026-10-15 (two workflow bugs
+  fixed from that run). Blocked on registering a runner or dropping the job.

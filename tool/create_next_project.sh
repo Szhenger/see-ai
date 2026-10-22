@@ -20,7 +20,12 @@
 #     added live for triage (sev:*, good first issue, ...) are kept;
 #   * its milestone, only when the file names one (`milestone:`);
 #   * an issue that is CLOSED is left alone — its body is history — and
-#     only its board fields are reconciled.
+#     only its board fields are reconciled;
+#   * the board's Status is DERIVED, never set by hand: Done when the issue
+#     is closed, In Progress when the file carries a `## Status` heading or
+#     a checked acceptance box (`- [x]`: the work has started and says so),
+#     Todo otherwise. A roadmap issue without a file is Done when closed
+#     and left alone while open.
 # Every label and milestone a body names is upserted; the issue list and
 # the board are each fetched once, paginated, so nothing stops at a page
 # boundary; a board field is written only when its value differs. A
@@ -89,9 +94,32 @@ mutate() {  # mutate "<what>" gh-args...
   if [ "$DRY_RUN" = 1 ]; then echo "   would: $what" >&2; return 0; fi
   gh "$@"
 }
-# A paginated read as ONE array (gh api --paginate emits one array per
-# page; a test that reads them page by page sees only the last one).
-gh_pages() { gh api --paginate "$1" | jq -s 'add // []'; }
+# A paginated read as ONE array, page by page. On 2026-10-22 the issues
+# endpoint answered `page=2` with `[]` on one call in three (and `gh api
+# --paginate` read the repository as 100 issues of 162, or as none, with
+# no error), so: a page that fails, or comes back empty right after a
+# full one, is retried three times; a short list is never reconciled
+# against. Callers that know the true count check it (below).
+gh_pages() {  # gh_pages <path?query>  (the function adds per_page and page)
+  local page=1 out="[]" chunk n try prev=100
+  while :; do
+    chunk=""
+    for try in 1 2 3; do
+      chunk=$(gh api "$1&per_page=100&page=$page" 2>/dev/null) || chunk=""
+      [ -n "$chunk" ] && { [ "$(jq 'length' <<< "$chunk")" -gt 0 ] || [ "$prev" -lt 100 ]; } && break
+      chunk=""; sleep "$try"
+    done
+    if [ -z "$chunk" ]; then
+      [ "$prev" -lt 100 ] && break  # a genuinely empty page after a short one: the end
+      echo "error: $1 (page $page) failed three times; nothing written" >&2; return 1
+    fi
+    n=$(jq 'length' <<< "$chunk")
+    out=$(printf '%s\n%s\n' "$out" "$chunk" | jq -c -s 'add')
+    [ "$n" -lt 100 ] && break
+    prev=$n; page=$((page + 1))
+  done
+  printf '%s\n' "$out"
+}
 # A body reaches gh through a file, never through a pipe into mutate: a
 # pipe into a command that does not read it (a dry run, a labels-only
 # edit) is a SIGPIPE race that aborts the script under pipefail.
@@ -144,7 +172,7 @@ echo "   ok: $(jq -r 'join(" ")' <<< "$wanted_labels")"
 
 # --- milestones: every milestone any body names --------------------------
 echo "== milestones"
-have_ms=$(gh_pages "repos/$REPO/milestones?state=all&per_page=100" | jq -c '[.[].title]')
+have_ms=$(gh_pages "repos/$REPO/milestones?state=all" | jq -c '[.[].title]')
 for f in "${BODIES[@]}"; do fm "$f" milestone; done | sed '/^$/d' | LC_ALL=C sort -u |
 while IFS= read -r m; do
   if jq -e --arg m "$m" 'index($m) != null' <<< "$have_ms" >/dev/null; then echo "   ok: $m"
@@ -153,11 +181,27 @@ done
 
 # --- issues: one fetch, then create or edit per body ---------------------
 echo "== issues"
-LIVE=$(gh_pages "repos/$REPO/issues?state=all&per_page=100" |
-  jq -c '.[] | select(.pull_request == null) |
+# The list is trusted only when it is as long as the search index says the
+# repository is (issues and pull requests both; the index may lag a create
+# by seconds, so a mismatch is retried, then fatal). A short list would
+# read live issues as missing and create every body again.
+# (The count itself read as 0 on one call in three that day: a zero is a
+# failed read, retried.)
+counted() {  # counted gh-args...  → the first nonzero number gh prints, or 0
+  local try n; for try in 1 2 3 4 5; do n=$(gh "$@" 2>/dev/null || echo 0); [ "${n:-0}" -gt 0 ] && { echo "$n"; return 0; }; sleep "$try"; done; echo 0
+}
+expected=$(counted api "search/issues?q=repo:$REPO" --jq '.total_count')
+[ "$expected" -gt 0 ] || { echo "error: the search index counts no issues in $REPO; nothing written — rerun" >&2; exit 1; }
+for try in 1 2 3 4 5; do
+  LIVE_RAW=$(gh_pages "repos/$REPO/issues?state=all") || LIVE_RAW="[]"
+  [ "$(jq 'length' <<< "$LIVE_RAW")" -eq "$expected" ] && break
+  LIVE_RAW=""; sleep "$try"
+done
+[ -n "$LIVE_RAW" ] || { echo "error: the issue list of $REPO never read as the $expected the search index counts; nothing written — rerun" >&2; exit 1; }
+LIVE=$(jq -c '.[] | select(.pull_request == null) |
          {number, title, state, body: (.body // ""), milestone: (.milestone.title // ""),
-          labels: ([.labels[].name] | unique)}')
-ITEMS=""  # url|Plane|Origin|Priority
+          labels: ([.labels[].name] | unique)}' <<< "$LIVE_RAW")
+ITEMS=""  # url|Plane|Origin|Priority|Status
 for f in "${BODIES[@]}"; do
   title=$(fm "$f" title)
   labels_json=$(fm "$f" labels | list_json)
@@ -169,6 +213,8 @@ for f in "${BODIES[@]}"; do
   number=$(fm "$f" number)
   body "$f" > "$TMPD/body"
   want_body=$(norm < "$TMPD/body")
+  # The board's Status, derived from the file and the live state (header).
+  status="Todo"; grep -q -e '^## Status' -e '^- \[x\]' "$f" && status="In Progress"
 
   # Identity: `number:` when the file names one, else the exact title. A
   # title held by several live issues (the retitling hazard the 2026-09-24
@@ -196,6 +242,7 @@ for f in "${BODIES[@]}"; do
     num=$(jq -r .number <<< "$live")
     url="https://github.com/$REPO/issues/$num"
     if [ "$(jq -r .state <<< "$live")" = "closed" ]; then
+      status="Done"
       echo "   closed, left alone (#$num): $title"
     else
       live_body=$(jq -r .body <<< "$live" | norm)
@@ -224,19 +271,23 @@ for f in "${BODIES[@]}"; do
       fi
     fi
   fi
-  ITEMS+="$url|$plane|$origin|$priority"$'\n'
+  ITEMS+="$url|$plane|$origin|$priority|$status"$'\n'
 done
 while IFS='|' read -r num plane origin priority; do
   [ -n "$num" ] || continue
-  ITEMS+="https://github.com/$REPO/issues/$num|$plane|$origin|$priority"$'\n'
+  # No file to read a `## Status` from: Done once closed, untouched while open.
+  status=""
+  [ "$(jq -r -s --argjson n "$num" 'first(.[] | select(.number == $n) | .state) // "open"' <<< "$LIVE")" = "closed" ] && status="Done"
+  ITEMS+="https://github.com/$REPO/issues/$num|$plane|$origin|$priority|$status"$'\n'
 done <<< "$EXISTING_ITEMS"
 
 # --- create or reuse the project ------------------------------------------
 echo "== project"
 proj_json=$(gh project list --owner "$OWNER" --format json --limit 100 |
   jq -c --arg t "$PROJECT_TITLE" 'first(.projects[] | select(.title == $t)) // empty')
+reused=""
 if [ -n "$proj_json" ]; then
-  echo "   reusing existing project"
+  echo "   reusing existing project"; reused=1
 else
   proj_json=$(mutate "create project '$PROJECT_TITLE'" project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json)
   if [ -z "$proj_json" ]; then
@@ -282,7 +333,17 @@ ensure_field "Priority" "P0,P1,P2"
 [ "$DRY_RUN" = 1 ] || fields_json=$(gh project field-list "$proj_num" --owner "$OWNER" --format json)  # sees the fields just created
 # One fetch of the board: item ids and current field values, so a run
 # that changes nothing writes nothing.
-items_json=$(gh project item-list "$proj_num" --owner "$OWNER" --format json --limit 500)
+# The same trust rule for the board: the item list must be as long as the
+# project says it is (it read as empty once on 2026-10-22), or every card
+# would be re-added and re-set from nothing.
+expected=$(counted project view "$proj_num" --owner "$OWNER" --format json --jq '.items.totalCount')
+[ "$expected" -gt 0 ] || [ -z "$reused" ] || { echo "error: the board reads as holding no items; nothing written to it — rerun" >&2; exit 1; }
+for try in 1 2 3 4 5; do
+  items_json=$(gh project item-list "$proj_num" --owner "$OWNER" --format json --limit 500)
+  [ "$(jq '.items | length' <<< "$items_json")" -eq "$expected" ] && break
+  items_json=""; sleep "$try"
+done
+[ -n "$items_json" ] || { echo "error: the board never read as the $expected items it holds; nothing written to it — rerun" >&2; exit 1; }
 
 set_field() {  # set_field <item-id> <item-url> <field-name> <option-name>
   local fid oid key current
@@ -306,7 +367,7 @@ set_field() {  # set_field <item-id> <item-url> <field-name> <option-name>
 }
 
 echo "== items"
-while IFS='|' read -r url plane origin priority; do
+while IFS='|' read -r url plane origin priority status; do
   [ -n "$url" ] || continue
   item_id=$(jq -r --arg u "$url" 'first(.items[] | select(.content.url == $u) | .id) // empty' <<< "$items_json")
   if [ -z "$item_id" ]; then
@@ -317,7 +378,8 @@ while IFS='|' read -r url plane origin priority; do
   set_field "$item_id" "$url" "Plane" "$plane"
   set_field "$item_id" "$url" "Origin" "$origin"
   set_field "$item_id" "$url" "Priority" "$priority"
-  echo "   $url  [$plane | ${origin:-—} | $priority]"
+  set_field "$item_id" "$url" "Status" "$status"
+  echo "   $url  [$plane | ${origin:-—} | $priority | ${status:-—}]"
 done <<< "$ITEMS"
 
 echo

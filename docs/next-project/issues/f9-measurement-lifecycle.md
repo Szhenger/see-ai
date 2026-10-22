@@ -86,10 +86,24 @@ visibly and run after the build (F36).
 
 ## Acceptance
 
-- A train-only Metal profile of SmolLM-135M committed to
-  `docs/benchmarks.md` with per-family shares (frozen GEMMs, LoRA,
-  elementwise, attention, CPU-resident, optimizer) and the outside-kernel
-  remainder.
-- The gate-share and lifecycle row for the real package on both backends.
-- The per-column int8 validation delta reported; if it does not close the
-  +0.10 nats, a follow-up issue names the residual.
+- [x] A train-only Metal profile of SmolLM-135M in `docs/benchmarks.md`
+  with per-family shares and the outside-kernel remainder — "The relaxed
+  GEMM family on Metal, measured" (2026-10-15); the profile header counts
+  the passes it saw.
+- [x] The gate-share and lifecycle row for the real package on both
+  backends — 3.9 % (metal, exact), 5.4 % (metal, relaxed), 3.6 % (cpu) of
+  a 300-step update with two evaluations, 36–38 % under `--eval-every
+  auto` ("Measurement rules, and the rows they were missing", 2026-10-15).
+- [x] The per-column int8 validation delta reported — the step-0 gap
+  closed, +0.005 nats at step 300 against f32, a quarter of the per-tensor
+  residual; no follow-up issue needed.
+- [x] The rule that CPU decisions gate on the real-package row, with the
+  fixture's under-read explained — 6 % on one code state; the 233–269
+  against 332 were readings of different code states.
+- [x] CI builds the measurement code where it is tested — the test job
+  sets `SEEML_BENCH=1` and `SEEML_ACCELERATE=1` (N44, N43), the e2e job
+  runs every tool suite and fails on a skip that names a missing
+  dependency (N45), the HF-import compile check runs after the build and
+  skips visibly (F36).
+
+Every line met as of 2026-10-15; closed 2026-10-22.

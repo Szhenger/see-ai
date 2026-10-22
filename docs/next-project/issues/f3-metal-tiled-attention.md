@@ -86,7 +86,23 @@ names for it. Memory line met; tok/s line reported, not met.
 
 ## Acceptance
 
-- GPU and CPU tiled attention agree bit-for-bit (unfused port) or within
-  the certified bound (fused), at model shapes including ragged S.
-- S=2048 SmolLM-shaped step runs entirely on the GPU; peak memory and
-  tok/s reported against the cached family and against F1's MLX row.
+- [x] GPU and CPU tiled attention agree bit-for-bit (the unfused port) at
+  model shapes including ragged S — the twin test in
+  `seeml_metal_backend_test` (three shapes; d = 16 and 48 drive the
+  blocked form, d = 96 the per-row one) and the tiled decoder in the
+  program-family test; two Metal runs byte-identical.
+- [ ] The fused flash-style form (design item 2: QKᵀ and PV on
+  `simdgroup_matrix` tiles) within the certified bound — not started; it
+  changes the reduction order and takes the certificate.
+- [x] S=2048 SmolLM-shaped step runs entirely on the GPU — no CPU-resident
+  opcode in the step; arena 4.12 GB against the cached family's 9.03 GB.
+- [x] Peak memory and tok/s reported against the cached family and F1's
+  MLX row — "Tiled attention on Metal at S = 2048" (2026-10-20): 3,473 ms
+  per step (590 tok/s) against the cached family's 1,659 ms and MLX-LM
+  bf16's 789 ms. Reported, not at parity: the blocked kernels are still
+  2.1× the cached family, and the simdgroup-matrix form above is the
+  remaining step.
+- [x] `--attention auto` chooses the tiled family for either backend from
+  `--attention-cache-budget-mib` (design item 3); a budget read from the
+  compiling device is out of scope, since the plan's bytes must not depend
+  on the host (the #163 review's rule for `--remat auto`).

@@ -159,6 +159,16 @@ What the file owns, and what it does not:
   `milestone:` leaves the live milestone alone;
 - **closed issues are history** — their body, labels and milestone are
   left alone and only their board fields are reconciled.
+- **the board's Status, derived** — Done when the issue is closed, In
+  Progress when the file carries a `## Status` heading (the dated section
+  a landing commit appends) or a checked acceptance box, Todo otherwise; a roadmap issue without a
+  file is Done when closed and left alone while open. Never set by hand:
+  a run of the script is what moves a card.
+- **acceptance as a task list** — each acceptance line is `- [x]` or
+  `- [ ]` with the measured value and the `docs/benchmarks.md` section it
+  is read from, so GitHub shows the issue's progress without reading the
+  prose; an acceptance line the measurement shows unreachable is kept,
+  marked superseded, and the line that replaces it follows it.
 
 Then it creates or reuses the **“SeeAI Two-Plane Overhaul”** GitHub
 Project with `Plane` / `Origin` / `Priority` fields — their option sets

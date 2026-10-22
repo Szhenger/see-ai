@@ -132,7 +132,20 @@ run, not a design question.
 
 ## Acceptance
 
-- A field-report table per model: arena, peak RSS / arena, tok/s,
-  val-loss parity, compile time.
-- 1.5B either trains on 16 GB or is refused at compile time with a correct
-  estimate — never an OOM at run time.
+- [x] A field-report table per model for the first two rungs — arena,
+  peak RSS / arena, tok/s, val-loss parity, compile time: "The scale
+  ladder's first two rungs" (2026-10-20). SmolLM2-360M 3.19 GB, 1.8×, 971
+  tok/s on Metal (0.86× `torch.compile` MPS f32), within 0.013 nats of
+  torch, 1.45 s; Qwen2.5-0.5B 4.23 GB, 1.8×, 726 tok/s (0.92×), 0.013
+  nats, 2.59 s.
+- [x] Rematerialization (design item 2) bit-identical to the plain plan —
+  `--remat auto|off|on`, "Rematerialization at three rungs" (2026-10-20):
+  with the binder fix the arenas are 1.34 / 2.77 / 3.69 GB at the three
+  rungs (−15.0 / −13.1 / −12.8 %), the committed model the same SHA-256
+  on both backends.
+- [ ] 8-bit optimizer states (design item 3) — not started.
+- [ ] The 1.5B rung: trains on 16 GB or is refused at compile time with a
+  correct estimate, never an OOM at run time — not attempted; needs item
+  3 and the disk-mode package (#158, landed).
+- [ ] The step-0 estimate-against-exact ratio at each rung — waits on S1
+  (#147) fixing N29.

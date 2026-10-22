@@ -116,12 +116,31 @@ hash.
 
 ## Acceptance
 
-- SmolLM-135M GPU tok/s measured against F1's MLX-LM **all-bf16** row
-  (4,605 tok/s on the M5, the 2026-09-22 frontier row in
-  `docs/benchmarks.md`; not the trainer's default mode, which on this
-  F32-stored checkpoint is f32 weights under TF32-class matmul); target
-  ≥ 0.9× on the same M5.
-- Certificate: per-site error inside the stated bound; 300-step val loss
-  within 1e-3 relative of the f32 run; gate decision unchanged.
-- Two runs of a relaxed plan byte-identical; f32 plans bit-identical to
-  today.
+- [x] SmolLM-135M GPU tok/s measured against F1's MLX-LM all-bf16 row on
+  the same M5 — relaxed 2,519 tok/s against the exact package's 1,783
+  (1.41×) and MLX-LM all-bf16's 4,465 (0.56×), `docs/benchmarks.md`, "The
+  relaxed GEMM family on Metal, measured (2026-10-15)".
+- Superseded 2026-10-22, the line as first written: *target ≥ 0.9× on the
+  same M5.* It was set against the 2026-09-18 Outlook's guess, and the
+  measurement shows it is out of this family's reach by construction: the
+  frozen GEMMs are 47.6 % of the exact step's kernel time, so a relaxed
+  family that cost nothing would top out at 1.76× on the measured step,
+  and 0.9× of 4,465 needs 2.25×. The 0.9× line is the milestone's, carried
+  by F2 + F7 (#138) + F8 (#139) together and read from the relaxed package
+  after each; what this issue still owes is the next line.
+- [ ] The relaxed package re-measured on the F7-era kernels — F7's steps 1
+  and 3 (2026-10-19) were measured on the exact package only, and F7's
+  status names the relaxed row as not re-measured.
+- [x] Certificate: per-site error inside the stated bound (`gemm.relaxed`
+  observed 6.2e-3 against 2⁻⁷); 300-step val loss within 1e-3 relative of
+  the f32 run (2.4e-5); gate decision unchanged.
+- [x] Two runs of a relaxed plan byte-identical (`93fb4a37…` twice); f32
+  plans bit-identical to today (the exact package unchanged, 1,783 against
+  the 2026-09-22 row's 1,802).
+- [x] Every build path refuses an uncertified relaxed plan; the certificate
+  carries the per-opcode max relative error, refuses `rtol <= 0` and
+  non-finite values, and binds to the plan hash and the source hash (N17,
+  F41, F72, N35 — closed 2026-10-15).
+- [ ] F42's residual: the diff report does not yet record whether the C++
+  arm ran the relaxed kernels, so an exact-vs-exact diff still vouches for
+  a site vacuously.
