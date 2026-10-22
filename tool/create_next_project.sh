@@ -97,26 +97,26 @@ mutate() {  # mutate "<what>" gh-args...
 # A paginated read as ONE array, page by page. On 2026-10-22 the issues
 # endpoint answered `page=2` with `[]` on one call in three (and `gh api
 # --paginate` read the repository as 100 issues of 162, or as none, with
-# no error), so: a page that fails, or comes back empty right after a
-# full one, is retried three times; a short list is never reconciled
-# against. Callers that know the true count check it (below).
-gh_pages() {  # gh_pages <path?query>  (the function adds per_page and page)
-  local page=1 out="[]" chunk n try prev=100
+# no error), so a caller that knows the true count passes it: a page that
+# fails, or comes back empty before the count is reached, is retried
+# three times, then fatal. Without a count an empty page is the end (a
+# collection with none, or exactly 100 or 200, is read as it is).
+gh_pages() {  # gh_pages <path?query> [count]  (the function adds per_page and page)
+  local page=1 out="[]" have=0 chunk n try want="${2:-}"
   while :; do
     chunk=""
     for try in 1 2 3; do
       chunk=$(gh api "$1&per_page=100&page=$page" 2>/dev/null) || chunk=""
-      [ -n "$chunk" ] && { [ "$(jq 'length' <<< "$chunk")" -gt 0 ] || [ "$prev" -lt 100 ]; } && break
-      chunk=""; sleep "$try"
+      [ -n "$chunk" ] && { [ "$(jq 'length' <<< "$chunk")" -gt 0 ] || [ -z "$want" ] || [ "$have" -ge "$want" ]; } && break
+      chunk=""; [ "$try" -lt 3 ] && sleep "$try"
     done
-    if [ -z "$chunk" ]; then
-      [ "$prev" -lt 100 ] && break  # a genuinely empty page after a short one: the end
-      echo "error: $1 (page $page) failed three times; nothing written" >&2; return 1
-    fi
+    if [ -z "$chunk" ]; then echo "error: $1 (page $page) failed three times" >&2; return 1; fi
     n=$(jq 'length' <<< "$chunk")
+    [ "$n" -gt 0 ] || break
     out=$(printf '%s\n%s\n' "$out" "$chunk" | jq -c -s 'add')
+    have=$((have + n))
     [ "$n" -lt 100 ] && break
-    prev=$n; page=$((page + 1))
+    page=$((page + 1))
   done
   printf '%s\n' "$out"
 }
@@ -181,21 +181,29 @@ done
 
 # --- issues: one fetch, then create or edit per body ---------------------
 echo "== issues"
-# The list is trusted only when it is as long as the search index says the
-# repository is (issues and pull requests both; the index may lag a create
-# by seconds, so a mismatch is retried, then fatal). A short list would
-# read live issues as missing and create every body again.
+# The list is trusted only when it is at least as long as the search index
+# says the repository is (issues and pull requests both; the index may lag
+# a create by seconds, so a shorter list is retried, then fatal — a longer
+# one is the index lagging and is fine). A short list would read live
+# issues as missing and create every body again.
 # (The count itself read as 0 on one call in three that day: a zero is a
 # failed read, retried.)
-counted() {  # counted gh-args...  → the first nonzero number gh prints, or 0
-  local try n; for try in 1 2 3 4 5; do n=$(gh "$@" 2>/dev/null || echo 0); [ "${n:-0}" -gt 0 ] && { echo "$n"; return 0; }; sleep "$try"; done; echo 0
+counted() {  # counted <min> gh-args...  → the first number ≥ min gh prints, or -1
+  local min="$1" try n; shift
+  for try in 1 2 3 4 5; do
+    n=$(gh "$@" 2>/dev/null) || n=""
+    case "$n" in ''|*[!0-9]*) n="" ;; esac  # not a number: a failed read
+    [ -n "$n" ] && [ "$n" -ge "$min" ] && { echo "$n"; return 0; }
+    [ "$try" -lt 5 ] && sleep "$try"
+  done
+  echo -1
 }
-expected=$(counted api "search/issues?q=repo:$REPO" --jq '.total_count')
+expected=$(counted 1 api "search/issues?q=repo:$REPO" --jq '.total_count')
 [ "$expected" -gt 0 ] || { echo "error: the search index counts no issues in $REPO; nothing written — rerun" >&2; exit 1; }
 for try in 1 2 3 4 5; do
-  LIVE_RAW=$(gh_pages "repos/$REPO/issues?state=all") || LIVE_RAW="[]"
-  [ "$(jq 'length' <<< "$LIVE_RAW")" -eq "$expected" ] && break
-  LIVE_RAW=""; sleep "$try"
+  LIVE_RAW=$(gh_pages "repos/$REPO/issues?state=all" "$expected") || LIVE_RAW="[]"
+  [ "$(jq 'length' <<< "$LIVE_RAW")" -ge "$expected" ] && break
+  LIVE_RAW=""; [ "$try" -lt 5 ] && sleep "$try"
 done
 [ -n "$LIVE_RAW" ] || { echo "error: the issue list of $REPO never read as the $expected the search index counts; nothing written — rerun" >&2; exit 1; }
 LIVE=$(jq -c '.[] | select(.pull_request == null) |
@@ -285,9 +293,8 @@ done <<< "$EXISTING_ITEMS"
 echo "== project"
 proj_json=$(gh project list --owner "$OWNER" --format json --limit 100 |
   jq -c --arg t "$PROJECT_TITLE" 'first(.projects[] | select(.title == $t)) // empty')
-reused=""
 if [ -n "$proj_json" ]; then
-  echo "   reusing existing project"; reused=1
+  echo "   reusing existing project"
 else
   proj_json=$(mutate "create project '$PROJECT_TITLE'" project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json)
   if [ -z "$proj_json" ]; then
@@ -333,15 +340,17 @@ ensure_field "Priority" "P0,P1,P2"
 [ "$DRY_RUN" = 1 ] || fields_json=$(gh project field-list "$proj_num" --owner "$OWNER" --format json)  # sees the fields just created
 # One fetch of the board: item ids and current field values, so a run
 # that changes nothing writes nothing.
-# The same trust rule for the board: the item list must be as long as the
-# project says it is (it read as empty once on 2026-10-22), or every card
-# would be re-added and re-set from nothing.
-expected=$(counted project view "$proj_num" --owner "$OWNER" --format json --jq '.items.totalCount')
-[ "$expected" -gt 0 ] || [ -z "$reused" ] || { echo "error: the board reads as holding no items; nothing written to it — rerun" >&2; exit 1; }
+# The same trust rule for the board: the item list must be at least as
+# long as the project says it is (it read as empty once on 2026-10-22), or
+# every card would be re-added and re-set from nothing. The count is read
+# from the project itself (not the search index), so a zero is an answer:
+# a board just created, or one a failed first run left empty, reconciles.
+expected=$(counted 0 project view "$proj_num" --owner "$OWNER" --format json --jq '.items.totalCount')
+[ "$expected" -ge 0 ] || { echo "error: the board's item count never read; nothing written to it — rerun" >&2; exit 1; }
 for try in 1 2 3 4 5; do
   items_json=$(gh project item-list "$proj_num" --owner "$OWNER" --format json --limit 500)
-  [ "$(jq '.items | length' <<< "$items_json")" -eq "$expected" ] && break
-  items_json=""; sleep "$try"
+  [ "$(jq '.items | length' <<< "$items_json")" -ge "$expected" ] && break
+  items_json=""; [ "$try" -lt 5 ] && sleep "$try"
 done
 [ -n "$items_json" ] || { echo "error: the board never read as the $expected items it holds; nothing written to it — rerun" >&2; exit 1; }
 
