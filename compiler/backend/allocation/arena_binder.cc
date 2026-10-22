@@ -97,8 +97,10 @@ uint64_t LinearScanTransients(
   uint64_t high_water = base;
 
   for (const Interval& iv : intervals) {
+    // Every scanned interval has a finite death: pinned values were bound
+    // above, before the scan, so no block is held open to the end here.
     std::erase_if(active, [&](const ActiveBlock& ab) {
-      return ab.free_after != SIZE_MAX && ab.free_after < iv.start;
+      return ab.free_after < iv.start;
     });
     uint64_t offset = base;
     for (const ActiveBlock& ab : active) {

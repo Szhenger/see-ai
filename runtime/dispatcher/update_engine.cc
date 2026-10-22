@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -49,18 +50,24 @@ kernels::GemmTiles UpdateEngine::gemm_tiles() const {
   return KernelPolicyOf(header_).gemm_tiles;
 }
 
-UpdateEngine::SourceMapping::~SourceMapping() { Release(); }
+UpdateEngine::Mapping::~Mapping() { Release(); }
 
-UpdateEngine::PlanMapping::~PlanMapping() { Release(); }
+UpdateEngine::Mapping::Mapping(Mapping&& other) noexcept
+    : data(std::exchange(other.data, nullptr)),
+      bytes(std::exchange(other.bytes, 0)) {}
 
-void UpdateEngine::PlanMapping::Release() {
-  if (data) ::munmap(const_cast<uint8_t*>(data), bytes);
-  data = nullptr;
-  bytes = 0;
+UpdateEngine::Mapping& UpdateEngine::Mapping::operator=(
+    Mapping&& other) noexcept {
+  if (this != &other) {
+    Release();
+    data = std::exchange(other.data, nullptr);
+    bytes = std::exchange(other.bytes, 0);
+  }
+  return *this;
 }
 
-void UpdateEngine::SourceMapping::Release() {
-  if (data) ::munmap(const_cast<uint8_t*>(data), static_cast<size_t>(bytes));
+void UpdateEngine::Mapping::Release() {
+  if (data) ::munmap(const_cast<uint8_t*>(data), bytes);
   data = nullptr;
   bytes = 0;
 }
@@ -82,14 +89,13 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
     return diag::executing::Error("cannot size the source model '" +
                                   source_model_path + "'");
   }
-  const auto bytes = static_cast<uint64_t>(st.st_size);
-  void* map = ::mmap(nullptr, static_cast<size_t>(bytes), PROT_READ,
-                     MAP_PRIVATE, fd, 0);
+  const auto bytes = static_cast<size_t>(st.st_size);
+  void* map = ::mmap(nullptr, bytes, PROT_READ, MAP_PRIVATE, fd, 0);
   ::close(fd);
   if (map == MAP_FAILED)
     return diag::executing::Error("cannot map the source model '" +
                                   source_model_path + "'");
-  SourceMapping candidate;
+  Mapping candidate;
   candidate.data = static_cast<const uint8_t*>(map);
   candidate.bytes = bytes;
   if (up::ContentHash64(candidate.data, bytes) != header_.source_model_hash)
@@ -104,11 +110,7 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
   if (auto r = backend_->BindSource(candidate.data, bytes); !r)
     return diag::executing::Error("backend cannot bind the source model: " +
                                   r.error());
-  source_.Release();
-  source_.data = candidate.data;
-  source_.bytes = candidate.bytes;
-  candidate.data = nullptr;  // ownership moved; do not unmap twice
-  candidate.bytes = 0;
+  source_ = std::move(candidate);  // releases the previous mapping
   return {};
 }
 
@@ -220,7 +222,7 @@ std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
   if (map == MAP_FAILED)
     return diag::executing::Error("cannot map the update plan '" + path +
                                   "' (" + std::strerror(errno) + ")");
-  PlanMapping candidate;
+  Mapping candidate;
   candidate.data = static_cast<const uint8_t*>(map);
   candidate.bytes = bytes;
   // Validate the candidate first: a rejected file must leave the previous
@@ -230,11 +232,7 @@ std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
   if (auto r = Initialize(candidate.data, candidate.bytes); !r) return r;
   owned_plan_.clear();
   owned_plan_.shrink_to_fit();
-  plan_map_.Release();
-  plan_map_.data = candidate.data;
-  plan_map_.bytes = candidate.bytes;
-  candidate.data = nullptr;  // ownership moved; do not unmap twice
-  candidate.bytes = 0;
+  plan_map_ = std::move(candidate);  // releases the previous mapping
   return {};
 }
 

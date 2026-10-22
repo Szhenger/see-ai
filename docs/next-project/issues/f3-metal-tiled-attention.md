@@ -69,6 +69,21 @@ the block size; the fused flash-style form follows from it. The
 acceptance's "runs entirely on the GPU" line is met; its tok/s line is
 reported, not met.
 
+Step 2, first form, later the same day: the blocked kernels
+(`k_attn_*_tiled_blk`, head width ≤ 64) — a threadgroup of 128 query or
+key rows, the other operand's rows staged through threadgroup memory 32
+at a time, one thread per row, serial over the other index (the CPU's own
+order, so no cross-lane reduction anywhere) — bring the S = 2048 step
+from 9,763 to **3,473 ms** (590 tok/s) against the cached family's 1,659
+in the same session, with the same bytes as the per-row form (the twin
+test drives both; wider heads keep the per-row kernels). Per layer the
+forward, dQ, dK and dV cost 17.4 / 36.2 / 25.4 / 10.9 ms — 2.7 s of the
+step — and the bound is now the scalar dot, one threadgroup-memory read
+per multiply-add. The remaining step is the same blocking on
+`simdgroup_matrix` tiles for QKᵀ and PV (the fused flash-style kernel),
+which changes the reduction order and takes the certificate the issue
+names for it. Memory line met; tok/s line reported, not met.
+
 ## Acceptance
 
 - GPU and CPU tiled attention agree bit-for-bit (unfused port) or within

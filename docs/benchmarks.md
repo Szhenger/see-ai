@@ -746,19 +746,29 @@ the same tokens per step on the same M5 (`out/f7-2026-10-19/f3`):
 
 | run | step (ms) | tok/s | arena / peak | validation 0 → 300 |
 |---|---:|---:|---|---|
-| SeeAI `metal`, tiled (this port, 20-step run) | 9,763 | 210 | 4.12 GB / 5.5 GB RSS | 3.7054 → 3.4855 (300-step row, first port) |
-| SeeAI `metal`, cached | 1,531 (row) / 1,709 (20-step) | 1,338 | 9.03 GB / 10.1 GB RSS | 3.7054 → 3.4855 |
+| SeeAI `metal`, tiled, per-row kernels (step 1, 20-step run) | 9,763 | 210 | 4.12 GB / 5.5 GB RSS | 3.7054 → 3.4855 (300-step row, first port) |
+| SeeAI `metal`, tiled, blocked kernels (step 2, first form, 20-step run) | 3,473 | 590 | 4.12 GB | same bytes as the per-row form |
+| SeeAI `metal`, cached | 1,531 (row) / 1,659 (20-step, same session as the blocked row) | 1,338 | 9.03 GB / 10.1 GB RSS | 3.7054 → 3.4855 |
 | MLX-LM all-bf16 | 789 | 2,596 | 6.2 GB device peak | 3.7069 → 3.4748 |
 | MLX-LM true f32 | 1,823 | 1,123 | 10.6 GB device peak | 3.7055 → 3.4801 |
 | `torch.compile` MPS, bf16 base | 998 | 2,053 | 10.3 GB device peak | 3.7070 → 3.4741 |
 
 The tiled family holds the memory line (less than half the cached arena,
 below both frameworks' f32 peaks) and the step runs with no CPU-resident
-opcode, but the per-row kernels are traffic-bound: every lane streams
-whole rows from L2, ~14 GB per kernel at this length, 75–90 ms per layer
-per kernel on the serialized profile against 1.4 ms for a frozen GEMM.
-A blocked kernel (K / V blocks staged once per 128 query rows) is the
-next step; the numbers above are the honest state of the port.
+opcode. The per-row kernels (step 1) were traffic-bound — every lane
+streamed whole rows from L2, ~14 GB per kernel at this length, 75–90 ms
+per layer per kernel. The blocked kernels (step 2, first form: a
+threadgroup of 128 query or key rows, the other operand staged through
+threadgroup memory 32 rows at a time, one thread per row in the CPU's
+own summation order) cut that to 17.4 ms (forward), 36.2 (dQ), 25.4
+(dK) and 10.9 (dV) per layer on the serialized profile — 2.7 s of the
+3.45 s step, 2.8× faster than the per-row form and still 2.1× the cached
+family, whose attention is batched simdgroup-matrix GEMMs. What binds
+now is the scalar dot: one threadgroup-memory read per multiply-add, at
+5–10 % of the GPU's rate. The next form is the same blocking with the
+QKᵀ and PV products on `simdgroup_matrix` tiles — the fused flash-style
+kernel the issue's step 2 names — which changes the reduction order and
+so needs the certificate the issue provides for it.
 
 ### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
 

@@ -1408,6 +1408,334 @@ kernel void k_attn_dv_tiled(KSIG, uint g [[thread_position_in_grid]],
   }
 }
 
+// --- Tiled attention, the blocked form (F3 #131 step 2, head width <= 64) --
+// A threadgroup of 128 threads owns 128 consecutive query rows (forward,
+// dQ) or key rows (dK, dV) of one (b, h); the other operand's rows come
+// through threadgroup memory 32 at a time, loaded cooperatively once per
+// block and read by every thread, so a row of K is fetched once per 128
+// query rows instead of once per query row — the per-row kernels above
+// streamed it from L2 once per row, ~14 GB per kernel at S = 2048. One
+// thread per row, serial over the other index, nothing reduced across
+// lanes: every output is summed in the CPU kernels' own order (serial j
+// for a query row, serial i for a key row) with the CPU kernels'
+// expressions, and the only difference from the reference is the f32
+// dot in place of the double. Bitwise run-to-run on its device. The
+// head's own row lives in registers (64 floats, zero past d); the
+// accumulators are kept 32 columns at a time, so the pass over the
+// blocks runs once per column half.
+#define ATT_BLK 32u
+#define ATT_ROWS 128u
+#define ATT_D 64u
+// Thread t of 128 loads 16 consecutive floats of row (t / 4) of a 32-row
+// block whose rows are `D` floats apart in memory and `d` wide (zero
+// past d, so a narrower head reads as a 64-wide one).
+static inline void stage_rows(threadgroup float* tile, device const float* base,
+                              uint row0, uint rows_total, uint D, uint d,
+                              uint t, bool vec) {
+  const uint r = t >> 2, c0 = (t & 3u) * 16u;
+  const uint row = row0 + r;
+  threadgroup float* dst = tile + r * ATT_D + c0;
+  if (row < rows_total && c0 < d) {
+    device const float* src = base + row * D + c0;
+    if (vec && c0 + 16u <= d) {
+      for (uint q = 0; q < 16u; q += 4u) {
+        const float4 x = *(device const float4*)(src + q);
+        dst[q] = x[0]; dst[q + 1u] = x[1]; dst[q + 2u] = x[2]; dst[q + 3u] = x[3];
+      }
+    } else {
+      for (uint q = 0; q < 16u; ++q) dst[q] = (c0 + q < d) ? src[q] : 0.0f;
+    }
+  } else {
+    for (uint q = 0; q < 16u; ++q) dst[q] = 0.0f;
+  }
+}
+// The dot over the full 64-float row — both sides are zero past d, and
+// adding those zero products changes no bit — so the loop is a constant
+// one the compiler unrolls, and the row stays in registers (a loop to the
+// runtime d indexes the register array dynamically and spills it).
+static inline float tg_dot(thread const float* r, threadgroup const float* row,
+                           uint) {
+  float dot = 0.0f;
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < ATT_D; ++c) dot += r[c] * row[c];
+  return dot;
+}
+kernel void k_attn_fwd_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                 uint t [[thread_index_in_threadgroup]]) {
+  threadgroup float kt[ATT_BLK * ATT_D];
+  threadgroup float vt[ATT_BLK * ATT_D];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + ATT_ROWS - 1u) / ATT_ROWS;
+  const uint bh = tg.x / nblk, i0 = (tg.x % nblk) * ATT_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const uint i = i0 + t;
+  const bool live = i < S;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  float qr[ATT_D];
+  #pragma clang loop unroll(full)
+
+  for (uint c = 0; c < ATT_D; ++c) qr[c] = (live && c < d) ? qbase[i * D + c] : 0.0f;
+  const uint last = min(i0 + ATT_ROWS, S);  // rows this group covers
+  const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
+  float m = -INFINITY;
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (live)
+      for (uint jj = 0; jj < ATT_BLK; ++jj) {
+        const uint j = kb * ATT_BLK + jj;
+        if (j > i) break;
+        m = max(m, tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d);
+      }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  float l = 0.0f;
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (live)
+      for (uint jj = 0; jj < ATT_BLK; ++jj) {
+        const uint j = kb * ATT_BLK + jj;
+        if (j > i) break;
+        l += exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m);
+      }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  const float inv = 1.0f / l;
+  device float* o = WF(3) + (b * S + i) * D + h * d;
+  for (uint c0 = 0; c0 < d; c0 += 32u) {
+    float acc[32];
+    #pragma clang loop unroll(full)
+
+    for (uint c = 0; c < 32u; ++c) acc[c] = 0.0f;
+    for (uint kb = 0; kb < kblocks; ++kb) {
+      stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+      stage_rows(vt, vbase, kb * ATT_BLK, S, D, d, t, vec);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (live)
+        for (uint jj = 0; jj < ATT_BLK; ++jj) {
+          const uint j = kb * ATT_BLK + jj;
+          if (j > i) break;
+          const float pj = exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m) * inv;
+          threadgroup const float* vr = vt + jj * ATT_D + c0;
+          #pragma clang loop unroll(full)
+
+          for (uint c = 0; c < 32u; ++c) acc[c] += pj * vr[c];
+        }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (live)
+      #pragma clang loop unroll(full)
+
+      for (uint c = 0; c < 32u; ++c)
+        if (c0 + c < d) o[c0 + c] = acc[c];
+  }
+  if (live) {
+    device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
+    st[0] = m; st[1] = inv; st[2] = 0.0f; st[3] = 0.0f;
+  }
+}
+kernel void k_attn_dq_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                uint t [[thread_index_in_threadgroup]]) {
+  threadgroup float kt[ATT_BLK * ATT_D];
+  threadgroup float vt[ATT_BLK * ATT_D];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + ATT_ROWS - 1u) / ATT_ROWS;
+  const uint bh = tg.x / nblk, i0 = (tg.x % nblk) * ATT_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const uint i = i0 + t;
+  const bool live = i < S;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
+  device float* dq = WF(5) + (b * S + i) * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  const float m = live ? st[0] : 0.0f, inv = live ? st[1] : 0.0f;
+  float qr[ATT_D], dor[ATT_D];
+  #pragma clang loop unroll(full)
+
+  for (uint c = 0; c < ATT_D; ++c) {
+    qr[c] = (live && c < d) ? qbase[i * D + c] : 0.0f;
+    dor[c] = (live && c < d) ? dobase[i * D + c] : 0.0f;
+  }
+  const uint last = min(i0 + ATT_ROWS, S);
+  const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
+  float delta = 0.0f;
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    stage_rows(vt, vbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (live)
+      for (uint jj = 0; jj < ATT_BLK; ++jj) {
+        const uint j = kb * ATT_BLK + jj;
+        if (j > i) break;
+        const float pj = exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m) * inv;
+        const float dp = tg_dot(dor, vt + jj * ATT_D, d);
+        delta += dp * pj;
+      }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  for (uint c0 = 0; c0 < d; c0 += 32u) {
+    float acc[32];
+    #pragma clang loop unroll(full)
+
+    for (uint c = 0; c < 32u; ++c) acc[c] = 0.0f;
+    for (uint kb = 0; kb < kblocks; ++kb) {
+      stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+      stage_rows(vt, vbase, kb * ATT_BLK, S, D, d, t, vec);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (live)
+        for (uint jj = 0; jj < ATT_BLK; ++jj) {
+          const uint j = kb * ATT_BLK + jj;
+          if (j > i) break;
+          const float pj = exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m) * inv;
+          const float dp = tg_dot(dor, vt + jj * ATT_D, d);
+          const float gg = pj * (dp - delta) * inv_sqrt_d;
+          threadgroup const float* kr = kt + jj * ATT_D + c0;
+          #pragma clang loop unroll(full)
+
+          for (uint c = 0; c < 32u; ++c) acc[c] += gg * kr[c];
+        }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (live)
+      #pragma clang loop unroll(full)
+
+      for (uint c = 0; c < 32u; ++c)
+        if (c0 + c < d) dq[c0 + c] = acc[c];
+  }
+  if (live) st[2] = delta;
+}
+// dK and dV: a threadgroup of 128 key rows, the query rows, dO rows and
+// stats rows staged 32 at a time from the group's first key row on.
+static inline void stage_stats(threadgroup float* tile, device const float* stats,
+                               uint row0, uint S, uint t) {
+  if (t < ATT_BLK) {
+    const uint i = row0 + t;
+    for (uint q = 0; q < 4u; ++q)
+      tile[t * 4u + q] = i < S ? stats[i * 4u + q] : 0.0f;
+  }
+}
+kernel void k_attn_dk_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                uint t [[thread_index_in_threadgroup]]) {
+  threadgroup float qt[ATT_BLK * ATT_D];
+  threadgroup float dot_[ATT_BLK * ATT_D];
+  threadgroup float stt[ATT_BLK * 4u];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + ATT_ROWS - 1u) / ATT_ROWS;
+  const uint bh = tg.x / nblk, j0 = (tg.x % nblk) * ATT_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const uint j = j0 + t;
+  const bool live = j < S;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device const float* stats = RF(4) + (b * H + h) * S * 4u;
+  device float* dk = WF(5) + (b * S + j) * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  float kr[ATT_D], vr[ATT_D];
+  #pragma clang loop unroll(full)
+
+  for (uint c = 0; c < ATT_D; ++c) {
+    kr[c] = (live && c < d) ? kbase[j * D + c] : 0.0f;
+    vr[c] = (live && c < d) ? vbase[j * D + c] : 0.0f;
+  }
+  const uint first = (j0 / ATT_BLK) * ATT_BLK;  // query blocks from the group's first key row
+  for (uint c0 = 0; c0 < d; c0 += 32u) {
+    float acc[32];
+    #pragma clang loop unroll(full)
+
+    for (uint c = 0; c < 32u; ++c) acc[c] = 0.0f;
+    for (uint ib = first; ib < S; ib += ATT_BLK) {
+      stage_rows(qt, qbase, ib, S, D, d, t, vec);
+      stage_rows(dot_, dobase, ib, S, D, d, t, vec);
+      stage_stats(stt, stats, ib, S, t);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (live)
+        for (uint ii = 0; ii < ATT_BLK; ++ii) {
+          const uint i = ib + ii;
+          if (i >= S) break;
+          if (i < j) continue;
+          threadgroup const float* qi = qt + ii * ATT_D;
+          const float pij = exp(tg_dot(kr, qi, d) * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u];
+          const float dp = tg_dot(vr, dot_ + ii * ATT_D, d);
+          const float gg = pij * (dp - stt[ii * 4u + 2u]) * inv_sqrt_d;
+          #pragma clang loop unroll(full)
+
+          for (uint c = 0; c < 32u; ++c) acc[c] += gg * qi[c0 + c];
+        }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (live)
+      #pragma clang loop unroll(full)
+
+      for (uint c = 0; c < 32u; ++c)
+        if (c0 + c < d) dk[c0 + c] = acc[c];
+  }
+}
+kernel void k_attn_dv_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                uint t [[thread_index_in_threadgroup]]) {
+  threadgroup float qt[ATT_BLK * ATT_D];
+  threadgroup float dot_[ATT_BLK * ATT_D];
+  threadgroup float stt[ATT_BLK * 4u];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + ATT_ROWS - 1u) / ATT_ROWS;
+  const uint bh = tg.x / nblk, j0 = (tg.x % nblk) * ATT_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const uint j = j0 + t;
+  const bool live = j < S;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device const float* stats = RF(4) + (b * H + h) * S * 4u;
+  device float* dv = WF(5) + (b * S + j) * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  float kr[ATT_D];
+  #pragma clang loop unroll(full)
+
+  for (uint c = 0; c < ATT_D; ++c) kr[c] = (live && c < d) ? kbase[j * D + c] : 0.0f;
+  const uint first = (j0 / ATT_BLK) * ATT_BLK;
+  for (uint c0 = 0; c0 < d; c0 += 32u) {
+    float acc[32];
+    #pragma clang loop unroll(full)
+
+    for (uint c = 0; c < 32u; ++c) acc[c] = 0.0f;
+    for (uint ib = first; ib < S; ib += ATT_BLK) {
+      stage_rows(qt, qbase, ib, S, D, d, t, vec);
+      stage_rows(dot_, dobase, ib, S, D, d, t, vec);
+      stage_stats(stt, stats, ib, S, t);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (live)
+        for (uint ii = 0; ii < ATT_BLK; ++ii) {
+          const uint i = ib + ii;
+          if (i >= S) break;
+          if (i < j) continue;
+          const float pij = exp(tg_dot(kr, qt + ii * ATT_D, d) * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u];
+          threadgroup const float* doi = dot_ + ii * ATT_D + c0;
+          #pragma clang loop unroll(full)
+
+          for (uint c = 0; c < 32u; ++c) acc[c] += pij * doi[c];
+        }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (live)
+      #pragma clang loop unroll(full)
+
+      for (uint c = 0; c < 32u; ++c)
+        if (c0 + c < d) dv[c0 + c] = acc[c];
+  }
+}
+
 // --- Softmax cross-entropy (opcodes 11 / 12; F8 #139) ----------------------
 // The loss ran on the CPU until F8, draining the GPU every pass. One
 // simdgroup per row over C columns (49,152 at an LM head), max and sum by
