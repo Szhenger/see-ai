@@ -874,13 +874,15 @@ the CPU path after:
 | Intel Xeon 6973P-C | 1 | 2,033 | 1,038k | WARN |
 
 Every FAIL and every Intel WARN is an Intel host measured against an
-AMD 7763 baseline: the Intel parts run the decoder fixtures at 0.63 –
-0.73× of the 7763 and the MLP fixtures at 0.83 – 0.85× while the
-calibration kernel reads 1.0 – 1.15× of it, so the normalization *adds*
-to the red. Within a model the calibration holds — the 9V74 at 712k and
-at 889k reads `dec_v256_d128_s128` @1t at 2,395 and 2,997, the same
-1.25× — and the 19 calibrated 7763 nights sit within ±1.4 % of each
-other across four commits. The 10-20 → 10-22 sequence was Xeon 8370C,
+AMD EPYC baseline — a 7763 night's (10-08 → 10-10, 10-16) or a 9V74
+night's (10-12, 10-20, 10-21: the 2,400 of `dec_v256_d128_s128` @1t in
+those gate logs is the 9V74's 10-19 reading): the Intel parts run the
+decoder fixtures at 0.63 – 0.73× of the 7763 and the MLP fixtures at
+0.83 – 0.85× while the calibration kernel reads 1.0 – 1.15× of it, so
+the normalization *adds* to the red. Within a model the calibration
+holds — the 9V74 at 712k and at 889k reads `dec_v256_d128_s128` @1t at
+2,395 and 2,997, the same 1.25× — and the 19 calibrated 7763 nights sit
+within ±1.4 % of each other across six commits. The 10-20 → 10-22 sequence was Xeon 8370C,
 Xeon 8573C, EPYC 7763; the two "consecutive" reds were two different
 Intel hosts.
 
@@ -907,7 +909,12 @@ anyway); `nightly.yml` runs the harness first and restores the rolling
 baseline, the epoch (`v3`) and the gate state under the model's slug
 (`--host-slug`), so each of the five runners in rotation meets its own
 baseline — the first night on a model seeds it; the gate state carries
-the commit and a cleared red is announced with both. The P5 assumption
+the commit and a cleared red is announced with both. One limit, stated:
+an Actions cache unused for seven days is evicted, so a model that
+appears rarely (the 8573C ten days apart, the 9V45 three weeks apart,
+the 8370C and 6973P-C once each so far) re-seeds on most visits and its
+gate is a seed, not a verdict; the gate gates on the 7763 (half the
+nights) and the 9V74. The P5 assumption
 is restated in "Measurement discipline": the calibration normalizes a
 runner's speed within a CPU model, not the ratio between models. Raw
 artifacts of the four runs in `docs/ledger/p8-2026-10-22/nightly/`.

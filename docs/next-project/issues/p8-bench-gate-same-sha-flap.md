@@ -65,11 +65,12 @@ issue is the record.
 Variance, of the host class. The 40 nightly `bench` jobs since
 2026-09-13 sorted by the runner's CPU model (`host_key`): every FAIL and
 every Intel WARN is an Intel Xeon (8573C ×5, 8370C, 6973P-C) measured
-against an AMD EPYC 7763 baseline — the Xeons run the decoder fixtures
-at 0.63–0.73× of the 7763 and the MLP fixtures at 0.83–0.85× while the
-calibration kernel reads 1.0–1.15× of it, so the P5 normalization adds
-to the red; the 19 calibrated 7763 nights are within ±1.4 % across four
-commits. The 10-20 → 10-22 runs were Xeon 8370C, Xeon 8573C, EPYC 7763:
+against an AMD EPYC baseline, a 7763 night's or a 9V74 night's (this
+incident's 2,400 is the 9V74's 10-19 reading) — the Xeons run the
+decoder fixtures at 0.63–0.73× of the 7763 and the MLP fixtures at
+0.83–0.85× while the calibration kernel reads 1.0–1.15× of it, so the
+P5 normalization adds to the red; the 19 calibrated 7763 nights are
+within ±1.4 % across six commits. The 10-20 → 10-22 runs were Xeon 8370C, Xeon 8573C, EPYC 7763:
 two different Intel hosts made the "two consecutive" reds. On one host
 (Apple M5) `ee979e7`, `32c8ac6` and `4b7ce89` read the named rows within
 ±2.2 % of each other (one 4-thread cell re-measured quiet: +0.6 %).
@@ -91,7 +92,11 @@ Tests: `test/tool/bench_compare_test.py` (the 10-08 → 10-22 replay red
 on one baseline and green keyed by model, the refusal, the slug, the
 cleared-red record, the schema-1 state). Written into "Measurement
 discipline". The next nights seed each model's baseline; until a model
-has met itself twice its gate is a seed, not a verdict.
+has met itself twice its gate is a seed, not a verdict — and an Actions
+cache unused for seven days is evicted, so the rare models (8573C ten
+days apart, 9V45 three weeks, 8370C and 6973P-C once each) will mostly
+re-seed; the gate gates on the 7763 and the 9V74, which is where the
+nights are.
 
 ## Acceptance
 
