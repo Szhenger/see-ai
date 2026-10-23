@@ -35,6 +35,52 @@ inline Unit UnitOf(size_t u, size_t H, size_t S) {
   return {u / (H * S), (u / S) % H, u % S};
 }
 
+// Double-precision dot products of one f32 row `a` against W rows, each
+// accumulated in c order exactly as the one-row loop
+//     double dot = 0.0; for c: dot += double(a[c]) * r[c];
+// The product of two floats is exact in double (24 + 24 significand bits
+// < 53), so a fused multiply-add and a multiply-then-add round the same
+// sum, and each row's dot carries the one-row loop's bits whatever the
+// compiler contracts. What changes is the schedule: W independent
+// dependency chains instead of one, so the double adds stop being
+// latency-bound (F4 #132, 2026-10-23: the score loops were the CPU step's
+// largest family).
+template <size_t W>
+inline void DotRows(const float* a, const float* const* rows, size_t d,
+                    double* out) {
+  double acc[W] = {};
+  for (size_t c = 0; c < d; ++c) {
+    const double ac = static_cast<double>(a[c]);
+    for (size_t w = 0; w < W; ++w)
+      acc[w] += ac * static_cast<double>(rows[w][c]);
+  }
+  for (size_t w = 0; w < W; ++w) out[w] = acc[w];
+}
+
+// A per-thread buffer of at least n doubles, grown once and reused (the
+// gemm.cc NT-scale pattern): scratch for values, never a source of bits.
+inline double* DotScratch(size_t n) {
+  thread_local std::vector<double> buf;
+  if (buf.size() < n) buf.resize(n);
+  return buf.data();
+}
+
+// dots[j] = a . rows(j) for j in [0, n), rows(j) = base + j * stride, in
+// blocks of 8 then single rows; each dot is the one-row loop's value.
+inline void DotRun(const float* a, const float* base, size_t stride,
+                   size_t n, size_t d, double* dots) {
+  size_t j = 0;
+  for (; j + 8 <= n; j += 8) {
+    const float* rows[8];
+    for (size_t w = 0; w < 8; ++w) rows[w] = base + (j + w) * stride;
+    DotRows<8>(a, rows, d, dots + j);
+  }
+  for (; j < n; ++j) {
+    const float* row = base + j * stride;
+    DotRows<1>(a, &row, d, dots + j);
+  }
+}
+
 }  // namespace
 
 namespace {
@@ -134,18 +180,16 @@ void AttnFwd(const float* q, const float* k, const float* v, float* o,
   // segment (b, i, h*d .. h*d+d) — both exclusively owned by this unit.
   up::ParallelFor(B * H * S, RowGrain(S * (d + 4), kGrainMath),
                   [&](size_t u0, size_t u1, size_t) {
+    double* dots = DotScratch(S);
     for (size_t u = u0; u < u1; ++u) {
       const auto [b, h, i] = UnitOf(u, H, S);
       const float* qi = q + (b * S + i) * D + h * d;
       float* prow = probs + u * S;
       // Scores for the causal prefix j <= i, then a stable row softmax.
+      DotRun(qi, k + b * S * D + h * d, D, i + 1, d, dots);
       float row_max = -INFINITY;
       for (size_t j = 0; j <= i; ++j) {
-        const float* kj = k + (b * S + j) * D + h * d;
-        double dot = 0.0;
-        for (size_t c = 0; c < d; ++c)
-          dot += static_cast<double>(qi[c]) * kj[c];
-        const float s = static_cast<float>(dot) * inv_sqrt_d;
+        const float s = static_cast<float>(dots[j]) * inv_sqrt_d;
         prow[j] = s;
         if (s > row_max) row_max = s;
       }
@@ -175,17 +219,13 @@ void AttnDP(const float* dout, const float* v, float* dp, size_t B, size_t S,
   const size_t D = H * d;
   up::ParallelFor(B * H * S, RowGrain(S * d, kGrainMath),
                   [&](size_t u0, size_t u1, size_t) {
+    double* dots = DotScratch(S);
     for (size_t u = u0; u < u1; ++u) {
       const auto [b, h, i] = UnitOf(u, H, S);
       const float* doi = dout + (b * S + i) * D + h * d;
       float* dprow = dp + u * S;
-      for (size_t j = 0; j <= i; ++j) {
-        const float* vj = v + (b * S + j) * D + h * d;
-        double dot = 0.0;
-        for (size_t c = 0; c < d; ++c)
-          dot += static_cast<double>(doi[c]) * vj[c];
-        dprow[j] = static_cast<float>(dot);
-      }
+      DotRun(doi, v + b * S * D + h * d, D, i + 1, d, dots);
+      for (size_t j = 0; j <= i; ++j) dprow[j] = static_cast<float>(dots[j]);
       // Masked positions: SoftmaxRowsBwd multiplies these by P == 0, so any
       // FINITE value gives dS == 0 — a zero store skips half the S^2 d work
       // bitwise-neutrally (adding +/-0 to the double rowsum never changes
