@@ -72,20 +72,43 @@ over int8 (option A), is what remains. Not done: the GEMM GFLOP/s table
 per shape and the serial-vs-8-thread identity on the new path (SGEMM's
 threading is Accelerate's; the two 10-thread runs above are identical).
 
+## Status 2026-10-23
+
+The three measurable lines are met (`docs/benchmarks.md`, "The relaxed
+int8 CPU step past 0.8× of `torch.compile`, with the same bits"; raw in
+`docs/ledger/f4-2026-10-23/`). The 10-19 package commits the same model
+(`025f3f3c…` after 20 steps) fully serial, serial with Accelerate's
+default pool, and at 8 and 10 threads, and a system test pins serial
+against 8-wide byte identity on the relaxed f32 and int8 bases. A
+`sample` of the step refuted the widening hypothesis above (2.7 % of busy
+samples): the cost was SGEMM on the calling thread, and an SGEMM
+microbenchmark found the LM head's dX product running as 28 skinny calls
+of 21 columns each (the 4 MiB panel spans the 49,152-long reduction). A
+256-column panel floor and an eight-chain schedule for the cached
+attention's double score dots — both bitwise-neutral, checked by the
+10-19 plan committing `025f3f3c…` (20 steps) and `d459b541…` (300 steps)
+on the new runtime — take the step from 761–777 ms to 663–678 ms: 755–773
+tok/s, **0.89–0.91×** of F1's `torch.compile` CPU row (852 tok/s, the
+2026-09-22 row; not re-run today). The GEMM table at SmolLM shapes is in
+the same section: relaxed 623–972 GFLOP/s against the portable kernels'
+74–315. Option A (native SME over int8) stays open for the determinism
+contract across OS releases; the exact f32 head dX (74 GFLOP/s) is the
+portable kernels' next lever.
+
 ## Acceptance
 
 - [x] The option decided: B, the Accelerate exception, for the f32 base
   (#136, 2026-09-23) and the int8 base (2026-10-19), behind the P3
   certificate; A (native SME kernels) stays open as the route to the 0.8×
   line and to a determinism contract that holds across OS releases.
-- [ ] GEMM GFLOP/s at SmolLM shapes (q8 and f32, NN/NT/TN) against the
-  committed kernels, timed against the committed object — not measured.
-- [ ] SmolLM-135M CPU tok/s against F1's `torch.compile` CPU row, target
-  ≥ 0.8× — **0.77–0.79×** (659–673 against 852 tok/s), "The int8 base on
-  the CPU matrix units" (2026-10-19); just under. What would cross it:
-  widening the head once per step instead of once per GEMM, or SME kernels
-  over int8 (option A).
-- [ ] Determinism: serial against 8-thread committed models byte-identical
-  on the new path — two 10-thread runs commit the same bytes
-  (`d459b541…`); the serial-against-threaded comparison has not been run
-  (SGEMM's threading is Accelerate's).
+- [x] GEMM GFLOP/s at SmolLM shapes (q8 and f32, NN/NT/TN) against the
+  committed kernels, timed against the committed object — `seeml-plan-probe
+  --profile` on four plans, 2026-10-23: relaxed 623–972 GFLOP/s, portable
+  74–315 ("The relaxed int8 CPU step past 0.8×").
+- [x] SmolLM-135M CPU tok/s against F1's `torch.compile` CPU row, target
+  ≥ 0.8× — **0.89–0.91×** (755–773 against 852 tok/s), "The relaxed int8
+  CPU step past 0.8×" (2026-10-23); it was 0.77–0.79× on 2026-10-19.
+- [x] Determinism: serial against 8-thread committed models byte-identical
+  on the new path — `025f3f3c…` at 1/1, 1/default, 8 and 10 threads (the
+  pool and Accelerate's), and `UpdateSystem.RelaxedCpuBitsAreThreadCountInvariant`
+  (2026-10-23).

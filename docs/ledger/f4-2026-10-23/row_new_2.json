@@ -1,0 +1,213 @@
+{
+ "schema": 1,
+ "system": "SeeML",
+ "backend": "cpu",
+ "precision": "f32 math, int8 base",
+ "host": {
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "package": "~/SeeAI/see-ai/out/f4-determinism-2026-10-23/pkg_relaxed_attn",
+ "seeml_version": "1.2.4",
+ "plan_version": 19,
+ "plan_hash": "c3952907c9e76a72",
+ "precision_flag": "certified-bf16",
+ "relaxed_gemms": 419,
+ "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+ "device": "host CPU",
+ "threads": 10,
+ "config": {
+  "steps": 300,
+  "tokens_per_step": 512,
+  "lo": 40,
+  "hi": 160,
+  "repeats": 1
+ },
+ "records_digest": "9a2f2c1396502ce0",
+ "adapters": 211,
+ "adapter_params": 3024384,
+ "arena_bytes": 1665464320,
+ "plan_bytes": 298631168,
+ "step_ms": 678.4285714285716,
+ "step_ms_lohi": 665.8333333333334,
+ "step_ms_min": 665.8333333333334,
+ "step_ms_max": 665.8333333333334,
+ "tokens_per_s": 754.6851968835542,
+ "it_per_s": 1.4739945251631918,
+ "tokens_per_step": 512,
+ "intercept_s": 20.09666666666666,
+ "val_loss": [
+  4.574264,
+  4.013783
+ ],
+ "val_acc": [
+  0.28125,
+  0.31453124
+ ],
+ "train_loss": [
+  4.4769039,
+  3.6253865
+ ],
+ "verdict": "accepted",
+ "committed": true,
+ "lifecycle": {
+  "load_s": 0.5105,
+  "data_s": 0.0002,
+  "train_s": 219.3961,
+  "eval_s": 17.8542,
+  "evaluations": 2,
+  "merge_s": 0.1137,
+  "commit_s": 1.5449,
+  "wall_s": 221.5656
+ },
+ "committed_sha256": "d459b541b737117b2b93ad989424c8f54f5df1066f25c9212626d21883cc8307",
+ "suspect": false,
+ "wall_quality_s": 221.61,
+ "peak_rss_bytes": 2740682752,
+ "runs": [
+  {
+   "steps": 40,
+   "exit": 0,
+   "wall_s": 46.73,
+   "peak_rss_bytes": 2740600832,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU",
+    "steps": 40,
+    "train_loss": [
+     4.3477054,
+     4.4352345
+    ],
+    "validation_loss": [
+     4.574264,
+     4.391171
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.28125,
+     0.28749999
+    ],
+    "lifecycle": {
+     "load_s": 0.3398,
+     "data_s": 0.0002,
+     "train_s": 44.6534,
+     "eval_s": 17.2517,
+     "evaluations": 2,
+     "merge_s": 0.1072,
+     "commit_s": 1.5886,
+     "wall_s": 46.6894
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "0959e36491a4a85ed99a79873894b51a0309cc27407aba663b1a8cdc5630ca68",
+   "device": "host CPU"
+  },
+  {
+   "steps": 160,
+   "exit": 0,
+   "wall_s": 126.63,
+   "peak_rss_bytes": 2740682752,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU",
+    "steps": 160,
+    "train_loss": [
+     4.4769039,
+     4.0276365
+    ],
+    "validation_loss": [
+     4.574264,
+     4.0922832
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.28125,
+     0.30312499
+    ],
+    "lifecycle": {
+     "load_s": 0.4946,
+     "data_s": 0.0002,
+     "train_s": 124.3836,
+     "eval_s": 18.3866,
+     "evaluations": 2,
+     "merge_s": 0.1102,
+     "commit_s": 1.5985,
+     "wall_s": 126.5872
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "8ba3d6162e05dbecba388792c9b188fd155d4fa7b8e9ed02a4500b8e6b6d6972",
+   "device": "host CPU"
+  },
+  {
+   "steps": 300,
+   "exit": 0,
+   "wall_s": 221.61,
+   "peak_rss_bytes": 2740682752,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU",
+    "steps": 300,
+    "train_loss": [
+     4.4769039,
+     3.6253865
+    ],
+    "validation_loss": [
+     4.574264,
+     4.013783
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.28125,
+     0.31453124
+    ],
+    "lifecycle": {
+     "load_s": 0.5105,
+     "data_s": 0.0002,
+     "train_s": 219.3961,
+     "eval_s": 17.8542,
+     "evaluations": 2,
+     "merge_s": 0.1137,
+     "commit_s": 1.5449,
+     "wall_s": 221.5656
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "d459b541b737117b2b93ad989424c8f54f5df1066f25c9212626d21883cc8307",
+   "device": "host CPU"
+  }
+ ]
+}

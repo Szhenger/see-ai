@@ -26,6 +26,8 @@ that date commits its summaries here in the same change.
 | The scale ladder's first two rungs (F5 #133, 2026-10-20) | `f7-2026-10-19/f5/`, `split/`, `binder/` | `frontier_*.json`, `plan_*.json`, `pkg_*/report.json`; the compile reports with the three-segment split; the binder fix's identity hashes |
 | Tiled attention on Metal at S = 2048 (F3 #131, 2026-10-20) | `f7-2026-10-19/f3/` | `frontier.json` (the matrix with MLX-LM and torch), `plan.json`, `plan2.json`, `steps*.json` (the 20-step runs, cached and tiled) |
 | Rematerialization at three rungs (F5 #133 step 2, 2026-10-20) | `f7-2026-10-19/gpu_checks/` | `*_off.json` / `*_on.json` (the six compile reports), `disk_metal.json` (#158's zero-copy check), `id_*.json`, `id_sha.txt` |
+| The relaxed int8 CPU step past 0.8× of `torch.compile`, with the same bits (F4 #132, 2026-10-23) | `f4-2026-10-23/` | `sha_threads.txt` (the four thread settings and the rebuilt runtime), `row_new_*.json` (the harness rows), `gemm_profile.json` + `gemm_table.md` (the probe's per-shape profile), `sgemm_panels.txt` (the SGEMM microbenchmark), `cpu_samples.txt` + `main_thread.txt` (the `sample` summaries) |
+| Dispatch overhead of the eval and merge programs, and `dec_wide` (F8 #139, 2026-10-23) | `f8-2026-10-23/` | `spans_smollm.txt`, `spans_dec_wide.txt`, `report_*.json` (the two compile reports) |
 | The nightly gate's reds were the runner's CPU model, not the commit (P8 #165, 2026-10-22) | `p8-2026-10-22/` | `nightly/runs-by-host.csv` (40 runs by CPU model), `nightly/<run>/bench.json` + `bench-gate.log` (the four runs of the incident), `m5/bench-<sha>.json` (the three commits on one host), `m5/mlp4-*.json` (the quiet re-measure) |
 
 `bench-epochs/` is not a section's evidence but the nightly gate's

@@ -1,0 +1,9 @@
+seeml-update: backend cpu (host CPU)
+seeml-update: validation scores the shipped model (the f32 weights of '~/SeeAI/see-ai/out/frontier-2026-09-22/smollm135.smf' plus the update)
+seeml-update: resource contract — arena 1665464320 bytes (36292608 persistent)
+seeml-update: step 1  loss 4.781977
+seeml-update: train loss 4.695530 -> 4.638751 over 20 steps
+seeml-update: validation loss 4.574264 -> 4.483878 [backend cpu]
+seeml-update: validation accuracy 0.2812 -> 0.2850
+seeml-update: gate min-improvement 0 require-accuracy no -> accepted [backend cpu]
+seeml-update: committed '~/SeeAI/see-ai/out/f4-determinism-2026-10-23/threads10.smf'

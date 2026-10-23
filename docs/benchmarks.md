@@ -941,6 +941,113 @@ is restated in "Measurement discipline": the calibration normalizes a
 runner's speed within a CPU model, not the ratio between models. Raw
 artifacts of the four runs in `docs/ledger/p8-2026-10-22/nightly/`.
 
+### The relaxed int8 CPU step past 0.8× of `torch.compile`, with the same bits (F4 #132, 2026-10-23)
+
+Three of F4's four open lines, on the 2026-10-19 relaxed int8 SmolLM-135M
+plan (`c3952907c9e76a72`, 419 relaxed GEMMs, certified then), Apple M5,
+macOS 26.6.2 (`docs/ledger/f4-2026-10-23/`).
+
+**Determinism.** The 10-19 package committed after 20 steps (`--val-frac
+0.1 --eval-every 0 --force`) at four settings of the two thread pools —
+SeeAI's (`SEEML_THREADS`) and Accelerate's (`VECLIB_MAXIMUM_THREADS`):
+fully serial (1 / 1), serial pool with Accelerate's default, 8 threads
+and 10 threads. All four commit `025f3f3c…` (`sha_threads.txt`). A new
+system test, `UpdateSystem.RelaxedCpuBitsAreThreadCountInvariant`,
+trains the relaxed f32- and int8-base plans of a small decoder at one and
+eight pool threads and compares the loss curve and the persistent
+segment byte for byte.
+
+**Where the step went.** A `sample` of the package mid-training
+(`cpu_samples.txt`, `main_thread.txt`) did not support the issue's
+hypothesis that widening the int8 base twice a step was the cost: the
+widening was 2.7 % of the busy samples. The calling thread spent 58 % of
+the step inside `cblas_sgemm` while the nine pool workers waited 75 % of
+the time, and an SGEMM microbenchmark at the model's shapes
+(`sgemm_panels.txt`) found the reason. The int8 path hands SGEMM
+column panels bounded at 4 MiB of f32, and each panel spans the full
+reduction, so on the LM head's dX product (512 × 576 × 49,152, the
+vocabulary as K) the budget left 21 columns per call: 28 skinny SGEMMs at
+160–210 GFLOP/s, 138–181 ms, where 341-column panels (a 64 MiB budget)
+run at 765–840 GFLOP/s in 34–38 ms — and the package's own profile with
+the 256-column floor below reads 817 GFLOP/s, 35.5 ms. Every other shape
+already ran at 780–1,050 GFLOP/s.
+
+**The change.** `AccelerateGemmQ8` now gives every call at least 256
+output columns (a 50 MB panel at the head; each output element is still
+one call's full-K dot), and the cached attention's double-precision score
+and dP dot products run eight keys at a time, each accumulated in its own
+c order — a float × float product is exact in double, so a fused and an
+unfused add round the same sum, and the bits are the one-key loop's. Both
+are bitwise-neutral by test: the 10-19 plan on the new runtime commits
+`025f3f3c…` after 20 steps and `d459b541…` after the 300-step quality
+run, the 10-19 binaries' bytes (`row_new_*.json`).
+
+| run (same plan, `frontier_run.py seeml`, 40 → 160 slope, 10 threads) | step (ms) | tok/s | validation 0 → 300 | committed model | peak RSS |
+|---|---:|---:|---|---|---:|
+| 10-19 runtime, run 1 | 776.8 | 659 | 4.5743 → 4.01378 | `d459b541…` | 2.69 GB |
+| 10-19 runtime, run 2 | 761.3 | 673 | 4.5743 → 4.01378 | `d459b541…` | 2.69 GB |
+| today's runtime, run 1 | 662.7 | 773 | 4.5743 → 4.01378 | `d459b541…` | 2.74 GB |
+| today's runtime, run 2 | 678.4 | 755 | 4.5743 → 4.01378 | `d459b541…` | 2.74 GB |
+
+Against F1's `torch.compile` CPU row (852 tok/s, 601 ms; measured
+2026-09-22 on this host, not re-run today — torch is not installed in
+this session's environment) that is **0.89–0.91×**, past the issue's ≥ 0.8×
+line, at the cost of 50 MB of resident panel.
+
+**GEMM GFLOP/s at SmolLM shapes**, timed against the committed object:
+`seeml-plan-probe --profile 5` on the train section of four plans
+compiled from this tree (int8 and f32 base, exact and certified-bf16),
+the arena staged by `frontier_exec.py`, CPU backend, 10 threads, the
+backend flushed after every instruction (`gemm_profile.json`,
+`gemm_table.md`). The frozen-weight shapes, per call family:
+
+| plan | NN fwd (512×1536×576 / 512×576×576 / head 512×49152×576) | NT dX (512×576×1536 / 512×576×576 / head 512×576×49152) | profiled step |
+|---|---|---|---:|
+| int8 base, exact (portable q8 kernels) | 315 / 281 / 268 GFLOP/s | 229 / 218 / 174 | 1,558 ms |
+| int8 base, relaxed (SGEMM over widened panels) | 781 / 804 / 884 | 763 / 779 / 817 | 661 ms |
+| f32 base, exact (portable kernels) | 257 / 236 / 215 | 239 / 217 / **74** | 1,939 ms |
+| f32 base, relaxed (SGEMM) | 767 / 864 / 972 | 699 / 623 / 969 | 682 ms |
+
+The relaxed family runs the frozen products at 2.5–11× the portable
+kernels, and with the panel floor the int8 package is now level with the
+f32 one. The exact f32 head dX product at 74 GFLOP/s is the portable NT
+kernel's weakest shape (K = 49,152), and the next exact-path lever;
+the rank-8 adapter products (TN 8 × 576 × 512, 38–46 GFLOP/s) are
+skinny by construction. Option A (native SME kernels) stays open.
+
+### Dispatch overhead of the eval and merge programs, and `dec_wide` (F8 #139, 2026-10-23)
+
+`SEEML_METAL_SPANS=1` on two packages compiled from this tree, Metal,
+Apple M5, 20 (SmolLM-135M, int8 base, exact) and 50 (`dec_wide`: V 4,096,
+D 512, H 8, S 256, 4 blocks, f32 base, LoRA r16, from `export_model.py
+--demo-decoder`) training steps with `--val-frac 0.1 --eval-every 0`, so
+each run has a train, an eval and a merge program; the command-buffer
+rows are told apart by dispatch count (`docs/ledger/f8-2026-10-23/`):
+
+| plan | program | dispatches per buffer | buffers | GPU per buffer | outside the GPU | share |
+|---|---|---:|---:|---:|---:|---:|
+| SmolLM-135M | train step | 3,039 | 20 | 233.6 ms | 1.51 ms | 0.6 % |
+| SmolLM-135M | eval batch (steady) | 998 | 25 | 95.8 ms | 0.97 ms | 1.0 % |
+| SmolLM-135M | eval, first batch | 996 | 1 | 78.9 ms | 144.5 ms | 64.7 % |
+| SmolLM-135M | merge | 422 | 1 | 17.4 ms | 0.79 ms | 4.3 % |
+| `dec_wide` | train step | 403 | 50 | 27.7 ms | 0.39 ms | 1.4 % |
+| `dec_wide` | eval batch (steady) | 140 | 51 | 10.1 ms | 0.30 ms | 2.8 % |
+| `dec_wide` | eval, first batch | 138 | 1 | 18.2 ms | 17.8 ms | 49.4 % |
+| `dec_wide` | merge | 58 | 1 | 2.0 ms | 0.76 ms | 28.0 % |
+
+Across all buffers the time outside the GPU is 2.30 µs per dispatch on
+SmolLM and 1.93 µs on `dec_wide` (2.7 % of the wall on both). The steady
+programs agree with the train-program verdict of 2026-10-19 — ordering
+or batching dispatches has little to recover. Two exceptions: the merge
+of a small plan is a fixed ~0.8 ms of encoding and synchronization
+against 2 ms of GPU work, which matters only for adapter-only packages
+(F6), and the *first* eval batch of each run pays 18–145 ms outside the
+GPU before the steady state. A plausible cause, not yet measured: that
+batch is the first to read the shipped f32 weights through the
+zero-copy source-model mapping (E12), so it takes the page faults on
+704 MB at SmolLM. Once per run, it is part of the gate's cost (F9's
+lifecycle row), not of the step.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |
