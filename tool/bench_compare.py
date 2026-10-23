@@ -32,7 +32,13 @@ The nightly keeps its epochs in git (docs/ledger/bench-epochs/<slug>.json),
 where nothing evicts them: an actions cache unused for seven days is
 evicted, and an epoch that re-seeds after every lapse is a reference that
 rolls forward. This tool therefore writes a missing epoch only when asked
-(--seed-epoch, on a green gate), never as a side effect of --promote.
+(--seed-epoch, on a green gate), never as a side effect of --promote. An
+epoch measured under another kernel policy or calibration kernel than
+tonight's report is set aside with a NOTE (a `::notice::` under GitHub
+Actions), as if missing, until it is re-pinned: such a change re-seeds
+every rolling baseline at once, and failing on the epoch would turn it
+into a red night on every pinned host. An epoch from another host is
+still refused — the path is the host's own, so that is a wrong file.
 
 Everything is medians-of-medians upstream, so a >10% delta is signal, not
 noise — on ONE machine. The nightly gate compares machines of one runner
@@ -498,6 +504,24 @@ def gate(args):
     sha = args.sha or os.environ.get("GITHUB_SHA") or None
     red, fatal, warned, unmeasured = {}, [], [], []
 
+    def epoch_setup_change(ref):
+        """Why a committed epoch cannot be compared under tonight's setup
+        (another kernel policy, or another calibration kernel when both
+        calibrate), or None. The host is not on this list: the epoch path
+        is the host's own, so another host there is a wrong file and
+        still fails closed in check_host."""
+        if ref.policy != cur.policy:
+            def name(p):
+                return ("the runtime defaults" if p is None
+                        else f"GEMM tiles {p}")
+            return (f"{name(ref.policy)} but tonight's report with "
+                    f"{name(cur.policy)}")
+        if (ref.calibration and cur.calibration
+                and ref.calibration[0] != cur.calibration[0]):
+            return (f"calibration kernel '{ref.calibration[0]}' but "
+                    f"tonight's report with '{cur.calibration[0]}'")
+        return None
+
     def against(label, path, max_regression, what):
         ref = Report(path)
         check_release(label, ref)
@@ -547,6 +571,20 @@ def gate(args):
                 print(f"::notice title=bench gate, no epoch::no epoch "
                       f"baseline at {args.epoch_baseline}; this host's "
                       "drift is unguarded until one is committed")
+        elif (why := epoch_setup_change(Report(args.epoch_baseline))):
+            # The committed epoch was measured under another setup. The
+            # rolling cache re-seeds every host on such a change; failing
+            # here would undo that for every host with a pinned epoch, so
+            # the epoch is set aside, said aloud, until one is re-pinned.
+            print(f"bench_compare: NOTE the epoch baseline at "
+                  f"{args.epoch_baseline} was measured with {why} — no "
+                  "epoch comparison; re-pin it by committing a green "
+                  "night's report there")
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::notice title=bench gate, epoch set aside::the "
+                      f"epoch at {args.epoch_baseline} was measured with "
+                      f"{why}; this host's drift is unguarded until it is "
+                      "re-pinned")
         else:
             against("epoch baseline", args.epoch_baseline,
                     args.max_epoch_regression,

@@ -929,7 +929,8 @@ included, and a cleared red names both commits. The epoch is not cached:
 each host's is a report committed at `docs/ledger/bench-epochs/` (the
 7763's 10-22 night and the 9V74's 10-19 night, both green), so eviction
 cannot roll it forward; a host without one runs the rolling gate only,
-with a notice. One limit, stated: an Actions cache unused for seven days
+with a notice, and so does a host whose epoch was measured under another
+kernel policy or calibration kernel, until it is re-pinned. One limit, stated: an Actions cache unused for seven days
 is evicted, so the rolling baseline of a model that appears rarely (the
 9V74 up to eight days apart, the 8573C nine, the 9V45 three weeks, the
 8370C and 6973P-C once each so far) re-seeds after a gap, and that night
@@ -1166,7 +1167,12 @@ All three pieces of this program exist:
      the one that rolls the baseline: only a fully green gate does, so a
      warned run is never the next reference, and not while a red key
      goes unmeasured. The nightly never writes an epoch (`--seed-epoch`
-     is for hand runs); pinning one is a commit.
+     is for hand runs); pinning one is a commit. An epoch measured
+     under another kernel policy or calibration kernel than the night's
+     report is set aside with a notice, as if missing, until it is
+     re-pinned — the change has already re-seeded the rolling baseline,
+     and refusing the epoch would leave every pinned host red. An epoch
+     from another host still fails closed.
 
    The epochs are the files in `docs/ledger/bench-epochs/`, each a
    calibrated (schema 4) green night. `test/tool/bench_compare_test.py` replays both

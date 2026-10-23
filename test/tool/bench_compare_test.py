@@ -445,6 +445,42 @@ class GateTest(unittest.TestCase):
         for k in (m1, pro):
             self.assertNotIn("---", k)
 
+    def pinned_epoch_gate(self, **epoch_kw):
+        gate = Gate(self.tmp, seed_epoch=False)
+        with open(gate.epoch, "w") as f:
+            json.dump(report(1.0, **epoch_kw), f)
+        return gate
+
+    def test_an_epoch_from_another_calibration_kernel_is_set_aside(self):
+        # The rolling cache re-seeds on a kernel change; the committed
+        # epoch must not turn that into a red night on every pinned host.
+        gate = self.pinned_epoch_gate(kernel="sgemm_v0")
+        self.assertEqual(gate.night(report(1.0)), 0, gate.log)
+        self.assertIn("calibration kernel 'sgemm_v0'", gate.log)
+        self.assertIn("no epoch comparison", gate.log)
+        self.assertNotIn("vs epoch", gate.log)
+        with open(gate.epoch) as f:  # never rewritten by the nightly
+            self.assertEqual(json.load(f)["calibration"]["kernel"], "sgemm_v0")
+
+    def test_an_epoch_from_another_kernel_policy_is_set_aside(self):
+        gate = self.pinned_epoch_gate(policy=(128, 256))
+        os.environ["GITHUB_ACTIONS"] = "true"
+        self.addCleanup(os.environ.pop, "GITHUB_ACTIONS", None)
+        self.assertEqual(gate.night(report(1.0)), 0, gate.log)
+        self.assertIn("GEMM tiles (128, 256)", gate.log)
+        self.assertIn("::notice title=bench gate, epoch set aside::", gate.log)
+
+    def test_an_epoch_from_another_host_still_fails_closed(self):
+        gate = self.pinned_epoch_gate(host=INTEL)
+        self.assertEqual(gate.night(report(1.0, host=AMD)), 1)
+        self.assertIn("P8 #165", gate.log)
+
+    def test_a_matching_epoch_still_compares(self):
+        gate = self.pinned_epoch_gate()
+        self.assertEqual(gate.night(report(1.0)), 0, gate.log)
+        self.assertIn("vs epoch", gate.log)
+        self.assertNotIn("set aside", gate.log)
+
     def test_an_option_between_the_two_paths_parses(self):
         # "BASELINE --option CURRENT" is how a hand run reads; Python 3.9
         # refused it while both positionals were optional.

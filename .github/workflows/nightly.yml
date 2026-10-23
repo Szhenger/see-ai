@@ -230,7 +230,9 @@ jobs:
   # cache evicts an entry unused for seven days, and an epoch that re-seeds
   # after every lapse rolls forward. Each host's epoch is a report
   # committed at docs/ledger/bench-epochs/<host slug>.json; a host without
-  # one runs the rolling gate only, with a notice.
+  # one runs the rolling gate only, with a notice, and so does a host whose
+  # epoch was measured under another kernel policy or calibration kernel,
+  # until it is re-pinned (another host's epoch there still fails closed).
   bench:
     name: bench (Tier A regression gate)
     runs-on: ubuntu-latest

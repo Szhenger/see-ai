@@ -34,7 +34,9 @@ pinned reference: one `seeml-bench` report per runner host, named by
 copied from this ledger (the AMD EPYC 7763's 2026-10-22 run 39782901348
 and the 9V74's 2026-10-19 run 39271309779, from `p8-2026-10-22/nightly/`).
 The nightly reads it and never writes it; replacing a file is starting
-a new epoch for that host, deliberately, in a commit.
+a new epoch for that host, deliberately, in a commit. After a kernel
+policy or calibration kernel change the nightly sets a host's file aside
+with a notice until it is replaced.
 
 The 2026-09-15 GPU baseline row, the E1 GEMM row and the E11 flash
 decision predate the ledger and are not in it; their `out/` directories
