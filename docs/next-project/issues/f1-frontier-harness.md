@@ -55,6 +55,10 @@ those guesses; it must be priced against measurements instead.
   `test/tool/frontier_run_test.py`, `test_a_wrong_rank_is_refused_by_name`.
 - [ ] The nightly frontier row (design item 3) — the job is in
   `nightly.yml` and has been skipped on every run since 2026-09-23 (29 as
-  of 2026-10-22): no runner labelled `self-hosted, macOS, ARM64` is
-  registered. Its recipe was run by hand on 2026-10-15 (two workflow bugs
-  fixed from that run). Blocked on registering a runner or dropping the job.
+  of 2026-10-22). Two things keep it off, not one: its `if:` runs it only
+  on a `workflow_dispatch` with `frontier` set, so no scheduled night
+  starts it whatever runners exist, and no runner labelled `self-hosted,
+  macOS, ARM64` is registered for a dispatch to land on. Its recipe was
+  run by hand on 2026-10-15 (two workflow bugs fixed from that run).
+  Blocked on a runner and on a schedule condition, or on dropping the
+  job.

@@ -75,14 +75,18 @@ def report(runner=1.0, schema=4, noise=0.03, night=0, regress=None,
 
 class Gate:
     """The nightly job's gate step, run night after night in one cache
-    directory: bench_compare.py with --epoch-baseline, --state, --promote."""
+    directory: bench_compare.py with --epoch-baseline, --state, --promote.
+    The state is kept after every night, failed ones included — the
+    workflow saves the cache with if: always(). seed_epoch stands in for
+    the commit that pins an epoch (the nightly itself never seeds one)."""
 
-    def __init__(self, tmp, state=True, epoch=True):
+    def __init__(self, tmp, state=True, epoch=True, seed_epoch=True):
         self.dir = tmp
         self.baseline = os.path.join(tmp, "baseline", "bench.json")
         self.epoch = os.path.join(tmp, "epoch.json") if epoch else None
         self.state = os.path.join(tmp, "baseline", "gate_state.json")
         self.use_state = state
+        self.seed_epoch = seed_epoch
         self.log = ""
 
     def night(self, rep, extra=()):
@@ -92,6 +96,8 @@ class Gate:
         argv = ["bench_compare.py", self.baseline, cur, "--promote"]
         if self.epoch:
             argv += ["--epoch-baseline", self.epoch]
+            if self.seed_epoch:
+                argv += ["--seed-epoch"]
         if self.use_state:
             argv += ["--state", self.state]
         argv += list(extra)
@@ -307,7 +313,8 @@ class GateTest(unittest.TestCase):
                          "intel-r-xeon-r-platinum-8573c")
         self.assertEqual(bench_compare.host_slug(None), "unknown-host")
         self.assertEqual(bench_compare.host_model(
-            {"host_key": "arm64;Apple M5;cores=10;l1d=65536"}), "Apple M5")
+            {"host_key": "arm64;Apple M5;cores=10;l1d=65536"}),
+            "Apple M5, 10 cores")
         path = os.path.join(self.tmp, "r.json")
         with open(path, "w") as f:
             json.dump(report(1.0, host=INTEL), f)
@@ -318,7 +325,8 @@ class GateTest(unittest.TestCase):
                 self.assertEqual(bench_compare.main(), 0)
         finally:
             sys.argv = old
-        self.assertEqual(buf.getvalue().strip(), "intel-r-xeon-r-platinum-8573c")
+        self.assertEqual(buf.getvalue().strip(),
+                         "intel-r-xeon-r-platinum-8573c-2-cores")
 
     def test_a_cleared_red_names_both_commits(self):
         gate = Gate(self.tmp, epoch=False)
@@ -330,7 +338,7 @@ class GateTest(unittest.TestCase):
         with open(gate.state) as f:
             state = json.load(f)
         self.assertEqual(state["sha"], "bbb2222")
-        self.assertEqual(state["host"], AMD)
+        self.assertEqual(state["host"], AMD + ", 2 cores")
         # Green at the same commit: variance, on record with both commits.
         self.assertEqual(gate.night(report(1.0, night=2),
                                     extra=["--sha", "bbb2222"]), 0)
@@ -346,6 +354,114 @@ class GateTest(unittest.TestCase):
         self.assertEqual(gate.night(report(1.0, night=1)), 0)
         self.assertIn("CLEARED mlp_64x512x3@1t/cpu vs baseline (red at an "
                       "unrecorded commit", gate.log)
+
+    # --- The 2026-10-23 review of the P8 change ------------------------------
+
+    def test_a_cleared_red_after_a_fail_names_the_fail_night(self):
+        # WARN at aaa, FAIL at bbb, green at bbb: the state of the FAIL
+        # night is the previous run, so the line reads as variance at bbb,
+        # never as a fix landing at bbb.
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0), extra=["--sha", "s0"]), 0)
+        bad = {"dec_v512_d192_s32": 0.75}
+        self.assertEqual(gate.night(report(1.0, night=1, regress=bad),
+                                    extra=["--sha", "aaa1111"]), 0)
+        self.assertEqual(gate.night(report(1.0, night=2, regress=bad),
+                                    extra=["--sha", "bbb2222"]), 1)
+        self.assertEqual(gate.night(report(1.0, night=3),
+                                    extra=["--sha", "bbb2222"]), 0)
+        self.assertIn("CLEARED dec_v512_d192_s32@1t/cpu vs baseline (red at "
+                      "bbb2222 on the previous run, green at bbb2222)", gate.log)
+
+    def test_an_unmeasured_red_is_not_cleared_and_stays_red(self):
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0)), 0)
+        bad = {"dec_v512_d192_s32": 0.75}
+        self.assertEqual(gate.night(report(1.0, night=1, regress=bad)), 0)
+        self.assertIn("WARN dec_v512_d192_s32@1t/cpu", gate.log)
+        missing = report(1.0, night=2)
+        del missing["fixtures"]["dec_v512_d192_s32"]
+        self.assertEqual(gate.night(missing), 0)
+        self.assertNotIn("CLEARED dec_v512_d192_s32", gate.log)
+        self.assertIn("not measured now; it stays red", gate.log)
+        # Measured again and still slow: the second red fails.
+        self.assertEqual(gate.night(report(1.0, night=3, regress=bad)), 1)
+        self.assertIn("FAIL dec_v512_d192_s32@1t/cpu", gate.log)
+
+    def test_the_nightly_never_seeds_an_epoch(self):
+        gate = Gate(self.tmp, seed_epoch=False)
+        self.assertEqual(gate.night(report(1.0)), 0)
+        self.assertIn("no epoch comparison", gate.log)
+        self.assertNotIn("seeded the epoch", gate.log)
+        self.assertFalse(os.path.exists(gate.epoch))
+        self.assertEqual(gate.night(report(1.0, night=1)), 0)
+        self.assertFalse(os.path.exists(gate.epoch))
+
+    def test_the_host_is_the_measuring_cpu_not_the_policy_key(self):
+        # --target-host names another machine's key in host_key; host_arch
+        # is the CPU that ran, and it decides.
+        rep = report(1.0, host=AMD)
+        rep["host_arch"] = {"isa": "arm64", "cpu_model": "Apple M5",
+                            "physical_cores": 10, "l1d_bytes": 131072,
+                            "l2_bytes": 16777216}
+        self.assertEqual(bench_compare.host_model(rep), "Apple M5, 10 cores")
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0, host=AMD)), 0)
+        self.assertEqual(gate.night(rep), 1)
+        self.assertIn("'Apple M5, 10 cores'", gate.log)
+
+    def test_hosts_without_a_model_name_differ_by_cores_and_caches(self):
+        def arm(cores, l2):
+            return {"host_arch": {"isa": "arm64", "cpu_model": "unknown",
+                                  "physical_cores": cores, "l1d_bytes": 65536,
+                                  "l2_bytes": l2}}
+        a, b = (bench_compare.host_model(arm(4, 1 << 20)),
+                bench_compare.host_model(arm(64, 1 << 20)))
+        self.assertIn("model unknown", a)
+        self.assertNotEqual(bench_compare.host_slug(a),
+                            bench_compare.host_slug(b))
+
+    def test_two_spellings_of_one_model_are_one_host(self):
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0, host=INTEL)), 0)
+        spelled = report(1.0, night=1, host="Intel(R) Xeon(R) Platinum 8573C")
+        self.assertEqual(gate.night(spelled), 0, gate.log)
+        self.assertNotIn("ERROR", gate.log)
+
+    def test_the_cache_key_segments_never_prefix_each_other(self):
+        def key(model, **kw):
+            rep = report(1.0, **kw)
+            rep["host_arch"] = {"isa": "arm64", "cpu_model": model,
+                                "physical_cores": 8}
+            return bench_compare.cache_key(rep)
+        m1, pro = key("Apple M1"), key("Apple M1 Pro")
+        self.assertEqual(m1, "apple-m1-8-cores--test--default-tiles--"
+                             "sgemm-ikj-128-f32-v1")
+        self.assertFalse(pro.startswith(m1.split("--")[0] + "--"))
+        # A release, a policy or a calibration kernel is a new segment.
+        self.assertNotEqual(key("Apple M1", version="1.3.0"), m1)
+        self.assertNotEqual(key("Apple M1", policy=(128, 256)), m1)
+        self.assertNotEqual(key("Apple M1", kernel="sgemm_v2"), m1)
+        for k in (m1, pro):
+            self.assertNotIn("---", k)
+
+    def test_an_option_between_the_two_paths_parses(self):
+        # "BASELINE --option CURRENT" is how a hand run reads; Python 3.9
+        # refused it while both positionals were optional.
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0)), 0)
+        cur = os.path.join(self.tmp, "cur.json")
+        with open(cur, "w") as f:
+            json.dump(report(1.0, night=1), f)
+        buf, old = io.StringIO(), sys.argv
+        sys.argv = ["bench_compare.py", gate.baseline, "--state", gate.state,
+                    cur]
+        try:
+            with redirect_stdout(buf):
+                self.assertEqual(bench_compare.main(), 0)
+        finally:
+            sys.argv = old
+        self.assertIn("no Tier A regression", buf.getvalue())
 
     # --- Fail closed ---------------------------------------------------------
 

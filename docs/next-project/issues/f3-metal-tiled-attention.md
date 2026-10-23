@@ -86,11 +86,18 @@ names for it. Memory line met; tok/s line reported, not met.
 
 ## Acceptance
 
-- [x] GPU and CPU tiled attention agree bit-for-bit (the unfused port) at
-  model shapes including ragged S — the twin test in
-  `seeml_metal_backend_test` (three shapes; d = 16 and 48 drive the
-  blocked form, d = 96 the per-row one) and the tiled decoder in the
-  program-family test; two Metal runs byte-identical.
+- Superseded 2026-10-23, the line as first written: *GPU and CPU tiled
+  attention agree bit-for-bit (the unfused port) at model shapes including
+  ragged S.* The doctrine is per-backend determinism: the Metal backend is
+  not bitwise against the CPU library (`runtime/executor/metal_kernels.h`),
+  and the twin test compares the two at tolerance. The line it was
+  checked against follows.
+- [x] GPU tiled attention agrees with the CPU family at tolerance (1e-4
+  relative, 1e-5 absolute on O, the stats row, dQ, dK and dV) at model
+  shapes including ragged S, and two Metal runs are byte-identical — the
+  twin test in `seeml_metal_backend_test` (three shapes; d = 16 and 48
+  drive the blocked form, d = 96 the per-row one) and the tiled decoder
+  in the program-family test.
 - [ ] The fused flash-style form (design item 2: QKᵀ and PV on
   `simdgroup_matrix` tiles) within the certified bound — not started; it
   changes the reduction order and takes the certificate.

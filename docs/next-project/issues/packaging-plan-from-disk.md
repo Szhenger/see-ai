@@ -83,8 +83,11 @@ f32 Qwen2.5-0.5B plan (2,724,184,064 bytes) builds in 11 s, loads,
 validates and source-binds in 5.1 s, and trains and commits on the CPU —
 the row the Real Analysis Delta study could not run; a disk-loaded
 SmolLM-135M package reports `rodata zero-copy` on Metal and commits the
-same bytes as the embedded one after 20 steps on both backends
-(`docs/benchmarks.md`, "Rematerialization at three rungs").
+same bytes as the embedded one after 20 steps on Metal
+(`docs/ledger/f7-2026-10-19/gpu_checks/disk_metal.json`, filed beside
+"Rematerialization at three rungs", whose text does not describe it).
+The same check was run on the CPU, but its summary was not kept, so
+that half is a claim until it is re-run into the ledger.
 
 ## Acceptance
 

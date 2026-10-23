@@ -28,6 +28,14 @@ that date commits its summaries here in the same change.
 | Rematerialization at three rungs (F5 #133 step 2, 2026-10-20) | `f7-2026-10-19/gpu_checks/` | `*_off.json` / `*_on.json` (the six compile reports), `disk_metal.json` (#158's zero-copy check), `id_*.json`, `id_sha.txt` |
 | The nightly gate's reds were the runner's CPU model, not the commit (P8 #165, 2026-10-22) | `p8-2026-10-22/` | `nightly/runs-by-host.csv` (40 runs by CPU model), `nightly/<run>/bench.json` + `bench-gate.log` (the four runs of the incident), `m5/bench-<sha>.json` (the three commits on one host), `m5/mlp4-*.json` (the quiet re-measure) |
 
+`bench-epochs/` is not a section's evidence but the nightly gate's
+pinned reference: one `seeml-bench` report per runner host, named by
+`tool/bench_compare.py --host-slug`, each a calibrated green night
+copied from this ledger (the AMD EPYC 7763's 2026-10-22 run 39782901348
+and the 9V74's 2026-10-19 run 39271309779, from `p8-2026-10-22/nightly/`).
+The nightly reads it and never writes it; replacing a file is starting
+a new epoch for that host, deliberately, in a commit.
+
 The 2026-09-15 GPU baseline row, the E1 GEMM row and the E11 flash
 decision predate the ledger and are not in it; their `out/` directories
 were not kept.

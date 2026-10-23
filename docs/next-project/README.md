@@ -172,8 +172,11 @@ What the file owns, and what it does not:
 
 Then it creates or reuses the **“SeeAI Two-Plane Overhaul”** GitHub
 Project with `Plane` / `Origin` / `Priority` fields — their option sets
-are the union of what the bodies and the roadmap rows name, and an option
-an existing field lacks is printed as an `ACTION:` line for the web UI,
-since the Projects CLI cannot append one — and adds both the new issues
+are the union of what the bodies and the roadmap rows name; an option an
+existing field lacks is appended through the GraphQL field mutation
+(the Projects CLI has no command for it), and because that mutation
+replaces the whole option list, the script first reads the existing
+options back and refuses to write unless the read carries every option
+the field lists, each with its id — and adds both the new issues
 and the existing #59–#67/#69–#71 to the board, writing a field only when
 its value differs.

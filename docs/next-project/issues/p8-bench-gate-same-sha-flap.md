@@ -66,23 +66,35 @@ Variance, of the host class. The 40 nightly `bench` jobs since
 2026-09-13 sorted by the runner's CPU model (`host_key`): every FAIL and
 every Intel WARN is an Intel Xeon (8573C ×5, 8370C, 6973P-C) measured
 against an AMD EPYC baseline, a 7763 night's or a 9V74 night's (this
-incident's 2,400 is the 9V74's 10-19 reading) — the Xeons run the
-decoder fixtures at 0.63–0.73× of the 7763 and the MLP fixtures at
-0.83–0.85× while the calibration kernel reads 1.0–1.15× of it, so the
-P5 normalization adds to the red; the 19 calibrated 7763 nights are
+incident's 2,400 is the 9V74's 10-19 reading), and the one other red
+(10-14) an AMD EPYC 9V45 against a 7763 — the models' fixture ratio is
+not their calibration ratio (the 8573C reads `dec_v256_d128_s128` @1t
+at 0.62–0.73× of the 7763 while its calibration kernel reads
+0.99–1.15×; the 6973P-C 0.82× and 1.39×), so the P5 normalization adds
+to the red; the 19 calibrated 7763 nights are
 within ±1.4 % across six commits. The 10-20 → 10-22 runs were Xeon 8370C, Xeon 8573C, EPYC 7763:
 two different Intel hosts made the "two consecutive" reds. On one host
-(Apple M5) `ee979e7`, `32c8ac6` and `4b7ce89` read the named rows within
-±2.2 % of each other (one 4-thread cell re-measured quiet: +0.6 %).
+(Apple M5) `ee979e7`, `32c8ac6` and `4b7ce89` read 16 of the 18 rows
+within 2.2 % of each other; of the other two, `mlp_128x1024x2` @4t
+re-measured quiet at +0.6 %, and `dec_v256_d128_s32` @4t reads 15.3 %
+and 14.3 % *faster* at the two red commits (the 10-20 gate named it red
+at −15.3 %), unexplained and not re-measured, but opposite to the red.
 Numbers in `docs/benchmarks.md`, "The nightly gate's reds were the
 runner's CPU model, not the commit"; raw in `docs/ledger/p8-2026-10-22/`.
 
-The rule: `bench_compare.py` names a report's CPU model (the host_key's
-second field) and refuses a baseline from another model unless
-`--across-hosts`; `--host-slug` prints the model's cache-key slug;
-`nightly.yml` benches first and restores the rolling baseline, the epoch
-(`bench-epoch-v3-<model>`) and the gate state under it, one of each per
-model — the first night on a model seeds. What clears a red: a green on
+The rule: `bench_compare.py` names the host a report measured on
+(`host_arch`: model and cores — not the host_key, which is the kernel
+policy's lookup key and names `--target-host` when given) and refuses a
+baseline from another host unless `--across-hosts`, comparing slugs so
+two spellings of one model are one host; `nightly.yml` benches first and
+restores the rolling baseline and gate state under
+`bench-rolling-<generation>--<host>--<release>--<policy>--<calibration>--`
+(`--cache-key`), saved after every gate; each host's epoch is a report
+committed at `docs/ledger/bench-epochs/` — the first night on a host
+seeds its rolling baseline, never its epoch. (Amended 2026-10-23 after
+the `/code-review` of this change: the epoch moved from the cache to git,
+the key gained the setup segments and `--` separators, the state is
+saved on failure, and an unmeasured red stays red.) What clears a red: a green on
 the same model; the state carries the commit (`--sha`, `$GITHUB_SHA`),
 and a cleared key is announced with both commits — the same commit twice
 is the runner's variance on record, a later one is a fix. The design's
@@ -90,19 +102,25 @@ calibration-ratio band is not needed once the comparison is within a
 model (the 9V74 at 712k and 889k rows/s normalizes to the same row).
 Tests: `test/tool/bench_compare_test.py` (the 10-08 → 10-22 replay red
 on one baseline and green keyed by model, the refusal, the slug, the
-cleared-red record, the schema-1 state). Written into "Measurement
-discipline". The next nights seed each model's baseline; until a model
-has met itself twice its gate is a seed, not a verdict — and an Actions
-cache unused for seven days is evicted, so the rare models (8573C ten
+cleared-red record, the schema-1 state; since 2026-10-23 also a cleared
+red after a FAIL night, an unmeasured red, the measuring host against a
+`--target-host` key, two spellings of one model, the key segments, and
+the interleaved command line). Written into "Measurement discipline".
+The next nights seed each host's rolling baseline; until a host has met
+itself twice its rolling gate is a seed, not a verdict — and an Actions
+cache unused for seven days is evicted, so the rare models (8573C nine
 days apart, 9V45 three weeks, 8370C and 6973P-C once each) will mostly
-re-seed; the gate gates on the 7763 and the 9V74, which is where the
-nights are.
+re-seed their rolling baseline (10 of the 35 calibrated nights, replayed).
+The committed epochs of the 7763 and the 9V74, which is where the nights
+are, compare on every visit.
 
 ## Acceptance
 
 - [x] The 2026-10-20 and 10-21 rows reproduced or refuted on one host at
   the two commits, the numbers in `docs/benchmarks.md` beside the runner's
-  — refuted: three commits within ±2.2 % on the M5 (2026-10-22).
+  — refuted: 16 of 18 rows within 2.2 % across the three commits on the
+  M5, one re-measured quiet at +0.6 %, one 15.3 % faster at the red
+  commits (2026-10-22, corrected 2026-10-23).
 - [x] Real: the commit named and an issue under its root cause. Variance:
   the P5 (#79) assumption restated with this incident, and the gate's
   band or normalization changed so the same readings would not fail —

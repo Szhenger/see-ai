@@ -33,22 +33,24 @@ keeps numbers comparable across commits.
 - **Same CPU model, or no comparison.** The nightly gate's calibration
   (P5, #79) divides a runner's speed out of every delta, and that
   transfers within one CPU model only: between an AMD EPYC 7763 and an
-  Intel Xeon 8573C the frozen kernel reads 1.0–1.15× while the decoder
-  fixtures read 0.65×, so a normalized delta across models is the
+  Intel Xeon 8573C the frozen kernel reads 0.99–1.15× while the decoder
+  fixtures read 0.62–0.73×, so a normalized delta across models is the
   microarchitecture, not the commit (P8, #165, below). `bench_compare.py`
   refuses a baseline from another model, and the nightly caches one
-  rolling baseline, one epoch and one gate state per model. A red is
-  cleared by a green on the same model; the gate names both commits, so
-  a clear at the same commit is variance on record and a clear at a
-  later one is a fix.
-- **The ledger beside the document.** Every dated section below names the
-  `out/` directory its run wrote. `out/` is ignored by git and lives on one
-  machine, so the summaries a section's numbers are read from — the
-  harness JSON, the compile reports, one profile and one span table per
-  state, the identity hashes — are committed under
-  [`docs/ledger/`](ledger/README.md) by the same directory name (2026-10-22,
-  for every section from the 2026-09-22 row on). A number in this
-  document that cannot be found in the ledger is a claim, not a
+  rolling baseline and one gate state per host and measuring setup, and
+  one epoch per host committed to git. A red is cleared by a green on the
+  same host; the gate names both commits, so a clear at the same commit
+  is variance on record and a clear at a later one is a fix.
+- **The ledger beside the document.** A dated section's run writes to an
+  `out/` directory, which is ignored by git and lives on one machine, so
+  the summaries a section's numbers are read from — the harness JSON, the
+  compile reports, one profile and one span table per state, the identity
+  hashes — are committed under [`docs/ledger/`](ledger/README.md)
+  (2026-10-22, for every section from the 2026-09-22 row on). The
+  ledger's table maps each section to its directory; not every section
+  names its `out/` directory in the text, and one ledger directory can
+  hold several sections' runs (`f7-2026-10-19/` holds six). A number in
+  this document that cannot be found in the ledger is a claim, not a
   measurement.
 
 ## External standards the harness reports in
@@ -860,14 +862,16 @@ The Tier A gate went WARN on 2026-10-20 (`32c8ac6`), FAIL on 10-21
 (`4b7ce89`) and green on 10-22 at the same `4b7ce89`, promoting the
 baseline. Two measurements decide it. First, the 40 nightly `bench`
 jobs from 2026-09-13 to 10-22 by the runner's CPU model (`host_key`,
-`docs/ledger/p8-2026-10-22/nightly/runs-by-host.csv`); the commit was
-`0832bdd` for the 21 nights from 09-25 to 10-15 and changed nothing on
-the CPU path after:
+`docs/ledger/p8-2026-10-22/nightly/runs-by-host.csv`). The commit was
+`0832bdd` for the 21 nights from 09-25 to 10-15; the incident's commits
+after it did change the CPU path (`ee979e7` → `32c8ac6` touches
+`runtime/executor/gemm.cc` and `cpu_backend.cc`), which is why the
+second measurement below holds the three commits on one host:
 
 | runner CPU model (`ubuntu-latest`) | nights | `dec_v256_d128_s128` @1t rows/s | calibration rows/s | gate |
 |---|---:|---:|---:|---|
 | AMD EPYC 7763 | 19 (+1 before calibration) | 2,457 – 2,526 | 732k – 750k | 19 green |
-| AMD EPYC 9V74 | 7 | 2,381 – 2,997 | 712k – 892k | 4 green, 3 WARN |
+| AMD EPYC 9V74 | 7 | 2,381 – 2,997 | 703k – 892k | 4 green, 3 WARN |
 | AMD EPYC 9V45 | 2 | 3,688 – 4,034 | 1,186k – 1,215k | 2 WARN |
 | Intel Xeon 8573C | 5 (+1 before calibration) | 1,551 – 1,820 | 740k – 853k | 4 FAIL, 1 WARN |
 | Intel Xeon 8370C | 1 | 1,532 | 720k | WARN |
@@ -875,11 +879,15 @@ the CPU path after:
 
 Every FAIL and every Intel WARN is an Intel host measured against an
 AMD EPYC baseline — a 7763 night's (10-08 → 10-10, 10-16) or a 9V74
-night's (10-12, 10-20, 10-21: the 2,400 of `dec_v256_d128_s128` @1t in
-those gate logs is the 9V74's 10-19 reading): the Intel parts run the
-decoder fixtures at 0.63 – 0.73× of the 7763 and the MLP fixtures at
-0.83 – 0.85× while the calibration kernel reads 1.0 – 1.15× of it, so
-the normalization *adds* to the red. Within a model the calibration
+night's (10-20 and 10-21 against 10-19's: the 2,400 of
+`dec_v256_d128_s128` @1t in those two gate logs is that reading; 10-12,
+whose log is not in the ledger, against 10-11's by the promotion order).
+The one other red, 10-14, is an AMD EPYC 9V45 against a 7763 night. Per
+model, against the 7763's medians (`dec_v256_d128_s128` @1t / calibration
+kernel): the 8573C reads 0.62 – 0.73× / 0.99 – 1.15×, the 8370C 0.62× /
+0.97×, the 6973P-C 0.82× / 1.39×, the 9V45 1.48 – 1.62× / 1.59 – 1.63×
+— the calibration ratio is not the fixture ratio between models, so the
+normalization *adds* to the red. Within a model the calibration
 holds — the 9V74 at 712k and at 889k reads `dec_v256_d128_s128` @1t at
 2,395 and 2,997, the same 1.25× — and the 19 calibrated 7763 nights sit
 within ±1.4 % of each other across six commits. The 10-20 → 10-22 sequence was Xeon 8370C,
@@ -896,25 +904,38 @@ the Apple M5 (10 cores, macOS 26.6.2, `build/build.sh` with
 | `dec_v256_d128_s128` @1 / 2 / 4 | 4,709 / 7,597 / 10,546 | 4,685 / 7,646 / 10,545 | 4,718 / 7,694 / 10,576 |
 | `dec_v512_d192_s32` @1 / 2 / 4 | 3,415 / 5,613 / 8,045 | 3,421 / 5,732 / 8,062 | 3,447 / 5,690 / 8,025 |
 | `mlp_128x1024x2` @1 / 2 / 4 | 7,488 / 12,246 / 17,824 | 7,597 / 12,391 / 18,031 | 7,620 / 12,377 / 15,506 † |
+| `dec_v256_d128_s32` @1 / 2 / 4 | 6,651 / 10,118 / 11,090 | 6,598 / 10,084 / 12,789 ‡ | 6,688 / 10,219 / 12,670 ‡ |
 
-Every delta between commits is within ±2.2 % except the one marked †,
-which read with four artifact downloads running beside it; re-measured
+Of the 18 rows the harness writes, 16 spread by at most 2.2 % across the
+three commits (`dec_v512_d192_s32` @2 is the widest at 2.12 %); two do
+not. † read with four artifact downloads running beside it; re-measured
 quiet, twice, the fixture alone (`m5/mlp4-*.json`): `ee979e7` 17,900 /
-17,910, `4b7ce89` 18,024 / 17,997 — +0.6 %. The reds were variance of
-the host class, not a regression; nothing is filed under a root cause.
+17,910, `4b7ce89` 18,024 / 17,997 — +0.6 %. ‡ is 15.3 % and 14.3 %
+*faster* than `ee979e7` at the two red commits and was not re-measured;
+the 10-20 gate named the row red at −15.3 %, so it runs opposite to the
+red and does not support a regression, but it is unexplained. The reds
+were variance of the host class, not a regression; nothing is filed
+under a root cause.
 
-What changed, the same day: `bench_compare.py` names a report's CPU
-model and refuses a baseline from another (`--across-hosts` to compare
-anyway); `nightly.yml` runs the harness first and restores the rolling
-baseline, the epoch (`v3`) and the gate state under the model's slug
-(`--host-slug`), so each of the five runners in rotation meets its own
-baseline — the first night on a model seeds it; the gate state carries
-the commit and a cleared red is announced with both. One limit, stated:
-an Actions cache unused for seven days is evicted, so a model that
-appears rarely (the 8573C ten days apart, the 9V45 three weeks apart,
-the 8370C and 6973P-C once each so far) re-seeds on most visits and its
-gate is a seed, not a verdict; the gate gates on the 7763 (half the
-nights) and the 9V74. The P5 assumption
+What changed: `bench_compare.py` names the host a report measured on
+(`host_arch`: the CPU model and its core count) and refuses a baseline
+from another (`--across-hosts` to compare anyway); `nightly.yml` runs the
+harness first, then restores the rolling baseline and the gate state
+under `bench-rolling-<generation>--<host>--<release>--<policy>--<calibration
+kernel>--` (`--cache-key`), so each of the six models in rotation meets
+its own baseline and a release, policy or calibration change re-seeds
+every host at once; the state is saved after every gate, failed ones
+included, and a cleared red names both commits. The epoch is not cached:
+each host's is a report committed at `docs/ledger/bench-epochs/` (the
+7763's 10-22 night and the 9V74's 10-19 night, both green), so eviction
+cannot roll it forward; a host without one runs the rolling gate only,
+with a notice. One limit, stated: an Actions cache unused for seven days
+is evicted, so the rolling baseline of a model that appears rarely (the
+9V74 up to eight days apart, the 8573C nine, the 9V45 three weeks, the
+8370C and 6973P-C once each so far) re-seeds after a gap, and that night
+is a seed, not a verdict; replayed with per-host caches, 10 of the 35
+calibrated nights would only seed. The committed epoch still compares
+on the 7763 and the 9V74 on every visit. The P5 assumption
 is restated in "Measurement discipline": the calibration normalizes a
 runner's speed within a CPU model, not the ratio between models. Raw
 artifacts of the four runs in `docs/ledger/p8-2026-10-22/nightly/`.
@@ -1100,17 +1121,24 @@ All three pieces of this program exist:
    fields, 3 the kernel policy, 4 the calibration block); every earlier
    key is unchanged, so stored baselines stay comparable.
 
-2. **The nightly `bench` CI job** restores the previous night's numbers
-   from the actions cache (the fuzz-corpus trust model), runs the harness,
-   and **fails on a >10% regression in any Tier A `rows_per_s`** via
-   `tool/bench_compare.py` — which also seeds the baseline on first run
-   and skips (never fails) fixtures that exist on only one side, so adding
-   a fixture can't fail the night it lands. Two fail-closed rules keep the
+2. **The nightly `bench` CI job** runs the harness, then restores the
+   last green night of the same host and measuring setup from the
+   actions cache (the fuzz-corpus trust model; the key is
+   `bench-rolling-<BENCH_GENERATION>--` + `bench_compare.py --cache-key`)
+   and gates via `tool/bench_compare.py`: a key's first >10% regression
+   in Tier A `rows_per_s` warns, its second consecutive one **fails**.
+   The comparer seeds the baseline on a host's first night and skips
+   (never fails) fixtures that exist on only one side, so adding a
+   fixture can't fail the night it lands. Two fail-closed rules keep the
    gate honest: a comparison with **zero overlapping keys is an error**
    (a renamed metric must re-seed deliberately, not pass silently), and a
-   **pinned epoch baseline** (`--epoch-baseline`, cache key `bench-epoch-v2`,
-   saved once and never rolled forward) is diffed at a 15% threshold so a
-   sub-10%/night drift cannot compound unnoticed.
+   **pinned epoch baseline** (`--epoch-baseline`, the host's report
+   committed at `docs/ledger/bench-epochs/<host slug>.json`, never rolled
+   forward and never evicted) is diffed at a 15% threshold so a
+   sub-10%/night drift cannot compound unnoticed. The cache is saved
+   after every gate, failed ones included. A reseed dispatch
+   (`reseed_baseline`) re-seeds the host it lands on; bumping
+   `BENCH_GENERATION` in the job re-seeds every host.
 
    Cloud runners of one class differ by 15–35% on identical work, and a
    rolling baseline that only a green night replaces turns that into a
@@ -1135,11 +1163,13 @@ All three pieces of this program exist:
      a warning (a `::warning::` annotation and the uploaded
      `bench-gate.log`); the job fails when the same key regresses against
      the same reference on the next run too. `--promote` makes the comparer
-     the one that rolls the baseline (and seeds a missing epoch): only a
-     fully green gate does, so a warned run is never the next reference.
+     the one that rolls the baseline: only a fully green gate does, so a
+     warned run is never the next reference, and not while a red key
+     goes unmeasured. The nightly never writes an epoch (`--seed-epoch`
+     is for hand runs); pinning one is a commit.
 
-   The epoch key is `bench-epoch-v2`, the first epoch that carries a
-   calibration block. `test/tool/bench_compare_test.py` replays both
+   The epochs are the files in `docs/ledger/bench-epochs/`, each a
+   calibrated (schema 4) green night. `test/tool/bench_compare_test.py` replays both
    incidents (all green) and an injected regression (warned, then failed),
    and shows the un-calibrated replay reproducing the four red nights.
 
