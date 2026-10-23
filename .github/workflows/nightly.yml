@@ -277,11 +277,10 @@ jobs:
           echo "BENCH_HOST=$slug" >> "$GITHUB_ENV"
           echo "BENCH_KEY=bench-rolling-$BENCH_GENERATION--$key--" >> "$GITHUB_ENV"
       - name: Restore baseline (this host's)
-        id: restore
         uses: actions/cache/restore@v4
         with:
           path: bench-baseline
-          key: ${{ env.BENCH_KEY }}${{ github.run_id }}
+          key: ${{ env.BENCH_KEY }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ env.BENCH_KEY }}
       # A reseed drops the rolling baseline and the pending reds, never the
       # committed epoch; the gate step then seeds from this run.
@@ -299,13 +298,15 @@ jobs:
             | tee bench-gate.log
           exit "${PIPESTATUS[0]}"
       # Saved whatever the verdict: a red never promotes bench.json, and the
-      # state of a FAIL night is what the next night must read.
+      # state of a FAIL night is what the next night must read. The attempt
+      # joins the key: a re-run's save must not collide with the first
+      # attempt's entry (an existing key is skipped, losing the state).
       - name: Save baseline and gate state
         if: always() && steps.gate.outcome != 'skipped' && hashFiles('bench-baseline/**') != ''
         uses: actions/cache/save@v4
         with:
           path: bench-baseline
-          key: ${{ env.BENCH_KEY }}${{ github.run_id }}
+          key: ${{ env.BENCH_KEY }}${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload run
         if: always()
         uses: actions/upload-artifact@v4

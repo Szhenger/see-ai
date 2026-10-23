@@ -143,10 +143,20 @@ counted() {  # counted <min> gh-args...
 # The repository's own counts, from the database behind GraphQL — not the
 # search index, which lags a create, can over-count a deleted or
 # transferred issue, and read as 0 on one call in three on 2026-10-22.
+# A zero is read again until a nonzero answer comes or five reads agree:
+# taken at its word, a transient zero beside a transient empty page would
+# read every live issue as missing and create every body again.
 repo_count() {  # repo_count <jq over .data.repository> <min>
-  counted "$2" api graphql \
-    -f query='query($o: String!, $n: String!) { repository(owner: $o, name: $n) { issues { totalCount } pullRequests { totalCount } milestones { totalCount } } }' \
-    -f o="${REPO%%/*}" -f n="${REPO##*/}" --jq ".data.repository | $1"
+  local n again
+  local -a q=(api graphql
+    -f query='query($o: String!, $n: String!) { repository(owner: $o, name: $n) { issues { totalCount } pullRequests { totalCount } milestones { totalCount } } }'
+    -f o="${REPO%%/*}" -f n="${REPO##*/}" --jq ".data.repository | $1")
+  n=$(counted "$2" "${q[@]}")
+  if [ "$n" -eq 0 ]; then
+    again=$(counted 1 "${q[@]}")
+    if [ "$again" -gt 0 ]; then n="$again"; else : > "$TMPD/read_err"; fi
+  fi
+  echo "$n"
 }
 read_failed() {  # read_failed <message>: print the message and why, then exit 1
   echo "error: $1" >&2
@@ -384,6 +394,10 @@ ensure_field() {  # ensure_field <name> <comma-separated options>
     { echo "the options of field '$1' never read back as the $(jq length <<< "$known") field-list names"; cat "$TMPD/gh_err"; } > "$TMPD/read_err"
     read_failed "field '$1' was not changed: appending $(jq -r 'join(", ")' <<< "$missing") needs the existing options read back in full — rerun"
   fi
+  # What is missing is decided against the read-back, not field-list: a
+  # short field-list would otherwise append an option that already exists.
+  missing=$(jq -c --argjson want "$(list_json <<< "$2")" '$want - [.[].name]' <<< "$existing")
+  [ "$missing" != "[]" ] || return 0
   all=$(jq -r --argjson new "$missing" \
     '(. + ($new | map({name: ., color: "GRAY", description: ""})))
      | map("{" + (if .id then "id: " + (.id | @json) + ", " else "" end)
@@ -418,7 +432,7 @@ expected=$(counted 0 project view "$proj_num" --owner "$OWNER" --format json --j
 [ "$expected" -ge 0 ] || read_failed "the board's item count never read; no item written — rerun"
 if [ "$expected" -eq 0 ] && [ "$PROJECT_NEW" = 0 ]; then
   again=$(counted 1 project view "$proj_num" --owner "$OWNER" --format json --jq '.items.totalCount')
-  [ "$again" -gt 0 ] && expected="$again"
+  if [ "$again" -gt 0 ]; then expected="$again"; else : > "$TMPD/read_err"; fi
 fi
 # item-list stops at --limit; ask for the count and a margin.
 limit=$((expected + 100))

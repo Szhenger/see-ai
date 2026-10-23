@@ -219,11 +219,14 @@ def cache_key(report):
     host in turn until a reseed dispatch happens to land on it."""
     policy = kernel_policy(report)
     calib = report.get("calibration") or {}
-    parts = [host_model(report), report.get("seeml_version") or "no release",
+    parts = [report.get("seeml_version") or "no release",
              ("default tiles" if policy is None
               else f"tiles {policy[0]} {policy[1]}"),
              calib.get("kernel") or "uncalibrated"]
-    return "--".join(host_slug(str(p)) for p in parts)
+    # The host segment is --host-slug's own spelling (a report without a
+    # host is "unknown-host" in both), so the key and the epoch name agree.
+    return "--".join([host_slug(host_model(report))]
+                     + [host_slug(str(p)) for p in parts])
 
 
 class Report:
@@ -500,15 +503,14 @@ def gate(args):
         check_release(label, ref)
         check_policy(label, ref)
         check_host(label, ref)
-        failures, compared = compare(label.split()[0], ref, cur,
-                                     max_regression)
+        short = label.split()[0]
+        failures, compared = compare(short, ref, cur, max_regression)
         if not compared:
             # Fail closed: zero overlap means the gate measured nothing.
             raise GateError("no Tier A metric is present in both the "
                             f"{label} and the current report — the gate "
                             "would be blind; re-seed the baseline "
                             "deliberately if the keys were renamed")
-        short = label.split()[0]
         f, w = judge(short, failures, compared, previous, use_state,
                      (previous_sha, sha))
         if f:
@@ -568,6 +570,13 @@ def gate(args):
         print(f"bench_compare: {len(unmeasured)} red key(s) not measured "
               "tonight — the baseline is not rolled forward (re-seed it if "
               "they were removed deliberately)")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # A green exit that never rolls forward is a stall: say so in
+            # the run summary, not only in the log.
+            print("::warning title=bench gate, baseline held::"
+                  f"{', '.join(sorted(unmeasured))} red and not measured; "
+                  "the rolling baseline stays frozen until they are "
+                  "measured or the baseline is re-seeded")
         return 0
     if args.promote:
         with open(args.current) as f:
