@@ -1048,6 +1048,60 @@ zero-copy source-model mapping (E12), so it takes the page faults on
 704 MB at SmolLM. Once per run, it is part of the gate's cost (F9's
 lifecycle row), not of the step.
 
+### The relaxed package on the F7-era kernels, beside MLX-LM in the same session (F2 #130 / F7 #138, 2026-10-24)
+
+F2's and F7's shared open line: the certified-bf16 SmolLM-135M int8
+package re-measured on today's Metal kernels (F7 steps 1 and 3, F8's GPU
+loss), next to the exact package from the same tree and flags
+(`--data-batch 512 --loss xent --quantize-base`, 419 frozen GEMMs
+relaxed, plans `ba53a7bf…` exact and `a0d2d967…` relaxed), and — the
+point of this row — next to MLX-LM run on the same chip in the same
+session (`docs/ledger/f2-2026-10-23/`). `frontier_run.py`, the 10-15
+recipe: 40 → 160 slope, 300-step quality run, 10 threads, Apple M5, macOS
+26.6.2, `caffeinate` holding the machine awake; MLX-LM 0.31.3 on MLX
+0.32.2, the same records (`records_digest 9a2f2c13…`).
+
+| run | step (ms) | tokens/s | validation 0 → 300 | committed model |
+|---|---:|---:|---|---|
+| SeeAI `metal`, exact (f32 math, int8 base) | 180.8 | 2,832 | 4.5744 → 4.00454 | `ab2504dc…` |
+| SeeAI `metal`, relaxed, run 1 | 116.6 | 4,392 | 4.5744 → 4.00458 | `a1c822e1…` |
+| SeeAI `metal`, relaxed, run 2 | 116.5 | 4,395 | 4.5744 → 4.00458 | `a1c822e1…` |
+| SeeAI `metal`, exact, drift control | 181.4 | 2,823 | 4.5744 → 4.00454 | `ab2504dc…` |
+| the 10-19 F7 package (control) | 181.1 | 2,828 | — | `8d04da39…` |
+| MLX-LM all-bf16 | 86.4 | 5,929 | 4.5759 → 4.0134 | — |
+| MLX-LM true-f32 (`MLX_ENABLE_TF32=0`) | 175.5 | 2,917 | 4.5744 → 4.0065 | — |
+
+Read against the same session's MLX-LM: the relaxed package is **0.74×**
+of the all-bf16 trainer (0.56× on 2026-10-15) and the exact package
+**0.97×** of the true-f32 one (0.93× on 10-19); the relaxed package runs
+1.55× the exact one (1.41× on 10-15). The two relaxed runs commit the
+same model, and the gate decides identically to the exact package.
+
+**The host moved, not only the code.** Every row here is about 1.3×
+faster than its 10-15 / 10-19 counterpart: the 10-19 F7 package, run
+unchanged in this session, reads 2,828 tok/s against the 2,085 it read
+on 10-19, and MLX-LM reads 5,929 / 2,917 against 4,465 / 2,240, on the
+same macOS build. The ratios above are within one session; the absolute
+numbers are not comparable with earlier sections. Two practical rules
+follow, for the measurement discipline: a frontier ratio is quoted only
+against a frontier row from the same session, and a run whose machine
+may sleep is held awake. The first attempt at these rows, taken while
+the session was locked, read a relaxed 40-step run at 261 s and the
+following 160-step one at 22 s; those rows are kept in `disturbed/`
+and quoted nowhere.
+
+**The certificate.** `certify_numerics.py certify` with its defaults (a
+20-step free run, site tolerance 1e-5, loss deviation 1e-4) **refuses**
+this plan: the softmax cross-entropy site at 4.5e-5 and the free run's
+loss deviation at 3.8e-4. The 10-15 and 10-19 certificates were issued
+with `--steps 2 --max-site-error 1e-4 --max-loss-deviation 1e-2`, and
+under those settings this plan is granted (`gemm.relaxed` 5.8e-3 against
+2⁻⁷, loss deviation 2.35e-4), which is the certificate the measured
+package carries. Both certificates are in the ledger. The defaults are
+the stricter contract and none of this milestone's relaxed packages has
+met them; which of the two a shipped relaxed package must carry is a
+decision to record in F2, not a tolerance to pick per run.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

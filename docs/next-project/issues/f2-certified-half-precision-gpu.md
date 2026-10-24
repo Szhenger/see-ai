@@ -114,6 +114,20 @@ carries the per-opcode max relative error and refuses `rtol <= 0` and
 non-finite values; the certificate binds to the plan hash and the source
 hash.
 
+## Status 2026-10-24
+
+Re-measured on the F7-era kernels beside MLX-LM in the same session
+(`docs/ledger/f2-2026-10-23/`): relaxed 4,392–4,395 tok/s, 0.74× of MLX-LM
+all-bf16 (5,929 today), exact 0.97× of true-f32. The host itself read
+about 1.3× faster than on 10-15 for every row, SeeAI's and MLX's alike,
+so only same-session ratios are quoted. Open, and newly so: the plan is
+granted under the settings the 10-15 and 10-19 certificates used
+(`--steps 2 --max-site-error 1e-4 --max-loss-deviation 1e-2`) and refused
+under `certify_numerics.py`'s defaults (20 steps, 1e-5, 1e-4: the
+softmax cross-entropy site at 4.5e-5, the loss deviation at 3.8e-4). The
+milestone has to decide which contract a shipped relaxed package
+carries.
+
 ## Acceptance
 
 - [x] SmolLM-135M GPU tok/s measured against F1's MLX-LM all-bf16 row on
@@ -128,9 +142,12 @@ hash.
   and 0.9× of 4,465 needs 2.25×. The 0.9× line is the milestone's, carried
   by F2 + F7 (#138) + F8 (#139) together and read from the relaxed package
   after each; what this issue still owes is the next line.
-- [ ] The relaxed package re-measured on the F7-era kernels — F7's steps 1
-  and 3 (2026-10-19) were measured on the exact package only, and F7's
-  status names the relaxed row as not re-measured.
+- [x] The relaxed package re-measured on the F7-era kernels — 4,392–4,395
+  tok/s, **0.74×** of MLX-LM all-bf16 measured in the same session
+  (5,929), 1.55× the exact package; "The relaxed package on the F7-era
+  kernels, beside MLX-LM in the same session" (2026-10-24). Granted
+  under the 10-15 certificate settings; refused under the tool's
+  defaults — see that section.
 - [x] Certificate: per-site error inside the stated bound (`gemm.relaxed`
   observed 6.2e-3 against 2⁻⁷); 300-step val loss within 1e-3 relative of
   the f32 run (2.4e-5); gate decision unchanged.
