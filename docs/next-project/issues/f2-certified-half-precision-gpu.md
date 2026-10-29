@@ -143,7 +143,12 @@ kernel or whose reference arm modelled the rounding (`--relaxed`) — the two
 ways a diff agrees with itself and vouches for nothing. The system suite
 asserts that the Accelerate build takes the permission for every relaxed
 GEMM of every step and the reference build for none, so the path is
-tested rather than tolerated. The contract decision above is unchanged and
+tested rather than tolerated. On the 10-15 relaxed SmolLM-135M plan
+(`out/f2-2026-10-15/pkg_relaxed`, 3,309 train instructions) the probe's
+`--time` reports `relaxed_executions: 419` per train step on Metal and on
+the Accelerate CPU alike — the 419 relaxed GEMMs the certificate priced, so
+neither backend leaves a tensor-op or SGEMM shape on the exact kernels at
+SmolLM's shapes. The contract decision above is unchanged and
 now visible where the binary is built: `pack_update.py` records the
 certificate's full tolerances and evidence steps in its report and prints
 a NOTE for each tolerance looser than the certifier's defaults
