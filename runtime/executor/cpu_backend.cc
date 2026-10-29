@@ -189,7 +189,14 @@ float KlLossScaleOf(uint64_t word) {
 class CpuBackend final : public ExecutorBackend {
  public:
   const char* name() const override { return "cpu"; }
-  std::string device() const override { return "host CPU"; }
+  // Says where a relaxed GEMM runs, as the Metal backend's label does: the
+  // line reaches every run report and frontier row, so a row measured on
+  // the exact kernels can be told from one measured on SGEMM.
+  std::string device() const override {
+    return SEEML_HAS_ACCELERATE
+               ? "host CPU, relaxed GEMMs on Accelerate SGEMM"
+               : "host CPU, relaxed GEMMs on the exact kernels";
+  }
 
   std::expected<void, std::string> Bind(uint8_t* arena, uint64_t,
                                         const uint8_t* rodata, uint64_t,
@@ -210,6 +217,8 @@ class CpuBackend final : public ExecutorBackend {
                                            const StepParams& params) override;
 
   std::expected<void, std::string> Flush() override { return {}; }
+
+  uint64_t relaxed_executions() const override { return relaxed_executions_; }
 
  private:
   const float* ReadPtr(uint64_t ref) const {
@@ -237,6 +246,9 @@ class CpuBackend final : public ExecutorBackend {
   const uint8_t* rodata_ = nullptr;
   const uint8_t* source_ = nullptr;  // v17: the bound source model file
   k::KernelPolicy policy_;  // the plan header's tiles; defaults until told
+  // Instructions dispatched to SGEMM under kFlagRelaxed (review F42): 0 on
+  // every build but SEEML_ACCELERATE, where the four branches below count.
+  uint64_t relaxed_executions_ = 0;
 #if SEEML_HAS_ACCELERATE
   std::vector<float> accel_panel_;  // F4: the widened int8 panel for SGEMM
 #endif
@@ -256,6 +268,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNN:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
+        ++relaxed_executions_;
         AccelerateGemm(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                        WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                        ins.out[2], false,
@@ -281,6 +294,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNT:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
+        ++relaxed_executions_;
         AccelerateGemm(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                        WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                        ins.out[2], true, nullptr, up::EpilogueAct::kNone,
@@ -310,6 +324,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNNQ8:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {  // F4: the int8 base on SGEMM
+        ++relaxed_executions_;
         AccelerateGemmQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]),
                          WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                          ins.out[2], false,
@@ -328,6 +343,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNTQ8:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
+        ++relaxed_executions_;
         AccelerateGemmQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]),
                          WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                          ins.out[2], true,

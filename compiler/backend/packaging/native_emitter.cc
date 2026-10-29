@@ -615,6 +615,11 @@ int main(int argc, char** argv) {
     str(engine.backend_name());
     std::fputs(",\n  \"device\": ", f);
     str(engine.backend_device());
+    // Which kernels this row measured (review F42): the instructions the
+    // backend ran on a relaxed kernel (plan v18) — 0 on the reference
+    // build, and for an exact plan, whatever the backend could do.
+    std::fprintf(f, ",\n  \"relaxed_executions\": %llu",
+                 (unsigned long long)engine.relaxed_executions());
     // The package mode (#158): the plan this run executed and where it
     // came from — the binary, or a file mapped at start-up.
     std::fputs(",\n  \"plan\": {\"source\": ", f);

@@ -1283,6 +1283,7 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
                                  engine.arena() + h.persistent_size);
       if (!relaxed) {
         EXPECT_EQ(compiled.relaxed_gemms, 0u);
+        EXPECT_EQ(engine.relaxed_executions(), 0u);  // nothing to take
         want_curve = report.loss_curve;
         want_state = state;
         want_val = val;
@@ -1290,6 +1291,17 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
       }
       EXPECT_GT(compiled.relaxed_gemms, 0u);
       ASSERT_EQ(report.loss_curve.size(), want_curve.size());
+      // Review F42: the backend counts the instructions it ran on a relaxed
+      // kernel. The reference build never takes the permission, and no
+      // build takes it for a bf16 base; the SEEML_ACCELERATE build takes it
+      // for every f32- and int8-weight relaxed GEMM of every training step
+      // (the eval program carries none), so the count is exactly the steps
+      // times the plan's relaxed GEMMs — the Accelerate path is asserted
+      // active here, not merely tolerated.
+      if (seeml::update_rt::CpuBackendRelaxedIsExact() || storage == 2)
+        EXPECT_EQ(engine.relaxed_executions(), 0u);
+      else
+        EXPECT_EQ(engine.relaxed_executions(), 25u * compiled.relaxed_gemms);
       if (seeml::update_rt::CpuBackendRelaxedIsExact() || storage == 2) {
         // The reference build, and the bf16 base everywhere: the bit is
         // inert. (The int8 base takes SGEMM through a widened panel since

@@ -591,6 +591,11 @@ class DifferentialSuite(unittest.TestCase):
                 for opcode, stat in report["opcodes"].items():
                     self.assertGreater(stat["extents"], 0, opcode)
                     self.assertLess(stat["worst_ratio"], 1.0)
+                # F42: every report says how many relaxed GEMMs it compared
+                # and how many the C++ backend ran on a relaxed kernel; the
+                # matrix compiles no relaxed plan.
+                self.assertEqual(report["relaxed_instructions"], 0)
+                self.assertEqual(report["cpp_relaxed_executed"], 0)
                 covered |= set(report["opcodes"])
         self.assertEqual(set(fx.OPCODES.values()) - covered, NEVER_COMPILED)
 
@@ -645,6 +650,7 @@ class DifferentialSuite(unittest.TestCase):
                               stderr=subprocess.DEVNULL, check=True)
         profile = json.loads(done.stdout)
         self.assertEqual(profile["executions"], 2)
+        self.assertEqual(profile["relaxed_executions"], 0)  # an exact plan
         self.assertTrue(any(row["key"].startswith("op4 M")  # gemm.acc_nn
                             for row in profile["rows"]))
 

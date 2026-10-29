@@ -105,11 +105,14 @@ struct UpdateConfig {
   // compared bit-for-bit.
   bool fuse_epilogues = true;
   // Attention memory (E11, #94). kAuto tiles every attention op when the
-  // probability caches of all of them together would exceed the budget —
-  // the cached family holds P [B*H*S, S] from forward to backward for
-  // every layer, and dP and dS at that size — at about twice the attention
-  // arithmetic; kCached / kTiled force one family. Identical bits either
-  // way (the tiled kernels reproduce the cached kernels' expressions).
+  // probability caches of all of them together would exceed the cache
+  // budget, or when the step-0 footprint would not fit a CONFIGURED
+  // memory_budget_bytes with them (F3 #131: never the compiling host's
+  // memory, so the plan's bytes depend on its inputs alone) — the cached
+  // family holds P [B*H*S, S] from forward to backward for every layer,
+  // and dP and dS at that size — at about twice the attention arithmetic;
+  // kCached / kTiled force one family. Identical bits either way (the
+  // tiled kernels reproduce the cached kernels' expressions).
   AttentionKind attention = AttentionKind::kAuto;
   uint64_t attention_cache_budget_bytes = 256ull << 20;
   // Rematerialization (roadmap 2b, F5 #133). The forward activations the

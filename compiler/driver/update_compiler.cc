@@ -45,6 +45,23 @@ std::expected<CompiledUpdate, std::string> Attributed(
 
 }  // namespace
 
+AttentionKind DecideAttention(const TrainingFootprint& footprint,
+                              const UpdateConfig& config) {
+  if (config.attention != AttentionKind::kAuto) return config.attention;
+  const bool over_budget =
+      footprint.probs_cache_bytes > config.attention_cache_budget_bytes;
+  // Against a CONFIGURED memory budget only (see the header): with none,
+  // the cache budget decides by itself, and the gate that follows keeps
+  // its own, host-sized refusal. CheckTrainableLocally falls back to the
+  // host's memory for a zero budget, which is exactly what a decision
+  // that changes the plan's bytes may not consult.
+  const bool cached_fits =
+      config.memory_budget_bytes == 0 ||
+      CheckTrainableLocally(footprint, config.memory_budget_bytes).has_value();
+  return (over_budget || !cached_fits) ? AttentionKind::kTiled
+                                       : AttentionKind::kCached;
+}
+
 std::expected<CompiledUpdate, std::string> UpdateCompiler::Compile(
     const SmfModel& source, const SmfModel* teacher) {
   return Attributed(CompileImpl(source, teacher, /*consume=*/false));
@@ -167,21 +184,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // (finding #8): under --quantize-base, 4x the weights they patch.
   footprint.delta_bytes =
       EstimateLoraDeltaBytes(source, config_.lora.target_filters);
-  // The attention decision (E11, plan v15), made on the footprint: keep
-  // the probability caches when they fit the budget AND the whole
-  // footprint fits local memory with them; tile otherwise (the tiled
-  // family holds a stats row per query instead, at about twice the
-  // attention arithmetic and identical bits). --attention forces either.
-  AttentionKind attention = config_.attention;
-  if (attention == AttentionKind::kAuto) {
-    const bool over_budget =
-        footprint.probs_cache_bytes > config_.attention_cache_budget_bytes;
-    const bool cached_fits =
-        CheckTrainableLocally(footprint, config_.memory_budget_bytes)
-            .has_value();
-    attention = (over_budget || !cached_fits) ? AttentionKind::kTiled
-                                              : AttentionKind::kCached;
-  }
+  // The attention decision (E11, plan v15), made on the footprint by
+  // DecideAttention below — the cache budget, and the memory budget when
+  // one is configured; never the compiling host's memory. --attention
+  // forces either.
+  const AttentionKind attention = DecideAttention(footprint, config_);
   if (attention == AttentionKind::kTiled) {
     if (footprint.probs_cache_bytes > 0)
       seeml::diag::Note(generating::kDriver,
@@ -193,8 +200,25 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     footprint.probs_cache_bytes = footprint.attention_stats_bytes;
   }
   if (auto fits = CheckTrainableLocally(footprint, config_.memory_budget_bytes);
-      !fits)
-    return std::unexpected(fits.error());
+      !fits) {
+    // The caches were kept — by force, or by `auto` with no memory budget
+    // to weigh them against — and the footprint does not fit: say when the
+    // tiled family would, so the refusal names its own remedy.
+    std::string why = fits.error();
+    if (attention == AttentionKind::kCached &&
+        footprint.probs_cache_bytes > footprint.attention_stats_bytes) {
+      TrainingFootprint tiled = footprint;
+      tiled.probs_cache_bytes = footprint.attention_stats_bytes;
+      if (CheckTrainableLocally(tiled, config_.memory_budget_bytes))
+        why += config_.attention == AttentionKind::kAuto
+                   ? " (--attention tiled would fit; --memory-budget-mib N "
+                     "lets --attention auto decide that against a budget, "
+                     "which it never decides against the compiling host's "
+                     "memory)"
+                   : " (--attention tiled would fit)";
+    }
+    return std::unexpected(std::move(why));
+  }
 
   // --- 1. Forward SIR: student (+ frozen teacher sharing the input). -------
   sir::Block block;

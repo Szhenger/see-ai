@@ -110,6 +110,11 @@ names for it. Memory line met; tok/s line reported, not met.
   2.1× the cached family, and the simdgroup-matrix form above is the
   remaining step.
 - [x] `--attention auto` chooses the tiled family for either backend from
-  `--attention-cache-budget-mib` (design item 3); a budget read from the
-  compiling device is out of scope, since the plan's bytes must not depend
-  on the host (the #163 review's rule for `--remat auto`).
+  `--attention-cache-budget-mib` (design item 3) and, when
+  `--memory-budget-mib` is given, from the step-0 footprint against that
+  budget — never from the compiling device's memory, since the plan's
+  bytes must not depend on the host (the #163 review's rule for `--remat
+  auto`). Until 2026-10-29 the second leg read the host's memory when no
+  budget was configured; `DecideAttention` now follows the remat rule, the
+  memory gate's refusal says when `--attention tiled` would fit, and
+  `UpdateCompiler.AttentionAutoDecidesAgainstAConfiguredBudgetOnly` pins it.
