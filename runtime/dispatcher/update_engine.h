@@ -227,6 +227,12 @@ class UpdateEngine {
   const char* backend_name() const;
   std::string backend_device() const;
   const std::string& backend_note() const { return backend_note_; }
+  /// Instructions the backend has run on a relaxed kernel (plan v18) since
+  /// it was selected — ExecutorBackend::relaxed_executions. Zero on the
+  /// reference build whatever the plan says; the generated driver writes
+  /// it into the run report so a measured row says which kernels it
+  /// measured (review F42).
+  uint64_t relaxed_executions() const;
   /// The CPU GEMM tile geometry the loaded plan's header selects (v11;
   /// the runtime defaults for zero fields or a pre-v11 plan). A
   /// throughput knob the compiler decided; no result bit depends on it.

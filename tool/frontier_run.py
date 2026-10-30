@@ -537,6 +537,9 @@ def cmd_seeml(args):
         train_loss=r0.get("train_loss"), verdict=r0.get("verdict"),
         committed=r0.get("committed"),
         lifecycle=r0.get("lifecycle"),  # Tier D split of the quality run (F9)
+        # F42: the relaxed GEMMs the quality run executed on a relaxed kernel
+        # (0 on the exact kernels), so the row says which kernels it measured.
+        relaxed_executions=r0.get("relaxed_executions"),
         committed_sha256=quality["committed_sha256"] if quality else None,
         suspect=suspect,
         wall_quality_s=quality["wall_s"] if quality else None,

@@ -59,6 +59,12 @@ downstream verdict (AdamW's first steps divide by |g| + eps, which turns
 1e-7 of gradient noise into a visible parameter difference), and a
 disagreement names the one instruction that owns it. The train, step
 (gradient accumulation), eval and merge sections are all compared. Exit 1 on any disagreement, 2 on a bad command line.
+The trace also says, per instruction, whether the C++ backend ran it on a
+relaxed kernel (plan v18), and the report carries the totals
+(`relaxed_instructions`, `cpp_relaxed_executed`): a numerics certificate is
+verified only against a report whose C++ arm took the permission — an
+exact-vs-exact diff of a relaxed plan agrees and vouches for nothing
+(review F42).
 """
 import argparse
 import bisect
@@ -1562,24 +1568,41 @@ TRACE_MAGIC = formats.PROBE_TRACE_MAGIC
 
 
 def read_trace(np, path):
-    """[(index, opcode, [(offset, f32 ndarray)])] from a probe trace."""
+    """[(index, opcode, [(offset, f32 ndarray)], relaxed)] from a probe
+    trace (tool/probe_trace.h v2): `relaxed` is how many relaxed-kernel
+    executions the backend reported for the instruction — 0 when it ran on
+    the exact kernel or carried no kFlagRelaxed (review F42)."""
     with open(path, "rb") as f:
         raw = f.read()
-    magic, version, count = struct.unpack_from("<IIQ", raw, 0)
+    preamble, record, extent = (formats.PROBE_TRACE_PREAMBLE,
+                                formats.PROBE_TRACE_RECORD,
+                                formats.PROBE_TRACE_EXTENT)
+    magic, version, count = preamble.unpack_from(raw, 0)
     if magic != TRACE_MAGIC or version != formats.PROBE_TRACE_VERSION:
-        raise PlanError(f"{path}: not a seeml-plan-probe trace")
-    pos, out = 16, []
+        raise PlanError(f"{path}: not a v{formats.PROBE_TRACE_VERSION} "
+                        "seeml-plan-probe trace")
+    pos, out = preamble.size, []
     for _ in range(count):
-        index, opcode, extents = struct.unpack_from("<IHH", raw, pos)
-        pos += 8
+        index, opcode, extents, relaxed = record.unpack_from(raw, pos)
+        pos += record.size
         writes = []
         for _ in range(extents):
-            off, nbytes = struct.unpack_from("<QQ", raw, pos)
-            pos += 16
+            off, nbytes = extent.unpack_from(raw, pos)
+            pos += extent.size
             writes.append((off, np.frombuffer(raw, "<f4", nbytes // 4, pos)))
             pos += nbytes
-        out.append((index, opcode, writes))
+        out.append((index, opcode, writes, relaxed))
     return out
+
+
+def new_stat(site):
+    """An empty per-site entry of a diff report's `opcodes`; the relaxed
+    GEMM site also counts the instructions the C++ backend ran on a relaxed
+    kernel (review F42)."""
+    stat = {"extents": 0, "worst_ratio": 0.0, "worst_rel": 0.0}
+    if site == RELAXED_SITE:
+        stat["cpp_relaxed_executed"] = 0
+    return stat
 
 
 class Probe:
@@ -1638,6 +1661,12 @@ class Differ:
         # verify reads this, not `agrees`, since a certified site is
         # allowed past the diff tolerance by design (review F41).
         self.mismatches = []
+        # The relaxed GEMMs compared (instructions carrying kFlagRelaxed)
+        # and how many of them the C++ backend ran on a relaxed kernel, per
+        # the trace (review F42): a certificate's verify refuses a report
+        # whose C++ arm took none — exact against exact vouches for nothing.
+        self.relaxed_flagged = 0
+        self.relaxed_executed = 0
 
     def _mismatch(self, message):
         self.failures.append(message)
@@ -1657,9 +1686,14 @@ class Differ:
             self._mismatch(f"{label}: {len(ours)} instructions here, "
                            f"{len(theirs)} in the C++ trace")
             return
-        for (index, ins, mine), (_, opcode, cpp) in zip(ours, theirs):
+        for (index, ins, mine), (_, opcode, cpp, relaxed) in zip(ours, theirs):
             name = (RELAXED_SITE if ins.flags & FLAG_RELAXED
                     else OPCODES.get(opcode, str(opcode)))
+            if ins.flags & FLAG_RELAXED:
+                self.relaxed_flagged += 1
+                self.relaxed_executed += relaxed
+                site = self.per_opcode.setdefault(name, new_stat(name))
+                site["cpp_relaxed_executed"] += relaxed
             mine_by_off = dict(mine)
             if sorted(mine_by_off) != sorted(off for off, _ in cpp):
                 self._mismatch(
@@ -1683,9 +1717,7 @@ class Differ:
                 worst = float(np.nanmax(delta)) if delta.size else 0.0
                 if np.isnan(delta).any():
                     worst = float("inf")
-                stat = self.per_opcode.setdefault(
-                    name, {"extents": 0, "worst_ratio": 0.0,
-                           "worst_rel": 0.0})
+                stat = self.per_opcode.setdefault(name, new_stat(name))
                 stat["extents"] += 1
                 stat["worst_ratio"] = max(stat["worst_ratio"], worst / bound)
                 # The relative error itself, |delta| / scale — the unit a
@@ -1778,18 +1810,28 @@ def cmd_diff(args):
         "cpp_backend": args.cpp_backend, "steps": args.steps,
         "rtol": args.rtol, "atol": args.atol,
         "extents_compared": differ.compared,
-        "opcodes": {k: differ.per_opcode.get(k, {"extents": 0,
-                                                 "worst_ratio": 0.0,
-                                                 "worst_rel": 0.0})
+        "opcodes": {k: differ.per_opcode.get(k, new_stat(k))
                     for k in sorted(used)},
         "failures": differ.failures, "agrees": not differ.failures,
         # The structural failures alone: a certificate's verify holds a
         # certified site to its own tolerance, not the diff's.
         "mismatches": differ.mismatches,
+        # The relaxed GEMMs compared, and how many of them the C++ backend
+        # ran on a relaxed kernel (review F42): a verify refuses a zero,
+        # since an exact C++ arm measures f32 round-off, not the site.
+        "relaxed_instructions": differ.relaxed_flagged,
+        "cpp_relaxed_executed": differ.relaxed_executed,
     }
     for name, stat in report["opcodes"].items():
         print(f"frontier_exec: {name:<18} {stat['extents']:>5} extent(s), "
               f"worst |delta|/bound {stat['worst_ratio']:.3g}")
+    if differ.relaxed_flagged:
+        print(f"frontier_exec: the C++ {args.cpp_backend} backend ran "
+              f"{differ.relaxed_executed} of {differ.relaxed_flagged} relaxed "
+              "GEMM(s) on a relaxed kernel"
+              + ("" if differ.relaxed_executed else
+                 " — this report measures the exact kernels, not the "
+                 "certified site"))
     for line in differ.failures[:40]:
         print(f"frontier_exec: DISAGREE {line}")
     verdict = ("agrees with" if report["agrees"] else
@@ -1936,11 +1978,20 @@ def cmd_price(args):
             probe = Probe(args.probe, args.plan, cpp_backend, args.threads)
             try:
                 scalars, image = ex.step_scalars(1), ex.mem.export()
-                ms = probe.time("train", image, scalars,
-                                args.steps_hi)["ms_median"] * plan.grad_accum
+                timing = probe.time("train", image, scalars, args.steps_hi)
+                ms = timing["ms_median"] * plan.grad_accum
+                # F42: which kernels the priced number priced — the relaxed
+                # GEMMs the backend ran on a relaxed kernel, per step as `ms`
+                # is (the probe counts over all its timed executions; every
+                # execution runs the same instructions).
+                def per_execution(t):
+                    return t.get("relaxed_executions", 0) // max(
+                        int(t.get("executions", 1)), 1)
+                relaxed = per_execution(timing) * plan.grad_accum
                 if plan.sections["step"]:
-                    ms += probe.time("step", image, scalars,
-                                     args.steps_hi)["ms_median"]
+                    timing = probe.time("step", image, scalars, args.steps_hi)
+                    ms += timing["ms_median"]
+                    relaxed += per_execution(timing)
             except PlanError as e:
                 cpp[cpp_backend] = {"available": False, "reason": str(e)}
                 print(f"frontier_exec: c++/{cpp_backend:<6} unavailable ({e})")
@@ -1948,7 +1999,7 @@ def cmd_price(args):
             finally:
                 probe.close()
             cpp[cpp_backend] = dict(cell(plan, ms, [ms], args.peak_gflops),
-                                    available=True)
+                                    available=True, relaxed_executions=relaxed)
             print(f"frontier_exec: c++/{cpp_backend:<6} {ms:>10.3f} ms/step "
                   f"{cpp[cpp_backend]['rows_per_s']:>9} rows/s "
                   f"{cpp[cpp_backend]['gemm_gflops']:>8.1f} GEMM GFLOP/s")

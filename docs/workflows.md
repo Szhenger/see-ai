@@ -355,7 +355,15 @@ test rather than a sentence.
 Two checks are worth running but too slow (or too statistical) to make
 every contributor wait for. They run on a schedule —
 `cron: "17 7 * * *"`, which is cron notation for "07:17 UTC daily" —
-plus `workflow_dispatch`, meaning you can click "run now."
+plus `workflow_dispatch`, meaning you can click "run now." Beside them
+sit two measurement jobs: **`bench`**, the Tier A throughput gate
+(`docs/benchmarks.md`), and **`frontier`** (F1 #129), the frontier row
+on a self-hosted Apple-silicon runner — opt-in rather than nightly by
+default, since no such runner is registered yet: it runs on a
+`workflow_dispatch` with the `frontier` input, and on the schedule only
+while the repository variable `SEEML_FRONTIER_NIGHTLY` is `true`, to be
+set once the runner exists (a scheduled job with no runner queues until
+GitHub times it out). It is a trend row, never a gate.
 
 **`tsan`** rebuilds everything under **ThreadSanitizer**, which watches
 the ordering of every memory access across threads and reports *data

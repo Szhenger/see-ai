@@ -156,6 +156,9 @@ std::expected<void, std::string> UpdateEngine::SelectBackend(
 
 const char* UpdateEngine::backend_name() const { return backend_->name(); }
 std::string UpdateEngine::backend_device() const { return backend_->device(); }
+uint64_t UpdateEngine::relaxed_executions() const {
+  return backend_->relaxed_executions();
+}
 
 const float* UpdateEngine::ReadPtr(uint64_t ref) const {
   const uint64_t offset = up::RefOffset(ref);

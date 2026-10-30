@@ -90,8 +90,7 @@ each opcode's relative error and `verify` reads that rather than
 `worst_ratio × rtol`, so NaN cannot pass (F41); the report names its plan,
 its structural mismatches refuse it, and every uncertified opcode is held
 to the diff tolerance (F42; whether the C++ arm of a diff actually ran the
-relaxed kernels is not yet in the report, so an exact-vs-exact diff still
-vouches for the site vacuously — the remaining F42 item); relaxed GEMMs are keyed `gemm.relaxed`
+relaxed kernels joined the report on 2026-10-29 — see that status); relaxed GEMMs are keyed `gemm.relaxed`
 on both sides (F72); the certificate binds to the source model by SHA-256
 and `verify --source` refuses another file (N35, with the ContentHash64
 check of "is this the model the plan was compiled from" left to the C++
@@ -128,6 +127,33 @@ softmax cross-entropy site at 4.5e-5, the loss deviation at 3.8e-4). The
 milestone has to decide which contract a shipped relaxed package
 carries.
 
+## Status 2026-10-29
+
+F42's residual closed. Every executor backend counts the instructions it
+ran on a relaxed kernel (`ExecutorBackend::relaxed_executions`: the
+Accelerate SGEMM paths on the CPU, the tensor-op GEMMs on Metal; the CPU's
+device line now says which it has for them, as Metal's did).
+`seeml-plan-probe` writes the count per instruction into trace v2 and into
+its `--time` / `--profile` JSON; the diff report carries
+`relaxed_instructions` and `cpp_relaxed_executed`; the generated driver's
+run report carries `relaxed_executions` and the frontier row repeats it.
+`certify_numerics.py verify --observed` refuses a report, for a certificate
+that covers `gemm.relaxed`, whose C++ arm ran no relaxed GEMM on a relaxed
+kernel or whose reference arm modelled the rounding (`--relaxed`) — the two
+ways a diff agrees with itself and vouches for nothing. The system suite
+asserts that the Accelerate build takes the permission for every relaxed
+GEMM of every step and the reference build for none, so the path is
+tested rather than tolerated. On the 10-15 relaxed SmolLM-135M plan
+(`out/f2-2026-10-15/pkg_relaxed`, 3,309 train instructions) the probe's
+`--time` reports `relaxed_executions: 419` per train step on Metal and on
+the Accelerate CPU alike — the 419 relaxed GEMMs the certificate priced, so
+neither backend leaves a tensor-op or SGEMM shape on the exact kernels at
+SmolLM's shapes. The contract decision above is unchanged and
+now visible where the binary is built: `pack_update.py` records the
+certificate's full tolerances and evidence steps in its report and prints
+a NOTE for each tolerance looser than the certifier's defaults
+(`DEFAULT_TOLERANCES`, the one table the CLI defaults read).
+
 ## Acceptance
 
 - [x] SmolLM-135M GPU tok/s measured against F1's MLX-LM all-bf16 row on
@@ -158,6 +184,9 @@ carries.
   carries the per-opcode max relative error, refuses `rtol <= 0` and
   non-finite values, and binds to the plan hash and the source hash (N17,
   F41, F72, N35 — closed 2026-10-15).
-- [ ] F42's residual: the diff report does not yet record whether the C++
-  arm ran the relaxed kernels, so an exact-vs-exact diff still vouches for
-  a site vacuously.
+- [x] F42's residual: the diff report records whether the C++ arm ran the
+  relaxed kernels (`cpp_relaxed_executed`, from the probe's per-instruction
+  count), and `verify --observed` refuses an exact-vs-exact diff, or a
+  `--relaxed`-modelled one, for a certificate that covers the site
+  (2026-10-29; `test_an_observed_run_must_have_measured_the_relaxed_kernels`
+  and the relaxed-plan C++ test in `test/tool/certify_numerics_test.py`).

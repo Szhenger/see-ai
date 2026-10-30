@@ -23,10 +23,13 @@
 //
 // --trace records, after EVERY instruction (the backend is flushed first,
 // so a deferred GPU instruction is complete), each extent the validator
-// says the instruction writes:
+// says the instruction writes, and whether the backend ran the instruction
+// on a relaxed kernel (plan v18, kFlagRelaxed; review F42 — an exact-vs-
+// exact diff must not vouch for a certified site):
 //
-//   u32 magic "SEPT"; u32 version 1; u64 instruction_count
+//   u32 magic "SEPT"; u32 version 2; u64 instruction_count
 //   per instruction: u32 index; u16 opcode; u16 extent_count;
+//                    u32 relaxed (relaxed-kernel executions: 1 or 0);
 //                    per extent: u64 arena_offset; u64 bytes; the bytes
 //
 // --time N is the pricing mode: one warm-up execution of the section, then
@@ -34,7 +37,9 @@
 // line on stdout with the median / min / max milliseconds — the C++ number
 // frontier_exec.py sets beside PyTorch's and MLX's for the same plan. It
 // measures the instruction stream alone (no feeder, no evaluation), which
-// is also all the Python side times.
+// is also all the Python side times. The line (and --profile's object)
+// also carries relaxed_executions, the relaxed-kernel executions over the
+// N measured runs, so a priced number says which kernels it priced.
 //
 // --profile N is Tier B's question — why did Tier A move — asked of one
 // plan: N executions (after a warm-up) with the backend flushed after every
@@ -397,6 +402,7 @@ std::string TimeProgram(rt::ExecutorBackend& backend, const Program& program,
                         const std::string& section, uint64_t timed) {
   using Clock = std::chrono::steady_clock;
   std::vector<double> ms;
+  uint64_t relaxed_after_warmup = 0;
   for (uint64_t run = 0; run <= timed; ++run) {  // run 0 is the warm-up
     const auto t0 = Clock::now();
     for (size_t i = 0; i < program.instructions.size(); ++i)
@@ -406,15 +412,19 @@ std::string TimeProgram(rt::ExecutorBackend& backend, const Program& program,
     if (run)
       ms.push_back(
           std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+    else
+      relaxed_after_warmup = backend.relaxed_executions();
   }
   std::sort(ms.begin(), ms.end());
   const size_t n = ms.size();
   std::printf("{\"backend\": \"%s\", \"section\": \"%s\", "
               "\"executions\": %zu, \"ms_median\": %.4f, "
-              "\"ms_min\": %.4f, \"ms_max\": %.4f}\n",
+              "\"ms_min\": %.4f, \"ms_max\": %.4f, "
+              "\"relaxed_executions\": %" PRIu64 "}\n",
               backend.name(), section.c_str(), n,
               n % 2 ? ms[n / 2] : 0.5 * (ms[n / 2 - 1] + ms[n / 2]),
-              ms.front(), ms.back());
+              ms.front(), ms.back(),
+              backend.relaxed_executions() - relaxed_after_warmup);
   return {};
 }
 
@@ -439,7 +449,9 @@ std::string ProfileProgram(rt::ExecutorBackend& backend,
     return key;
   };
   double total = 0.0;
+  uint64_t relaxed_after_warmup = 0;
   for (uint64_t run = 0; run <= runs; ++run) {  // run 0 is the warm-up
+    if (run == 1) relaxed_after_warmup = backend.relaxed_executions();
     for (size_t i = 0; i < program.instructions.size(); ++i) {
       const auto t0 = Clock::now();
       if (auto r = backend.Execute(program.instructions[i], params); !r)
@@ -461,8 +473,10 @@ std::string ProfileProgram(rt::ExecutorBackend& backend,
   });
   const double n = static_cast<double>(runs);
   std::printf("{\"backend\": \"%s\", \"executions\": %" PRIu64
-              ", \"ms_per_execution\": %.4f, \"rows\": [",
-              backend.name(), runs, total / n);
+              ", \"ms_per_execution\": %.4f, \"relaxed_executions\": %" PRIu64
+              ", \"rows\": [",
+              backend.name(), runs, total / n,
+              backend.relaxed_executions() - relaxed_after_warmup);
   for (size_t i = 0; i < sorted.size(); ++i)
     std::printf("%s{\"key\": \"%s\", \"ms\": %.4f, \"calls\": %" PRIu64 "}",
                 i ? ", " : "", sorted[i].first.c_str(),
@@ -473,7 +487,8 @@ std::string ProfileProgram(rt::ExecutorBackend& backend,
 }
 
 /// Oracle mode: executes the section once; with `trace`, flushes after
-/// every instruction and records each extent it was allowed to write.
+/// every instruction and records each extent it was allowed to write and
+/// whether a relaxed kernel ran it (trace v2).
 std::string RunProgram(rt::ExecutorBackend& backend, const Program& program,
                        const rt::StepParams& params, const uint8_t* arena,
                        StagedFile* trace) {
@@ -483,6 +498,7 @@ std::string RunProgram(rt::ExecutorBackend& backend, const Program& program,
     trace->Put<uint64_t>(program.instructions.size());
   }
   for (size_t i = 0; i < program.instructions.size(); ++i) {
+    const uint64_t relaxed_before = backend.relaxed_executions();
     if (auto r = backend.Execute(program.instructions[i], params); !r)
       return "instruction " + std::to_string(i) + ": " + r.error();
     if (!trace) continue;
@@ -493,6 +509,8 @@ std::string RunProgram(rt::ExecutorBackend& backend, const Program& program,
     trace->Put<uint32_t>(static_cast<uint32_t>(i));
     trace->Put<uint16_t>(program.instructions[i].opcode);
     trace->Put<uint16_t>(writes);
+    trace->Put<uint32_t>(static_cast<uint32_t>(backend.relaxed_executions() -
+                                               relaxed_before));
     for (size_t k = 0; k < ext.count; ++k) {
       const rt::OperandExtent& e = ext.ranges[k];
       if (!e.write) continue;
@@ -622,8 +640,10 @@ int main(int argc, char** argv) {
   if (!out.ok()) return Fail("cannot stage the arena image");
   out.Write(arena.get(), static_cast<size_t>(h.arena_size));
   if (!out.Commit()) return Fail("short write to the arena image");
-  std::fprintf(stderr, "seeml-plan-probe: %s, %zu instruction(s), %s\n",
+  std::fprintf(stderr,
+               "seeml-plan-probe: %s, %zu instruction(s), %s, %" PRIu64
+               " relaxed-kernel execution(s)\n",
                opts.section.c_str(), program.instructions.size(),
-               backend.name());
+               backend.name(), backend.relaxed_executions());
   return 0;
 }

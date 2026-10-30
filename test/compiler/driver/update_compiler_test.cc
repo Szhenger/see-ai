@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "compiler/driver/update_compiler.h"
+#include "compiler/frontend/accountant/resource_analyzer.h"
 #include "source/plan/update_types.h"
 #include "source/parallel/parallel_for.h"
 #include "source/language/model_format.h"
@@ -963,6 +964,84 @@ TEST(UpdateCompiler, RematerializationShrinksTheArenaAndLeavesEvalAlone) {
                        UpdateCompiler(automatic).Compile(model));
   EXPECT_FALSE(unconfigured.remat_applied);
   EXPECT_TRUE(unconfigured.plan == off.plan);
+}
+
+TEST(UpdateCompiler, AttentionAutoDecidesAgainstAConfiguredBudgetOnly) {
+  // F3 (#131) design item 3, by the rule --remat auto already follows: a
+  // decision that changes the plan's bytes may weigh the footprint against
+  // a CONFIGURED memory budget, never against the compiling host's memory,
+  // so identical inputs compile identical plans on every machine. With no
+  // budget the cache budget decides by itself.
+  TrainingFootprint fp;
+  fp.weight_bytes = 1000;
+  fp.activation_bytes = 2000;
+  fp.delta_bytes = 500;
+  fp.probs_cache_bytes = 4000;
+  fp.attention_stats_bytes = 100;
+  UpdateConfig config = BaseConfig(kBatch);
+  ASSERT_EQ(config.attention, AttentionKind::kAuto);
+  config.memory_budget_bytes = 0;  // no budget: the caches fit their own
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kCached);
+  config.memory_budget_bytes = fp.total_bytes();  // exactly fits with them
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kCached);
+  config.memory_budget_bytes = fp.total_bytes() - 1;  // not with them
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kTiled);
+  config.memory_budget_bytes = 0;
+  config.attention_cache_budget_bytes = fp.probs_cache_bytes - 1;
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kTiled);
+  config.attention_cache_budget_bytes = fp.probs_cache_bytes;
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kCached);
+  // A forced family is obeyed whatever the budgets say.
+  config.memory_budget_bytes = 1;
+  config.attention_cache_budget_bytes = 0;
+  config.attention = AttentionKind::kCached;
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kCached);
+  config.memory_budget_bytes = 0;
+  config.attention_cache_budget_bytes = 1ull << 40;
+  config.attention = AttentionKind::kTiled;
+  EXPECT_EQ(DecideAttention(fp, config), AttentionKind::kTiled);
+
+  // Through the driver: with no budget and with one nothing could exceed,
+  // the same plan byte for byte — the cached family, by the cache budget.
+  // (S = 8: at S = 4 a probability row is exactly a stats row's width, so
+  // the two families' footprints coincide and no budget tells them apart.)
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 8, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  UpdateConfig plain = BaseConfig(batch);
+  plain.remat = RematKind::kOff;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate unbudgeted,
+                       UpdateCompiler(plain).Compile(model));
+  UpdateConfig roomy = plain;
+  roomy.memory_budget_bytes = 1ull << 50;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate budgeted,
+                       UpdateCompiler(roomy).Compile(model));
+  EXPECT_FALSE(unbudgeted.attention_tiled);
+  EXPECT_GT(unbudgeted.probs_cache_bytes, 0u);
+  EXPECT_TRUE(unbudgeted.plan == budgeted.plan);
+
+  // The step-0 gate's refusal names its remedy: the caches kept by force
+  // under a budget the tiled family would have fit.
+  TrainingFootprint est = EstimateTrainingFootprint(model, batch);
+  est.delta_bytes = EstimateLoraDeltaBytes(model, plain.lora.target_filters);
+  ASSERT_GT(est.probs_cache_bytes, est.attention_stats_bytes);
+  UpdateConfig forced = plain;
+  forced.attention = AttentionKind::kCached;
+  forced.memory_budget_bytes = est.total_bytes() - 1;
+  const auto refused = UpdateCompiler(forced).Compile(model);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_STR_CONTAINS(refused.error(), "too big to train locally");
+  EXPECT_STR_CONTAINS(refused.error(), "--attention tiled would fit");
+  // `auto` under the same budget tiles instead of refusing at this gate;
+  // what it may still meet is the final gate on the exact arena, whose
+  // refusal reads differently.
+  UpdateConfig automatic = plain;
+  automatic.memory_budget_bytes = est.total_bytes() - 1;
+  const auto tiled = UpdateCompiler(automatic).Compile(model);
+  if (tiled.has_value())
+    EXPECT_TRUE(tiled->attention_tiled);
+  else
+    EXPECT_STR_CONTAINS(tiled.error(), "cannot run locally");
 }
 
 }  // namespace

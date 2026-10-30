@@ -279,6 +279,12 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> Execute(const up::UpdateInstruction& ins,
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
+  // Its own tensor-op GEMMs plus the relaxed GEMMs it hands the CPU
+  // backend (a GEMM whose dimensions overflow 32 bits, DimsFit32), which
+  // that backend runs on SGEMM in a SEEML_ACCELERATE build.
+  uint64_t relaxed_executions() const override {
+    return relaxed_executions_ + (cpu_ ? cpu_->relaxed_executions() : 0);
+  }
 
  private:
   const InstructionExtents* ExtentsOf(const up::UpdateInstruction& ins);
@@ -309,6 +315,7 @@ class MetalBackend final : public ExecutorBackend {
   id<MTLComputePipelineState> rx_pipes_[kRxPipeCount];
   bool relaxed_ = false;
   std::string relaxed_reason_ = "not built";
+  uint64_t relaxed_executions_ = 0;  // GEMMs EncodeRelaxedGemm took (F42)
   id<MTLBuffer> bf16_scratch_ = nil;
   uint64_t bf16_scratch_bytes_ = 0;
   bool EncodeRelaxedGemm(up::OpCode op, const up::UpdateInstruction& ins,
@@ -965,6 +972,7 @@ bool MetalBackend::EncodeRelaxedGemm(up::OpCode op,
   [enc_ dispatchThreadgroups:MTLSizeMake((a.n + kRxTileN - 1) / kRxTileN,
                                          (a.m + kRxTileM - 1) / kRxTileM, 1)
        threadsPerThreadgroup:MTLSizeMake(kRxThreads, 1, 1)];
+  ++relaxed_executions_;
   return true;
 }
 
