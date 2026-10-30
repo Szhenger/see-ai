@@ -33,7 +33,12 @@ and it is unmeasured.
 
 ## Acceptance
 
-- SmolLM-135M update runs on a current iPhone and iPad: tok/s, J/token,
-  peak memory, gate result, committed model hash.
-- Adapter-only package for SmolLM-135M r8 measured in bytes vs today's
-  package.
+- [ ] SmolLM-135M update runs on a current iPhone and iPad: tok/s, J/token,
+  peak memory, gate result, committed model hash — not started.
+- [ ] Energy per token in `seeml-bench` and the frontier rows on macOS
+  (design item 2's first half, measurable without a device) — not started.
+- [ ] Adapter-only package for SmolLM-135M r8 measured in bytes against
+  today's package — not started.
+
+As of 2026-10-22 nothing in the tree serves this issue beyond this body;
+the item that needs no device is the adapter-only package.

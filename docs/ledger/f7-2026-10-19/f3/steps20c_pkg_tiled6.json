@@ -1,0 +1,13 @@
+{
+  "schema": 3,
+  "backend": "metal",
+  "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+  "plan": {"source": "embedded", "path": null, "bytes": 298631168},
+  "steps": 20,
+  "train_loss": [3.8571322, 3.9592638],
+  "validation_scores": "shipped",
+  "lifecycle": {"load_s": 0.4123, "data_s": 0.0005, "train_s": 69.4529, "eval_s": 0.0000, "evaluations": 0, "merge_s": 0.1316, "commit_s": 1.7062, "wall_s": 71.7367},
+  "gate": {"min_improvement": 0, "require_accuracy": false, "loss_ok": false, "accuracy_measured": false, "accuracy_ok": true, "forced": true},
+  "verdict": "forced",
+  "committed": true
+}

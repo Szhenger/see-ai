@@ -5,6 +5,9 @@ Usage:
     python3 bench_compare.py baseline.json current.json
         [--max-regression F] [--epoch-baseline epoch.json]
         [--max-epoch-regression F] [--state gate_state.json] [--promote]
+        [--sha COMMIT] [--across-hosts] [--seed-epoch]
+    python3 bench_compare.py --host-slug current.json
+    python3 bench_compare.py --cache-key current.json
 
 Compares the Tier A throughput metric — rows_per_s, per fixture per thread
 width — and exits 1 if any pair regressed by more than --max-regression
@@ -24,8 +27,18 @@ The rolling baseline (last green night) catches step changes; a slow
 compounding drift of <10%/night would never trip it. --epoch-baseline names
 a second, pinned report that is never rolled forward — the gate also diffs
 against it (--max-epoch-regression, default 0.15) so drift accumulates
-against a fixed reference. A missing epoch file is a note, not a failure
-(the workflow seeds it once).
+against a fixed reference. A missing epoch file is a note, not a failure.
+The nightly keeps its epochs in git (docs/ledger/bench-epochs/<slug>.json),
+where nothing evicts them: an actions cache unused for seven days is
+evicted, and an epoch that re-seeds after every lapse is a reference that
+rolls forward. This tool therefore writes a missing epoch only when asked
+(--seed-epoch, on a green gate), never as a side effect of --promote. An
+epoch measured under another kernel policy or calibration kernel than
+tonight's report is set aside with a NOTE (a `::notice::` under GitHub
+Actions), as if missing, until it is re-pinned: such a change re-seeds
+every rolling baseline at once, and failing on the epoch would turn it
+into a red night on every pinned host. An epoch from another host is
+still refused — the path is the host's own, so that is a wrong file.
 
 Everything is medians-of-medians upstream, so a >10% delta is signal, not
 noise — on ONE machine. The nightly gate compares machines of one runner
@@ -50,6 +63,25 @@ report WITHOUT a usable calibration block, two different calibration
 kernels, or a ratio outside [1/3, 3] (not the same host class) are errors,
 never silent raw comparisons.
 
+Host model. Calibration normalizes a runner's speed within one CPU model,
+not the ratio between models: the nightly's hosted runners rotate across
+six models, and from 2026-10-08 to 10-22 every WARN and FAIL was measured
+against a baseline from another model (an Intel Xeon 8573C, 8370C or
+6973P-C, or an AMD EPYC 9V45, against an AMD EPYC 7763's or 9V74's
+night; on the 8573C the decoder fixtures read 0.63-0.73x of a 7763's
+rows/s while its calibration kernel read 1.0-1.15x) — P8 (#165). So the
+gate compares like with like a second way: a report names the host it
+measured on (host_arch: the CPU model and its physical core count; the
+ISA, cores and caches when the kernel names no model) and a baseline from
+another host is refused (exit 1) unless --across-hosts is passed. Two
+spellings of one model (case, punctuation) are one host: hosts compare as
+slugs, the cache key's own form. `--host-slug REPORT` prints that slug
+and `--cache-key REPORT` the rolling cache's whole key segment (host,
+release, kernel policy, calibration kernel, joined by "--", which no slug
+contains), so the workflow keeps one rolling baseline and gate state per
+host and measuring setup. A report without host_arch or a host_key
+(schema < 3) compares with a NOTE.
+
 Two-consecutive-red. With --state PATH a key that regresses for the first
 time is a WARNING (exit 0; a `::warning::` annotation under GitHub Actions)
 and is recorded; the gate fails only when the same key regresses against
@@ -58,7 +90,17 @@ Without --state every red fails at once, as before. --promote makes this
 tool the one that rolls the baseline forward: the current report replaces
 the baseline only on a fully green gate (or when no baseline exists), so a
 warned run is never what the second night is compared against; a missing
---epoch-baseline is seeded under the same condition and never rewritten.
+--epoch-baseline is seeded under the same condition when --seed-epoch is
+also given, and never rewritten. The state carries the commit the run
+measured (--sha, else GITHUB_SHA), and a key that was red on the previous
+run and is compared and green now is announced as CLEARED with both
+commits: cleared at the same commit is the runner's variance on record,
+cleared at a later one is a fix. The workflow saves the state after every
+gate, failed ones included, so "the previous run" is the previous night.
+A red key the current report does not measure (a fixture dropped, a
+thread width removed) is not cleared: it stays red in the state, fails
+the night it is measured red again, and while it is carried the baseline
+is not rolled forward (the report would drop the key's only reference).
 
 Schema-3 reports name the kernel policy they ran under (the CPU GEMM
 tiles the compiler wrote into every plan); two reports with different
@@ -68,6 +110,7 @@ measures, not a regression — and the gate exits 1 telling you to re-seed.
 import argparse
 import json
 import os
+import re
 import sys
 
 
@@ -124,6 +167,74 @@ def calibration(report, path):
     return kernel, rate
 
 
+UNKNOWN_MODELS = ("", "unknown")
+
+
+def _host_fields(report):
+    """(isa, model, cores, l1d, l2) of the CPU a report measured on, or
+    None. host_arch (schema >= 3) is the measuring host as detected. The
+    host_key is the kernel-policy LOOKUP key — it names the --target-host
+    when one was given — so it is read only for a report without
+    host_arch."""
+    arch = report.get("host_arch")
+    if isinstance(arch, dict):
+        return (str(arch.get("isa") or ""), str(arch.get("cpu_model") or ""),
+                arch.get("physical_cores"), arch.get("l1d_bytes"),
+                arch.get("l2_bytes"))
+    key = report.get("host_key")
+    if not key:
+        return None
+    parts = str(key).split(";")
+    if len(parts) == 1:
+        return ("", parts[0], None, None, None)
+    kv = dict(f.split("=", 1) for f in parts[2:] if "=" in f)
+    return (parts[0], parts[1], kv.get("cores"), kv.get("l1d"), kv.get("l2"))
+
+
+def host_model(report):
+    """The host a report measured on, as one string: "<model>, <N> cores",
+    or, when the kernel names no model (Linux arm64 prints none), "<isa>
+    CPU (model unknown), <N> cores, L1d <bytes>, L2 <bytes>", so two such
+    hosts differ by what does distinguish them. None for a report from
+    before host_arch and host_key (schema < 3)."""
+    fields = _host_fields(report)
+    if fields is None:
+        return None
+    isa, model, cores, l1d, l2 = fields
+    model = model.strip()
+    cores_s = f", {cores} cores" if cores not in (None, "") else ""
+    if model.lower() not in UNKNOWN_MODELS:
+        return model + cores_s
+    return (f"{isa or 'unknown'} CPU (model unknown){cores_s}, "
+            f"L1d {l1d}, L2 {l2}")
+
+
+def host_slug(model):
+    """The model as a cache-key slug: lower case, every run of other
+    characters one dash ("amd-epyc-7763-64-core-processor")."""
+    return re.sub(r"[^a-z0-9]+", "-", (model or "unknown host").lower()).strip("-")
+
+
+def cache_key(report):
+    """The rolling cache's key segment for a report: the host, the
+    release, the kernel policy and the calibration kernel, each a slug,
+    joined by "--" (a slug never contains two dashes in a row, so no
+    segment is a prefix of another host's). A change in any of the last
+    three is a re-seed by design — the gate refuses that comparison — so
+    keying by them re-seeds every host at once instead of failing each
+    host in turn until a reseed dispatch happens to land on it."""
+    policy = kernel_policy(report)
+    calib = report.get("calibration") or {}
+    parts = [report.get("seeml_version") or "no release",
+             ("default tiles" if policy is None
+              else f"tiles {policy[0]} {policy[1]}"),
+             calib.get("kernel") or "uncalibrated"]
+    # The host segment is --host-slug's own spelling (a report without a
+    # host is "unknown-host" in both), so the key and the epoch name agree.
+    return "--".join([host_slug(host_model(report))]
+                     + [host_slug(str(p)) for p in parts])
+
+
 class Report:
     def __init__(self, path):
         with open(path) as f:
@@ -133,6 +244,7 @@ class Report:
         self.policy = kernel_policy(raw)
         self.calibration = calibration(raw, path)
         self.version = raw.get("seeml_version")
+        self.host = host_model(raw)
 
 
 def runner_ratio(label, ref, cur):
@@ -165,7 +277,8 @@ def key_name(key):
 
 def compare(label, ref, cur, max_regression):
     """Prints per-key lines; returns ({key_name: line} of regressed keys,
-    compared_count). Deltas are runner-normalized (see runner_ratio)."""
+    {key_name of every key compared}). Deltas are runner-normalized (see
+    runner_ratio)."""
     base, now = ref.tier_a, cur.tier_a
     ratio = runner_ratio(label, ref, cur)
     shared = [k for k in base if k in now and base[k] > 0]
@@ -178,12 +291,12 @@ def compare(label, ref, cur, max_regression):
                if raw else "")
         print(f"bench_compare: NOTE runner calibrates at {ratio:.3f}x the "
               f"{label}'s{mid}; deltas below are normalized")
-    failures, skipped, compared = {}, [], 0
+    failures, skipped, compared = {}, [], set()
     for key, base_v in sorted(base.items()):
         if key not in now:
             skipped.append(f"{key_name(key)}: in {label} only")
             continue
-        compared += 1
+        compared.add(key_name(key))
         cur_v = now[key]
         norm_v = cur_v / ratio
         delta = (norm_v - base_v) / base_v if base_v > 0 else 0.0
@@ -202,21 +315,23 @@ def compare(label, ref, cur, max_regression):
     return failures, compared
 
 
-STATE_SCHEMA = 1
+STATE_SCHEMA = 2  # 2: carries the commit the reds were measured at
 
 
 def load_state(path):
-    """{label: [key_name, ...]} — the keys that were red on the previous
-    run. A missing file is an empty state; an unreadable one is an error
-    (a gate that forgets its reds silently never fails)."""
+    """({label: [key_name, ...]}, sha) — the keys that were red on the
+    previous run and the commit it measured (None for a schema-1 state).
+    A missing file is an empty state; an unreadable one is an error (a
+    gate that forgets its reds silently never fails)."""
     if path is None or not os.path.exists(path):
-        return {}
+        return {}, None
     try:
         with open(path) as f:
             state = json.load(f)
-        if state.get("schema") != STATE_SCHEMA:
+        if state.get("schema") not in (1, STATE_SCHEMA):
             raise ValueError(f"schema {state.get('schema')!r}")
-        return {label: list(keys) for label, keys in state["red"].items()}
+        return ({label: list(keys) for label, keys in state["red"].items()},
+                state.get("sha"))
     except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
         raise GateError(f"cannot read the gate state {path}: {e}")
 
@@ -229,10 +344,19 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def judge(label, failures, previous, use_state):
+def judge(label, failures, compared, previous, use_state, shas=(None, None)):
     """Splits one reference's regressed keys into (fatal, warned) lines and
-    prints them. Without --state every red is fatal."""
+    prints them. Without --state every red is fatal. A key red on the
+    previous run, compared now and green is announced with both commits
+    (shas = (previous, current)): the same commit twice is the runner's
+    variance on record, a later one is a fix. A previous red this run did
+    not compare is neither cleared nor announced."""
     fatal, warned = [], []
+    for name in sorted(previous.get(label, [])):
+        if name in compared and name not in failures:
+            prev_sha, cur_sha = (s or "an unrecorded commit" for s in shas)
+            print(f"bench_compare: CLEARED {name} vs {label} (red at "
+                  f"{prev_sha} on the previous run, green at {cur_sha})")
     for name, line in sorted(failures.items()):
         if not use_state or name in previous.get(label, []):
             fatal.append(line)
@@ -248,6 +372,19 @@ def judge(label, failures, previous, use_state):
 
 
 def main():
+    # --host-slug and --cache-key stand alone. They are read first so the
+    # two positionals stay required: optional positionals stop argparse
+    # from reading "BASELINE --option CURRENT" before Python 3.12.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--host-slug", metavar="REPORT", default=None)
+    pre.add_argument("--cache-key", metavar="REPORT", default=None)
+    early, _ = pre.parse_known_args()
+    for path, render in ((early.host_slug, lambda r: host_slug(host_model(r))),
+                         (early.cache_key, cache_key)):
+        if path is not None:
+            with open(path) as f:
+                print(render(json.load(f)))
+            return 0
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("baseline")
@@ -266,11 +403,29 @@ def main():
                         "is a warning, its second consecutive red fails")
     p.add_argument("--promote", action="store_true",
                    help="on a fully green gate (or a missing baseline) "
-                        "replace the baseline with the current report and "
-                        "seed a missing epoch baseline")
+                        "replace the baseline with the current report")
+    p.add_argument("--seed-epoch", action="store_true",
+                   help="with --promote, also write a missing "
+                        "--epoch-baseline from the current report (the "
+                        "nightly keeps its epochs in git and never passes "
+                        "this)")
     p.add_argument("--across-releases", action="store_true",
                    help="compare against a rolling baseline measured on a "
                         "different seeml_version (refused by default)")
+    p.add_argument("--across-hosts", action="store_true",
+                   help="compare against baselines measured on a different "
+                        "CPU model (refused by default: calibration does "
+                        "not transfer between models, P8 #165)")
+    p.add_argument("--sha", metavar="COMMIT", default=None,
+                   help="the commit the current report measured, recorded "
+                        "in the state (default: $GITHUB_SHA)")
+    p.add_argument("--host-slug", metavar="REPORT", default=None,
+                   help="print REPORT's host as a slug and exit (the "
+                        "workflow names the committed epoch by it)")
+    p.add_argument("--cache-key", metavar="REPORT", default=None,
+                   help="print REPORT's rolling-cache key segment (host, "
+                        "release, kernel policy, calibration kernel) and "
+                        "exit")
     args = p.parse_args()
     try:
         return gate(args)
@@ -315,29 +470,86 @@ def gate(args):
                             "--across-releases to compare anyway")
         print(f"bench_compare: NOTE {said}")
 
-    previous = load_state(args.state)
+    def check_host(label, ref):
+        """A baseline from another host must not compare at all (P8,
+        #165): the calibration kernel reads 0.99-1.15x between an AMD EPYC
+        7763 and an Intel Xeon 8573C while the decoder fixtures read
+        0.63-0.73x, so the normalized delta is the microarchitecture, not
+        the commit. Both anchors fail closed; the workflow keys them by
+        host so each runner meets its own. Hosts compare as slugs, the
+        cache key's form, so two spellings of one model are one host and
+        a slug that keys a cache always passes its own check. A report
+        without a host predates the field and compares with a note."""
+        if ref.host is None and cur.host is None:
+            return
+        if (ref.host is not None and cur.host is not None
+                and host_slug(ref.host) == host_slug(cur.host)):
+            return
+        if ref.host is None or cur.host is None:
+            print(f"bench_compare: NOTE the {label if ref.host is None else 'current report'} "
+                  "predates host_key (no CPU model) — comparing across hosts")
+            return
+        said = (f"the {label} was measured on '{ref.host}' but the current "
+                f"report on '{cur.host}'")
+        if not args.across_hosts:
+            raise GateError(f"{said}; calibration does not transfer between "
+                            "CPU models (P8 #165) — the nightly keys its "
+                            "baselines by model, so this is a wrong cache "
+                            "key or a hand-run comparison; pass "
+                            "--across-hosts to compare anyway")
+        print(f"bench_compare: NOTE {said}; comparing across hosts as asked")
+
+    previous, previous_sha = load_state(args.state)
     use_state = args.state is not None
-    red, fatal, warned = {}, [], []
+    sha = args.sha or os.environ.get("GITHUB_SHA") or None
+    red, fatal, warned, unmeasured = {}, [], [], []
+
+    def epoch_setup_change(ref):
+        """Why a committed epoch cannot be compared under tonight's setup
+        (another kernel policy, or another calibration kernel when both
+        calibrate), or None. The host is not on this list: the epoch path
+        is the host's own, so another host there is a wrong file and
+        still fails closed in check_host."""
+        if ref.policy != cur.policy:
+            def name(p):
+                return ("the runtime defaults" if p is None
+                        else f"GEMM tiles {p}")
+            return (f"{name(ref.policy)} but tonight's report with "
+                    f"{name(cur.policy)}")
+        if (ref.calibration and cur.calibration
+                and ref.calibration[0] != cur.calibration[0]):
+            return (f"calibration kernel '{ref.calibration[0]}' but "
+                    f"tonight's report with '{cur.calibration[0]}'")
+        return None
 
     def against(label, path, max_regression, what):
         ref = Report(path)
         check_release(label, ref)
         check_policy(label, ref)
-        failures, compared = compare(label.split()[0], ref, cur,
-                                     max_regression)
-        if compared == 0:
+        check_host(label, ref)
+        short = label.split()[0]
+        failures, compared = compare(short, ref, cur, max_regression)
+        if not compared:
             # Fail closed: zero overlap means the gate measured nothing.
             raise GateError("no Tier A metric is present in both the "
                             f"{label} and the current report — the gate "
                             "would be blind; re-seed the baseline "
                             "deliberately if the keys were renamed")
-        f, w = judge(label.split()[0], failures, previous, use_state)
+        f, w = judge(short, failures, compared, previous, use_state,
+                     (previous_sha, sha))
         if f:
             print(f"bench_compare: {len(f)} Tier A metric(s) regressed more "
                   f"than {max_regression:.0%} vs {what}")
-        red[label.split()[0]] = sorted(failures)
+        # A red this run did not measure stays red: nothing showed it green.
+        carried = [n for n in previous.get(short, []) if n not in compared]
+        for n in carried:
+            print(f"bench_compare: NOTE {n} was red vs {short} on the "
+                  "previous run and is not measured now; it stays red")
+        red[short] = sorted(set(failures) | set(carried))
         fatal.extend(f)
         warned.extend(w)
+        if short == "baseline":
+            unmeasured.extend(carried)
 
     seeded = not os.path.exists(args.baseline)
     if seeded:
@@ -349,8 +561,30 @@ def gate(args):
 
     if args.epoch_baseline is not None:
         if not os.path.exists(args.epoch_baseline):
-            print(f"bench_compare: no epoch baseline at "
-                  f"{args.epoch_baseline} — this run seeds it")
+            seeding = args.seed_epoch and args.promote
+            how = ("this run seeds it on a green gate" if seeding
+                   else "no epoch comparison; pin one by committing a "
+                        "green night's report there")
+            print(f"bench_compare: NOTE no epoch baseline at "
+                  f"{args.epoch_baseline} — {how}")
+            if os.environ.get("GITHUB_ACTIONS") == "true" and not seeding:
+                print(f"::notice title=bench gate, no epoch::no epoch "
+                      f"baseline at {args.epoch_baseline}; this host's "
+                      "drift is unguarded until one is committed")
+        elif (why := epoch_setup_change(Report(args.epoch_baseline))):
+            # The committed epoch was measured under another setup. The
+            # rolling cache re-seeds every host on such a change; failing
+            # here would undo that for every host with a pinned epoch, so
+            # the epoch is set aside, said aloud, until one is re-pinned.
+            print(f"bench_compare: NOTE the epoch baseline at "
+                  f"{args.epoch_baseline} was measured with {why} — no "
+                  "epoch comparison; re-pin it by committing a green "
+                  "night's report there")
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::notice title=bench gate, epoch set aside::the "
+                      f"epoch at {args.epoch_baseline} was measured with "
+                      f"{why}; this host's drift is unguarded until it is "
+                      "re-pinned")
         else:
             against("epoch baseline", args.epoch_baseline,
                     args.max_epoch_regression,
@@ -358,8 +592,8 @@ def gate(args):
 
     if use_state:
         write_atomic(args.state, json.dumps(
-            {"schema": STATE_SCHEMA, "red": red}, indent=2, sort_keys=True)
-            + "\n")
+            {"schema": STATE_SCHEMA, "red": red, "sha": sha,
+             "host": cur.host}, indent=2, sort_keys=True) + "\n")
     if fatal:
         return 1
     if warned:
@@ -368,12 +602,26 @@ def gate(args):
               "forward")
         return 0
     print("bench_compare: no Tier A regression")
+    if args.promote and unmeasured:
+        # Promoting a report that lacks a red key would drop the only
+        # reference that can show it still slow.
+        print(f"bench_compare: {len(unmeasured)} red key(s) not measured "
+              "tonight — the baseline is not rolled forward (re-seed it if "
+              "they were removed deliberately)")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # A green exit that never rolls forward is a stall: say so in
+            # the run summary, not only in the log.
+            print("::warning title=bench gate, baseline held::"
+                  f"{', '.join(sorted(unmeasured))} red and not measured; "
+                  "the rolling baseline stays frozen until they are "
+                  "measured or the baseline is re-seeded")
+        return 0
     if args.promote:
         with open(args.current) as f:
             text = f.read()
         write_atomic(args.baseline, text)
         print(f"bench_compare: promoted {args.current} to {args.baseline}")
-        if (args.epoch_baseline is not None
+        if (args.seed_epoch and args.epoch_baseline is not None
                 and not os.path.exists(args.epoch_baseline)):
             write_atomic(args.epoch_baseline, text)
             print(f"bench_compare: seeded the epoch {args.epoch_baseline}")

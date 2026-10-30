@@ -123,9 +123,24 @@ row.
 
 ## Acceptance
 
-- Train-only Metal profile of SmolLM-135M: the LoRA family's share of
-  kernel time reported before/after each step; steps 1–3 bit-identical
-  committed models against main; step 4 certified.
-- SmolLM-135M `metal` tok/s and the F2 relaxed package's tok/s reported
-  against F1's MLX-LM rows.
-- The head's LoRA cost reported as a fraction of the head GEMM.
+- [x] Train-only Metal profile of SmolLM-135M with the LoRA family's share
+  of kernel time before and after each step — 37.3 % (main) → 37.0 %
+  (step 1) → 33.6 % (step 3, first half) → 24.1 % (step 3, second half):
+  "The LoRA lowering, steps 1 and 3, and the per-dispatch cost" and "The
+  LoRA family's Metal kernels, off the issue floor" (2026-10-19).
+- [x] Steps 1 and 3 commit the same bytes as main — `beb98417…` (CPU) and
+  `0fef91ef…` (Metal) at every stage.
+- [x] Design item 3's target, ≥ 100 GB/s effective on `512x1536x8+add` —
+  44 µs for the 6 MB of C and D the row moves (the doc's own figure: 92 µs
+  was 65 GB/s), so about 137 GB/s.
+- [ ] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
+  simdgroups) — the family's next floor.
+- [ ] Step 2, the batched A-projections — not started; needs strided
+  operands in the ISA.
+- [ ] Step 4, B(Ax) folded into the base GEMM, certified — not started.
+- [x] SmolLM-135M `metal` tok/s against F1's MLX-LM rows — 2,085 tok/s,
+  0.93× true-f32 and 0.45× all-bf16.
+- [ ] The F2 relaxed package's tok/s on these kernels — not re-measured
+  since 2026-10-15 (F2's open item too).
+- [x] The head's LoRA cost as a fraction of the head GEMM — 61 % → 34 %
+  after step 3.

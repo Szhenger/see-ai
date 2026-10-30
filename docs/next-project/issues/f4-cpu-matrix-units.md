@@ -74,8 +74,18 @@ threading is Accelerate's; the two 10-thread runs above are identical).
 
 ## Acceptance
 
-- GEMM GFLOP/s at SmolLM shapes (q8 and f32, NN/NT/TN) vs the committed
-  kernels, timed against the committed object.
-- SmolLM-135M CPU tok/s vs F1's `torch.compile` CPU row; target ≥ 0.8×.
-- Determinism: serial vs 8-thread committed models byte-identical on the
-  new path.
+- [x] The option decided: B, the Accelerate exception, for the f32 base
+  (#136, 2026-09-23) and the int8 base (2026-10-19), behind the P3
+  certificate; A (native SME kernels) stays open as the route to the 0.8×
+  line and to a determinism contract that holds across OS releases.
+- [ ] GEMM GFLOP/s at SmolLM shapes (q8 and f32, NN/NT/TN) against the
+  committed kernels, timed against the committed object — not measured.
+- [ ] SmolLM-135M CPU tok/s against F1's `torch.compile` CPU row, target
+  ≥ 0.8× — **0.77–0.79×** (659–673 against 852 tok/s), "The int8 base on
+  the CPU matrix units" (2026-10-19); just under. What would cross it:
+  widening the head once per step instead of once per GEMM, or SME kernels
+  over int8 (option A).
+- [ ] Determinism: serial against 8-thread committed models byte-identical
+  on the new path — two 10-thread runs commit the same bytes
+  (`d459b541…`); the serial-against-threaded comparison has not been run
+  (SGEMM's threading is Accelerate's).

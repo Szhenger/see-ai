@@ -20,13 +20,20 @@
 #     added live for triage (sev:*, good first issue, ...) are kept;
 #   * its milestone, only when the file names one (`milestone:`);
 #   * an issue that is CLOSED is left alone — its body is history — and
-#     only its board fields are reconciled.
+#     only its board fields are reconciled;
+#   * the board's Status is DERIVED, never set by hand: Done when the issue
+#     is closed, In Progress when the file carries a `## Status` heading or
+#     a checked acceptance box (`- [x]`: the work has started and says so),
+#     Todo otherwise. A roadmap issue without a file is Done when closed
+#     and left alone while open.
 # Every label and milestone a body names is upserted; the issue list and
 # the board are each fetched once, paginated, so nothing stops at a page
 # boundary; a board field is written only when its value differs. A
-# single-select option that an existing field lacks cannot be added by the
-# Projects CLI (the option-edit mutation refuses to append): the script
-# names it as an ACTION for the web UI and carries on.
+# single-select option that an existing field lacks is appended through
+# the GraphQL field mutation (the Projects CLI has no command for it): the
+# field's options are read with their ids, colors and descriptions and
+# written back whole with the new names at the end, so nothing existing
+# moves or loses its id.
 #
 #     tool/create_next_project.sh              # reconcile
 #     tool/create_next_project.sh --dry-run    # print every write it would make, touch nothing
@@ -89,9 +96,73 @@ mutate() {  # mutate "<what>" gh-args...
   if [ "$DRY_RUN" = 1 ]; then echo "   would: $what" >&2; return 0; fi
   gh "$@"
 }
-# A paginated read as ONE array (gh api --paginate emits one array per
-# page; a test that reads them page by page sees only the last one).
-gh_pages() { gh api --paginate "$1" | jq -s 'add // []'; }
+# A paginated read as ONE array, page by page. On 2026-10-22 the issues
+# endpoint answered `page=2` with `[]` on one call in three (and `gh api
+# --paginate` read the repository as 100 issues of 162, or as none, with
+# no error), so a caller that knows the true count passes it: a page that
+# fails, or comes back empty before the count is reached, is retried
+# three times, then the read fails (status 1, the reason and gh's last
+# stderr in $TMPD/read_err for the caller to print once it gives up).
+# Without a count an empty page is the end (a collection with none, or
+# exactly 100 or 200, is read as it is).
+gh_pages() {  # gh_pages <path?query> [count]  (the function adds per_page and page)
+  local page=1 out="[]" have=0 chunk n try want="${2:-}"
+  while :; do
+    chunk=""
+    for try in 1 2 3; do
+      chunk=$(gh api "$1&per_page=100&page=$page" 2>"$TMPD/gh_err") || chunk=""
+      [ -n "$chunk" ] && { [ "$(jq 'length' <<< "$chunk")" -gt 0 ] || [ -z "$want" ] || [ "$have" -ge "$want" ]; } && break
+      chunk=""; [ "$try" -lt 3 ] && sleep "$try"
+    done
+    if [ -z "$chunk" ]; then
+      { echo "$1 (page $page, $have of ${want:-?} read) failed three times"; cat "$TMPD/gh_err"; } > "$TMPD/read_err"
+      return 1
+    fi
+    n=$(jq 'length' <<< "$chunk")
+    [ "$n" -gt 0 ] || break
+    out=$(printf '%s\n%s\n' "$out" "$chunk" | jq -c -s 'add')
+    have=$((have + n))
+    [ "$n" -lt 100 ] && break
+    page=$((page + 1))
+  done
+  printf '%s\n' "$out"
+}
+# A number read from gh, retried: the first value >= min within five
+# tries, else -1 with the reason and gh's last stderr in $TMPD/read_err.
+counted() {  # counted <min> gh-args...
+  local min="$1" try n; shift
+  for try in 1 2 3 4 5; do
+    n=$(gh "$@" 2>"$TMPD/gh_err") || n=""
+    case "$n" in ''|*[!0-9]*) n="" ;; esac  # not a number: a failed read
+    [ -n "$n" ] && [ "$n" -ge "$min" ] && { echo "$n"; return 0; }
+    [ "$try" -lt 5 ] && sleep "$try"
+  done
+  { echo "gh $1 never read a number >= $min (last: '${n:-none}')"; cat "$TMPD/gh_err"; } > "$TMPD/read_err"
+  echo -1
+}
+# The repository's own counts, from the database behind GraphQL — not the
+# search index, which lags a create, can over-count a deleted or
+# transferred issue, and read as 0 on one call in three on 2026-10-22.
+# A zero is read again until a nonzero answer comes or five reads agree:
+# taken at its word, a transient zero beside a transient empty page would
+# read every live issue as missing and create every body again.
+repo_count() {  # repo_count <jq over .data.repository> <min>
+  local n again
+  local -a q=(api graphql
+    -f query='query($o: String!, $n: String!) { repository(owner: $o, name: $n) { issues { totalCount } pullRequests { totalCount } milestones { totalCount } } }'
+    -f o="${REPO%%/*}" -f n="${REPO##*/}" --jq ".data.repository | $1")
+  n=$(counted "$2" "${q[@]}")
+  if [ "$n" -eq 0 ]; then
+    again=$(counted 1 "${q[@]}")
+    if [ "$again" -gt 0 ]; then n="$again"; else : > "$TMPD/read_err"; fi
+  fi
+  echo "$n"
+}
+read_failed() {  # read_failed <message>: print the message and why, then exit 1
+  echo "error: $1" >&2
+  [ -s "$TMPD/read_err" ] && sed 's/^/       /' "$TMPD/read_err" >&2
+  exit 1
+}
 # A body reaches gh through a file, never through a pipe into mutate: a
 # pipe into a command that does not read it (a dry run, a labels-only
 # edit) is a SIGPIPE race that aborts the script under pipefail.
@@ -144,7 +215,13 @@ echo "   ok: $(jq -r 'join(" ")' <<< "$wanted_labels")"
 
 # --- milestones: every milestone any body names --------------------------
 echo "== milestones"
-have_ms=$(gh_pages "repos/$REPO/milestones?state=all&per_page=100" | jq -c '[.[].title]')
+ms_count=$(repo_count '.milestones.totalCount' 0)
+[ "$ms_count" -ge 0 ] || read_failed "the milestone count of $REPO never read; labels may be upserted, nothing else written — rerun"
+ms_raw=$(gh_pages "repos/$REPO/milestones?state=all" "$ms_count") ||
+  read_failed "the milestones of $REPO never read as the $ms_count it holds; labels may be upserted, nothing else written — rerun"
+[ "$(jq 'length' <<< "$ms_raw")" -ge "$ms_count" ] ||
+  read_failed "the milestones of $REPO read short of the $ms_count it holds; labels may be upserted, nothing else written — rerun"
+have_ms=$(jq -c '[.[].title]' <<< "$ms_raw")
 for f in "${BODIES[@]}"; do fm "$f" milestone; done | sed '/^$/d' | LC_ALL=C sort -u |
 while IFS= read -r m; do
   if jq -e --arg m "$m" 'index($m) != null' <<< "$have_ms" >/dev/null; then echo "   ok: $m"
@@ -153,11 +230,27 @@ done
 
 # --- issues: one fetch, then create or edit per body ---------------------
 echo "== issues"
-LIVE=$(gh_pages "repos/$REPO/issues?state=all&per_page=100" |
-  jq -c '.[] | select(.pull_request == null) |
+# The list is trusted only when it is as long as the repository says it is
+# (the issues endpoint lists issues and pull requests both, so the count is
+# their sum, read from the repository itself). A short list would read
+# live issues as missing and create every body again; the count is exact,
+# so a page that comes back empty early is retried rather than taken as
+# the end.
+expected=$(repo_count '.issues.totalCount + .pullRequests.totalCount' 0)
+[ "$expected" -ge 0 ] || read_failed "the issue count of $REPO never read; labels and milestones may be upserted, no issue or board write made — rerun"
+LIVE_RAW=""
+for try in 1 2 3 4 5; do
+  if raw=$(gh_pages "repos/$REPO/issues?state=all" "$expected") &&
+     [ "$(jq 'length' <<< "$raw")" -ge "$expected" ]; then
+    LIVE_RAW="$raw"; break
+  fi
+  [ "$try" -lt 5 ] && sleep "$try"
+done
+[ -n "$LIVE_RAW" ] || read_failed "the issue list of $REPO never read as the $expected issues and pull requests it holds; labels and milestones may be upserted, no issue or board write made — rerun"
+LIVE=$(jq -c '.[] | select(.pull_request == null) |
          {number, title, state, body: (.body // ""), milestone: (.milestone.title // ""),
-          labels: ([.labels[].name] | unique)}')
-ITEMS=""  # url|Plane|Origin|Priority
+          labels: ([.labels[].name] | unique)}' <<< "$LIVE_RAW")
+ITEMS=""  # url|Plane|Origin|Priority|Status
 for f in "${BODIES[@]}"; do
   title=$(fm "$f" title)
   labels_json=$(fm "$f" labels | list_json)
@@ -169,6 +262,8 @@ for f in "${BODIES[@]}"; do
   number=$(fm "$f" number)
   body "$f" > "$TMPD/body"
   want_body=$(norm < "$TMPD/body")
+  # The board's Status, derived from the file and the live state (header).
+  status="Todo"; grep -q -e '^## Status' -e '^- \[x\]' "$f" && status="In Progress"
 
   # Identity: `number:` when the file names one, else the exact title. A
   # title held by several live issues (the retitling hazard the 2026-09-24
@@ -196,6 +291,7 @@ for f in "${BODIES[@]}"; do
     num=$(jq -r .number <<< "$live")
     url="https://github.com/$REPO/issues/$num"
     if [ "$(jq -r .state <<< "$live")" = "closed" ]; then
+      status="Done"
       echo "   closed, left alone (#$num): $title"
     else
       live_body=$(jq -r .body <<< "$live" | norm)
@@ -224,20 +320,25 @@ for f in "${BODIES[@]}"; do
       fi
     fi
   fi
-  ITEMS+="$url|$plane|$origin|$priority"$'\n'
+  ITEMS+="$url|$plane|$origin|$priority|$status"$'\n'
 done
 while IFS='|' read -r num plane origin priority; do
   [ -n "$num" ] || continue
-  ITEMS+="https://github.com/$REPO/issues/$num|$plane|$origin|$priority"$'\n'
+  # No file to read a `## Status` from: Done once closed, untouched while open.
+  status=""
+  [ "$(jq -r -s --argjson n "$num" 'first(.[] | select(.number == $n) | .state) // "open"' <<< "$LIVE")" = "closed" ] && status="Done"
+  ITEMS+="https://github.com/$REPO/issues/$num|$plane|$origin|$priority|$status"$'\n'
 done <<< "$EXISTING_ITEMS"
 
 # --- create or reuse the project ------------------------------------------
 echo "== project"
 proj_json=$(gh project list --owner "$OWNER" --format json --limit 100 |
   jq -c --arg t "$PROJECT_TITLE" 'first(.projects[] | select(.title == $t)) // empty')
+PROJECT_NEW=0
 if [ -n "$proj_json" ]; then
   echo "   reusing existing project"
 else
+  PROJECT_NEW=1
   proj_json=$(mutate "create project '$PROJECT_TITLE'" project create --owner "$OWNER" --title "$PROJECT_TITLE" --format json)
   if [ -z "$proj_json" ]; then
     echo "   (nothing to reconcile the board against yet; stopping)" >&2
@@ -262,12 +363,49 @@ ensure_field() {  # ensure_field <name> <comma-separated options>
     [ "$DRY_RUN" = 1 ] && PENDING_FIELDS="$PENDING_FIELDS $1 "
     return 0
   fi
-  # The field exists: an option it lacks has to be added by hand (the
-  # Projects option-edit mutation refuses to append). Say which.
-  missing=$(jq -r --arg n "$1" --argjson want "$(list_json <<< "$2")" \
-    '[.fields[] | select(.name == $n) | .options[].name] as $have | ($want - $have) | join(", ")' \
+  # The field exists: an option it lacks is appended. The mutation takes
+  # the whole option list, each with its color and description, so the
+  # existing ones are read back in full (field-list omits both) and kept
+  # by id; the new ones follow with no id and the field's plain look.
+  missing=$(jq -c --arg n "$1" --argjson want "$(list_json <<< "$2")" \
+    '[.fields[] | select(.name == $n) | .options[].name] as $have | ($want - $have)' \
     <<< "$fields_json")
-  [ -z "$missing" ] || echo "   ACTION: field '$1' lacks option(s) '$missing' — add in the web UI (project settings → $1), then rerun" >&2
+  [ "$missing" != "[]" ] || return 0
+  # The mutation REPLACES the option list, so the read-back is trusted only
+  # when it carries every option field-list named, each with an id; an
+  # empty, null or short read (the class 2026-10-22 showed on the other
+  # reads) would otherwise delete the existing options and every card's
+  # value for the field.
+  local existing all known try
+  known=$(jq -c --arg n "$1" '[.fields[] | select(.name == $n) | .options[].name]' <<< "$fields_json")
+  existing=""
+  for try in 1 2 3 4 5; do
+    existing=$(gh api graphql -f query="{ node(id: \"$have\") { ... on ProjectV2SingleSelectField { options { id name color description } } } }" \
+      --jq '.data.node.options' 2>"$TMPD/gh_err") || existing=""
+    if [ -n "$existing" ] && jq -e --argjson known "$known" \
+         'type == "array" and all(.[]; (.id // "") != "" and (.name // "") != "")
+          and ([.[].name] as $got | all($known[]; . as $k | any($got[]; . == $k)))' \
+         <<< "$existing" >/dev/null 2>&1; then
+      break
+    fi
+    existing=""; [ "$try" -lt 5 ] && sleep "$try"
+  done
+  if [ -z "$existing" ]; then
+    { echo "the options of field '$1' never read back as the $(jq length <<< "$known") field-list names"; cat "$TMPD/gh_err"; } > "$TMPD/read_err"
+    read_failed "field '$1' was not changed: appending $(jq -r 'join(", ")' <<< "$missing") needs the existing options read back in full — rerun"
+  fi
+  # What is missing is decided against the read-back, not field-list: a
+  # short field-list would otherwise append an option that already exists.
+  missing=$(jq -c --argjson want "$(list_json <<< "$2")" '$want - [.[].name]' <<< "$existing")
+  [ "$missing" != "[]" ] || return 0
+  all=$(jq -r --argjson new "$missing" \
+    '(. + ($new | map({name: ., color: "GRAY", description: ""})))
+     | map("{" + (if .id then "id: " + (.id | @json) + ", " else "" end)
+             + "name: " + (.name | @json) + ", color: " + .color
+             + ", description: " + (.description | @json) + "}")
+     | join(", ")' <<< "$existing")
+  mutate "append option(s) $(jq -r 'join(", ")' <<< "$missing") to field '$1'" api graphql \
+    -f query="mutation { updateProjectV2Field(input: { fieldId: \"$have\", singleSelectOptions: [$all] }) { clientMutationId } }" >/dev/null
 }
 # The option sets are the union of what the bodies and the roadmap rows
 # name, so a new origin or plane in a body is never silently unset.
@@ -282,7 +420,34 @@ ensure_field "Priority" "P0,P1,P2"
 [ "$DRY_RUN" = 1 ] || fields_json=$(gh project field-list "$proj_num" --owner "$OWNER" --format json)  # sees the fields just created
 # One fetch of the board: item ids and current field values, so a run
 # that changes nothing writes nothing.
-items_json=$(gh project item-list "$proj_num" --owner "$OWNER" --format json --limit 500)
+# The same trust rule for the board: the item list must be at least as
+# long as the project says it is (it read as empty once on 2026-10-22), or
+# every card would be re-added and re-set from nothing. The count is read
+# from the project itself (not the search index), so a zero is an answer:
+# a board just created, or one a failed first run left empty, reconciles.
+# A zero from a board this run did not create is read again until a nonzero
+# answer comes or five reads agree: the transient zero is the failure the
+# issue count was hardened against, and here it would re-add every card.
+expected=$(counted 0 project view "$proj_num" --owner "$OWNER" --format json --jq '.items.totalCount')
+[ "$expected" -ge 0 ] || read_failed "the board's item count never read; no item written — rerun"
+if [ "$expected" -eq 0 ] && [ "$PROJECT_NEW" = 0 ]; then
+  again=$(counted 1 project view "$proj_num" --owner "$OWNER" --format json --jq '.items.totalCount')
+  if [ "$again" -gt 0 ]; then expected="$again"; else : > "$TMPD/read_err"; fi
+fi
+# item-list stops at --limit; ask for the count and a margin.
+limit=$((expected + 100))
+items_json=""
+for try in 1 2 3 4 5; do
+  if raw=$(gh project item-list "$proj_num" --owner "$OWNER" --format json --limit "$limit" 2>"$TMPD/gh_err") &&
+     [ "$(jq '.items | length' <<< "$raw")" -ge "$expected" ]; then
+    items_json="$raw"; break
+  fi
+  [ "$try" -lt 5 ] && sleep "$try"
+done
+if [ -z "$items_json" ]; then
+  cp "$TMPD/gh_err" "$TMPD/read_err"
+  read_failed "the board never read as the $expected items it holds; field options may be appended, no item written — rerun"
+fi
 
 set_field() {  # set_field <item-id> <item-url> <field-name> <option-name>
   local fid oid key current
@@ -292,8 +457,8 @@ set_field() {  # set_field <item-id> <item-url> <field-name> <option-name>
   oid=$(jq -r --arg n "$3" --arg o "$4" \
     '.fields[] | select(.name == $n) | .options[] | select(.name == $o) | .id' \
     <<< "$fields_json")
-  if [ -z "$fid" ] || [ -z "$oid" ]; then  # said once per missing option; the ACTION line above names the fix
-    case "$WARNED" in *"|$3=$4|"*) ;; *) WARNED="$WARNED|$3=$4|"; echo "   warn: '$4' not set on any item: field '$3' lacks it (see ACTION above)" >&2 ;; esac
+  if [ -z "$fid" ] || [ -z "$oid" ]; then  # a dry run: the option would be appended first
+    case "$WARNED" in *"|$3=$4|"*) ;; *) WARNED="$WARNED|$3=$4|"; echo "   note: '$4' would be set once field '$3' carries it" >&2 ;; esac
     return 0
   fi
   # item-list keys a field's value by its lower-cased name.
@@ -306,7 +471,7 @@ set_field() {  # set_field <item-id> <item-url> <field-name> <option-name>
 }
 
 echo "== items"
-while IFS='|' read -r url plane origin priority; do
+while IFS='|' read -r url plane origin priority status; do
   [ -n "$url" ] || continue
   item_id=$(jq -r --arg u "$url" 'first(.items[] | select(.content.url == $u) | .id) // empty' <<< "$items_json")
   if [ -z "$item_id" ]; then
@@ -317,7 +482,8 @@ while IFS='|' read -r url plane origin priority; do
   set_field "$item_id" "$url" "Plane" "$plane"
   set_field "$item_id" "$url" "Origin" "$origin"
   set_field "$item_id" "$url" "Priority" "$priority"
-  echo "   $url  [$plane | ${origin:-—} | $priority]"
+  set_field "$item_id" "$url" "Status" "$status"
+  echo "   $url  [$plane | ${origin:-—} | $priority | ${status:-—}]"
 done <<< "$ITEMS"
 
 echo

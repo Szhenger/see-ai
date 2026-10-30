@@ -1,0 +1,40 @@
+bench_compare: NOTE runner calibrates at 0.947x the baseline's, median raw key ratio 0.918x; deltas below are normalized
+bench_compare: OK   dec_v256_d128_s128@1t/cpu: 2497 -> 2400 (normalized 2534) rows/s (+1.5%) vs baseline
+bench_compare: OK   dec_v256_d128_s128@2t/cpu: 4084 -> 3496 (normalized 3691) rows/s (-9.6%) vs baseline
+bench_compare: OK   dec_v256_d128_s128@4t/cpu: 3973 -> 3655 (normalized 3859) rows/s (-2.9%) vs baseline
+bench_compare: OK   dec_v256_d128_s32@1t/cpu: 3321 -> 3159 (normalized 3335) rows/s (+0.4%) vs baseline
+bench_compare: OK   dec_v256_d128_s32@2t/cpu: 5156 -> 4413 (normalized 4659) rows/s (-9.6%) vs baseline
+bench_compare: OK   dec_v256_d128_s32@4t/cpu: 4627 -> 4237 (normalized 4474) rows/s (-3.3%) vs baseline
+bench_compare: OK   dec_v512_d192_s32@1t/cpu: 1657 -> 1543 (normalized 1629) rows/s (-1.7%) vs baseline
+bench_compare: OK   dec_v512_d192_s32@2t/cpu: 2732 -> 2528 (normalized 2669) rows/s (-2.3%) vs baseline
+bench_compare: OK   dec_v512_d192_s32@4t/cpu: 2805 -> 2453 (normalized 2590) rows/s (-7.7%) vs baseline
+bench_compare: OK   mlp_128x1024x2@1t/cpu: 3899 -> 3766 (normalized 3976) rows/s (+2.0%) vs baseline
+bench_compare: OK   mlp_128x1024x2@2t/cpu: 6529 -> 5864 (normalized 6191) rows/s (-5.2%) vs baseline
+bench_compare: OK   mlp_128x1024x2@4t/cpu: 7032 -> 6064 (normalized 6403) rows/s (-9.0%) vs baseline
+bench_compare: OK   mlp_64x512x3@1t/cpu: 7738 -> 7388 (normalized 7800) rows/s (+0.8%) vs baseline
+bench_compare: OK   mlp_64x512x3@2t/cpu: 12025 -> 11013 (normalized 11628) rows/s (-3.3%) vs baseline
+bench_compare: OK   mlp_64x512x3@4t/cpu: 12491 -> 11063 (normalized 11681) rows/s (-6.5%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@1t/cpu: 43469 -> 40901 (normalized 43184) rows/s (-0.7%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@2t/cpu: 51310 -> 47092 (normalized 49721) rows/s (-3.1%) vs baseline
+bench_compare: OK   tok_v64_d64_s16@4t/cpu: 38569 -> 34635 (normalized 36569) rows/s (-5.2%) vs baseline
+bench_compare: NOTE runner calibrates at 0.938x the epoch's, median raw key ratio 0.947x; deltas below are normalized
+bench_compare: OK   dec_v256_d128_s128@1t/cpu: 2463 -> 2400 (normalized 2559) rows/s (+3.9%) vs epoch
+bench_compare: OK   dec_v256_d128_s128@2t/cpu: 3963 -> 3496 (normalized 3728) rows/s (-5.9%) vs epoch
+bench_compare: OK   dec_v256_d128_s128@4t/cpu: 3860 -> 3655 (normalized 3898) rows/s (+1.0%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@1t/cpu: 3202 -> 3159 (normalized 3369) rows/s (+5.2%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@2t/cpu: 4879 -> 4413 (normalized 4706) rows/s (-3.5%) vs epoch
+bench_compare: OK   dec_v256_d128_s32@4t/cpu: 4475 -> 4237 (normalized 4519) rows/s (+1.0%) vs epoch
+bench_compare: OK   dec_v512_d192_s32@1t/cpu: 1605 -> 1543 (normalized 1646) rows/s (+2.5%) vs epoch
+bench_compare: OK   dec_v512_d192_s32@2t/cpu: 2688 -> 2528 (normalized 2696) rows/s (+0.3%) vs epoch
+bench_compare: OK   dec_v512_d192_s32@4t/cpu: 2705 -> 2453 (normalized 2616) rows/s (-3.3%) vs epoch
+bench_compare: OK   mlp_128x1024x2@1t/cpu: 3867 -> 3766 (normalized 4016) rows/s (+3.9%) vs epoch
+bench_compare: OK   mlp_128x1024x2@2t/cpu: 6509 -> 5864 (normalized 6254) rows/s (-3.9%) vs epoch
+bench_compare: OK   mlp_128x1024x2@4t/cpu: 6909 -> 6064 (normalized 6467) rows/s (-6.4%) vs epoch
+bench_compare: OK   mlp_64x512x3@1t/cpu: 7635 -> 7388 (normalized 7879) rows/s (+3.2%) vs epoch
+bench_compare: OK   mlp_64x512x3@2t/cpu: 11822 -> 11013 (normalized 11745) rows/s (-0.7%) vs epoch
+bench_compare: OK   mlp_64x512x3@4t/cpu: 12421 -> 11063 (normalized 11798) rows/s (-5.0%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@1t/cpu: 42734 -> 40901 (normalized 43619) rows/s (+2.1%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@2t/cpu: 43909 -> 47092 (normalized 50221) rows/s (+14.4%) vs epoch
+bench_compare: OK   tok_v64_d64_s16@4t/cpu: 37252 -> 34635 (normalized 36936) rows/s (-0.8%) vs epoch
+bench_compare: no Tier A regression
+bench_compare: promoted bench.json to bench-baseline/bench.json

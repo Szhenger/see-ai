@@ -1,0 +1,653 @@
+{
+ "schema": 1,
+ "plan": "~/SeeAI/see-ml/out/f7-2026-10-19/f4/plan_cpu.json",
+ "rows": [
+  {
+   "schema": 1,
+   "system": "SeeML",
+   "backend": "cpu",
+   "precision": "f32 math, int8 base",
+   "host": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "seeml_threads": null,
+    "cpu": "Apple M5"
+   },
+   "package": "~/SeeAI/see-ml/out/f7-2026-10-19/f4/pkg_relaxed",
+   "seeml_version": "1.2.4",
+   "plan_version": 19,
+   "plan_hash": "c3952907c9e76a72",
+   "precision_flag": "certified-bf16",
+   "relaxed_gemms": 419,
+   "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+   "device": "host CPU",
+   "threads": 10,
+   "config": {
+    "steps": 300,
+    "tokens_per_step": 512,
+    "lo": 40,
+    "hi": 160,
+    "repeats": 1
+   },
+   "records_digest": "9a2f2c1396502ce0",
+   "adapters": 211,
+   "adapter_params": 3024384,
+   "arena_bytes": 1665464320,
+   "plan_bytes": 298631168,
+   "step_ms": 776.7857142857146,
+   "step_ms_lohi": 802.4999999999999,
+   "step_ms_min": 802.4999999999999,
+   "step_ms_max": 802.4999999999999,
+   "tokens_per_s": 659.126436781609,
+   "it_per_s": 1.28735632183908,
+   "tokens_per_step": 512,
+   "intercept_s": 22.830000000000005,
+   "val_loss": [
+    4.574264,
+    4.013783
+   ],
+   "val_acc": [
+    0.28125,
+    0.31453124
+   ],
+   "train_loss": [
+    4.4769039,
+    3.6253865
+   ],
+   "verdict": "accepted",
+   "committed": true,
+   "lifecycle": {
+    "load_s": 0.2583,
+    "data_s": 0.0002,
+    "train_s": 258.0715,
+    "eval_s": 18.1708,
+    "evaluations": 2,
+    "merge_s": 0.1337,
+    "commit_s": 1.4868,
+    "wall_s": 259.9506
+   },
+   "committed_sha256": "d459b541b737117b2b93ad989424c8f54f5df1066f25c9212626d21883cc8307",
+   "suspect": false,
+   "wall_quality_s": 259.98,
+   "peak_rss_bytes": 2690203648,
+   "runs": [
+    {
+     "steps": 40,
+     "exit": 0,
+     "wall_s": 54.93,
+     "peak_rss_bytes": 2690203648,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 40,
+      "train_loss": [
+       4.3477054,
+       4.4352345
+      ],
+      "validation_loss": [
+       4.574264,
+       4.391171
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.28749999
+      ],
+      "lifecycle": {
+       "load_s": 0.6291,
+       "data_s": 0.0002,
+       "train_s": 49.2939,
+       "eval_s": 17.5691,
+       "evaluations": 2,
+       "merge_s": 0.1412,
+       "commit_s": 1.5197,
+       "wall_s": 51.5844
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "0959e36491a4a85ed99a79873894b51a0309cc27407aba663b1a8cdc5630ca68",
+     "device": "host CPU"
+    },
+    {
+     "steps": 160,
+     "exit": 0,
+     "wall_s": 151.23,
+     "peak_rss_bytes": 2690187264,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 160,
+      "train_loss": [
+       4.4769039,
+       4.0276365
+      ],
+      "validation_loss": [
+       4.574264,
+       4.0922832
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.30312499
+      ],
+      "lifecycle": {
+       "load_s": 0.25,
+       "data_s": 0.0002,
+       "train_s": 149.2885,
+       "eval_s": 18.7602,
+       "evaluations": 2,
+       "merge_s": 0.1372,
+       "commit_s": 1.5267,
+       "wall_s": 151.2027
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "8ba3d6162e05dbecba388792c9b188fd155d4fa7b8e9ed02a4500b8e6b6d6972",
+     "device": "host CPU"
+    },
+    {
+     "steps": 300,
+     "exit": 0,
+     "wall_s": 259.98,
+     "peak_rss_bytes": 2690187264,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 300,
+      "train_loss": [
+       4.4769039,
+       3.6253865
+      ],
+      "validation_loss": [
+       4.574264,
+       4.013783
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.31453124
+      ],
+      "lifecycle": {
+       "load_s": 0.2583,
+       "data_s": 0.0002,
+       "train_s": 258.0715,
+       "eval_s": 18.1708,
+       "evaluations": 2,
+       "merge_s": 0.1337,
+       "commit_s": 1.4868,
+       "wall_s": 259.9506
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "d459b541b737117b2b93ad989424c8f54f5df1066f25c9212626d21883cc8307",
+     "device": "host CPU"
+    }
+   ]
+  },
+  {
+   "schema": 1,
+   "system": "SeeML",
+   "backend": "cpu",
+   "precision": "f32 math, int8 base",
+   "host": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "seeml_threads": null,
+    "cpu": "Apple M5"
+   },
+   "package": "~/SeeAI/see-ml/out/f7-2026-10-19/f4/pkg_relaxed",
+   "seeml_version": "1.2.4",
+   "plan_version": 19,
+   "plan_hash": "c3952907c9e76a72",
+   "precision_flag": "certified-bf16",
+   "relaxed_gemms": 419,
+   "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+   "device": "host CPU",
+   "threads": 10,
+   "config": {
+    "steps": 300,
+    "tokens_per_step": 512,
+    "lo": 40,
+    "hi": 160,
+    "repeats": 1
+   },
+   "records_digest": "9a2f2c1396502ce0",
+   "adapters": 211,
+   "adapter_params": 3024384,
+   "arena_bytes": 1665464320,
+   "plan_bytes": 298631168,
+   "step_ms": 761.2857142857141,
+   "step_ms_lohi": 791.5,
+   "step_ms_min": 791.5,
+   "step_ms_max": 791.5,
+   "tokens_per_s": 672.5464439857385,
+   "it_per_s": 1.3135672734096455,
+   "tokens_per_step": 512,
+   "intercept_s": 19.51,
+   "val_loss": [
+    4.574264,
+    4.013783
+   ],
+   "val_acc": [
+    0.28125,
+    0.31453124
+   ],
+   "train_loss": [
+    4.4769039,
+    3.6253865
+   ],
+   "verdict": "accepted",
+   "committed": true,
+   "lifecycle": {
+    "load_s": 0.2527,
+    "data_s": 0.0002,
+    "train_s": 250.8111,
+    "eval_s": 17.8528,
+    "evaluations": 2,
+    "merge_s": 0.14,
+    "commit_s": 1.5017,
+    "wall_s": 252.7058
+   },
+   "committed_sha256": "d459b541b737117b2b93ad989424c8f54f5df1066f25c9212626d21883cc8307",
+   "suspect": false,
+   "wall_quality_s": 252.73,
+   "peak_rss_bytes": 2690203648,
+   "runs": [
+    {
+     "steps": 40,
+     "exit": 0,
+     "wall_s": 51.17,
+     "peak_rss_bytes": 2690203648,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 40,
+      "train_loss": [
+       4.3477054,
+       4.4352345
+      ],
+      "validation_loss": [
+       4.574264,
+       4.391171
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.28749999
+      ],
+      "lifecycle": {
+       "load_s": 0.2521,
+       "data_s": 0.0002,
+       "train_s": 49.25,
+       "eval_s": 18.0588,
+       "evaluations": 2,
+       "merge_s": 0.1357,
+       "commit_s": 1.5003,
+       "wall_s": 51.1384
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "0959e36491a4a85ed99a79873894b51a0309cc27407aba663b1a8cdc5630ca68",
+     "device": "host CPU"
+    },
+    {
+     "steps": 160,
+     "exit": 0,
+     "wall_s": 146.15,
+     "peak_rss_bytes": 2690187264,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 160,
+      "train_loss": [
+       4.4769039,
+       4.0276365
+      ],
+      "validation_loss": [
+       4.574264,
+       4.0922832
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.30312499
+      ],
+      "lifecycle": {
+       "load_s": 0.2578,
+       "data_s": 0.0002,
+       "train_s": 144.2276,
+       "eval_s": 17.9661,
+       "evaluations": 2,
+       "merge_s": 0.1301,
+       "commit_s": 1.5069,
+       "wall_s": 146.1227
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "8ba3d6162e05dbecba388792c9b188fd155d4fa7b8e9ed02a4500b8e6b6d6972",
+     "device": "host CPU"
+    },
+    {
+     "steps": 300,
+     "exit": 0,
+     "wall_s": 252.73,
+     "peak_rss_bytes": 2690187264,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 300,
+      "train_loss": [
+       4.4769039,
+       3.6253865
+      ],
+      "validation_loss": [
+       4.574264,
+       4.013783
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.31453124
+      ],
+      "lifecycle": {
+       "load_s": 0.2527,
+       "data_s": 0.0002,
+       "train_s": 250.8111,
+       "eval_s": 17.8528,
+       "evaluations": 2,
+       "merge_s": 0.14,
+       "commit_s": 1.5017,
+       "wall_s": 252.7058
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "d459b541b737117b2b93ad989424c8f54f5df1066f25c9212626d21883cc8307",
+     "device": "host CPU"
+    }
+   ]
+  },
+  {
+   "schema": 1,
+   "system": "SeeML",
+   "backend": "cpu",
+   "precision": "f32 math, int8 base",
+   "host": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "seeml_threads": null,
+    "cpu": "Apple M5"
+   },
+   "package": "~/SeeAI/see-ml/out/f7-2026-10-19/f8/pkg",
+   "seeml_version": "1.2.4",
+   "plan_version": 19,
+   "plan_hash": "f47c2d7254bf9a9d",
+   "precision_flag": "f32",
+   "relaxed_gemms": 0,
+   "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+   "device": "host CPU",
+   "threads": 10,
+   "config": {
+    "steps": 300,
+    "tokens_per_step": 512,
+    "lo": 40,
+    "hi": 160,
+    "repeats": 1
+   },
+   "records_digest": "9a2f2c1396502ce0",
+   "adapters": 211,
+   "adapter_params": 3024384,
+   "arena_bytes": 1665464320,
+   "plan_bytes": 298631168,
+   "step_ms": 1591.642857142857,
+   "step_ms_lohi": 1669.8333333333333,
+   "step_ms_min": 1669.8333333333333,
+   "step_ms_max": 1669.8333333333333,
+   "tokens_per_s": 321.6802046403088,
+   "it_per_s": 0.6282816496881031,
+   "tokens_per_step": 512,
+   "intercept_s": 18.016666666666666,
+   "val_loss": [
+    4.574264,
+    4.0137415
+   ],
+   "val_acc": [
+    0.28125,
+    0.31453124
+   ],
+   "train_loss": [
+    4.4769015,
+    3.6254117
+   ],
+   "verdict": "accepted",
+   "committed": true,
+   "lifecycle": {
+    "load_s": 0.4892,
+    "data_s": 0.0002,
+    "train_s": 505.7644,
+    "eval_s": 18.2039,
+    "evaluations": 2,
+    "merge_s": 0.1302,
+    "commit_s": 1.6042,
+    "wall_s": 507.9883
+   },
+   "committed_sha256": "bac5fa02abc142f6554ecc3dcc7986b434e9f51699a02ce1f1fa36b58a2cbfca",
+   "suspect": false,
+   "wall_quality_s": 508.02,
+   "peak_rss_bytes": 2687959040,
+   "runs": [
+    {
+     "steps": 40,
+     "exit": 0,
+     "wall_s": 84.81,
+     "peak_rss_bytes": 2687959040,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 40,
+      "train_loss": [
+       4.3477049,
+       4.4352279
+      ],
+      "validation_loss": [
+       4.574264,
+       4.3911724
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.28749999
+      ],
+      "lifecycle": {
+       "load_s": 0.4461,
+       "data_s": 0.0002,
+       "train_s": 82.7287,
+       "eval_s": 17.9956,
+       "evaluations": 2,
+       "merge_s": 0.1285,
+       "commit_s": 1.491,
+       "wall_s": 84.7951
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "8494a1830439192d5fff4e0959909d90c34deb154148a32c0874a98300e15624",
+     "device": "host CPU"
+    },
+    {
+     "steps": 160,
+     "exit": 0,
+     "wall_s": 285.19,
+     "peak_rss_bytes": 2687926272,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 160,
+      "train_loss": [
+       4.4769015,
+       4.0276599
+      ],
+      "validation_loss": [
+       4.574264,
+       4.0923038
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.30312499
+      ],
+      "lifecycle": {
+       "load_s": 0.2497,
+       "data_s": 0.0002,
+       "train_s": 283.226,
+       "eval_s": 18.099,
+       "evaluations": 2,
+       "merge_s": 0.1303,
+       "commit_s": 1.5478,
+       "wall_s": 285.1542
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "0925a15d6d8fe004b04039998152fad14665694f4d31d5718c05f0065fdb3006",
+     "device": "host CPU"
+    },
+    {
+     "steps": 300,
+     "exit": 0,
+     "wall_s": 508.02,
+     "peak_rss_bytes": 2687926272,
+     "report": {
+      "schema": 3,
+      "backend": "cpu",
+      "device": "host CPU",
+      "steps": 300,
+      "train_loss": [
+       4.4769015,
+       3.6254117
+      ],
+      "validation_loss": [
+       4.574264,
+       4.0137415
+      ],
+      "validation_scores": "shipped",
+      "validation_accuracy": [
+       0.28125,
+       0.31453124
+      ],
+      "lifecycle": {
+       "load_s": 0.4892,
+       "data_s": 0.0002,
+       "train_s": 505.7644,
+       "eval_s": 18.2039,
+       "evaluations": 2,
+       "merge_s": 0.1302,
+       "commit_s": 1.6042,
+       "wall_s": 507.9883
+      },
+      "gate": {
+       "min_improvement": 0,
+       "require_accuracy": false,
+       "loss_ok": true,
+       "accuracy_measured": true,
+       "accuracy_ok": true,
+       "forced": false
+      },
+      "verdict": "accepted",
+      "committed": true
+     },
+     "committed_sha256": "bac5fa02abc142f6554ecc3dcc7986b434e9f51699a02ce1f1fa36b58a2cbfca",
+     "device": "host CPU"
+    }
+   ]
+  }
+ ],
+ "parity_problems": [],
+ "host": {
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ }
+}

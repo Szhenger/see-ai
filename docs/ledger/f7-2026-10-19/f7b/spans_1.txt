@@ -1,0 +1,12 @@
+seeml-update: backend metal (Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops)
+seeml-update: validation scores the shipped model (the f32 weights of '~/SeeAI/see-ml/out/frontier-2026-09-22/smollm135.smf' plus the update)
+seeml-update: resource contract — arena 1665464320 bytes (36292608 persistent)
+seeml-update: step 1  loss 4.644509
+seeml-update: train loss 4.647294 -> 4.296039 over 50 steps
+seeml-update: gate min-improvement 0 require-accuracy no -> accepted [backend metal]
+seeml-update: committed '~/SeeAI/see-ml/out/f7-2026-10-19/f7b/spans.smf'
+metal spans: 52 command buffer(s), 152372 dispatch(es); GPU busy 11.911 s, CPU wall 12.156 s, outside the GPU 0.245 s (2.0% of the wall; 1.61 us per dispatch)
+      422 dispatches x    1: GPU   17.394 ms, wall   18.158 ms, outside   0.763 ms (4.2%) per buffer
+      996 dispatches x    1: GPU   81.704 ms, wall  254.729 ms, outside 173.026 ms (67.9%) per buffer
+     2043 dispatches x    1: GPU  143.898 ms, wall  145.846 ms, outside   1.948 ms (1.3%) per buffer
+     3039 dispatches x   49: GPU  238.124 ms, wall  239.536 ms, outside   1.412 ms (0.6%) per buffer

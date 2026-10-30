@@ -1,0 +1,5 @@
+{"model_dir": "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM2-360M/snapshots/f8027fd0eaeea54caa13c31d31b9fdc459c38b49", "rank": 8, "rows": [
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/pkg_smollm2_360", "--model", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/smollm2_360.smf", "--data", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/smollm2_360.sds", "--backend", "metal", "--lo", "40", "--hi", "160", "--repeats", "1", "--quality-steps", "300", "--threads", "10"]},
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/pkg_smollm2_360", "--model", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/smollm2_360.smf", "--data", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/smollm2_360.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "100", "--threads", "10"]},
+ {"kind": "torch", "args": ["--model-dir", "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM2-360M/snapshots/f8027fd0eaeea54caa13c31d31b9fdc459c38b49", "--corpus", "~/SeeAI/see-ml/out/f7-2026-10-19/f3/corpus.txt", "--device", "mps", "--compile", "1", "--dtype", "f32"]}
+]}

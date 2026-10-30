@@ -126,10 +126,22 @@ and the `dec_wide` row.
 
 ## Acceptance
 
-- No CPU-resident opcode in the train program of a SmolLM-shaped plan on
-  Metal (`seeml-plan-probe` lists none; the profile shows no `cpu opcode`
-  row); CPU vs Metal loss within 1e-5; two Metal runs byte-identical.
-- The dispatch-overhead number reported per program (train / eval /
-  merge) for SmolLM-135M and `dec_wide` in `docs/benchmarks.md`.
-- The fusion decision for the GPU recorded from that number, with the
-  E4 CPU number beside it.
+- [x] No CPU-resident opcode in the train program of a SmolLM-shaped plan
+  on Metal — the train-only profile shows no `cpu opcode` row and the
+  step is one command buffer (2026-10-19). `seeml-plan-probe` has no such
+  listing; the profile is the witness.
+- [x] CPU against Metal loss within 1e-5 on identical inputs; two Metal
+  runs byte-identical — the twin test. The 300-step endpoints agree to
+  1.4e-4 relative, since the gradient now descends from GPU probabilities.
+- [x] The dispatch-overhead number for SmolLM-135M's train program — about
+  3 µs per dispatch at the means, 0–7 µs across the two experiments, ≈4 %
+  of the step and ≤ 8 % at the ceiling ("The LoRA lowering, steps 1 and 3",
+  2026-10-19).
+- [ ] The same number for the eval and merge programs, and the `dec_wide`
+  row, in `docs/benchmarks.md` — not measured.
+- [x] The fusion decision for the GPU recorded from that number with the
+  E4 CPU number beside it — `kFusedMap` is not extended to Metal for the
+  dispatch count's sake; the lever is bytes per kernel, E4's 2–6 % case on
+  both backends; for S6 (#152) scheduling stays a function inside
+  selection ("No CPU-resident opcode in the train step, and the fusion
+  verdict", 2026-10-19).

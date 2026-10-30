@@ -1,0 +1,4 @@
+32bc7fa78d3f8e13ef9bc72ee39940531f1cb838126d5eb77c4a57dd9d68fd51  ~/SeeAI/see-ml/out/f7-2026-10-19/alpha3/cpu_f7.smf
+32bc7fa78d3f8e13ef9bc72ee39940531f1cb838126d5eb77c4a57dd9d68fd51  ~/SeeAI/see-ml/out/f7-2026-10-19/alpha3/cpu_main.smf
+6a4e1590c848be78fc37f5f248858e5d9a4e9c18bc54ec7af9720007a3f37e7c  ~/SeeAI/see-ml/out/f7-2026-10-19/alpha3/metal_f7.smf
+82b2e374eb046e35e5aacbadab9bd3a0b8bff473ddd658013af3efd171bf5a96  ~/SeeAI/see-ml/out/f7-2026-10-19/alpha3/metal_main.smf

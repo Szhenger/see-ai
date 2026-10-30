@@ -1,0 +1,28 @@
+{
+  "seeml_version": "1.2.4",
+  "schema": 4,
+  "host": "Darwin arm64",
+  "backend": "cpu",
+  "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+  "host_arch": {"isa": "arm64", "cpu_model": "Apple M5", "physical_cores": 10, "l1d_bytes": 65536, "l2_bytes": 6291456, "simd_width_f32": 4},
+  "kernel_policy": {"source": "default", "gemm_tile_k": 64, "gemm_tile_n": 256},
+  "walked_gemm_tiles": {"k": 64, "n": 128},
+  "analytic_gemm_tiles": {"k": 64, "n": 128},
+  "config": {"steps_lo": 5, "steps_hi": 15, "repeats": 1, "threads": "10", "peak_gflops": 0.0},
+  "fixtures": {
+    "tok_smollm135m_q8": {
+      "kind": "token", "batch_rows": 512, "seq": 128,
+      "plan_bytes": 298663936, "arena_bytes": 1564825600, "persistent_bytes": 36292608, "rodata_bytes": 262048512,
+      "train_instructions": 3309, "gemm_flops_per_step": 310851403776, "trainable_params": 3024384,
+      "compile_ms": 205.38, "load_ms": 197.864,
+      "threads": {
+        "10": {"step_ms": 1602.758, "lifecycle_ms": -92.82, "rows_per_s": 319, "gemm_gflops": 193.9, "fwd_ms": 646.852, "bwd_ms": 934.112, "opt_ms": 12.499,
+              "tokens_per_s": 319, "it_per_s": 0.624, "step_ms_min": 1602.758, "step_ms_max": 1602.758}
+      },
+      "merge_ms": 145.680, "checkpoint_save_ms": 6.400,
+      "train_loss_first": 27.546280, "train_loss_last": 27.437073, "trained_tokens": 12288,
+      "peak_rss_bytes": 2743730176, "rss_over_planned": 1.472
+    }
+  },
+  "calibration": {"kernel": "sgemm_ikj_128_f32_v1", "calib_rows_per_s": 855855.9, "pre_rows_per_s": 855557.1, "post_rows_per_s": 855872.2, "samples": 10, "spread": 0.0177}
+}

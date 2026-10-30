@@ -1,0 +1,5 @@
+{"model_dir": "~/SeeAI/see-ml/out/realanalysis-2026-09-25/ckpt_base_qwen25_05b", "rank": 8, "rows": [
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/pkg_qwen25_05b", "--model", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/qwen25_05b.smf", "--data", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/qwen25_05b.sds", "--backend", "metal", "--lo", "40", "--hi", "160", "--repeats", "1", "--quality-steps", "300", "--threads", "10"]},
+ {"kind": "seeml", "args": ["--package", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/pkg_qwen25_05b", "--model", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/qwen25_05b.smf", "--data", "~/SeeAI/see-ml/out/f7-2026-10-19/f5/qwen25_05b.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "100", "--threads", "10"]},
+ {"kind": "torch", "args": ["--model-dir", "~/SeeAI/see-ml/out/realanalysis-2026-09-25/ckpt_base_qwen25_05b", "--corpus", "~/SeeAI/see-ml/out/f7-2026-10-19/f3/corpus.txt", "--device", "mps", "--compile", "1", "--dtype", "f32"]}
+]}

@@ -1,0 +1,13 @@
+{
+  "schema": 3,
+  "backend": "cpu",
+  "device": "host CPU",
+  "plan": {"source": "embedded", "path": null, "bytes": 298631168},
+  "steps": 20,
+  "train_loss": [4.6507883, 4.4592199],
+  "validation_scores": "shipped",
+  "lifecycle": {"load_s": 0.2238, "data_s": 0.0048, "train_s": 31.3453, "eval_s": 0.0000, "evaluations": 0, "merge_s": 0.1054, "commit_s": 1.5524, "wall_s": 33.2319},
+  "gate": {"min_improvement": 0, "require_accuracy": false, "loss_ok": true, "accuracy_measured": false, "accuracy_ok": true, "forced": false},
+  "verdict": "accepted",
+  "committed": true
+}
