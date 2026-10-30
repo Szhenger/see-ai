@@ -185,7 +185,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   footprint.delta_bytes =
       EstimateLoraDeltaBytes(source, config_.lora.target_filters);
   // The attention decision (E11, plan v15), made on the footprint by
-  // DecideAttention below — the cache budget, and the memory budget when
+  // DecideAttention (above) — the cache budget, and the memory budget when
   // one is configured; never the compiling host's memory. --attention
   // forces either.
   const AttentionKind attention = DecideAttention(footprint, config_);
@@ -211,9 +211,9 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       tiled.probs_cache_bytes = footprint.attention_stats_bytes;
       if (CheckTrainableLocally(tiled, config_.memory_budget_bytes))
         why += config_.attention == AttentionKind::kAuto
-                   ? " (--attention tiled would fit; --memory-budget-mib N "
-                     "lets --attention auto decide that against a budget, "
-                     "which it never decides against the compiling host's "
+                   ? " (--attention tiled would fit; --attention auto tiles "
+                     "by itself only against a configured "
+                     "--memory-budget-mib, never against this host's "
                      "memory)"
                    : " (--attention tiled would fit)";
     }
