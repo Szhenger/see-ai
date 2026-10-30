@@ -112,10 +112,17 @@ jobs:
           print(json.dumps(probe, indent=1))
           with open("out/frontier/probe.json", "w") as f:
               json.dump(probe, f, indent=1)
-          missing = [k for k in ("mlx_metal", "torch_mps") if not probe[k]]
-          if missing:
-              print(f"::error::the hosted runner cannot run {', '.join(missing)}; "
-                    "the frontier rows need both GPU frameworks")
+          # MLX is the GPU comparator the hosted rows need. PyTorch MPS is
+          # recorded but not run here: on this VM's paravirtual GPU, torch
+          # 2.14's MPS evaluation fails to build a Metal pipeline over
+          # cooperative tensors ("unsupported deferred-static-alloca-size
+          # function body", dispatch of 2026-10-30), the Metal 4 tensor-op
+          # family SeeAI's own relaxed GEMM library cannot build there
+          # either. The torch MPS rows are taken on real Apple silicon
+          # (docs/benchmarks.md).
+          if not probe["mlx_metal"]:
+              print("::error::the hosted runner cannot run MLX on its GPU; "
+                    "the frontier rows have no GPU comparator")
               sys.exit(1)
           EOF
           echo "SEEML_THREADS=$(sysctl -n hw.ncpu)" >> "$GITHUB_ENV"
@@ -171,7 +178,6 @@ jobs:
           {"model_dir": "$SMOLLM_DIR", "rank": 8, "rows": [
             {"kind": "seeml", "args": ["--package", "$S/pkg", "--model", "$S/smollm135.smf", "--data", "$S/docs.sds", "--backend", "metal", "--threads", "$T"]},
             {"kind": "seeml", "args": ["--package", "$S/pkg", "--model", "$S/smollm135.smf", "--data", "$S/docs.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "300", "--threads", "$T"]},
-            {"kind": "torch", "args": ["--model-dir", "$SMOLLM_DIR", "--corpus", "$S/corpus.txt", "--device", "mps", "--compile", "1", "--dtype", "bf16"]},
             {"kind": "torch", "args": ["--model-dir", "$SMOLLM_DIR", "--corpus", "$S/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32"]},
             {"kind": "mlx", "args": ["--model-dir", "$SMOLLM_DIR", "--corpus", "$S/corpus.txt", "--dtype", "bf16"]}
           ]}
@@ -180,7 +186,6 @@ jobs:
           {"model_dir": "$S/dec_wide_hf", "rank": 16, "rows": [
             {"kind": "seeml", "args": ["--package", "$S/pkg_dec_wide", "--model", "$S/dec_wide.smf", "--data", "$S/dec_wide.sds", "--backend", "metal", "--threads", "$T"]},
             {"kind": "seeml", "args": ["--package", "$S/pkg_dec_wide", "--model", "$S/dec_wide.smf", "--data", "$S/dec_wide.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "300", "--threads", "$T"]},
-            {"kind": "torch", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--device", "mps", "--compile", "1", "--dtype", "bf16", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
             {"kind": "torch", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
             {"kind": "mlx", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--dtype", "bf16", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
             {"kind": "mlx", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--dtype", "f32", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]}
