@@ -1845,10 +1845,10 @@ def cmd_diff(args):
     if differ.relaxed_flagged:
         print(f"frontier_exec: the C++ {args.cpp_backend} backend ran "
               f"{differ.relaxed_executed} of {differ.relaxed_flagged} relaxed "
-              "GEMM(s) on a relaxed kernel"
+              "instruction(s) on a relaxed kernel"
               + ("" if differ.relaxed_executed else
                  " — this report measures the exact kernels, not the "
-                 "certified site"))
+                 "certified sites"))
     for line in differ.failures[:40]:
         print(f"frontier_exec: DISAGREE {line}")
     verdict = ("agrees with" if report["agrees"] else
