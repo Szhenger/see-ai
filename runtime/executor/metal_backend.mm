@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <array>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -492,6 +494,145 @@ bool IsGpuOpcode(up::OpCode op) {
   }
 }
 
+// The compiled kernel set, one per process. Both libraries compile from
+// constant source for the one system device, and a pipeline state is an
+// immutable, thread-safe object, so every backend the process creates
+// shares them: the compile is paid once, not per backend. On a hosted
+// macOS runner (a VM with no shader cache, 2–3 s a compile) the Metal
+// suite creates a backend per case — 456 in the GEMM shape test alone —
+// and ran 21 to 27 minutes against the job's 30, then crossed it three
+// times on 2026-10-22; on an M5 the same suite is 7 s. A failed compile is
+// not cached: every Create reports it, as before.
+struct KernelSet {
+  id<MTLDevice> device = nil;
+  id<MTLComputePipelineState> pipes[kPipeCount];
+  id<MTLComputePipelineState> rx_pipes[kRxPipeCount];
+  bool relaxed = false;
+  std::string relaxed_reason = "not built";
+};
+
+std::expected<std::unique_ptr<KernelSet>, std::string> CompileKernels(
+    id<MTLDevice> device) {
+  auto set = std::make_unique<KernelSet>();
+  set->device = device;
+  MTLCompileOptions* options = [MTLCompileOptions new];
+  // Precise math, both halves of it: `mathMode` governs algebraic
+  // fast-math (reassociation, no NaN/inf), `mathFloatingPointFunctions`
+  // governs which transcendental variants the unqualified tanh/exp/sin/
+  // cos/sqrt calls resolve to — and the fast tanh returns NaN above
+  // ~44, which through the GELU means NaN for any pre-activation past
+  // ~10.25. The kernel library mirrors the CPU expressions and is
+  // compared against them at tolerance; both knobs must be precise.
+  // (The pre-15 `fastMathEnabled = NO` selects both at once.)
+#if defined(__MAC_15_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+  if (@available(macOS 15.0, *)) {
+    options.mathMode = MTLMathModeSafe;
+    options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+  } else
+#endif
+  {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    options.fastMathEnabled = NO;
+#pragma clang diagnostic pop
+  }
+  NSError* err = nil;
+  const std::string source = std::string(kMetalKernelHead) +
+                             kMetalKernelPrelude + kMetalKernelSource;
+  NSString* src = [NSString stringWithUTF8String:source.c_str()];
+  id<MTLLibrary> lib = [device newLibraryWithSource:src
+                                            options:options
+                                              error:&err];
+  if (!lib)
+    return std::unexpected(NsError(err, "kernel library compilation failed"));
+  // The relaxed family: Metal 4 (macOS 26) and a GPU whose compiler
+  // accepts the tensor ops. Absent, relaxed instructions run exact.
+  for (int i = 0; i < kRxPipeCount; ++i) set->rx_pipes[i] = nil;
+#if defined(__MAC_26_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+  if (@available(macOS 26.0, *)) {
+    MTLCompileOptions* rx_options = [MTLCompileOptions new];
+    rx_options.languageVersion = MTLLanguageVersion4_0;
+    rx_options.mathMode = MTLMathModeSafe;
+    rx_options.mathFloatingPointFunctions =
+        MTLMathFloatingPointFunctionsPrecise;
+    const std::string rx_source = std::string(kMetalRelaxedKernelHead) +
+                                  kMetalKernelPrelude +
+                                  kMetalRelaxedKernelSource;
+    NSError* rx_err = nil;
+    id<MTLLibrary> rx_lib = [device
+        newLibraryWithSource:[NSString stringWithUTF8String:rx_source.c_str()]
+                     options:rx_options
+                       error:&rx_err];
+    if (!rx_lib) {
+      set->relaxed_reason =
+          NsError(rx_err, "Metal 4 tensor-op library did not compile");
+    } else {
+      set->relaxed = true;
+      for (int i = 0; i < kRxPipeCount && set->relaxed; ++i) {
+        id<MTLFunction> fn = [rx_lib
+            newFunctionWithName:[NSString
+                                    stringWithUTF8String:kRxPipeNames[i]]];
+        set->rx_pipes[i] =
+            fn ? [device newComputePipelineStateWithFunction:fn error:&rx_err]
+               : nil;
+        if (!set->rx_pipes[i]) {
+          set->relaxed = false;
+          set->relaxed_reason =
+              std::string("pipeline '") + kRxPipeNames[i] + "' failed";
+        }
+      }
+      if (set->relaxed &&
+          set->rx_pipes[kRxNNQ8].threadExecutionWidth != 32) {
+        set->relaxed = false;
+        set->relaxed_reason = "tensor-op tiles need 32-wide simdgroups";
+      }
+    }
+  } else
+#endif
+  {
+    set->relaxed_reason = "Metal 4 needs macOS 26";
+  }
+  for (int i = 0; i < kPipeCount; ++i) {
+    id<MTLFunction> fn = [lib
+        newFunctionWithName:[NSString stringWithUTF8String:kPipeNames[i]]];
+    if (!fn)
+      return std::unexpected(std::string("kernel '") + kPipeNames[i] +
+                             "' missing from the library");
+    set->pipes[i] = [device newComputePipelineStateWithFunction:fn error:&err];
+    if (!set->pipes[i])
+      return std::unexpected(NsError(err, "pipeline creation failed"));
+  }
+  // The GEMM tiles assume 32-wide simdgroups (four per 128-thread group)
+  // and threadgroups of at least 256 for the elementwise kernels.
+  if (set->pipes[kPGemmNN].threadExecutionWidth != 32)
+    return std::unexpected(
+        "unsupported SIMD width " +
+        std::to_string(set->pipes[kPGemmNN].threadExecutionWidth) +
+        " (the GEMM tiles need 32)");
+  for (int i = 0; i < kPipeCount; ++i)
+    if (set->pipes[i].maxTotalThreadsPerThreadgroup < kElementwiseGroup)
+      return std::unexpected(
+          "device threadgroup limit below " +
+          std::to_string(kElementwiseGroup) + " for kernel " + kPipeNames[i]);
+  return set;
+}
+
+// The process's kernel set for `device`, compiled on first use; a different
+// device (none has been seen — the system default is one object) compiles
+// its own and replaces it.
+std::expected<const KernelSet*, std::string> SharedKernels(
+    id<MTLDevice> device) {
+  static std::mutex mu;
+  static std::unique_ptr<KernelSet> shared;
+  std::lock_guard<std::mutex> lock(mu);
+  if (!shared || shared->device != device) {
+    auto compiled = CompileKernels(device);
+    if (!compiled) return std::unexpected(compiled.error());
+    shared = std::move(*compiled);
+  }
+  return shared.get();
+}
+
 std::expected<std::unique_ptr<ExecutorBackend>, std::string>
 MetalBackend::Create() {
   @autoreleasepool {
@@ -500,109 +641,13 @@ MetalBackend::Create() {
     if (!be->device_) return std::unexpected("no Metal device available");
     be->queue_ = [be->device_ newCommandQueue];
     if (!be->queue_) return std::unexpected("cannot create a command queue");
-
-    MTLCompileOptions* options = [MTLCompileOptions new];
-    // Precise math, both halves of it: `mathMode` governs algebraic
-    // fast-math (reassociation, no NaN/inf), `mathFloatingPointFunctions`
-    // governs which transcendental variants the unqualified tanh/exp/sin/
-    // cos/sqrt calls resolve to — and the fast tanh returns NaN above
-    // ~44, which through the GELU means NaN for any pre-activation past
-    // ~10.25. The kernel library mirrors the CPU expressions and is
-    // compared against them at tolerance; both knobs must be precise.
-    // (The pre-15 `fastMathEnabled = NO` selects both at once.)
-#if defined(__MAC_15_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
-    if (@available(macOS 15.0, *)) {
-      options.mathMode = MTLMathModeSafe;
-      options.mathFloatingPointFunctions =
-          MTLMathFloatingPointFunctionsPrecise;
-    } else
-#endif
-    {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-      options.fastMathEnabled = NO;
-#pragma clang diagnostic pop
-    }
-    NSError* err = nil;
-    const std::string source = std::string(kMetalKernelHead) +
-                               kMetalKernelPrelude + kMetalKernelSource;
-    NSString* src = [NSString stringWithUTF8String:source.c_str()];
-    id<MTLLibrary> lib = [be->device_ newLibraryWithSource:src
-                                                   options:options
-                                                     error:&err];
-    if (!lib)
-      return std::unexpected(NsError(err, "kernel library compilation failed"));
-    // The relaxed family: Metal 4 (macOS 26) and a GPU whose compiler
-    // accepts the tensor ops. Absent, relaxed instructions run exact.
-    for (int i = 0; i < kRxPipeCount; ++i) be->rx_pipes_[i] = nil;
-#if defined(__MAC_26_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
-    if (@available(macOS 26.0, *)) {
-      MTLCompileOptions* rx_options = [MTLCompileOptions new];
-      rx_options.languageVersion = MTLLanguageVersion4_0;
-      rx_options.mathMode = MTLMathModeSafe;
-      rx_options.mathFloatingPointFunctions =
-          MTLMathFloatingPointFunctionsPrecise;
-      const std::string rx_source = std::string(kMetalRelaxedKernelHead) +
-                                    kMetalKernelPrelude +
-                                    kMetalRelaxedKernelSource;
-      NSError* rx_err = nil;
-      id<MTLLibrary> rx_lib = [be->device_
-          newLibraryWithSource:[NSString stringWithUTF8String:rx_source.c_str()]
-                       options:rx_options
-                         error:&rx_err];
-      if (!rx_lib) {
-        be->relaxed_reason_ =
-            NsError(rx_err, "Metal 4 tensor-op library did not compile");
-      } else {
-        be->relaxed_ = true;
-        for (int i = 0; i < kRxPipeCount && be->relaxed_; ++i) {
-          id<MTLFunction> fn = [rx_lib
-              newFunctionWithName:[NSString
-                                      stringWithUTF8String:kRxPipeNames[i]]];
-          be->rx_pipes_[i] =
-              fn ? [be->device_ newComputePipelineStateWithFunction:fn
-                                                              error:&rx_err]
-                 : nil;
-          if (!be->rx_pipes_[i]) {
-            be->relaxed_ = false;
-            be->relaxed_reason_ = std::string("pipeline '") +
-                                  kRxPipeNames[i] + "' failed";
-          }
-        }
-        if (be->relaxed_ &&
-            be->rx_pipes_[kRxNNQ8].threadExecutionWidth != 32) {
-          be->relaxed_ = false;
-          be->relaxed_reason_ = "tensor-op tiles need 32-wide simdgroups";
-        }
-      }
-    } else
-#endif
-    {
-      be->relaxed_reason_ = "Metal 4 needs macOS 26";
-    }
-    for (int i = 0; i < kPipeCount; ++i) {
-      id<MTLFunction> fn = [lib
-          newFunctionWithName:[NSString stringWithUTF8String:kPipeNames[i]]];
-      if (!fn)
-        return std::unexpected(std::string("kernel '") + kPipeNames[i] +
-                               "' missing from the library");
-      be->pipes_[i] = [be->device_ newComputePipelineStateWithFunction:fn
-                                                                  error:&err];
-      if (!be->pipes_[i])
-        return std::unexpected(NsError(err, "pipeline creation failed"));
-    }
-    // The GEMM tiles assume 32-wide simdgroups (four per 128-thread group)
-    // and threadgroups of at least 256 for the elementwise kernels.
-    if (be->pipes_[kPGemmNN].threadExecutionWidth != 32)
-      return std::unexpected("unsupported SIMD width " +
-                             std::to_string(
-                                 be->pipes_[kPGemmNN].threadExecutionWidth) +
-                             " (the GEMM tiles need 32)");
-    for (int i = 0; i < kPipeCount; ++i)
-      if (be->pipes_[i].maxTotalThreadsPerThreadgroup < kElementwiseGroup)
-        return std::unexpected(
-            "device threadgroup limit below " +
-            std::to_string(kElementwiseGroup) + " for kernel " + kPipeNames[i]);
+    auto kernels = SharedKernels(be->device_);
+    if (!kernels) return std::unexpected(kernels.error());
+    for (int i = 0; i < kPipeCount; ++i) be->pipes_[i] = (*kernels)->pipes[i];
+    for (int i = 0; i < kRxPipeCount; ++i)
+      be->rx_pipes_[i] = (*kernels)->rx_pipes[i];
+    be->relaxed_ = (*kernels)->relaxed;
+    be->relaxed_reason_ = (*kernels)->relaxed_reason;
     be->scratch_ =
         [be->device_ newBufferWithLength:kScratchFloats * sizeof(float)
                                  options:MTLResourceStorageModeShared];
