@@ -1693,8 +1693,7 @@ class Differ:
                 self.relaxed_flagged += 1
                 self.relaxed_executed += relaxed
                 site = self.per_opcode.setdefault(name, new_stat(name))
-                site["cpp_relaxed_executed"] = (
-                    site.get("cpp_relaxed_executed", 0) + relaxed)
+                site["cpp_relaxed_executed"] += relaxed
             mine_by_off = dict(mine)
             if sorted(mine_by_off) != sorted(off for off, _ in cpp):
                 self._mismatch(
@@ -1982,12 +1981,17 @@ def cmd_price(args):
                 timing = probe.time("train", image, scalars, args.steps_hi)
                 ms = timing["ms_median"] * plan.grad_accum
                 # F42: which kernels the priced number priced — the relaxed
-                # GEMMs the backend ran on a relaxed kernel over the run.
-                relaxed = timing.get("relaxed_executions", 0)
+                # GEMMs the backend ran on a relaxed kernel, per step as `ms`
+                # is (the probe counts over all its timed executions; every
+                # execution runs the same instructions).
+                def per_execution(t):
+                    return t.get("relaxed_executions", 0) // max(
+                        int(t.get("executions", 1)), 1)
+                relaxed = per_execution(timing) * plan.grad_accum
                 if plan.sections["step"]:
                     timing = probe.time("step", image, scalars, args.steps_hi)
                     ms += timing["ms_median"]
-                    relaxed += timing.get("relaxed_executions", 0)
+                    relaxed += per_execution(timing)
             except PlanError as e:
                 cpp[cpp_backend] = {"available": False, "reason": str(e)}
                 print(f"frontier_exec: c++/{cpp_backend:<6} unavailable ({e})")

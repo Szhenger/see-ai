@@ -277,7 +277,12 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> Execute(const up::UpdateInstruction& ins,
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
-  uint64_t relaxed_executions() const override { return relaxed_executions_; }
+  // Its own tensor-op GEMMs plus the relaxed GEMMs it hands the CPU
+  // backend (a GEMM whose dimensions overflow 32 bits, DimsFit32), which
+  // that backend runs on SGEMM in a SEEML_ACCELERATE build.
+  uint64_t relaxed_executions() const override {
+    return relaxed_executions_ + (cpu_ ? cpu_->relaxed_executions() : 0);
+  }
 
  private:
   const InstructionExtents* ExtentsOf(const up::UpdateInstruction& ins);
