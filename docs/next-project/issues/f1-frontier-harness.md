@@ -40,6 +40,17 @@ those guesses; it must be priced against measurements instead.
 4. `docs/benchmarks.md`: replace the carried M4 anchors with the measured
    same-host table; the Frontier Outlook's asterisks become numbers.
 
+## Status 2026-10-30
+
+Every acceptance line is met. The two that stayed open closed the same
+day: the `dec_wide` row was taken through the harness with a synthesized
+checkpoint (`frontier_run.py synth`), and the nightly frontier row runs
+on GitHub's hosted Apple silicon instead of the self-hosted runner design
+item 3 named — a deliberate deviation, for the public-repository reason
+in the line below. The exporter learned Transformers 5's
+`rope_parameters` on the way (a v5-saved checkpoint with a non-default
+rotary base used to fall back to 10,000).
+
 ## Acceptance
 
 - [x] Same-host table for SmolLM-135M (r8, S=128, 512 tok/step): SeeAI
@@ -48,19 +59,29 @@ those guesses; it must be priced against measurements instead.
   "The nightly frontier row's recipe, run by hand (2026-10-15)". (MLX-LM's
   *default* mode on this F32-stored checkpoint is f32 under TF32-class
   matmul, so the rows are labelled true-f32 and all-bf16 instead.)
-- [ ] The `dec_wide` column of that table — never run through the harness.
+- [x] The `dec_wide` column of that table — run through the harness on
+  2026-10-30 (`docs/benchmarks.md`, "The dec_wide row, and the frontier
+  rows on GitHub's hosted Apple silicon"). `frontier_run.py synth --shape
+  dec_wide` writes the checkpoint every stack loads (a seeded Llama at the
+  shape, a 4,096-entry BPE tokenizer; byte-identical twice; `--hf-parity`
+  2.6e-6), and on the M5 SeeAI's f32 Metal package runs at 17,853 tok/s,
+  1.04× MLX-LM's true-f32 trainer (17,128) and 0.65× its all-bf16 one,
+  every parity check passing.
 - [x] Every row names device, precision mode, library versions and host
   key — the harness's schema-versioned rows (`tool/frontier_run.py`).
 - [x] Loss-agreement check fails loudly on a mismatched configuration —
   `test/tool/frontier_run_test.py`, `test_a_wrong_rank_is_refused_by_name`.
-- [ ] The nightly frontier row (design item 3) — the job is in
-  `nightly.yml` and has been skipped on every run since 2026-09-23 (29 as
-  of 2026-10-22). Of the two things that kept it off, one closed on
-  2026-10-29: its `if:` now also admits the schedule while the repository
-  variable `SEEML_FRONTIER_NIGHTLY` is `true`, taking the checkpoint from
-  the runner's `SEEML_FRONTIER_MODEL_DIR`. The other stands: no runner
-  labelled `self-hosted, macOS, ARM64` is registered, and the variable
-  must stay unset until one is (a scheduled job with no runner queues
-  until GitHub times it out). Its recipe was run by hand on 2026-10-15
-  (two workflow bugs fixed from that run). Blocked on the runner, or on
-  dropping the job.
+- [x] The nightly frontier row (design item 3) — runs on GitHub's hosted
+  Apple-silicon runner since 2026-10-30, not a self-hosted one: this
+  repository is public, and a self-hosted runner on a public repository
+  runs whatever workflow a fork's pull request brings. The job probes the
+  VM (a 3-core Apple M1 (Virtual), 7.5 GB; MLX on its paravirtual GPU),
+  fetches SmolLM-135M at the pinned revision, synthesizes `dec_wide`, and
+  runs both matrices with the parity checks; dispatch 41093112857 passed
+  every check (SeeAI metal 878 / 6,656 tok/s, MLX-LM bf16 1,181 / 6,249,
+  SmolLM / dec_wide; `docs/ledger/f1-2026-10-30/hosted/`). PyTorch MPS
+  cannot build its cooperative-tensor pipelines on the VM, so the hosted
+  rows are SeeAI metal / cpu, torch.compile CPU and MLX-LM, and the MPS
+  rows stay on real hardware. The schedule runs it once the repository
+  variable `SEEML_FRONTIER_NIGHTLY` is set to `true`; until then it runs
+  on a `workflow_dispatch` with `frontier` set. Trend only, never a gate.

@@ -14,13 +14,13 @@
 #                     and measuring setup) and the host's epoch pinned in
 #                     git; a key's first >10% regression warns, its second
 #                     consecutive one fails (docs/benchmarks.md)
-#   frontier          the frontier row (tool/frontier_run.py, F1 #129) on a
-#                     self-hosted Apple-silicon runner: on demand with the
-#                     `frontier` input, and on the schedule once the
-#                     repository variable SEEML_FRONTIER_NIGHTLY is 'true'
-#                     — set it only after that runner is registered, or
-#                     every night queues a job no runner picks up. Trend
-#                     only, never a gate.
+#   frontier          the frontier row (tool/frontier_run.py, F1 #129) on
+#                     GitHub's hosted Apple-silicon runner: SmolLM-135M and
+#                     the synthesized dec_wide shape, SeeAI against
+#                     torch.compile and MLX-LM on the same VM; on demand
+#                     with the `frontier` input, and on the schedule while
+#                     the repository variable SEEML_FRONTIER_NIGHTLY is
+#                     'true'. Trend only, never a gate.
 #
 # A nightly failure is a regression on main itself, not on a diff — treat
 # it with the same severity as a red PR.
@@ -44,92 +44,164 @@ on:
         default: false
       frontier:
         description: >-
-          Also run the frontier row (tool/frontier_run.py, F1 #129) on a
-          self-hosted Apple-silicon runner: SeeAI cpu / metal, torch.compile
-          and MLX-LM on SmolLM-135M with the parity checks. Trend only.
+          Also run the frontier rows (tool/frontier_run.py, F1 #129) on
+          GitHub's hosted Apple-silicon runner: SeeAI cpu / metal,
+          torch.compile and MLX-LM on SmolLM-135M and on dec_wide, with
+          the parity checks. Trend only.
         type: boolean
         default: false
-      frontier_model_dir:
-        description: >-
-          The SmolLM-135M Hugging Face checkpoint directory on the
-          self-hosted runner (config.json, model.safetensors, the
-          tokenizer files). Empty: the runner's SEEML_FRONTIER_MODEL_DIR.
-        type: string
-        default: ""
 
 jobs:
   frontier:
-    name: Frontier row (self-hosted Apple silicon, opt-in)
+    name: Frontier rows (hosted Apple silicon, opt-in)
     # On demand with the `frontier` input, or on the schedule while the
     # repository variable SEEML_FRONTIER_NIGHTLY is 'true' (Settings >
-    # Secrets and variables > Actions > Variables). Leave the variable
-    # unset until a runner labelled self-hosted / macOS / ARM64 is
-    # registered: a scheduled job with no runner queues until GitHub times
-    # it out, so every night would show a stuck run. On the schedule the
-    # inputs are empty and the checkpoint comes from the runner's
-    # SEEML_FRONTIER_MODEL_DIR.
+    # Secrets and variables > Actions > Variables).
+    #
+    # GitHub's hosted Apple-silicon runner, not a self-hosted one (F1 #129,
+    # 2026-10-30): this repository is public, and a self-hosted runner on a
+    # public repository runs whatever workflow a fork's pull request brings
+    # to it. The hosted VM has Apple's paravirtual GPU — SeeAI's Metal
+    # backend runs there on every pull request (CI's macOS test cell) — and
+    # the probe step below names what else it can run. Its numbers are a
+    # VM's: the ratios inside one run are the trend; the absolute rows are
+    # not comparable with docs/benchmarks.md's Apple M5 rows.
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.frontier) || (github.event_name == 'schedule' && vars.SEEML_FRONTIER_NIGHTLY == 'true') }}
-    runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 240
+    runs-on: macos-latest
+    timeout-minutes: 300
+    env:
+      # The SmolLM-135M revision every frontier row since 2026-09-22 used.
+      SMOLLM_REPO: HuggingFaceTB/SmolLM-135M
+      SMOLLM_REVISION: 1d461723eec654e65efdc40cf49301c89c0c92f4
     steps:
       - uses: actions/checkout@v4
-      - name: Locate the checkpoint
-        # The job's one external input. Fail here, by name, rather than
-        # inside the exporter with an empty path.
-        env:
-          # Through the environment, never spliced into the script text.
-          INPUT_MODEL_DIR: ${{ inputs.frontier_model_dir }}
-        run: |
-          dir="${INPUT_MODEL_DIR:-}"
-          [ -n "$dir" ] || dir="${SEEML_FRONTIER_MODEL_DIR:-}"
-          if [ -z "$dir" ] || [ ! -f "$dir/config.json" ]; then
-            echo "::error::no SmolLM-135M checkpoint: pass frontier_model_dir or set SEEML_FRONTIER_MODEL_DIR in the runner's environment (got '$dir')"
-            exit 1
-          fi
-          echo "SEEML_FRONTIER_MODEL_DIR=$dir" >> "$GITHUB_ENV"
-      - name: Build the tools
-        run: sh build/build.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.7"
       - name: Python plane (tier 2)
+        # The releases the 2026-10-30 dec_wide column was measured with.
         run: |
-          python3 -m pip install --user -r tool/requirements-pinned.txt \
-            transformers tokenizers mlx mlx-lm
-      - name: Export SmolLM-135M and compile the package
-        # The corpus is the whole docs/ tree, as the 2026-09-22 row's was
-        # (~500 records of 129 ids): docs/usage.md alone is 58 records, so
-        # 300 steps of 4 are 23 epochs, the validation loss rises and the
-        # gate declines — a throughput row, not a frontier row.
+          python -m pip install -r tool/requirements-pinned.txt \
+            transformers==5.17.0 tokenizers==0.23.2 mlx==0.32.2 mlx-lm==0.31.3
+      - name: Probe the runner
+        # Every stack the matrices run is asked directly, with a real
+        # kernel: a VM that cannot run one fails here, by name, rather than
+        # as a refused matrix row an hour later.
         run: |
           mkdir -p out/frontier
+          python - <<'EOF'
+          import json, os, platform, subprocess, sys
+          import mlx.core as mx
+          import torch
+          def sysctl(key):
+              return subprocess.run(["sysctl", "-n", key], capture_output=True,
+                                    text=True).stdout.strip()
+          probe = {"machine": platform.machine(),
+                   "cpu": sysctl("machdep.cpu.brand_string"),
+                   "cores": os.cpu_count(), "memory_bytes": int(sysctl("hw.memsize")),
+                   "mlx": mx.__version__, "mlx_metal": bool(mx.metal.is_available()),
+                   "torch": torch.__version__,
+                   "torch_mps": bool(torch.backends.mps.is_available())}
+          if probe["mlx_metal"]:
+              a = mx.ones((256, 256))
+              mx.eval(a @ a)
+              probe["mlx_device"] = str(mx.default_device())
+          if probe["torch_mps"]:
+              x = torch.ones(256, 256, device="mps")
+              probe["torch_mps_matmul"] = float((x @ x).sum().item())
+          print(json.dumps(probe, indent=1))
+          with open("out/frontier/probe.json", "w") as f:
+              json.dump(probe, f, indent=1)
+          # MLX is the GPU comparator the hosted rows need. PyTorch MPS is
+          # recorded but not run here: on this VM's paravirtual GPU, torch
+          # 2.14's MPS evaluation fails to build a Metal pipeline over
+          # cooperative tensors ("unsupported deferred-static-alloca-size
+          # function body", dispatch of 2026-10-30), the Metal 4 tensor-op
+          # family SeeAI's own relaxed GEMM library cannot build there
+          # either. The torch MPS rows are taken on real Apple silicon
+          # (docs/benchmarks.md).
+          if not probe["mlx_metal"]:
+              print("::error::the hosted runner cannot run MLX on its GPU; "
+                    "the frontier rows have no GPU comparator")
+              sys.exit(1)
+          EOF
+          echo "SEEML_THREADS=$(sysctl -n hw.ncpu)" >> "$GITHUB_ENV"
+      - name: Fetch SmolLM-135M
+        run: |
+          dir=$(python -c "import os; from huggingface_hub import snapshot_download; print(snapshot_download(os.environ['SMOLLM_REPO'], revision=os.environ['SMOLLM_REVISION']))")
+          if [ ! -f "$dir/config.json" ]; then
+            echo "::error::no SmolLM-135M checkpoint at '$dir'"
+            exit 1
+          fi
+          echo "SMOLLM_DIR=$dir" >> "$GITHUB_ENV"
+      - name: Build the tools
+        run: sh build/build.sh
+      - name: Export and compile the two packages
+        # The corpus is the whole docs/ tree, as the 2026-09-22 row's was
+        # (~500 records of 129 ids for SmolLM): docs/usage.md alone is 58
+        # records, so 300 steps of 4 are 23 epochs, the validation loss
+        # rises and the gate declines — a throughput row, not a frontier
+        # row. dec_wide is synthesized (tool/frontier_run.py synth: a
+        # seeded Llama at the shape and a BPE tokenizer of its vocabulary)
+        # and trained at 2 x 256 tokens per step, LoRA r16, f32 base.
+        run: |
+          mkdir -p out/frontier/smollm out/frontier/dec_wide
           cat docs/*.md > out/frontier/corpus.txt
-          python3 tool/export_model.py --hf "$SEEML_FRONTIER_MODEL_DIR" out/frontier/smollm135.smf \
+          python tool/export_model.py --hf "$SMOLLM_DIR" out/frontier/smollm135.smf \
             --seq-len 128 --text-corpus out/frontier/corpus.txt out/frontier/docs.sds
+          # --report: the seeml rows read the package's compile report (its
+          # tokens per step, adapters, plan hash).
           ./build/seeml-update-compile --source out/frontier/smollm135.smf --out out/frontier/pkg/ \
             --data-batch 512 --loss xent --lora-rank 8 --lora-alpha 16 --optimizer adamw \
-            --lr 1e-4 --lr-schedule const --quantize-base --steps 300 --no-embed
-          python3 tool/pack_update.py out/frontier/pkg/ --build
-      - name: The frontier row
+            --lr 1e-4 --lr-schedule const --quantize-base --steps 300 --no-embed \
+            --report out/frontier/pkg/report.json
+          python tool/pack_update.py out/frontier/pkg/ --build
+          python tool/frontier_run.py synth --shape dec_wide --corpus out/frontier/corpus.txt \
+            --out out/frontier/dec_wide_hf
+          python tool/export_model.py --hf out/frontier/dec_wide_hf out/frontier/dec_wide.smf \
+            --seq-len 256 --text-corpus out/frontier/corpus.txt out/frontier/dec_wide.sds --hf-parity
+          ./build/seeml-update-compile --source out/frontier/dec_wide.smf --out out/frontier/pkg_dec_wide/ \
+            --data-batch 512 --loss xent --lora-rank 16 --lora-alpha 32 --optimizer adamw \
+            --lr 1e-4 --lr-schedule const --steps 300 --no-embed \
+            --report out/frontier/pkg_dec_wide/report.json
+          python tool/pack_update.py out/frontier/pkg_dec_wide/ --build
+      - name: The frontier rows
         # Every row trains the 300 steps and scores the split: the parity
         # check refuses a row with no validation loss as "not a
         # measurement" and the matrix exits 3, so a throughput-only CPU
-        # row (--quality-steps 0) would fail the job on every run.
-        env:
-          SEEML_THREADS: "10"
+        # row (--quality-steps 0) would fail the job on every run. Both
+        # matrices run, whatever the first one's verdict.
         run: |
-          cat > out/frontier/plan.json <<EOF
-          {"model_dir": "$SEEML_FRONTIER_MODEL_DIR", "rank": 8, "rows": [
-            {"kind": "seeml", "args": ["--package", "out/frontier/pkg", "--model", "out/frontier/smollm135.smf", "--data", "out/frontier/docs.sds", "--backend", "metal", "--threads", "10"]},
-            {"kind": "seeml", "args": ["--package", "out/frontier/pkg", "--model", "out/frontier/smollm135.smf", "--data", "out/frontier/docs.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "300", "--threads", "10"]},
-            {"kind": "torch", "args": ["--model-dir", "$SEEML_FRONTIER_MODEL_DIR", "--corpus", "out/frontier/corpus.txt", "--device", "mps", "--compile", "1", "--dtype", "bf16"]},
-            {"kind": "torch", "args": ["--model-dir", "$SEEML_FRONTIER_MODEL_DIR", "--corpus", "out/frontier/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32"]},
-            {"kind": "mlx", "args": ["--model-dir", "$SEEML_FRONTIER_MODEL_DIR", "--corpus", "out/frontier/corpus.txt", "--dtype", "bf16"]}
+          T="$SEEML_THREADS"
+          S=out/frontier
+          cat > $S/smollm/plan.json <<EOF
+          {"model_dir": "$SMOLLM_DIR", "rank": 8, "rows": [
+            {"kind": "seeml", "args": ["--package", "$S/pkg", "--model", "$S/smollm135.smf", "--data", "$S/docs.sds", "--backend", "metal", "--threads", "$T"]},
+            {"kind": "seeml", "args": ["--package", "$S/pkg", "--model", "$S/smollm135.smf", "--data", "$S/docs.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "300", "--threads", "$T"]},
+            {"kind": "torch", "args": ["--model-dir", "$SMOLLM_DIR", "--corpus", "$S/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32"]},
+            {"kind": "mlx", "args": ["--model-dir", "$SMOLLM_DIR", "--corpus", "$S/corpus.txt", "--dtype", "bf16"]}
           ]}
           EOF
-          python3 tool/frontier_run.py matrix out/frontier/plan.json --out out/frontier/frontier.json
+          cat > $S/dec_wide/plan.json <<EOF
+          {"model_dir": "$S/dec_wide_hf", "rank": 16, "rows": [
+            {"kind": "seeml", "args": ["--package", "$S/pkg_dec_wide", "--model", "$S/dec_wide.smf", "--data", "$S/dec_wide.sds", "--backend", "metal", "--threads", "$T"]},
+            {"kind": "seeml", "args": ["--package", "$S/pkg_dec_wide", "--model", "$S/dec_wide.smf", "--data", "$S/dec_wide.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "300", "--threads", "$T"]},
+            {"kind": "torch", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
+            {"kind": "mlx", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--dtype", "bf16", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
+            {"kind": "mlx", "args": ["--model-dir", "$S/dec_wide_hf", "--corpus", "$S/corpus.txt", "--dtype", "f32", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]}
+          ]}
+          EOF
+          status=0
+          python tool/frontier_run.py matrix $S/smollm/plan.json --out $S/smollm/frontier.json || status=1
+          python tool/frontier_run.py matrix $S/dec_wide/plan.json --out $S/dec_wide/frontier.json || status=1
+          exit $status
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: frontier-row
-          path: out/frontier/*.json
+          name: frontier-rows
+          path: |
+            out/frontier/*.json
+            out/frontier/*/*.json
 
   tsan:
     name: ThreadSanitizer (full suites)

@@ -154,6 +154,21 @@ certificate's full tolerances and evidence steps in its report and prints
 a NOTE for each tolerance looser than the certifier's defaults
 (`DEFAULT_TOLERANCES`, the one table the CLI defaults read).
 
+## Status 2026-10-30
+
+The contract is decided: a certificate certifies the relaxations its plan
+takes (`docs/benchmarks.md`, "The certificate contract, decided"). A plan
+with `kFlagRelaxed` instructions carries `relaxed-flagged-instructions`:
+the flagged sites enforced, the free run's relaxed arm relaxing exactly
+those instructions, the loss default 1e-3 (this issue's acceptance line);
+every other site measured as evidence. Exact plans keep P3's
+`relaxed-reductions-f32`. `check_certificate` refuses a certificate that
+leaves any relaxed site of the plan uncovered, and `pack_update.py`'s
+tolerance NOTE compares against the certificate's own family
+(`FAMILY_DEFAULTS`, one row per family, replaces 10-29's single
+`DEFAULT_TOLERANCES` table). The measured 10-24 package (plan hash `a0d2d967…`) is being re-certified
+under it at the defaults.
+
 ## Acceptance
 
 - [x] SmolLM-135M GPU tok/s measured against F1's MLX-LM all-bf16 row on

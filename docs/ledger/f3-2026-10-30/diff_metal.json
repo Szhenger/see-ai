@@ -1,0 +1,186 @@
+{
+  "agrees": false,
+  "atol": 1e-07,
+  "cpp_backend": "metal",
+  "cpp_relaxed_executed": 71,
+  "extents_compared": 706,
+  "failures": [
+    "step 1 train #2 gemm.relaxed @12193856: max |delta| 3.331e-03 > 2.053e-05 (element 245411: here np.float32(0.24556895), C++ np.float32(0.24223822))",
+    "step 1 train #5 gemm.relaxed @12193856: max |delta| 3.441e-03 > 2.103e-05 (element 127575: here np.float32(-0.2150273), C++ np.float32(-0.21846782))",
+    "step 1 train #8 gemm.relaxed @12193856: max |delta| 3.510e-03 > 2.074e-05 (element 8101: here np.float32(0.27595177), C++ np.float32(0.27946225))",
+    "step 1 train #15 gemm.relaxed @17535040: max |delta| 1.240e-03 > 7.154e-06 (element 126: here np.float32(0.28103378), C++ np.float32(0.2822736))",
+    "step 1 train #20 gemm.relaxed @18583616: max |delta| 3.580e-03 > 2.368e-05 (element 442086: here np.float32(0.8749558), C++ np.float32(0.8713755))",
+    "step 1 train #23 gemm.relaxed @18583616: max |delta| 3.899e-03 > 2.221e-05 (element 22551: here np.float32(0.6582694), C++ np.float32(0.65437084))",
+    "step 1 train #28 gemm.relaxed @26972224: max |delta| 5.800e-04 > 3.478e-06 (element 239863: here np.float32(0.017367031), C++ np.float32(0.017946983))",
+    "step 1 train #33 gemm.relaxed @29069376: max |delta| 3.539e-03 > 2.077e-05 (element 147510: here np.float32(-0.13024716), C++ np.float32(-0.133786))",
+    "step 1 train #36 gemm.relaxed @29069376: max |delta| 4.214e-03 > 2.098e-05 (element 105051: here np.float32(0.03825162), C++ np.float32(0.042465735))",
+    "step 1 train #39 gemm.relaxed @29069376: max |delta| 3.660e-03 > 2.021e-05 (element 171505: here np.float32(-0.014260561), C++ np.float32(-0.017920425))",
+    "step 1 train #45 gemm.relaxed @33263680: max |delta| 1.355e-03 > 7.023e-06 (element 131842: here np.float32(0.06445769), C++ np.float32(0.06581285))",
+    "step 1 train #50 gemm.relaxed @35360832: max |delta| 3.920e-03 > 1.984e-05 (element 72499: here np.float32(0.77536476), C++ np.float32(0.7714448))",
+    "step 1 train #53 gemm.relaxed @35360832: max |delta| 3.607e-03 > 1.944e-05 (element 278061: here np.float32(0.3649325), C++ np.float32(0.36853904))",
+    "step 1 train #58 gemm.relaxed @43749440: max |delta| 6.244e-04 > 3.048e-06 (element 59623: here np.float32(-0.0052992757), C++ np.float32(-0.0046749148))",
+    "step 1 train #63 gemm.relaxed @45846592: max |delta| 3.596e-03 > 1.804e-05 (element 107602: here np.float32(0.65891993), C++ np.float32(0.6625163))",
+    "step 1 train #66 gemm.relaxed @45846592: max |delta| 3.386e-03 > 1.968e-05 (element 206413: here np.float32(0.19429487), C++ np.float32(0.19090918))",
+    "step 1 train #69 gemm.relaxed @45846592: max |delta| 3.449e-03 > 1.872e-05 (element 237640: here np.float32(-0.021673925), C++ np.float32(-0.025123242))",
+    "step 1 train #75 gemm.relaxed @50040896: max |delta| 1.347e-03 > 7.268e-06 (element 238766: here np.float32(0.20040865), C++ np.float32(0.19906142))",
+    "step 1 train #80 gemm.relaxed @52138048: max |delta| 3.802e-03 > 2.208e-05 (element 405199: here np.float32(0.105717905), C++ np.float32(0.109520316))",
+    "step 1 train #83 gemm.relaxed @52138048: max |delta| 3.705e-03 > 2.092e-05 (element 44702: here np.float32(-0.0021813256), C++ np.float32(0.0015232493))",
+    "step 1 train #88 gemm.relaxed @60526656: max |delta| 5.827e-04 > 3.311e-06 (element 53347: here np.float32(-0.033215154), C++ np.float32(-0.032632433))",
+    "step 1 train #93 gemm.relaxed @62623808: max |delta| 3.943e-03 > 2.078e-05 (element 258625: here np.float32(-0.44275424), C++ np.float32(-0.4388117))",
+    "step 1 train #96 gemm.relaxed @62623808: max |delta| 3.864e-03 > 2.403e-05 (element 172773: here np.float32(0.034603007), C++ np.float32(0.030738704))",
+    "step 1 train #99 gemm.relaxed @62623808: max |delta| 3.541e-03 > 1.806e-05 (element 87376: here np.float32(-0.059378732), C++ np.float32(-0.062919885))",
+    "step 1 train #105 gemm.relaxed @66818112: max |delta| 1.443e-03 > 7.426e-06 (element 176534: here np.float32(-0.05773307), C++ np.float32(-0.05629043))",
+    "step 1 train #110 gemm.relaxed @68948032: max |delta| 3.863e-03 > 2.133e-05 (element 135343: here np.float32(-0.4536033), C++ np.float32(-0.44974053))",
+    "step 1 train #113 gemm.relaxed @68948032: max |delta| 3.904e-03 > 1.965e-05 (element 276840: here np.float32(0.44322085), C++ np.float32(0.4393172))",
+    "step 1 train #118 gemm.relaxed @77402176: max |delta| 5.974e-04 > 2.863e-06 (element 180520: here np.float32(0.088810615), C++ np.float32(0.08821323))",
+    "step 1 train #123 gemm.relaxed @79532096: max |delta| 3.893e-03 > 2.079e-05 (element 488303: here np.float32(0.3902134), C++ np.float32(0.38632026))",
+    "step 1 train #132 gemm.relaxed @78483520: max |delta| 1.263e-07 > 1.019e-07 (element 143989: here np.float32(0.00016357172), C++ np.float32(0.00016369803))",
+    "step 1 train #138 gemm.relaxed @75305024: max |delta| 4.646e-07 > 1.028e-07 (element 182133: here np.float32(-3.0890118e-05), C++ np.float32(-3.0425472e-05))",
+    "step 1 train #158 gemm.relaxed @64720960: max |delta| 5.310e-07 > 1.027e-07 (element 63057: here np.float32(0.00014885684), C++ np.float32(0.0001483258))",
+    "step 1 train #168 gemm.relaxed @64720960: max |delta| 1.807e-07 > 1.010e-07 (element 131117: here np.float32(1.7630919e-07), C++ np.float32(3.570481e-07))",
+    "step 1 train #185 gemm.relaxed @58429504: max |delta| 4.898e-07 > 1.026e-07 (element 198943: here np.float32(-3.7832076e-05), C++ np.float32(-3.734225e-05))",
+    "step 1 train #205 gemm.relaxed @47943744: max |delta| 5.054e-07 > 1.031e-07 (element 91901: here np.float32(-4.2125313e-05), C++ np.float32(-4.1619885e-05))",
+    "step 1 train #215 gemm.relaxed @47943744: max |delta| 4.166e-07 > 1.022e-07 (element 131198: here np.float32(-4.2570417e-05), C++ np.float32(-4.298702e-05))",
+    "step 1 train #232 gemm.relaxed @41652288: max |delta| 5.970e-07 > 1.040e-07 (element 263311: here np.float32(0.00016430809), C++ np.float32(0.00016371111))",
+    "step 1 train #240 gemm.relaxed @37457984: max |delta| 1.074e-07 > 1.006e-07 (element 3871: here np.float32(1.608271e-05), C++ np.float32(1.6190157e-05))",
+    "step 1 train #252 gemm.relaxed @31166528: max |delta| 7.103e-07 > 1.047e-07 (element 131308: here np.float32(-2.2933917e-05), C++ np.float32(-2.3644254e-05))",
+    "step 1 train #262 gemm.relaxed @31166528: max |delta| 7.809e-07 > 1.045e-07 (element 131515: here np.float32(0.00026059957), C++ np.float32(0.0002598187))",
+    "step 1 train #279 gemm.relaxed @24875072: max |delta| 2.046e-06 > 1.118e-07 (element 3071: here np.float32(-8.166626e-05), C++ np.float32(-8.371198e-05))",
+    "step 1 train #287 gemm.relaxed @20680768: max |delta| 3.036e-07 > 1.018e-07 (element 131114: here np.float32(4.7324825e-06), C++ np.float32(5.03613e-06))",
+    "step 1 train #293 gemm.relaxed @10096704: max |delta| 3.164e-07 > 1.023e-07 (element 2508: here np.float32(5.7453755e-05), C++ np.float32(5.7770136e-05))",
+    "step 1 train #299 gemm.relaxed @14356544: max |delta| 2.823e-06 > 1.149e-07 (element 5623: here np.float32(6.9570056e-06), C++ np.float32(4.133618e-06))"
+  ],
+  "frontier_backend": "numpy",
+  "frontier_device": "host CPU, NumPy 2.5.3 (float64)",
+  "mismatches": [],
+  "opcodes": {
+    "adamw.step": {
+      "extents": 174,
+      "worst_ratio": 0.0003601959228817323,
+      "worst_rel": 3.6379802224843184e-07
+    },
+    "add.ew": {
+      "extents": 23,
+      "worst_ratio": 0.0,
+      "worst_rel": 0.0
+    },
+    "attn.dk.tiled": {
+      "cpp_relaxed_executed": 4,
+      "extents": 4,
+      "worst_ratio": 0.001428238334092629,
+      "worst_rel": 8.975126334875526e-07
+    },
+    "attn.dq.tiled": {
+      "cpp_relaxed_executed": 4,
+      "extents": 8,
+      "worst_ratio": 0.00042942850999040633,
+      "worst_rel": 3.941326929915775e-07
+    },
+    "attn.dv.tiled": {
+      "cpp_relaxed_executed": 4,
+      "extents": 4,
+      "worst_ratio": 0.0208594782289446,
+      "worst_rel": 6.710676314347901e-07
+    },
+    "attn.fwd.tiled": {
+      "cpp_relaxed_executed": 4,
+      "extents": 16,
+      "worst_ratio": 0.08403741466714858,
+      "worst_rel": 8.453402170326474e-07
+    },
+    "embed.fwd": {
+      "extents": 2,
+      "worst_ratio": 0.0,
+      "worst_rel": 0.0
+    },
+    "fill": {
+      "extents": 30,
+      "worst_ratio": 0.0,
+      "worst_rel": 0.0
+    },
+    "gemm.acc_nn": {
+      "extents": 29,
+      "worst_ratio": 0.00028697322027561713,
+      "worst_rel": 2.0545748499081707e-07
+    },
+    "gemm.nn": {
+      "extents": 145,
+      "worst_ratio": 0.12897113276593003,
+      "worst_rel": 1.2958066232845634e-06
+    },
+    "gemm.nt": {
+      "extents": 55,
+      "worst_ratio": 0.0,
+      "worst_rel": 0.0
+    },
+    "gemm.relaxed": {
+      "cpp_relaxed_executed": 55,
+      "extents": 55,
+      "worst_ratio": 208.6719389923159,
+      "worst_rel": 0.0021622483413144336
+    },
+    "gemm.tn": {
+      "extents": 58,
+      "worst_ratio": 0.12884499447246384,
+      "worst_rel": 1.3884986950426432e-06
+    },
+    "mul.ew": {
+      "extents": 16,
+      "worst_ratio": 0.0,
+      "worst_rel": 0.0
+    },
+    "rms_norm.bwd": {
+      "extents": 8,
+      "worst_ratio": 0.0019069001405838484,
+      "worst_rel": 1.1300734931995568e-07
+    },
+    "rms_norm.fwd": {
+      "extents": 36,
+      "worst_ratio": 0.01524685126373054,
+      "worst_rel": 1.527126617351167e-07
+    },
+    "rope.bwd": {
+      "extents": 8,
+      "worst_ratio": 0.0010825496021726938,
+      "worst_rel": 6.903433976571831e-07
+    },
+    "rope.fwd": {
+      "extents": 16,
+      "worst_ratio": 0.8044679906862198,
+      "worst_rel": 8.084871195941543e-06
+    },
+    "rope.table": {
+      "extents": 2,
+      "worst_ratio": 0.8763653216975749,
+      "worst_rel": 8.851289749145508e-06
+    },
+    "silu.bwd": {
+      "extents": 4,
+      "worst_ratio": 0.0005400252022547155,
+      "worst_rel": 1.1838514143354462e-07
+    },
+    "silu.fwd": {
+      "extents": 8,
+      "worst_ratio": 0.011988622979019979,
+      "worst_rel": 1.2049211147183102e-07
+    },
+    "softmax_xent.bwd": {
+      "extents": 1,
+      "worst_ratio": 0.0,
+      "worst_rel": 0.0
+    },
+    "softmax_xent.fwd": {
+      "extents": 4,
+      "worst_ratio": 0.01135278186568747,
+      "worst_rel": 1.4453981341933645e-07
+    }
+  },
+  "plan": "out/f3-2026-10-30/pkg_tiled_relaxed/update_plan.seeu",
+  "plan_hash": "c9c6c47b676f33d9",
+  "plan_sha256": "cebcdb869f6dad61baa860b01fe61cf38d14eb41d5afdebe2920d240e017c617",
+  "plan_version": 20,
+  "relaxed_instructions": 71,
+  "relaxed_modelled": false,
+  "rtol": 1e-05,
+  "steps": 1
+}

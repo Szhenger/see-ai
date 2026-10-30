@@ -92,8 +92,20 @@ FLAG_RELAXED = formats.FLAG_RELAXED
 # The one site name for every relaxed GEMM (v18, kFlagRelaxed), whatever
 # its opcode: the certifier prices the site under this name and a diff
 # report keys the measured deviation under it, so the two sides of a
-# certificate compare like with like (2026-09-24 review, F72).
+# certificate compare like with like (2026-09-24 review, F72). A relaxed
+# tiled attention instruction (v20) keeps its opcode's own name, which is
+# also the certifier's reduction site for it (attn.fwd.tiled, ...).
 RELAXED_SITE = "gemm.relaxed"
+RELAXED_GEMM_OPCODES = formats.RELAXED_GEMM_OPCODES
+RELAXED_ATTENTION_OPCODES = formats.RELAXED_ATTENTION_OPCODES
+
+
+def site_of(ins):
+    """The name an instruction's measured deviation is keyed under in a
+    diff report and its site under in a certificate."""
+    if ins.flags & FLAG_RELAXED and ins.opcode in RELAXED_GEMM_OPCODES:
+        return RELAXED_SITE
+    return OPCODES.get(ins.opcode, str(ins.opcode))
 
 
 def is_source_ref(ref):
@@ -190,10 +202,13 @@ class Plan:
         if self.persistent_size > self.arena_size:
             raise PlanError(f"{path}: persistent segment exceeds the arena")
         self.grad_accum = max(1, self.grad_accum_steps)
-        # v18: the frozen-weight GEMMs a certified relaxed kernel may run.
-        self.relaxed_gemms = sum(
-            1 for name in ("train", "step") for i in self.sections[name]
-            if i.flags & FLAG_RELAXED)
+        # v18 / v20: the instructions a certified relaxed kernel may run —
+        # all of them, and the frozen-weight GEMMs among them.
+        relaxed = [i for name in ("train", "step") for i in self.sections[name]
+                   if i.flags & FLAG_RELAXED]
+        self.relaxed_instructions = len(relaxed)
+        self.relaxed_gemms = sum(1 for i in relaxed
+                                 if i.opcode in RELAXED_GEMM_OPCODES)
 
     def _bounds(self, what, off, size):
         if off > len(self.blob) or size > len(self.blob) - off:
@@ -1687,13 +1702,16 @@ class Differ:
                            f"{len(theirs)} in the C++ trace")
             return
         for (index, ins, mine), (_, opcode, cpp, relaxed) in zip(ours, theirs):
-            name = (RELAXED_SITE if ins.flags & FLAG_RELAXED
-                    else OPCODES.get(opcode, str(opcode)))
+            name = site_of(ins)
             if ins.flags & FLAG_RELAXED:
                 self.relaxed_flagged += 1
                 self.relaxed_executed += relaxed
                 site = self.per_opcode.setdefault(name, new_stat(name))
-                site["cpp_relaxed_executed"] += relaxed
+                # A relaxed attention site (v20) shares its name with the
+                # eval program's exact instructions, so its count is seeded
+                # here, the first time a relaxed one is compared.
+                site["cpp_relaxed_executed"] = (
+                    site.get("cpp_relaxed_executed", 0) + relaxed)
             mine_by_off = dict(mine)
             if sorted(mine_by_off) != sorted(off for off, _ in cpp):
                 self._mismatch(
@@ -1796,8 +1814,7 @@ def cmd_diff(args):
     finally:
         probe.close()
 
-    used = {RELAXED_SITE if i.flags & FLAG_RELAXED else OPCODES[i.opcode]
-            for s in plan.sections.values() for i in s}
+    used = {site_of(i) for s in plan.sections.values() for i in s}
     report = {
         "plan": args.plan, "plan_version": plan.version,
         # What the report is a measurement of: a certificate's verify
@@ -1828,10 +1845,10 @@ def cmd_diff(args):
     if differ.relaxed_flagged:
         print(f"frontier_exec: the C++ {args.cpp_backend} backend ran "
               f"{differ.relaxed_executed} of {differ.relaxed_flagged} relaxed "
-              "GEMM(s) on a relaxed kernel"
+              "instruction(s) on a relaxed kernel"
               + ("" if differ.relaxed_executed else
                  " — this report measures the exact kernels, not the "
-                 "certified site"))
+                 "certified sites"))
     for line in differ.failures[:40]:
         print(f"frontier_exec: DISAGREE {line}")
     verdict = ("agrees with" if report["agrees"] else
@@ -2036,8 +2053,9 @@ def cmd_info(args):
           + (f", {plan.seq_len}-token records" if plan.input_kind else ""))
     print("sections: " + ", ".join(
         f"{name} {len(plan.sections[name])}" for name in SECTIONS)
-          + (f"; {plan.relaxed_gemms} relaxed GEMM(s) (v18: a certified "
-             "kernel may run them)" if plan.relaxed_gemms else ""))
+          + (f"; {plan.relaxed_instructions} relaxed instruction(s), "
+             f"{plan.relaxed_gemms} of them GEMMs (v18 / v20: a certified "
+             "kernel may run them)" if plan.relaxed_instructions else ""))
     print(f"GEMM FLOPs per optimizer step: "
           f"{plan.gemm_flops() * plan.grad_accum:,}")
     for name, where in sorted(plan.histogram().items()):

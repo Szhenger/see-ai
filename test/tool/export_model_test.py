@@ -493,6 +493,24 @@ class HfImportTest(unittest.TestCase):
             em.hf_llama_to_seeml(dict(cfg, hidden_act="gelu"), t, 8)
         with self.assertRaisesRegex(ValueError, "rope_scaling"):
             em.hf_llama_to_seeml(dict(cfg, rope_scaling={"type": "linear"}), t, 8)
+        # Transformers 5 spells the rotary settings as one object and drops
+        # the top-level keys: the base is read from it, a scaled type is
+        # refused, and two different bases are refused rather than guessed.
+        v5 = {k: v for k, v in cfg.items()
+              if k not in ("rope_theta", "rope_scaling")}
+        conv = em.hf_llama_to_seeml(dict(v5, rope_parameters={
+            "rope_type": "default", "rope_theta": 500000.0}), t, 8)
+        self.assertEqual(conv["rope_base"], 500000.0)
+        with self.assertRaisesRegex(ValueError, "rope_type"):
+            em.hf_llama_to_seeml(dict(v5, rope_parameters={
+                "rope_type": "llama3", "rope_theta": 500000.0}), t, 8)
+        with self.assertRaisesRegex(ValueError, "disagree"):
+            em.hf_llama_to_seeml(dict(cfg, rope_parameters={
+                "rope_type": "default",
+                "rope_theta": cfg["rope_theta"] * 2}), t, 8)
+        same = em.hf_llama_to_seeml(dict(cfg, rope_parameters={
+            "rope_type": "default", "rope_theta": cfg["rope_theta"]}), t, 8)
+        self.assertEqual(same["rope_base"], float(cfg["rope_theta"]))
         with self.assertRaisesRegex(ValueError, "model_type"):
             em.hf_llama_to_seeml(dict(cfg, model_type="gpt2"), t, 8)
         with self.assertRaisesRegex(ValueError, "num_key_value_heads"):

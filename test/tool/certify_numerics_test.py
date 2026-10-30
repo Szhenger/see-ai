@@ -191,7 +191,8 @@ class CertificateTest(unittest.TestCase):
                                            report(cpp_relaxed_executed=1)), [])
         exact = cn.check_observed(relaxed, report(cpp_relaxed_executed=0))
         self.assertEqual(len(exact), 1)
-        self.assertIn("4 relaxed GEMM(s) on the exact kernels", exact[0])
+        self.assertIn("4 relaxed instruction(s) on the exact kernels",
+                      exact[0])
         self.assertIn("--cpp-backend metal", exact[0])
         old = report()
         del old["cpp_relaxed_executed"]
@@ -206,15 +207,20 @@ class CertificateTest(unittest.TestCase):
         self.assertEqual(cn.check_observed(plain, unrelaxed), [])
 
     def test_tolerances_looser_than_the_defaults_are_named(self):
-        # F2's open decision made visible: the certifier's defaults are one
-        # table, the CLI defaults are that table, and a certificate granted
-        # under looser settings is named for it (the packer repeats this).
+        # F2's decision made visible: each contract family has one table of
+        # defaults, the CLI leaves a tolerance unset until the plan's family
+        # is known, and a certificate granted under looser settings than
+        # its family's is named for it (the packer repeats this).
         args = cn.build_parser().parse_args(["certify", "p", "--corpus", "c"])
-        self.assertEqual(args.max_site_error, cn.DEFAULT_TOLERANCES["site_rel"])
-        self.assertEqual(args.max_relaxed_gemm_error,
-                         cn.DEFAULT_TOLERANCES["relaxed_gemm_rel"])
-        self.assertEqual(args.max_loss_deviation,
-                         cn.DEFAULT_TOLERANCES["loss_rel"])
+        self.assertIsNone(args.max_site_error)
+        self.assertIsNone(args.max_relaxed_gemm_error)
+        self.assertIsNone(args.max_loss_deviation)
+        self.assertEqual(cn.FAMILY_DEFAULTS[cn.FAMILY]["loss_rel"], 1e-4)
+        self.assertEqual(cn.FAMILY_DEFAULTS[cn.FLAGGED_FAMILY]["loss_rel"], 1e-3)
+        for family in cn.FAMILIES:
+            self.assertEqual(cn.FAMILY_DEFAULTS[family]["site_rel"], 1e-5)
+            self.assertEqual(cn.FAMILY_DEFAULTS[family]["relaxed_gemm_rel"],
+                             2.0 ** -7)
         self.assertEqual(cn.tolerance_notes(granted(self.plan)), [])
         loose = granted(self.plan, tolerances={"site_rel": 1e-4,
                                                "relaxed_gemm_rel": 2.0 ** -7,
@@ -223,8 +229,27 @@ class CertificateTest(unittest.TestCase):
         self.assertEqual(notes, [
             "site_rel 1.0e-04 is looser than the certify default 1.0e-05",
             "loss_rel 1.0e-02 is looser than the certify default 1.0e-04"])
+        # The same tolerances under the flagged contract, against its own
+        # defaults: the loss line is 1e-3 there.
+        flagged = granted(self.plan, contract={
+            "family": cn.FLAGGED_FAMILY, "model_lanes": 8,
+            "unit_roundoff": cn.UNIT_ROUNDOFF,
+            "sites": [cn.RELAXED_GEMM_SITE]},
+            tolerances={"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
+                        "loss_rel": 1e-2})
+        self.assertEqual(cn.tolerance_notes(flagged), [
+            "loss_rel 1.0e-02 is looser than the certify default 1.0e-03"])
+        at_default = granted(self.plan, contract=dict(
+            flagged["contract"]), tolerances=dict(
+                cn.FAMILY_DEFAULTS[cn.FLAGGED_FAMILY]))
+        self.assertEqual(cn.tolerance_notes(at_default), [])
+        self.assertEqual(cn.check_certificate(at_default, self.plan), [])
         self.assertEqual(cn.tolerance_notes({}), [])
         self.assertEqual(cn.check_certificate(loose, self.plan), [])  # legal
+        odd = granted(self.plan, contract=dict(flagged["contract"],
+                                               family="relaxed-something"))
+        self.assertIn("unknown contract family",
+                      cn.check_certificate(odd, self.plan)[0])
 
     def test_a_vacuous_tolerance_certifies_nothing(self):
         for value in (0.0, -1e-5, float("inf"), float("nan")):
@@ -328,6 +353,46 @@ class RelaxedModelTest(unittest.TestCase):
         self.assertLessEqual(stat["observed_rel"], stat["bound_rel"])
         self.assertGreater(stat["bound_rel"], 1.0)  # vacuous: refuse-worthy
 
+    def test_the_flagged_contract_relaxes_only_what_the_plan_marks(self):
+        # F2 (#130): under P3's contract the relaxed arm recomputes every
+        # reduction site in lane-accumulated float32; under the flagged
+        # contract it relaxes the kFlagRelaxed instructions alone, so an
+        # unflagged reduction runs exactly as the reference does — the
+        # shipped arithmetic, since every backend runs reductions exact.
+        # One 1e8 among 4,095 ones: a float32 lane holding the 1e8 drops
+        # every 1 added to it (half its spacing is 4), so the lane sum is
+        # 1e8 + 7 * 512 where the exact sum rounds to 1e8 + 4,096.
+        rows, cols = 4096, 2
+        big = np.ones((rows, cols))
+        big[0, 0] = 1e8
+        plan = fx.Plan(fixtures.assemble(
+            4 * (rows * cols + 8),
+            train=[(10, 0, (0, 4 * rows * cols, N, N), (rows, cols, 0))]))
+        self.assertEqual(cn.family_of(plan), cn.FAMILY)
+        self.assertEqual(cn.flagged_sites(plan), [])
+
+        def reduce_with(relax):
+            ex = cn.RelaxedExecutor(plan, 8, relax=relax)
+            ex.mem.stage(0, big.astype("<f4").tobytes())
+            ex.execute("train")
+            return np.frombuffer(ex.mem.export(), "<f4")[
+                rows * cols:rows * cols + cols].copy()
+
+        reference = fx.Executor(plan, fx.NumpyBackend("float64"))
+        reference.mem.stage(0, big.astype("<f4").tobytes())
+        reference.execute("train")
+        exact = np.frombuffer(reference.mem.export(), "<f4")[
+            rows * cols:rows * cols + cols]
+        np.testing.assert_array_equal(reduce_with(cn.is_flagged), exact)
+        self.assertFalse(np.array_equal(reduce_with(cn.is_site), exact))
+        # A plan that marks a GEMM states the flagged contract over it.
+        w = np.array([[1.0, -2.0], [0.5, 4.0]], np.float32)
+        gemm = fx.Plan(fixtures.assemble(
+            64, train=[(1, fx.FLAG_RELAXED, (0, fx.RODATA_BIT, 16, N),
+                        (1, 2, 2))], rodata=w.tobytes()))
+        self.assertEqual(cn.family_of(gemm), cn.FLAGGED_FAMILY)
+        self.assertEqual(cn.flagged_sites(gemm), [cn.RELAXED_GEMM_SITE])
+
 
 @unittest.skipIf(np is None, "NumPy not installed")
 @unittest.skipUnless(fixtures.HAVE_CPP,
@@ -422,7 +487,7 @@ class CertifyPlansTest(unittest.TestCase):
         self.assertGreater(plan.relaxed_gemms, 0)
         status, log = run(pack_update, [pkg])
         self.assertEqual(status, 1)
-        self.assertIn("relaxed GEMM", log)
+        self.assertIn("relaxed instruction", log)
         self.assertIn("no numerics certificate", log)
         # N17: neither the compiler's --build nor the package's own
         # build.sh links an uncertified relaxed plan — the script refuses
@@ -444,21 +509,34 @@ class CertifyPlansTest(unittest.TestCase):
         done = build_sh()
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertIn("no numerics_certificate.json", done.stderr)
-        # bf16 input rounding moves a short run's loss by ~1e-3 relative;
-        # the 1e-4 default is the reduction family's, so a relaxed plan
-        # states its loss tolerance explicitly (F2's acceptance is 1e-3 on
-        # the 300-step validation loss, measured by the frontier harness).
+        # A relaxed plan states the flagged contract (F2 #130): its loss
+        # default is 1e-3, F2's acceptance line. On this toy MLP, four
+        # steps of bf16 input rounding move the training loss further than
+        # that, so the default refuses and the run states its own.
         status, log = run(cn, ["certify", pkg, "--corpus", corpus,
                                "--steps", "4"])
         self.assertEqual(status, 3)
         self.assertIn("loss_max_rel_dev", log)
+        self.assertIn("exceeds 1.0e-03", log)
+        self.assertIn(f"contract {cn.FLAGGED_FAMILY} over 1 enforced site",
+                      log)
+        # Only the flagged instructions are enforced: an absurd tolerance on
+        # the reduction sites, which every backend runs exact, refuses
+        # nothing under this contract.
+        status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                               "--steps", "4", "--max-loss-deviation", "1e-2",
+                               "--max-site-error", "1e-12"])
+        self.assertEqual(status, 0, log)
+        self.assertIn("evidence only", log)
         status, log = run(cn, ["certify", pkg, "--corpus", corpus,
                                "--steps", "4", "--max-loss-deviation", "1e-2"])
         self.assertEqual(status, 0, log)
         with open(os.path.join(pkg, cn.CERT_FILE)) as f:
             cert = json.load(f)
         self.assertEqual(cert["verdict"], "granted")
-        self.assertIn(cn.RELAXED_GEMM_SITE, cert["contract"]["sites"])
+        self.assertEqual(cert["contract"]["family"], cn.FLAGGED_FAMILY)
+        self.assertEqual(cert["contract"]["sites"], [cn.RELAXED_GEMM_SITE])
+        self.assertGreater(len(cert["evidence"]["sites"]), 1)  # all measured
         self.assertEqual(cert["plan"]["relaxed_gemms"], plan.relaxed_gemms)
         site = cert["evidence"]["sites"][cn.RELAXED_GEMM_SITE]
         self.assertEqual(site["instances"], plan.relaxed_gemms * 4)
@@ -473,11 +551,12 @@ class CertifyPlansTest(unittest.TestCase):
         report = os.path.join(self.dir, "pack_relaxed.json")
         status, log = run(pack_update, [pkg, "--report", report])
         self.assertEqual(status, 0, log)
-        # The certificate was granted at a loss tolerance looser than the
-        # certifier's default (1e-2 against 1e-4): the packer says so where
-        # the binary is built, and its report carries the whole contract.
+        # The certificate was granted at a loss tolerance looser than its
+        # contract's default (1e-2 against the flagged family's 1e-3): the
+        # packer says so where the binary is built, and its report carries
+        # the whole contract.
         self.assertIn("NOTE numerics certificate: loss_rel 1.0e-02 is looser "
-                      "than the certify default 1.0e-04", log)
+                      "than the certify default 1.0e-03", log)
         with open(report) as f:
             packed = json.load(f)
         self.assertEqual(packed["relaxed_gemms"], plan.relaxed_gemms)
@@ -554,7 +633,7 @@ class CertifyPlansTest(unittest.TestCase):
         status, log = run(cn, ["verify", cert_path, "--plan", pkg,
                                "--observed", diff])
         self.assertEqual(status, 3)
-        self.assertIn(f"{plan.relaxed_gemms} relaxed GEMM(s) on the exact "
+        self.assertIn(f"{plan.relaxed_gemms} relaxed instruction(s) on the exact "
                       "kernels", log)
         rewrite(cpp_relaxed_executed=max(executed, 1), relaxed_modelled=True)
         status, log = run(cn, ["verify", cert_path, "--plan", pkg,
@@ -581,6 +660,48 @@ class CertifyPlansTest(unittest.TestCase):
             self.assertEqual(x.opcode, y.opcode)
             self.assertEqual(x.flags, y.flags & ~fx.FLAG_RELAXED)
             self.assertEqual(x.src, y.src)
+
+    def test_a_relaxed_tiled_attention_plan_certifies_its_attention_sites(self):
+        # Plan v20 (F3 #131): certified precision with tiled attention marks
+        # the four tiled opcodes of training kFlagRelaxed beside the frozen
+        # GEMMs. The flagged contract then enforces exactly those sites —
+        # gemm.relaxed and each attn.*.tiled, which the certifier prices
+        # for any summation order — and a certificate that left one of them
+        # out does not vouch for the plan.
+        corpus = os.path.join(self.dir, "decoder_corpus.sds")
+        pkg = self.compile("dec_relaxed_tiled", "decoder.smf", 12,
+                           "--precision", "certified-bf16",
+                           "--attention", "tiled")
+        plan = fx.Plan.load(os.path.join(pkg, cn.PLAN_FILE))
+        self.assertEqual(plan.version, fx.formats.SEEU_VERSION)
+        self.assertGreater(plan.relaxed_instructions, plan.relaxed_gemms)
+        attention = ["attn.dk.tiled", "attn.dq.tiled", "attn.dv.tiled",
+                     "attn.fwd.tiled"]
+        self.assertEqual(cn.flagged_sites(plan),
+                         attention + [cn.RELAXED_GEMM_SITE])
+        status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                               "--steps", "4", "--val-fraction", "0.25",
+                               "--max-loss-deviation", "1e-2"])
+        self.assertEqual(status, 0, log)
+        with open(os.path.join(pkg, cn.CERT_FILE)) as f:
+            cert = json.load(f)
+        self.assertEqual(cert["contract"]["family"], cn.FLAGGED_FAMILY)
+        self.assertEqual(cert["contract"]["sites"],
+                         attention + [cn.RELAXED_GEMM_SITE])
+        for name in attention:
+            site = cert["evidence"]["sites"][name]
+            self.assertGreater(site["instances"], 0)
+            self.assertLessEqual(site["observed_rel"], site["bound_rel"])
+        self.assertEqual(cn.check_certificate(
+            cert, os.path.join(pkg, cn.PLAN_FILE)), [])
+        short = dict(cert, contract=dict(cert["contract"], sites=[
+            s for s in cert["contract"]["sites"] if s != "attn.fwd.tiled"]))
+        short["digest"] = cn.self_digest(short)
+        problems = cn.check_certificate(short, os.path.join(pkg, cn.PLAN_FILE))
+        self.assertTrue(any("attn.fwd.tiled site the certificate does not "
+                            "cover" in p for p in problems), problems)
+        # The packer accepts the plan beside its certificate.
+        self.assertEqual(run(pack_update, [pkg])[0], 0)
 
     def test_a_tolerance_the_plan_cannot_meet_is_a_refusal(self):
         pkg = self.compile("mlp", "mlp.smf", 8, "--clip-norm", "0.5")

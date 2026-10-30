@@ -518,7 +518,10 @@ int main(int argc, char** argv) {
   const std::string repo_root =
       std::filesystem::path(argv[0]).parent_path().parent_path().string();
   EmitOptions emit_options;
-  emit_options.relaxed_plan = compiled->relaxed_gemms > 0;
+  // Any kFlagRelaxed instruction (v18 GEMMs, v20 tiled attention) makes
+  // the package one that builds only beside a certificate.
+  emit_options.relaxed_plan =
+      compiled->relaxed_gemms + compiled->relaxed_attention > 0;
   emit_options.embed_plan_tu = !no_embed;
   auto paths = EmitNativePackage(
       compiled->plan, *out_dir,
@@ -599,6 +602,7 @@ int main(int argc, char** argv) {
                  "  \"bf16_base\": %s,\n"
                  "  \"precision\": \"%s\",\n"
                  "  \"relaxed_gemms\": %" PRIu64 ",\n"
+                 "  \"relaxed_attention\": %" PRIu64 ",\n"
                  "  \"validation_scores\": \"%s\",\n"
                  "  \"attention\": {\"family\": \"%s\", "
                  "\"cached_probs_bytes\": %" PRIu64 "},\n"
@@ -631,7 +635,7 @@ int main(int argc, char** argv) {
                  config.bf16_base ? "true" : "false",
                  config.precision == Precision::kCertifiedBf16
                      ? "certified-bf16" : "f32",
-                 compiled->relaxed_gemms,
+                 compiled->relaxed_gemms, compiled->relaxed_attention,
                  compiled->scores_shipped ? "shipped" : "plan",
                  compiled->attention_tiled ? "tiled" : "cached",
                  compiled->probs_cache_bytes,

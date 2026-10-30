@@ -97,7 +97,7 @@ SDS_HEADER_BYTES = SDS_HEADER.size
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 19
+SEEU_VERSION = 20
 SEEU_OLDEST_READABLE = 4
 RODATA_BIT = 1 << 63
 SOURCE_BIT = 1 << 62  # v17: the source model file (E12), eval program only
@@ -167,18 +167,29 @@ FLAG_EPILOGUE_ACT_MASK = 6
 FLAG_GEMM_ADDEND = 8
 # The int8 GEMMs (v17): in[3] is a rodata ref to per-output-column scales.
 FLAG_Q8_COL_SCALE = 16
-# The frozen-weight GEMMs (v18): the backend may run a certified relaxed
-# kernel (bf16-rounded activations against the exact stored weight).
+# The frozen-weight GEMMs (v18) and the tiled attention family (v20): the
+# backend may run a certified relaxed kernel (bf16-rounded activations
+# against the exact stored weight; the attention blocks' products on matrix
+# tiles in another f32 summation order).
 FLAG_RELAXED = 32
-
+RELAXED_GEMM_OPCODES = (1, 2, 29, 30, 43, 44)
+RELAXED_ATTENTION_OPCODES = (47, 48, 49, 50)
 
 
 def relaxed_gemm_count(source: Any) -> int:
-    """Instructions of the train and step programs carrying FLAG_RELAXED
-    (v18) — a plan with any needs a numerics certificate to be packaged.
-    `source` is the plan's bytes or an open binary file; standard library
-    only, for tool/pack_update.py on the build host's tier-0 interpreter.
-    Anything that is not a well-formed plan counts zero: the runtime's
+    """Instructions of the train and step programs carrying FLAG_RELAXED —
+    the relaxed GEMMs (v18) and the relaxed tiled attention instructions
+    (v20) together; a plan with any needs a numerics certificate to be
+    packaged. See relaxed_opcodes."""
+    return len(relaxed_opcodes(source))
+
+
+def relaxed_opcodes(source: Any) -> List[int]:
+    """The opcodes of the train and step programs' instructions carrying
+    FLAG_RELAXED, in program order. `source` is the plan's bytes or an open
+    binary file; standard library only, for tool/pack_update.py and
+    certify_numerics.py verify on the build host's tier-0 interpreter.
+    Anything that is not a well-formed plan yields none: the runtime's
     validator, not this reader, is the judge of a malformed file."""
     if hasattr(source, "read"):
         source.seek(0, 2)
@@ -196,26 +207,30 @@ def relaxed_gemm_count(source: Any) -> int:
         def section(off: int, n: int) -> bytes:
             return bytes(source[off:off + n * INSTRUCTION.size])
     if len(head) < PLAN_HEADER.size:
-        return 0
+        return []
     header = dict(zip(PLAN_HEADER.names, PLAN_HEADER.unpack_from(head, 0)))
     if (header["magic"] != SEEU_MAGIC or header["version"] < 18
             or header["version"] > SEEU_VERSION):
-        return 0
+        return []
     flags_at = INSTRUCTION.offsets["flags"]
-    count = 0
+    opcode_at = INSTRUCTION.offsets["opcode"]
+    found: List[int] = []
     for name in ("train", "step"):
         off, n = header[f"{name}_instr_offset"], header[f"{name}_instr_count"]
         if n == 0:
             continue
         if off > total or n > total // INSTRUCTION.size or \
                 off + n * INSTRUCTION.size > total:
-            return 0
+            return []
         body = section(off, n)
         for i in range(n):
-            at = i * INSTRUCTION.size + flags_at
-            if int.from_bytes(body[at:at + 2], "little") & FLAG_RELAXED:
-                count += 1
-    return count
+            at = i * INSTRUCTION.size
+            flags = int.from_bytes(body[at + flags_at:at + flags_at + 2],
+                                   "little")
+            if flags & FLAG_RELAXED:
+                found.append(int.from_bytes(
+                    body[at + opcode_at:at + opcode_at + 2], "little"))
+    return found
 
 
 # kFusedMap micro-program: one byte per stage, packed into an operand word.

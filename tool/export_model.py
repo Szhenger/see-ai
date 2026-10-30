@@ -644,6 +644,22 @@ def hf_llama_to_seeml(config: dict, tensors: dict, seq_len: int,
     if config.get("rope_scaling") not in (None, {}):
         raise ValueError("rope_scaling is set; the runtime's RoPE is the "
                          "plain base^(-2c/d) recurrence")
+    # Transformers 5 writes the rotary settings as one object,
+    # rope_parameters = {"rope_type": ..., "rope_theta": ...}, in place of
+    # the top-level rope_theta / rope_scaling older checkpoints carry: a
+    # scaled type is refused like rope_scaling, and the base is read from
+    # either spelling (a config that states two different bases is refused
+    # rather than guessed at).
+    rope = config.get("rope_parameters") or {}
+    if rope.get("rope_type", "default") != "default":
+        raise ValueError(f"rope_parameters.rope_type is "
+                         f"'{rope.get('rope_type')}'; the runtime's RoPE is "
+                         "the plain base^(-2c/d) recurrence")
+    if ("rope_theta" in config and "rope_theta" in rope
+            and float(config["rope_theta"]) != float(rope["rope_theta"])):
+        raise ValueError(f"rope_theta {config['rope_theta']} and "
+                         f"rope_parameters.rope_theta {rope['rope_theta']} "
+                         "disagree")
     if config.get("mlp_bias", False):
         raise ValueError("mlp_bias=true: the SeeAI MLP has no biases")
     D = int(config["hidden_size"])
@@ -653,7 +669,8 @@ def hf_llama_to_seeml(config: dict, tensors: dict, seq_len: int,
     L = int(config["num_hidden_layers"])
     V = int(config["vocab_size"])
     eps = float(config.get("rms_norm_eps", 1e-6))
-    theta = float(config.get("rope_theta", DEFAULT_ROPE_BASE))
+    theta = float(config.get("rope_theta",
+                             rope.get("rope_theta", DEFAULT_ROPE_BASE)))
     max_pos = int(config.get("max_position_embeddings", seq_len))
     if D % H != 0:
         raise ValueError(f"hidden_size {D} is not a multiple of "
