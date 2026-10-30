@@ -142,9 +142,12 @@ jobs:
           cat docs/*.md > out/frontier/corpus.txt
           python tool/export_model.py --hf "$SMOLLM_DIR" out/frontier/smollm135.smf \
             --seq-len 128 --text-corpus out/frontier/corpus.txt out/frontier/docs.sds
+          # --report: the seeml rows read the package's compile report (its
+          # tokens per step, adapters, plan hash).
           ./build/seeml-update-compile --source out/frontier/smollm135.smf --out out/frontier/pkg/ \
             --data-batch 512 --loss xent --lora-rank 8 --lora-alpha 16 --optimizer adamw \
-            --lr 1e-4 --lr-schedule const --quantize-base --steps 300 --no-embed
+            --lr 1e-4 --lr-schedule const --quantize-base --steps 300 --no-embed \
+            --report out/frontier/pkg/report.json
           python tool/pack_update.py out/frontier/pkg/ --build
           python tool/frontier_run.py synth --shape dec_wide --corpus out/frontier/corpus.txt \
             --out out/frontier/dec_wide_hf
@@ -152,7 +155,8 @@ jobs:
             --seq-len 256 --text-corpus out/frontier/corpus.txt out/frontier/dec_wide.sds --hf-parity
           ./build/seeml-update-compile --source out/frontier/dec_wide.smf --out out/frontier/pkg_dec_wide/ \
             --data-batch 512 --loss xent --lora-rank 16 --lora-alpha 32 --optimizer adamw \
-            --lr 1e-4 --lr-schedule const --steps 300 --no-embed
+            --lr 1e-4 --lr-schedule const --steps 300 --no-embed \
+            --report out/frontier/pkg_dec_wide/report.json
           python tool/pack_update.py out/frontier/pkg_dec_wide/ --build
       - name: The frontier rows
         # Every row trains the 300 steps and scores the split: the parity
