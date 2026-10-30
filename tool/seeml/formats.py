@@ -250,9 +250,11 @@ CKPT_HAS_BEST = 8
 # --- The probe trace (tool/probe_trace.h) -------------------------------------
 
 PROBE_TRACE_MAGIC = 0x54504553  # "SEPT"
-PROBE_TRACE_VERSION = 1
+PROBE_TRACE_VERSION = 2
 PROBE_TRACE_PREAMBLE = struct.Struct("<IIQ")  # magic, version, instructions
-PROBE_TRACE_RECORD = struct.Struct("<IHH")    # index, opcode, extents
+# index, opcode, extents, relaxed (v2: relaxed-kernel executions, 0 or 1 —
+# review F42, so a diff can say whether the C++ arm ran the certified kernel)
+PROBE_TRACE_RECORD = struct.Struct("<IHHI")
 PROBE_TRACE_EXTENT = struct.Struct("<QQ")     # arena offset, bytes
 
 STRUCTS = {

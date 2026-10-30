@@ -1196,6 +1196,52 @@ TEST(UpdateSystem, KernelBatchChangesNoTrainingBits) {
   seeml::update::SetParallelThreadCount(0);
 }
 
+TEST(UpdateSystem, RelaxedCpuBitsAreThreadCountInvariant) {
+  // F4 #132's determinism line: on the Accelerate path (SGEMM for the
+  // relaxed f32 and int8 frozen GEMMs, the int8 panel widened under the
+  // pool) a serial run and an 8-wide run train the same losses and the
+  // same persistent segment, byte for byte. On the reference build the
+  // relaxed bit is inert and this is the exact kernels' own invariance.
+  // Accelerate's internal threads are not the pool's (VECLIB_MAXIMUM_THREADS
+  // governs them, read once per process), so the SmolLM-135M package is
+  // also run at both settings (docs/benchmarks.md, F4 #132, 2026-10-23).
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  for (int storage = 0; storage < 2; ++storage) {
+    UpdateConfig config = BaseConfig(batch);
+    config.optimizer.lr = 5e-3f;
+    config.optimizer.kind = OptimizerKind::kAdamW;
+    config.quantize_base = storage == 1;
+    config.precision = Precision::kCertifiedBf16;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                         UpdateCompiler(config).Compile(model));
+    ASSERT_GT(compiled.relaxed_gemms, 0u);
+    const PlanHeader h = HeaderOf(compiled);
+    std::vector<float> curves[2];
+    std::vector<uint8_t> states[2];
+    for (int t = 0; t < 2; ++t) {
+      seeml::update::SetParallelThreadCount(t == 0 ? 1 : 8);
+      UpdateEngine engine;
+      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
+                                      compiled.plan.size()));
+      ASSERT_OK_AND_ASSIGN(Dataset data,
+                           seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
+      data.EnableShuffle(9);
+      TrainOptions options = Quiet();
+      options.record_loss_curve = true;
+      ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 25, options));
+      curves[t] = report.loss_curve;
+      states[t].assign(engine.arena(), engine.arena() + h.persistent_size);
+    }
+    seeml::update::SetParallelThreadCount(0);
+    ASSERT_EQ(curves[0].size(), curves[1].size());
+    for (size_t i = 0; i < curves[0].size(); ++i)
+      EXPECT_EQ(curves[0][i], curves[1][i]);
+    EXPECT_TRUE(states[0] == states[1]);
+  }
+}
+
 TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
   // Plan v18: --precision certified-bf16 marks the frozen-weight GEMMs
   // kFlagRelaxed — a permission the CPU backend never takes. So at every
@@ -1237,6 +1283,7 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
                                  engine.arena() + h.persistent_size);
       if (!relaxed) {
         EXPECT_EQ(compiled.relaxed_gemms, 0u);
+        EXPECT_EQ(engine.relaxed_executions(), 0u);  // nothing to take
         want_curve = report.loss_curve;
         want_state = state;
         want_val = val;
@@ -1244,6 +1291,17 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
       }
       EXPECT_GT(compiled.relaxed_gemms, 0u);
       ASSERT_EQ(report.loss_curve.size(), want_curve.size());
+      // Review F42: the backend counts the instructions it ran on a relaxed
+      // kernel. The reference build never takes the permission, and no
+      // build takes it for a bf16 base; the SEEML_ACCELERATE build takes it
+      // for every f32- and int8-weight relaxed GEMM of every training step
+      // (the eval program carries none), so the count is exactly the steps
+      // times the plan's relaxed GEMMs — the Accelerate path is asserted
+      // active here, not merely tolerated.
+      if (seeml::update_rt::CpuBackendRelaxedIsExact() || storage == 2)
+        EXPECT_EQ(engine.relaxed_executions(), 0u);
+      else
+        EXPECT_EQ(engine.relaxed_executions(), 25u * compiled.relaxed_gemms);
       if (seeml::update_rt::CpuBackendRelaxedIsExact() || storage == 2) {
         // The reference build, and the bf16 base everywhere: the bit is
         // inert. (The int8 base takes SGEMM through a widened panel since

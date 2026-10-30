@@ -96,7 +96,7 @@ two-consecutive-red: a key's first regression warns, its second fails
 fourth Python-plane subsystem (P4): a build-host interpreter for the whole
 plan instruction set, written a second time from the documented mathematics
 rather than ported from the kernels. `diff` replays a plan against
-`seeml-plan-probe --trace` (the probe also times a section, `--time`, and attributes it per opcode and GEMM shape, `--profile`) one instruction at a time — each opcode executes
+`seeml-plan-probe --trace` (the probe also times a section, `--time`, and attributes it per opcode and GEMM shape, `--profile`; the trace, v2, says per instruction whether a relaxed kernel ran it, and the timing JSON carries the count) one instruction at a time — each opcode executes
 on exactly the bytes the C++ runtime had and is judged on its own writes —
 so it catches the kernel bug a bit-exact self-comparison would reproduce
 faithfully, and names the instruction that owns it; it runs against the CPU
@@ -143,8 +143,11 @@ to the plan and corpus by SHA-256 — and to the source model, given
 `--source` — and `verify` holds a measured run (a `frontier_exec.py
 diff` report, which must name the same plan bytes, agree with its
 reference outside the certified sites and carry each opcode's relative
-error itself) to the certified tolerances; `verify --source` refuses
-another model file. The certificate carries the worst relative error
+error itself — and, for a certificate that covers `gemm.relaxed`, must
+have run at least one relaxed GEMM on a relaxed kernel in its C++ arm
+with the reference arm exact: `cpp_relaxed_executed`, from the probe's
+trace; an exact-vs-exact diff vouches for nothing, F42) to the certified
+tolerances; `verify --source` refuses another model file. The certificate carries the worst relative error
 per site and per opcode within a site.
 `pack_update.py` refuses to package a plan beside a certificate that does
 not vouch for it, so a recompile voids a certificate loudly. Since plan

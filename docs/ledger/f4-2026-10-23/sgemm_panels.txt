@@ -1,0 +1,6 @@
+head fwd   512x49152x576     4MiB   39.36ms   736GF/s    16MiB   32.38ms   895GF/s    64MiB   33.53ms   865GF/s  4096MiB   32.92ms   881GF/s
+head dX    512x576x49152     4MiB  180.73ms   160GF/s    16MiB   58.37ms   497GF/s    64MiB   37.88ms   765GF/s  4096MiB   33.74ms   859GF/s
+gate fwd   512x1536x576     4MiB    1.09ms   831GF/s    16MiB    1.08ms   839GF/s    64MiB    1.08ms   836GF/s  4096MiB    1.08ms   837GF/s
+gate dX    512x576x1536     4MiB    1.16ms   778GF/s    16MiB    1.15ms   785GF/s    64MiB    1.16ms   782GF/s  4096MiB    1.16ms   779GF/s
+down fwd   512x576x1536     4MiB    0.95ms   958GF/s    16MiB    0.94ms   962GF/s    64MiB    0.94ms   959GF/s  4096MiB    0.95ms   958GF/s
+proj fwd   512x576x576     4MiB    0.32ms  1051GF/s    16MiB    0.32ms  1048GF/s    64MiB    0.32ms  1051GF/s  4096MiB    0.32ms  1053GF/s

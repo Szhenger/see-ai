@@ -115,6 +115,22 @@ struct CompiledUpdate {
   uint64_t relaxed_gemms = 0;
 };
 
+struct TrainingFootprint;
+
+/// The `--attention auto` rule (E11, plan v15; F3 #131 design item 3) as
+/// the driver applies it to the step-0 footprint. A forced kind is returned
+/// as given. `auto` keeps the probability caches while they fit
+/// `config.attention_cache_budget_bytes` and — only when
+/// `config.memory_budget_bytes` is configured — the whole footprint fits
+/// that budget with them; it tiles otherwise. It never reads the compiling
+/// host's memory: the two families compute identical bits, so this is a
+/// memory decision alone, and a decision that changes the plan's bytes must
+/// depend on the plan's inputs alone (the rule `--remat auto` follows). The
+/// memory gate that runs next still refuses, on the host's memory, a
+/// compile this host cannot run — and says when the tiled family would fit.
+AttentionKind DecideAttention(const TrainingFootprint& footprint,
+                              const UpdateConfig& config);
+
 class UpdateCompiler {
  public:
   explicit UpdateCompiler(UpdateConfig config) : config_(std::move(config)) {}

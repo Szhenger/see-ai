@@ -140,7 +140,8 @@ row.
 - [ ] Step 4, B(Ax) folded into the base GEMM, certified — not started.
 - [x] SmolLM-135M `metal` tok/s against F1's MLX-LM rows — 2,085 tok/s,
   0.93× true-f32 and 0.45× all-bf16.
-- [ ] The F2 relaxed package's tok/s on these kernels — not re-measured
-  since 2026-10-15 (F2's open item too).
+- [x] The F2 relaxed package's tok/s on these kernels — 4,392–4,395 tok/s,
+  0.74× of MLX-LM all-bf16 in the same session; the exact package 0.97×
+  of true-f32 (2026-10-24, "The relaxed package on the F7-era kernels").
 - [x] The head's LoRA cost as a fraction of the head GEMM — 61 % → 34 %
   after step 3.

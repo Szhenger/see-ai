@@ -1,0 +1,9 @@
+certify_numerics: attn.dp               60 instance(s)  observed 1.49e-07  any-order bound 1.09e-05
+certify_numerics: attn.fwd             840 instance(s)  observed 7.15e-07  any-order bound 9.84e-06
+certify_numerics: gemm.relaxed         838 instance(s)  observed 5.83e-03  any-order bound 3.08e-02
+certify_numerics: rms_norm.bwd         120 instance(s)  observed 1.41e-07  any-order bound 4.71e-04
+certify_numerics: rms_norm.fwd        1708 instance(s)  observed 4.01e-07  any-order bound 3.43e-05
+certify_numerics: softmax_rows.bwd      60 instance(s)  observed 4.38e-07  any-order bound 1.42e-05
+certify_numerics: softmax_xent.fwd      28 instance(s)  observed 3.95e-05  any-order bound 2.94e-03
+certify_numerics: free run over 2 step(s): loss deviation 2.35e-04, validation 4.509927 vs 4.509942 (3.46e-06); gate improved: reference True, relaxed True
+certify_numerics: granted — wrote ~/SeeAI/see-ai/out/f2-2026-10-23/pkg_relaxed/numerics_certificate.json

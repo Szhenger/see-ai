@@ -14,6 +14,13 @@
 #                     and measuring setup) and the host's epoch pinned in
 #                     git; a key's first >10% regression warns, its second
 #                     consecutive one fails (docs/benchmarks.md)
+#   frontier          the frontier row (tool/frontier_run.py, F1 #129) on a
+#                     self-hosted Apple-silicon runner: on demand with the
+#                     `frontier` input, and on the schedule once the
+#                     repository variable SEEML_FRONTIER_NIGHTLY is 'true'
+#                     — set it only after that runner is registered, or
+#                     every night queues a job no runner picks up. Trend
+#                     only, never a gate.
 #
 # A nightly failure is a regression on main itself, not on a diff — treat
 # it with the same severity as a red PR.
@@ -53,7 +60,15 @@ on:
 jobs:
   frontier:
     name: Frontier row (self-hosted Apple silicon, opt-in)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.frontier }}
+    # On demand with the `frontier` input, or on the schedule while the
+    # repository variable SEEML_FRONTIER_NIGHTLY is 'true' (Settings >
+    # Secrets and variables > Actions > Variables). Leave the variable
+    # unset until a runner labelled self-hosted / macOS / ARM64 is
+    # registered: a scheduled job with no runner queues until GitHub times
+    # it out, so every night would show a stuck run. On the schedule the
+    # inputs are empty and the checkpoint comes from the runner's
+    # SEEML_FRONTIER_MODEL_DIR.
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.frontier) || (github.event_name == 'schedule' && vars.SEEML_FRONTIER_NIGHTLY == 'true') }}
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 240
     steps:

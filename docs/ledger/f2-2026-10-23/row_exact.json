@@ -1,0 +1,228 @@
+{
+ "schema": 1,
+ "system": "SeeML",
+ "backend": "metal",
+ "precision": "f32 math, int8 base",
+ "host": {
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "package": "~/SeeAI/see-ai/out/f2-2026-10-23/pkg_exact",
+ "seeml_version": "1.2.4",
+ "plan_version": 19,
+ "plan_hash": "ba53a7bfa9fa2a9c",
+ "precision_flag": "f32",
+ "relaxed_gemms": 0,
+ "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+ "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+ "threads": 10,
+ "config": {
+  "steps": 300,
+  "tokens_per_step": 512,
+  "lo": 40,
+  "hi": 160,
+  "repeats": 1
+ },
+ "records_digest": "9a2f2c1396502ce0",
+ "adapters": 211,
+ "adapter_params": 3024384,
+ "arena_bytes": 1576898688,
+ "plan_bytes": 298631168,
+ "step_ms": 180.7857142857143,
+ "step_ms_lohi": 177.08333333333334,
+ "step_ms_min": 177.08333333333334,
+ "step_ms_max": 177.08333333333334,
+ "tokens_per_s": 2832.0821809561435,
+ "it_per_s": 5.531410509679968,
+ "tokens_per_step": 512,
+ "intercept_s": 3.846666666666666,
+ "val_loss": [
+  4.574419,
+  4.0045447
+ ],
+ "val_acc": [
+  0.28109375,
+  0.33406249
+ ],
+ "train_loss": [
+  4.2649736,
+  2.7761161
+ ],
+ "verdict": "accepted",
+ "committed": true,
+ "lifecycle": {
+  "load_s": 0.1457,
+  "data_s": 0.0001,
+  "train_s": 56.4611,
+  "eval_s": 2.1873,
+  "evaluations": 2,
+  "merge_s": 0.0681,
+  "commit_s": 0.7774,
+  "wall_s": 57.4696
+ },
+ "committed_sha256": "ab2504dc5bd3ad69362f5e30839a746782b499270ccc39898a61421625d00552",
+ "suspect": false,
+ "wall_quality_s": 57.49,
+ "peak_rss_bytes": 2603909120,
+ "runs": [
+  {
+   "steps": 40,
+   "exit": 0,
+   "wall_s": 10.93,
+   "peak_rss_bytes": 2603810816,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 298631168
+    },
+    "steps": 40,
+    "train_loss": [
+     4.2297873,
+     4.0127573
+    ],
+    "validation_loss": [
+     4.574419,
+     4.0807967
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.28109375,
+     0.31156251
+    ],
+    "lifecycle": {
+     "load_s": 0.1419,
+     "data_s": 0.0001,
+     "train_s": 9.9269,
+     "eval_s": 2.3053,
+     "evaluations": 2,
+     "merge_s": 0.0631,
+     "commit_s": 0.7616,
+     "wall_s": 10.9128
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "fc95c6468b0b108675ef384b590b97ab999cfaf42d7fd639fb56aa0eea86271c",
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  },
+  {
+   "steps": 160,
+   "exit": 0,
+   "wall_s": 32.18,
+   "peak_rss_bytes": 2603909120,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 298631168
+    },
+    "steps": 160,
+    "train_loss": [
+     4.2649736,
+     3.3469627
+    ],
+    "validation_loss": [
+     4.574419,
+     3.9515762
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.28109375,
+     0.32343751
+    ],
+    "lifecycle": {
+     "load_s": 0.1394,
+     "data_s": 0.0001,
+     "train_s": 31.1604,
+     "eval_s": 2.1525,
+     "evaluations": 2,
+     "merge_s": 0.0741,
+     "commit_s": 0.7827,
+     "wall_s": 32.1754
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "8929f2396ba67b1c29fab15002605e65835b6d90ee3fa4c023c5b401fca6d4da",
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  },
+  {
+   "steps": 300,
+   "exit": 0,
+   "wall_s": 57.49,
+   "peak_rss_bytes": 2603843584,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 298631168
+    },
+    "steps": 300,
+    "train_loss": [
+     4.2649736,
+     2.7761161
+    ],
+    "validation_loss": [
+     4.574419,
+     4.0045447
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.28109375,
+     0.33406249
+    ],
+    "lifecycle": {
+     "load_s": 0.1457,
+     "data_s": 0.0001,
+     "train_s": 56.4611,
+     "eval_s": 2.1873,
+     "evaluations": 2,
+     "merge_s": 0.0681,
+     "commit_s": 0.7774,
+     "wall_s": 57.4696
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "ab2504dc5bd3ad69362f5e30839a746782b499270ccc39898a61421625d00552",
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  }
+ ]
+}

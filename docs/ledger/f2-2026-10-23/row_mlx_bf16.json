@@ -1,0 +1,71 @@
+{
+ "schema": 1,
+ "system": "MLX-LM LoRA",
+ "backend": "gpu",
+ "precision": "bf16",
+ "host": {
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "model_dir": "~/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM-135M/snapshots/1d461723eec654e65efdc40cf49301c89c0c92f4",
+ "mlx": "0.32.2",
+ "mlx_lm": "0.31.3",
+ "mlx_enable_tf32": null,
+ "records_digest": "9a2f2c1396502ce0",
+ "records": {
+  "total": 501,
+  "train": 451,
+  "val": 50
+ },
+ "config": {
+  "rank": 8,
+  "alpha": 16.0,
+  "scale": 2.0,
+  "lr": 0.0001,
+  "weight_decay": 0.01,
+  "optimizer": "adamw",
+  "bias_correction": true,
+  "schedule": "const",
+  "clip": 0,
+  "batch_records": 4,
+  "seq_len": 128,
+  "tokens_per_step": 512,
+  "steps": 300,
+  "targets": [
+   "self_attn.q_proj",
+   "self_attn.k_proj",
+   "self_attn.v_proj",
+   "self_attn.o_proj",
+   "mlp.gate_proj",
+   "mlp.up_proj",
+   "mlp.down_proj",
+   "lm_head"
+  ],
+  "seed": 7
+ },
+ "adapter_params": 2840064,
+ "load_s": 0.13506112500908785,
+ "step_ms": 86.35859170171898,
+ "tokens_per_s": 5928.7673630487025,
+ "it_per_s": 11.579623755954497,
+ "tokens_per_step": 512,
+ "tokens_per_step_mlx_count": 512.0,
+ "train_wall_s": 30.1356345420063,
+ "train_loss": [
+  4.717618179321289,
+  3.6062671661376955
+ ],
+ "val_loss": [
+  4.575913963317871,
+  4.013435869216919
+ ],
+ "val_acc": [
+  0.28125,
+  0.31546875
+ ],
+ "peak_device_bytes": 1339830276,
+ "peak_rss_bytes": 743014400
+}

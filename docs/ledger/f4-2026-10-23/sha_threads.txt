@@ -1,0 +1,5 @@
+025f3f3c80e317c48afcb034669dff1c52346a3800fcfc82b35fec992a0a2bd4  ~/SeeAI/see-ai/out/f4-determinism-2026-10-23/serial_veclib1.smf
+025f3f3c80e317c48afcb034669dff1c52346a3800fcfc82b35fec992a0a2bd4  ~/SeeAI/see-ai/out/f4-determinism-2026-10-23/serial_veclibdefault.smf
+025f3f3c80e317c48afcb034669dff1c52346a3800fcfc82b35fec992a0a2bd4  ~/SeeAI/see-ai/out/f4-determinism-2026-10-23/threads10.smf
+025f3f3c80e317c48afcb034669dff1c52346a3800fcfc82b35fec992a0a2bd4  ~/SeeAI/see-ai/out/f4-determinism-2026-10-23/threads8.smf
+025f3f3c80e317c48afcb034669dff1c52346a3800fcfc82b35fec992a0a2bd4  ~/SeeAI/see-ai/out/f4-determinism-2026-10-23/attn_threads10.smf

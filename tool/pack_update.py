@@ -364,9 +364,21 @@ def check_certificate(package_dir: str, plan_path: str) -> Optional[dict]:
         raise PackError(f"'{cert_path}' does not vouch for this plan: "
                         + "; ".join(problems)
                         + " — re-run tool/certify_numerics.py or remove it")
+    # F2 (#130): a certificate granted under tolerances looser than the
+    # certifier's defaults is legitimate — the contract is the issuer's —
+    # but the package says so, in the report and on stderr, so the decision
+    # is read where the binary is built rather than discovered when the row
+    # is measured.
+    notes = certify_numerics.tolerance_notes(cert)
+    for note in notes:
+        print(f"pack_update: NOTE numerics certificate: {note}",
+              file=sys.stderr)
     return {"file": cert_path, "family": cert["contract"]["family"],
             "sites": cert["contract"]["sites"],
-            "site_rel_tolerance": cert["tolerances"]["site_rel"]}
+            "site_rel_tolerance": cert["tolerances"]["site_rel"],
+            "tolerances": dict(cert["tolerances"]),
+            "evidence_steps": cert.get("evidence", {}).get("steps"),
+            "looser_than_defaults": notes}
 
 
 def pack(opts: Options) -> dict:

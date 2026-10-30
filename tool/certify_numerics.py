@@ -75,6 +75,12 @@ CERT_FILE = "numerics_certificate.json"
 PLAN_FILE = "update_plan.seeu"
 FAMILY = "relaxed-reductions-f32"
 UNIT_ROUNDOFF = 2.0 ** -24  # float32, round to nearest
+# `certify`'s default tolerances, one table so tool/pack_update.py can say
+# when a packaged certificate was granted under looser ones (F2 #130's open
+# decision: the 2026-10-24 SmolLM-135M package is granted under the 10-15
+# settings — site 1e-4, loss 1e-2 — and refused under these).
+DEFAULT_TOLERANCES = {"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
+                      "loss_rel": 1e-4}
 # The relaxed GEMM family (plan v18, kFlagRelaxed): the activation input of
 # a frozen-weight GEMM rounded to bfloat16 once (8 significant bits) before
 # an f32-accumulating multiply against the exact stored weight — what the
@@ -487,12 +493,31 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
     return problems
 
 
+def tolerance_notes(cert):
+    """Each certified tolerance looser than `certify`'s default, as a
+    sentence (empty: none is). Not a verification failure — the contract is
+    the issuer's to set — but one the packager repeats where the binary is
+    built, so the decision is read there rather than discovered when a row
+    is measured (F2 #130)."""
+    notes = []
+    tolerances = cert.get("tolerances") if isinstance(cert, dict) else None
+    for key, default in DEFAULT_TOLERANCES.items():
+        value = (tolerances or {}).get(key)
+        if isinstance(value, (int, float)) and value > default:
+            notes.append(f"{key} {value:.1e} is looser than the certify "
+                         f"default {default:.1e}")
+    return notes
+
+
 def check_observed(cert, observed):
     """A real run's measured deviations (a frontier_exec.py diff report)
     against the certified tolerances. The report must be of this plan,
     must line up with its reference (no structural mismatch) and agree
-    with it outside the certified sites, and must carry each opcode's
-    relative error itself (review F41, F42, F72)."""
+    with it outside the certified sites, must carry each opcode's relative
+    error itself, and — when the certificate covers the relaxed GEMM site —
+    must have measured the relaxed kernel: its C++ arm ran at least one
+    relaxed GEMM on one and its reference arm ran exact (review F41, F42,
+    F72)."""
     problems = []
     try:
         rtol = float(observed.get("rtol", 0.0))
@@ -514,6 +539,36 @@ def check_observed(cert, observed):
                     plan_hash != cert["plan"]["plan_hash"]):
                 problems.append("the observed run was of a different plan "
                                 "(plan hash mismatch)")
+        # Review F42, both halves. The certified site is measured only when
+        # the C++ arm ran its relaxed GEMMs on a relaxed kernel — the probe
+        # counts them per instruction, and the exact kernels measure f32
+        # round-off, vouching for nothing (a Metal backend keeps skinny
+        # shapes exact by design, so one is enough, not all) — AND the
+        # reference arm ran exact: --relaxed models the bf16 rounding on
+        # the reference too, so the two would agree on the model, not on
+        # the kernel.
+        if RELAXED_GEMM_SITE in cert["contract"]["sites"]:
+            if observed.get("relaxed_modelled", False):
+                problems.append("the observed run modelled the relaxed "
+                                "rounding on the reference side (--relaxed): "
+                                "a certificate is verified against the exact "
+                                "reference")
+            executed = observed.get("cpp_relaxed_executed")
+            if executed is None:
+                problems.append("the observed report does not say whether "
+                                "the C++ backend ran the relaxed kernels (no "
+                                "cpp_relaxed_executed): regenerate it with "
+                                "the current frontier_exec.py diff")
+            elif not int(executed) > 0:
+                problems.append(
+                    "the observed run executed its "
+                    f"{observed.get('relaxed_instructions', '?')} relaxed "
+                    "GEMM(s) on the exact kernels (C++ backend "
+                    f"{observed.get('cpp_backend', '?')}): it measures "
+                    f"nothing about the certified {RELAXED_GEMM_SITE} site; "
+                    "run the diff on a backend that carries the relaxed "
+                    "kernels (--cpp-backend metal, or a SEEML_ACCELERATE "
+                    "build of seeml-plan-probe)")
         # A certified site may sit past the diff tolerance by design (the
         # relaxed GEMMs: 2^-7 against the diff's 1e-5), so `agrees`, which
         # judges every site at that tolerance, is not the test here. The
@@ -593,15 +648,17 @@ def build_parser():
     c.add_argument("--lanes", type=int, default=8)
     c.add_argument("--seed", type=int, default=0)
     c.add_argument("--val-fraction", type=float, default=0.1)
-    c.add_argument("--max-site-error", type=float, default=1e-5)
+    c.add_argument("--max-site-error", type=float,
+                   default=DEFAULT_TOLERANCES["site_rel"])
     c.add_argument("--max-relaxed-gemm-error", type=float,
-                   default=2.0 ** -7,
+                   default=DEFAULT_TOLERANCES["relaxed_gemm_rel"],
                    help="tolerance for the v18 relaxed GEMM site (bf16 "
                         "input rounding): default 2^-7")
     c.add_argument("--source", metavar="SMF", default=None,
                    help="the source model (v17 plans whose eval program "
                         "reads it)")
-    c.add_argument("--max-loss-deviation", type=float, default=1e-4)
+    c.add_argument("--max-loss-deviation", type=float,
+                   default=DEFAULT_TOLERANCES["loss_rel"])
     c.add_argument("--out", default=None)
     c.set_defaults(fn=cmd_certify)
     v = sub.add_parser("verify")

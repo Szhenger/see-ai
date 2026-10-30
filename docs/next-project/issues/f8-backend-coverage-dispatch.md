@@ -124,6 +124,19 @@ E4 CPU number (2–6 %) stays the fusion case on both backends. For S6
 done: the per-program (train / eval / merge) dispatch-overhead table
 and the `dec_wide` row.
 
+## Status 2026-10-23
+
+The eval and merge programs and the `dec_wide` plan measured with
+`SEEML_METAL_SPANS` (`docs/ledger/f8-2026-10-23/`): the steady programs
+spend 0.6–2.8 % of each command buffer outside the GPU, so the
+2026-10-19 verdict — the lever is bytes per kernel, not dispatch count —
+holds for every program. Two costs are new: a small plan's merge is a
+fixed ~0.8 ms of encoding and synchronization (28 % of its buffer, which
+matters for F6's adapter-only packages), and the first eval batch of a
+run takes 18–145 ms outside the GPU, plausibly the page faults of the
+zero-copy source-model mapping the eval program reads (E12), not yet
+measured as such.
+
 ## Acceptance
 
 - [x] No CPU-resident opcode in the train program of a SmolLM-shaped plan
@@ -137,8 +150,12 @@ and the `dec_wide` row.
   3 µs per dispatch at the means, 0–7 µs across the two experiments, ≈4 %
   of the step and ≤ 8 % at the ceiling ("The LoRA lowering, steps 1 and 3",
   2026-10-19).
-- [ ] The same number for the eval and merge programs, and the `dec_wide`
-  row, in `docs/benchmarks.md` — not measured.
+- [x] The same number for the eval and merge programs, and the `dec_wide`
+  row, in `docs/benchmarks.md` — "Dispatch overhead of the eval and merge
+  programs, and `dec_wide`" (2026-10-23): eval 1.0 % / 2.8 % of the
+  buffer, merge 4.3 % / 28 % (a fixed ~0.8 ms against 2 ms of GPU work on
+  the small plan), 1.9–2.3 µs per dispatch overall; the first eval batch
+  of a run pays 18–145 ms outside the GPU, once.
 - [x] The fusion decision for the GPU recorded from that number with the
   E4 CPU number beside it — `kFusedMap` is not extended to Metal for the
   dispatch count's sake; the lever is bytes per kernel, E4's 2–6 % case on

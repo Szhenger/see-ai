@@ -75,7 +75,9 @@ void AccelerateGemm(const float* A, const float* B, float* C, size_t M,
 // the NN form, nc rows of W read as [N, K] for the NT form, the per-column
 // (v17) or per-tensor scale applied as each element widens, exactly as
 // the portable cores widen their panels — into one backend-owned f32
-// panel bounded at kAcceleratePanelFloats, and hands each panel to SGEMM.
+// panel bounded at kAcceleratePanelFloats (or kAccelerateMinPanelCols
+// columns of the full reduction, whichever is larger), and hands each
+// panel to SGEMM.
 // The products are f32 over the exact int8 levels, so the result stays
 // inside the bound the numerics certificate priced for the relaxed site
 // (Metal's tensor-op kernel rounds the activation to bf16 first; SGEMM
@@ -84,13 +86,24 @@ void AccelerateGemm(const float* A, const float* B, float* C, size_t M,
 // allocation outside the arena the CPU backend makes, and only here, on
 // the opt-in path a certificate already marks as not the reference.
 inline constexpr size_t kAcceleratePanelFloats = size_t{1} << 20;  // 4 MiB
+// ... but never fewer than this many output columns per SGEMM call. The
+// panel spans the whole reduction (K), so on the LM head's dX product (K =
+// the vocabulary, 49,152 on SmolLM) the 4 MiB budget alone left 21 columns
+// per call: 28 skinny SGEMMs at ~210 GFLOP/s, 138 ms where the same
+// product in 256-column panels runs at ~840 GFLOP/s (F4 #132,
+// 2026-10-23, Apple M5). The floor costs that one product a panel of
+// 256 x K floats (50 MB at the head) and changes no reduction: each
+// output element is still one SGEMM call's full-K dot.
+inline constexpr size_t kAccelerateMinPanelCols = 256;
 
 void AccelerateGemmQ8(const float* A, const int8_t* B, float* C, size_t M,
                       size_t N, size_t K, bool nt, float scale,
                       const float* col_scale, up::EpilogueAct act,
                       std::vector<float>& panel) {
-  const size_t nc = std::max<size_t>(
-      1, std::min(N, kAcceleratePanelFloats / std::max<size_t>(1, K)));
+  const size_t nc = std::min(
+      N, std::max({size_t{1},
+                   kAcceleratePanelFloats / std::max<size_t>(1, K),
+                   kAccelerateMinPanelCols}));
   if (panel.size() < K * nc) panel.resize(K * nc);
   float* P = panel.data();
   for (size_t n0 = 0; n0 < N; n0 += nc) {
@@ -176,7 +189,14 @@ float KlLossScaleOf(uint64_t word) {
 class CpuBackend final : public ExecutorBackend {
  public:
   const char* name() const override { return "cpu"; }
-  std::string device() const override { return "host CPU"; }
+  // Says where a relaxed GEMM runs, as the Metal backend's label does: the
+  // line reaches every run report and frontier row, so a row measured on
+  // the exact kernels can be told from one measured on SGEMM.
+  std::string device() const override {
+    return SEEML_HAS_ACCELERATE
+               ? "host CPU, relaxed GEMMs on Accelerate SGEMM"
+               : "host CPU, relaxed GEMMs on the exact kernels";
+  }
 
   std::expected<void, std::string> Bind(uint8_t* arena, uint64_t,
                                         const uint8_t* rodata, uint64_t,
@@ -197,6 +217,8 @@ class CpuBackend final : public ExecutorBackend {
                                            const StepParams& params) override;
 
   std::expected<void, std::string> Flush() override { return {}; }
+
+  uint64_t relaxed_executions() const override { return relaxed_executions_; }
 
  private:
   const float* ReadPtr(uint64_t ref) const {
@@ -224,6 +246,9 @@ class CpuBackend final : public ExecutorBackend {
   const uint8_t* rodata_ = nullptr;
   const uint8_t* source_ = nullptr;  // v17: the bound source model file
   k::KernelPolicy policy_;  // the plan header's tiles; defaults until told
+  // Instructions dispatched to SGEMM under kFlagRelaxed (review F42): 0 on
+  // every build but SEEML_ACCELERATE, where the four branches below count.
+  uint64_t relaxed_executions_ = 0;
 #if SEEML_HAS_ACCELERATE
   std::vector<float> accel_panel_;  // F4: the widened int8 panel for SGEMM
 #endif
@@ -243,6 +268,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNN:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
+        ++relaxed_executions_;
         AccelerateGemm(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                        WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                        ins.out[2], false,
@@ -268,6 +294,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNT:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
+        ++relaxed_executions_;
         AccelerateGemm(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                        WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                        ins.out[2], true, nullptr, up::EpilogueAct::kNone,
@@ -297,6 +324,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNNQ8:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {  // F4: the int8 base on SGEMM
+        ++relaxed_executions_;
         AccelerateGemmQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]),
                          WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                          ins.out[2], false,
@@ -315,6 +343,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kGemmNTQ8:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
+        ++relaxed_executions_;
         AccelerateGemmQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]),
                          WritePtr(ins.in[2]), ins.out[0], ins.out[1],
                          ins.out[2], true,
