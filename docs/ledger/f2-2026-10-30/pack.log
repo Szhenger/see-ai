@@ -1,0 +1,3 @@
+pack_update: embedded update_plan.seeu (298631168 bytes) as update_plan_embedded.S, 16384-byte aligned
+built: ~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f2-2026-10-30/pkg_relaxed/model_update
+pack_update: built out/f2-2026-10-30/pkg_relaxed/model_update in 13.4 s

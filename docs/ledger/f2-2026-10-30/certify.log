@@ -1,0 +1,13 @@
+start 2026-10-30T15:21:23Z
+certify_numerics: contract relaxed-flagged-instructions over 1 enforced site(s)
+certify_numerics: attn.dp              600 instance(s)  observed 1.98e-07  any-order bound 1.30e-05  (evidence only: no instruction runs it relaxed)
+certify_numerics: attn.fwd            1380 instance(s)  observed 7.45e-07  any-order bound 1.05e-05  (evidence only: no instruction runs it relaxed)
+certify_numerics: gemm.relaxed        8380 instance(s)  observed 6.75e-03  any-order bound 3.27e-02
+certify_numerics: rms_norm.bwd        1200 instance(s)  observed 1.85e-07  any-order bound 7.44e-04  (evidence only: no instruction runs it relaxed)
+certify_numerics: rms_norm.fwd        2806 instance(s)  observed 4.31e-07  any-order bound 3.43e-05  (evidence only: no instruction runs it relaxed)
+certify_numerics: softmax_rows.bwd     600 instance(s)  observed 5.78e-07  any-order bound 2.55e-05  (evidence only: no instruction runs it relaxed)
+certify_numerics: softmax_xent.fwd      46 instance(s)  observed 4.49e-05  any-order bound 2.94e-03  (evidence only: no instruction runs it relaxed)
+certify_numerics: free run over 20 step(s): loss deviation 2.57e-04, validation 4.227503 vs 4.227518 (3.64e-06); gate improved: reference True, relaxed True
+certify_numerics: granted — wrote out/f2-2026-10-30/pkg_relaxed/numerics_certificate.json
+certify rc=0
+end 2026-10-30T19:48:46Z

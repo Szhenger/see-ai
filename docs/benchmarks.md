@@ -1266,9 +1266,25 @@ the softmax cross-entropy relaxed (every backend runs it on its exact
 kernel), and the old free run's relaxed arm relaxed every reduction on
 top of the bf16 GEMMs. `check_certificate` refuses a certificate that
 leaves any relaxed site of its plan uncovered, and `pack_update.py`'s
-tolerance NOTE compares against the certificate's own family. The
-measured 10-24 package's certificate under the decided contract is
-recorded here when its run completes.
+tolerance NOTE compares against the certificate's own family.
+
+**The measured package under it.** The 10-24 relaxed SmolLM-135M plan,
+recompiled from this branch to the same plan hash (`a0d2d967…`, the hash
+both 10-23 certificates bind), is **granted** at the certifier's defaults
+(`docs/ledger/f2-2026-10-30/`). One site is enforced: `gemm.relaxed`,
+observed at 6.75e-3 over 8,380 instances against 2⁻⁷ (7.8e-3; any-order
+bound 3.27e-2). The softmax cross-entropy's 4.49e-5 — the first 10-24
+refusal — and the other reduction sites (attention, the RMS norms and
+the softmax backward, all under 1e-6) are printed as evidence. The
+20-step free run, its relaxed arm relaxing the 419 flagged GEMMs and
+nothing else, deviates by 2.57e-4 in loss (against 1e-3; 10-24's
+relax-everything arm read 3.82e-4) and by 3.6e-6 in validation loss, and
+the improvement gate passes on both arms. The certifier that wrote it ran
+the F2 change as the working tree held it at 15:21 UTC, before the
+review fixes of d9c7bec; the branch tip's `certify_numerics.py verify`
+accepts the certificate, and `pack_update.py --build` builds the package
+with no tolerance NOTE. The run took about 3.5 h of one core (4 h 27 min
+of wall time, paused for the day's timing windows).
 
 ## Tier C — Memory (the gate that refuses compiles)
 
