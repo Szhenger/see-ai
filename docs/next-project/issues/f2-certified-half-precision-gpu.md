@@ -166,8 +166,12 @@ every other site measured as evidence. Exact plans keep P3's
 leaves any relaxed site of the plan uncovered, and `pack_update.py`'s
 tolerance NOTE compares against the certificate's own family
 (`FAMILY_DEFAULTS`, one row per family, replaces 10-29's single
-`DEFAULT_TOLERANCES` table). The measured 10-24 package (plan hash `a0d2d967…`) is being re-certified
-under it at the defaults.
+`DEFAULT_TOLERANCES` table). The measured 10-24 package (plan hash
+`a0d2d967…`) is granted under it at the defaults: `gemm.relaxed` 6.75e-3
+against 2⁻⁷, the 20-step free run's loss deviation 2.57e-4 against 1e-3,
+the softmax cross-entropy's 4.49e-5 printed as evidence; the branch tip's
+`verify` and `pack_update.py --build` accept the certificate
+(`docs/ledger/f2-2026-10-30/`). Every acceptance line is met.
 
 ## Acceptance
 
