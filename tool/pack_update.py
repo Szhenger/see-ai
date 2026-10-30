@@ -397,10 +397,12 @@ def pack(opts: Options) -> dict:
     # certificate — the runtime's validator gates the bit on the version
     # alone, so this is where "no certificate, no relaxed plan" is enforced.
     with open(plan_path, "rb") as f:
-        relaxed_gemms = formats.relaxed_gemm_count(f)
-    if relaxed_gemms and certificate is None:
+        relaxed = formats.relaxed_opcodes(f)
+    relaxed_gemms = sum(1 for op in relaxed
+                        if op in formats.RELAXED_GEMM_OPCODES)
+    if relaxed and certificate is None:
         raise PackError(
-            f"'{plan_path}' carries {relaxed_gemms} relaxed instruction(s) "
+            f"'{plan_path}' carries {len(relaxed)} relaxed instruction(s) "
             "(GEMMs, tiled attention: --precision certified-bf16) and no "
             "numerics certificate: run "
             f"tool/certify_numerics.py certify {pkg} --corpus <corpus.sds> "
@@ -492,7 +494,11 @@ def pack(opts: Options) -> dict:
                           else round(build_seconds, 3)),
         "binary": os.path.join(pkg, BINARY) if opts.build else None,
         "numerics_certificate": certificate,
+        # The frozen-weight GEMMs among them (v18), as the compile report
+        # counts them, and every kFlagRelaxed instruction (v20: the tiled
+        # attention ones too).
         "relaxed_gemms": relaxed_gemms,
+        "relaxed_instructions": len(relaxed),
     }
 
 

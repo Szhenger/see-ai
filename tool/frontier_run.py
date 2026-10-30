@@ -190,12 +190,16 @@ SYNTH_ROPE_THETA = 10000.0
 SYNTH_NORM_EPS = 1e-5
 
 
-def sha256_16(path):
+def sha256_hex(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 24), b""):
             h.update(chunk)
-    return h.hexdigest()[:16]
+    return h.hexdigest()
+
+
+def sha256_16(path):
+    return sha256_hex(path)[:16]
 
 
 def cmd_synth(args):
@@ -575,11 +579,7 @@ def cmd_seeml(args):
         report = json.load(open(rep)) if os.path.exists(rep) else {}
         sha = None
         if os.path.exists(model_out):
-            h = hashlib.sha256()
-            with open(model_out, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 24), b""):
-                    h.update(chunk)
-            sha = h.hexdigest()
+            sha = sha256_hex(model_out)
             os.remove(model_out)
         device = re.search(r"backend \w+ \(([^\n]*)\)", out)
         if rc not in (0, 3):  # 3 = the gate declined: a result, not a failure
@@ -619,6 +619,8 @@ def cmd_seeml(args):
         plan_version=compile_report["plan_version"], plan_hash=compile_report["plan_hash"],
         precision_flag=compile_report.get("precision", "f32"),
         relaxed_gemms=compile_report.get("relaxed_gemms", 0),
+        # v20: relaxed_executions below counts these as well.
+        relaxed_attention=compile_report.get("relaxed_attention", 0),
         host_key=compile_report.get("kernel_policy", {}).get("host_key"),
         device=(quality or runs[0])["device"], threads=args.threads,
         config=dict(steps=args.quality_steps, tokens_per_step=tokens,
@@ -636,8 +638,9 @@ def cmd_seeml(args):
         train_loss=r0.get("train_loss"), verdict=r0.get("verdict"),
         committed=r0.get("committed"),
         lifecycle=r0.get("lifecycle"),  # Tier D split of the quality run (F9)
-        # F42: the relaxed GEMMs the quality run executed on a relaxed kernel
-        # (0 on the exact kernels), so the row says which kernels it measured.
+        # F42: the relaxed instructions (GEMMs, v20 tiled attention) the
+        # quality run executed on a relaxed kernel (0 on the exact kernels),
+        # so the row says which kernels it measured.
         relaxed_executions=r0.get("relaxed_executions"),
         committed_sha256=quality["committed_sha256"] if quality else None,
         suspect=suspect,

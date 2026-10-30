@@ -315,6 +315,10 @@ class LockstepExecutor(fx.Executor):
     def __init__(self, plan, lanes, source=None):
         super().__init__(plan, fx.NumpyBackend("float64"), source)
         self.lane, self.sites = LaneBackend(lanes), {}
+        # The sites a kFlagRelaxed instruction was measured at: a relaxed
+        # attention site shares its name with the eval program's exact
+        # instructions, so `sites` alone cannot say a flagged one ran.
+        self.flagged_measured = set()
 
     def execute(self, section, scalars=None, on_instruction=None):
         np = self.x.np
@@ -336,6 +340,8 @@ class LockstepExecutor(fx.Executor):
                 "by_opcode": {}})
             stat["instances"] += 1
             stat["bound_rel"] = max(stat["bound_rel"], self.lane.bound_rel)
+            if is_flagged(ins):
+                self.flagged_measured.add(site_name(ins))
             # A site spans opcodes (the relaxed GEMM site covers every
             # kGemm* form): the certificate carries the worst relative
             # error per opcode as well as per site.
@@ -445,13 +451,14 @@ def cmd_certify(args):
                         val_rel_dev=rel(rlx["val_final"], ref["val_final"]))
 
     sites = arms["reference"].sites
+    flagged = flagged_sites(plan)
+    measured = arms["reference"].flagged_measured
     enforced = (sorted(sites) if family == FAMILY
-                else [s for s in flagged_sites(plan) if s in sites])
+                else [s for s in flagged if s in sites])
     reasons = []
     if not sites:
         reasons.append("the plan has no reduction site to relax")
-    elif family == FLAGGED_FAMILY and len(enforced) != len(
-            flagged_sites(plan)):
+    elif family == FLAGGED_FAMILY and any(s not in measured for s in flagged):
         reasons.append("a relaxed instruction never ran in the free run, so "
                        "its site was not measured: raise --steps")
     for name in enforced:

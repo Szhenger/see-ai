@@ -111,10 +111,12 @@ class ExecutorBackend {
   [[nodiscard]] virtual std::expected<void, std::string> Flush() = 0;
 
   /// How many instructions this backend has run on a RELAXED kernel since
-  /// it was built (plan v18, kFlagRelaxed): the Accelerate SGEMM paths on
-  /// the CPU, the tensor-op GEMMs on Metal. The bit is a permission, so a
-  /// backend that never takes it (the reference build; a skinny shape on
-  /// Metal) reports fewer than the instructions carrying it — and the
+  /// it was built (plan v18 / v20, kFlagRelaxed): the Accelerate SGEMM
+  /// paths on the CPU, the tensor-op GEMMs and the matrix-tile tiled
+  /// attention kernels on Metal. The bit is a permission, so a backend
+  /// that never takes it (the reference build; a skinny shape or a head
+  /// wider than 64 on Metal) reports fewer than the instructions carrying
+  /// it — and the
   /// count is what tells "this run measured the certified kernel" from
   /// "this run measured the exact one and vouched for nothing" (review
   /// F42: seeml-plan-probe records it per instruction, the frontier diff

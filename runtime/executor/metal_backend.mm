@@ -282,7 +282,8 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> Execute(const up::UpdateInstruction& ins,
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
-  // Its own tensor-op GEMMs plus the relaxed GEMMs it hands the CPU
+  // Its own tensor-op GEMMs and matrix-tile tiled attention dispatches
+  // (v20) plus the relaxed GEMMs it hands the CPU
   // backend (a GEMM whose dimensions overflow 32 bits, DimsFit32), which
   // that backend runs on SGEMM in a SEEML_ACCELERATE build.
   uint64_t relaxed_executions() const override {
@@ -318,7 +319,9 @@ class MetalBackend final : public ExecutorBackend {
   id<MTLComputePipelineState> rx_pipes_[kRxPipeCount];
   bool relaxed_ = false;
   std::string relaxed_reason_ = "not built";
-  uint64_t relaxed_executions_ = 0;  // GEMMs EncodeRelaxedGemm took (F42)
+  // GEMMs EncodeRelaxedGemm took (F42) and tiled attention instructions
+  // dispatched on the matrix-tile kernels (v20).
+  uint64_t relaxed_executions_ = 0;
   id<MTLBuffer> bf16_scratch_ = nil;
   uint64_t bf16_scratch_bytes_ = 0;
   bool EncodeRelaxedGemm(up::OpCode op, const up::UpdateInstruction& ins,
