@@ -1249,6 +1249,27 @@ the stricter contract and none of this milestone's relaxed packages has
 met them; which of the two a shipped relaxed package must carry is a
 decision to record in F2, not a tolerance to pick per run.
 
+### The certificate contract, decided (F2 #130, 2026-10-30)
+
+The 10-24 section left one decision open: which contract a shipped
+relaxed package is certified under. Decided: **a certificate certifies
+the relaxations its plan takes.** A plan that marks instructions
+`kFlagRelaxed` carries the `relaxed-flagged-instructions` contract: it
+enforces exactly the sites those instructions run (`gemm.relaxed`, and
+each `attn.*.tiled` since plan v20), the free run's relaxed arm relaxes
+those instructions and nothing else, and the loss tolerance defaults to
+1e-3, F2's own acceptance line. Every other site is measured and printed
+as evidence only. An exact plan keeps P3's `relaxed-reductions-f32`
+contract unchanged (every reduction site, loss 1e-4). Both 10-24
+refusals measured something the package does not do: no instruction runs
+the softmax cross-entropy relaxed (every backend runs it on its exact
+kernel), and the old free run's relaxed arm relaxed every reduction on
+top of the bf16 GEMMs. `check_certificate` refuses a certificate that
+leaves any relaxed site of its plan uncovered, and `pack_update.py`'s
+tolerance NOTE compares against the certificate's own family. The
+measured 10-24 package's certificate under the decided contract is
+recorded here when its run completes.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |
