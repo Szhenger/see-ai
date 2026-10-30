@@ -6,6 +6,13 @@ asterisks became on 2026-09-22 — as one tool with the parity rules pinned.
 
 Subcommands (each writes one JSON report in seeml-bench's units):
 
+  synth    --shape dec_wide --corpus TEXT --out DIR
+                                             a seeded random-init Llama checkpoint at
+                                             a named frontier shape, with a BPE
+                                             tokenizer of its vocabulary trained on
+                                             TEXT: the one HF directory every stack
+                                             loads for a shape that exists only as a
+                                             SeeAI fixture
   records  MODEL_DIR TEXT --seq-len S        the exact records every row trains on
   torch    --model-dir D --corpus TEXT ...    a PyTorch LoRA loop, eager or
                                              torch.compile, cpu or mps, f32 or bf16
@@ -164,6 +171,102 @@ def write_report(path, report):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     os.replace(tmp, path)
+
+
+# --- synth: a frontier-shaped checkpoint ---------------------------------------
+
+# The shapes the frontier row is taken at that no hub checkpoint has. Each
+# is a Llama: RMSNorm, rotary attention, SwiGLU, the head tied to the
+# embedding (rule 2's path, the one SmolLM takes).
+SHAPES = {
+    # The Tier A dec_wide decoder (export_model.py --demo-decoder --vocab
+    # 4096 --width 512 --heads 8 --seq-len 256 --blocks 4; FFN 1024, as
+    # F8's 2026-10-23 report of it shows): full multi-head attention, so
+    # no k/v repeat separates SeeAI's adapter count from the frameworks'.
+    "dec_wide": {"vocab": 4096, "hidden": 512, "ffn": 1024, "layers": 4,
+                 "heads": 8, "seq": 256},
+}
+SYNTH_ROPE_THETA = 10000.0
+SYNTH_NORM_EPS = 1e-5
+
+
+def sha256_hex(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 24), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_16(path):
+    return sha256_hex(path)[:16]
+
+
+def cmd_synth(args):
+    """A seeded, random-init Llama checkpoint at a named shape, in the
+    layout every stack loads (config.json, model.safetensors in f32,
+    tokenizer.json): parity by construction, since SeeAI imports it with
+    `export_model.py --hf` and the frameworks load the same files. The
+    tokenizer is a byte-level BPE of exactly the shape's vocabulary trained
+    on TEXT, with no special tokens (rule 1: no BOS / EOS). The weights
+    are the library's own initialization under --seed; a throughput row,
+    not a quality one."""
+    import torch
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    shape = dict(SHAPES[args.shape])
+    for key in ("vocab", "hidden", "ffn", "layers", "heads"):
+        if getattr(args, key) is not None:
+            shape[key] = getattr(args, key)
+    if shape["hidden"] % shape["heads"] or (shape["hidden"] // shape["heads"]) % 2:
+        raise SystemExit(f"frontier_run: synth: hidden {shape['hidden']} over "
+                         f"{shape['heads']} heads is not an even head width")
+    os.makedirs(args.out, exist_ok=True)
+
+    tok = Tokenizer(models.BPE())
+    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tok.decoder = decoders.ByteLevel()
+    tok.train([args.corpus], trainers.BpeTrainer(
+        vocab_size=shape["vocab"], show_progress=False, special_tokens=[],
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet()))
+    if tok.get_vocab_size() != shape["vocab"]:
+        raise SystemExit(f"frontier_run: synth: the corpus yields a "
+                         f"{tok.get_vocab_size()}-token vocabulary, not "
+                         f"{shape['vocab']}: give a larger --corpus")
+    tok.save(os.path.join(args.out, "tokenizer.json"))
+    with open(os.path.join(args.out, "tokenizer_config.json"), "w") as f:
+        json.dump({"tokenizer_class": "PreTrainedTokenizerFast",
+                   "clean_up_tokenization_spaces": False}, f, indent=1)
+
+    config = LlamaConfig(
+        vocab_size=shape["vocab"], hidden_size=shape["hidden"],
+        intermediate_size=shape["ffn"], num_hidden_layers=shape["layers"],
+        num_attention_heads=shape["heads"], num_key_value_heads=shape["heads"],
+        max_position_embeddings=max(2048, shape["seq"]),
+        rms_norm_eps=SYNTH_NORM_EPS, rope_theta=SYNTH_ROPE_THETA,
+        hidden_act="silu", tie_word_embeddings=True, bos_token_id=None,
+        eos_token_id=None, pad_token_id=None)
+    torch.manual_seed(args.seed)
+    model = LlamaForCausalLM(config).to(torch.float32)
+    model.save_pretrained(args.out, safe_serialization=True)
+    # The rotary base at the top level too: Transformers 5 writes only
+    # rope_parameters, and a reader that knows only the older key (MLX-LM,
+    # older exporters) would otherwise fall back to its own default.
+    cfg_path = os.path.join(args.out, "config.json")
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+    cfg["rope_theta"] = SYNTH_ROPE_THETA
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2, sort_keys=True)
+
+    digests = {name: sha256_16(os.path.join(args.out, name))
+               for name in ("tokenizer.json", "model.safetensors")}
+    params = sum(p.numel() for p in model.parameters())
+    print(f"frontier_run synth: {args.shape} {shape} -> {args.out}: "
+          f"{params:,} parameters, tokenizer {digests['tokenizer.json']}, "
+          f"weights {digests['model.safetensors']} (seed {args.seed})")
+    return 0
 
 
 # --- torch --------------------------------------------------------------------
@@ -476,11 +579,7 @@ def cmd_seeml(args):
         report = json.load(open(rep)) if os.path.exists(rep) else {}
         sha = None
         if os.path.exists(model_out):
-            h = hashlib.sha256()
-            with open(model_out, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 24), b""):
-                    h.update(chunk)
-            sha = h.hexdigest()
+            sha = sha256_hex(model_out)
             os.remove(model_out)
         device = re.search(r"backend \w+ \(([^\n]*)\)", out)
         if rc not in (0, 3):  # 3 = the gate declined: a result, not a failure
@@ -520,6 +619,8 @@ def cmd_seeml(args):
         plan_version=compile_report["plan_version"], plan_hash=compile_report["plan_hash"],
         precision_flag=compile_report.get("precision", "f32"),
         relaxed_gemms=compile_report.get("relaxed_gemms", 0),
+        # v20: relaxed_executions below counts these as well.
+        relaxed_attention=compile_report.get("relaxed_attention", 0),
         host_key=compile_report.get("kernel_policy", {}).get("host_key"),
         device=(quality or runs[0])["device"], threads=args.threads,
         config=dict(steps=args.quality_steps, tokens_per_step=tokens,
@@ -537,8 +638,9 @@ def cmd_seeml(args):
         train_loss=r0.get("train_loss"), verdict=r0.get("verdict"),
         committed=r0.get("committed"),
         lifecycle=r0.get("lifecycle"),  # Tier D split of the quality run (F9)
-        # F42: the relaxed GEMMs the quality run executed on a relaxed kernel
-        # (0 on the exact kernels), so the row says which kernels it measured.
+        # F42: the relaxed instructions (GEMMs, v20 tiled attention) the
+        # quality run executed on a relaxed kernel (0 on the exact kernels),
+        # so the row says which kernels it measured.
         relaxed_executions=r0.get("relaxed_executions"),
         committed_sha256=quality["committed_sha256"] if quality else None,
         suspect=suspect,
@@ -696,6 +798,17 @@ def build_parser():
     c.add_argument("--rank", type=int, default=None)
     c.add_argument("--val0-tolerance", type=float, default=0.02)
     c.set_defaults(fn=cmd_check)
+
+    y = sub.add_parser("synth")
+    y.add_argument("--shape", required=True, choices=sorted(SHAPES))
+    y.add_argument("--corpus", required=True,
+                   help="the UTF-8 text the tokenizer is trained on")
+    y.add_argument("--out", required=True)
+    y.add_argument("--seed", type=int, default=0)
+    for key in ("vocab", "hidden", "ffn", "layers", "heads"):
+        y.add_argument(f"--{key}", type=int, default=None,
+                       help=f"override the shape's {key} (tests)")
+    y.set_defaults(fn=cmd_synth)
 
     r = sub.add_parser("records")
     r.add_argument("model_dir")

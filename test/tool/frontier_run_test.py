@@ -127,6 +127,56 @@ class RecordsTest(unittest.TestCase):
             self.assertIn("8 records of 4 ids (7 train, 1 held out)", out.getvalue())
 
 
+class SynthTest(unittest.TestCase):
+    def test_a_named_shape_is_one_reproducible_checkpoint(self):
+        # F1 (#129): the dec_wide column needs a checkpoint every stack loads.
+        # `synth` writes it: two runs give the same bytes (the tokenizer's
+        # training and the seeded initialization are both deterministic),
+        # the geometry is the shape's with the head tied and no k/v repeat,
+        # the rotary base is stated where every reader looks for it, and the
+        # records rule reads the corpus through the trained tokenizer.
+        try:
+            import tokenizers  # noqa: F401
+            import torch  # noqa: F401
+            import transformers  # noqa: F401
+        except ImportError:
+            self.skipTest("needs torch, transformers and tokenizers (tier 2)")
+        with tempfile.TemporaryDirectory() as d:
+            corpus = os.path.join(d, "corpus.txt")
+            with open(os.path.join(REPO, "docs", "usage.md"),
+                      encoding="utf-8") as src, open(corpus, "w") as f:
+                f.write(src.read())
+            outs = []
+            for run in range(2):
+                out = os.path.join(d, f"m{run}")
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    self.assertEqual(fr.main([
+                        "synth", "--shape", "dec_wide", "--corpus", corpus,
+                        "--out", out, "--vocab", "320", "--hidden", "32",
+                        "--ffn", "64", "--layers", "1", "--heads", "4"]), 0)
+                self.assertIn("frontier_run synth: dec_wide", buf.getvalue())
+                outs.append(out)
+            for name in ("tokenizer.json", "model.safetensors", "config.json"):
+                self.assertEqual(fr.sha256_16(os.path.join(outs[0], name)),
+                                 fr.sha256_16(os.path.join(outs[1], name)),
+                                 name)
+            self.assertEqual(fr.hf_geometry(outs[0]), {
+                "layers": 1, "dim": 32, "heads": 4, "kv_heads": 4, "ffn": 64,
+                "vocab": 320, "tied": True})
+            with open(os.path.join(outs[0], "config.json")) as f:
+                cfg = json.load(f)
+            self.assertEqual(cfg["rope_theta"], fr.SYNTH_ROPE_THETA)
+            self.assertEqual(cfg["model_type"], "llama")
+            recs = fr.load_records(outs[0], corpus, 16)
+            self.assertGreater(len(recs), 10)
+            self.assertLess(int(recs.max()), 320)
+            # The full dec_wide shape is the one F1's column is taken at.
+            self.assertEqual(fr.SHAPES["dec_wide"], {
+                "vocab": 4096, "hidden": 512, "ffn": 1024, "layers": 4,
+                "heads": 8, "seq": 256})
+
+
 class CliTest(unittest.TestCase):
     def test_check_reads_a_matrix_report_and_refuses_loudly(self):
         with tempfile.TemporaryDirectory() as d:

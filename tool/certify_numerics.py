@@ -36,9 +36,17 @@ and records three kinds of evidence:
              losses, and whether the update gate (validation loss must
              improve) holds under either contract.
 
-The certificate is GRANTED only if every site's observed error is within
---max-site-error, the free-run deviations are within --max-loss-deviation,
-and the gate verdict is the same in both arms. It binds to the plan by
+The certificate is GRANTED only if every enforced site's observed error is
+within --max-site-error (the relaxed GEMM site: --max-relaxed-gemm-error),
+the free-run deviations are within --max-loss-deviation, and the gate
+verdict is the same in both arms. Which sites are enforced, what the
+relaxed arm relaxes and the tolerance defaults follow the plan (F2 #130):
+an exact plan states P3's contract (relaxed-reductions-f32: every
+reduction site, all relaxed in the relaxed arm, loss 1e-4); a plan that
+marks instructions kFlagRelaxed states the flagged contract
+(relaxed-flagged-instructions: exactly those instructions, relaxed alone,
+loss 1e-3 — F2's acceptance line), with every other site measured as
+evidence and not enforced, since every backend runs it exact. It binds to the plan by
 SHA-256 and by the plan's own sealed hash, and to the corpus by SHA-256; it
 carries a digest of itself; given --source, it binds to the source model
 by SHA-256 too. `verify` re-checks all of that against a plan, and,
@@ -73,14 +81,37 @@ CERT_SCHEMA = 1
 CERT_KIND = "seeml-numerics-certificate"
 CERT_FILE = "numerics_certificate.json"
 PLAN_FILE = "update_plan.seeu"
+# The two contracts a certificate can state (F2 #130's decision,
+# 2026-10-30). A certificate certifies the relaxations its plan takes:
+#
+#   FAMILY          an exact plan (no kFlagRelaxed): P3's contract — every
+#                   reduction site of the plan, recomputed as a relaxed-
+#                   reduction backend would run it, all of them enforced.
+#   FLAGGED_FAMILY  a plan that marks instructions kFlagRelaxed (v18): the
+#                   contract is exactly those instructions, as their
+#                   certified kernels compute them. The free run's relaxed
+#                   arm relaxes them and nothing else, so its deviation is
+#                   the shipped arithmetic's; every other site is still
+#                   measured, as evidence, but no backend runs it relaxed,
+#                   so it is not enforced (the 2026-10-24 SmolLM-135M
+#                   package was refused on the softmax cross-entropy site,
+#                   a reduction every backend runs exact).
 FAMILY = "relaxed-reductions-f32"
+FLAGGED_FAMILY = "relaxed-flagged-instructions"
+FAMILIES = (FAMILY, FLAGGED_FAMILY)
 UNIT_ROUNDOFF = 2.0 ** -24  # float32, round to nearest
-# `certify`'s default tolerances, one table so tool/pack_update.py can say
-# when a packaged certificate was granted under looser ones (F2 #130's open
-# decision: the 2026-10-24 SmolLM-135M package is granted under the 10-15
-# settings — site 1e-4, loss 1e-2 — and refused under these).
-DEFAULT_TOLERANCES = {"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
-                      "loss_rel": 1e-4}
+# `certify`'s default tolerances per contract, one table so
+# tool/pack_update.py can say when a packaged certificate was granted under
+# looser ones. The flagged family's loss tolerance is F2's own acceptance
+# line (validation loss within 1e-3 relative of the exact run); 1e-4 is the
+# reduction family's, which one bf16 rounding of a GEMM's input
+# (2^-9 per element) does not meet.
+FAMILY_DEFAULTS = {
+    FAMILY: {"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
+             "loss_rel": 1e-4},
+    FLAGGED_FAMILY: {"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
+                     "loss_rel": 1e-3},
+}
 # The relaxed GEMM family (plan v18, kFlagRelaxed): the activation input of
 # a frozen-weight GEMM rounded to bfloat16 once (8 significant bits) before
 # an f32-accumulating multiply against the exact stored weight — what the
@@ -119,8 +150,33 @@ def is_site(ins):
 
 
 def site_name(ins):
-    return RELAXED_GEMM_SITE if ins.flags & fx.FLAG_RELAXED else \
+    """The one gemm.relaxed site for a relaxed GEMM (F72); every other site
+    instruction — a relaxed tiled attention one (v20) included — under its
+    opcode's reduction site."""
+    return fx.site_of(ins) if ins.flags & fx.FLAG_RELAXED else \
         SITES[ins.opcode]
+
+
+def is_flagged(ins):
+    """An instruction the plan marks kFlagRelaxed (v18): one a certified
+    relaxed kernel may run, and the only kind the flagged contract
+    relaxes."""
+    return bool(ins.flags & fx.FLAG_RELAXED)
+
+
+def family_of(plan):
+    """The contract a certificate of `plan` states: the flagged family when
+    its train or step program marks any instruction kFlagRelaxed (a GEMM,
+    v18, or a tiled attention instruction, v20), P3's reduction family
+    otherwise."""
+    return FLAGGED_FAMILY if plan.relaxed_instructions else FAMILY
+
+
+def flagged_sites(plan):
+    """The site names of the instructions `plan` marks kFlagRelaxed — the
+    flagged contract's enforced sites."""
+    return sorted({site_name(i) for name in ("train", "step")
+                   for i in plan.sections[name] if is_flagged(i)})
 
 
 def gamma(n):
@@ -234,16 +290,19 @@ class DryMemory:
 
 
 class RelaxedExecutor(fx.Executor):
-    """The relaxed arm: site opcodes through the lane backend."""
+    """The relaxed arm: the instructions the contract relaxes through the
+    lane backend — every site under P3's family, only the flagged ones
+    under the flagged family (`relax`)."""
 
-    def __init__(self, plan, lanes, source=None):
+    def __init__(self, plan, lanes, source=None, relax=is_site):
         super().__init__(plan, fx.NumpyBackend("float64"), source)
         self.lane = LaneBackend(lanes)
+        self.relax = relax
 
     def execute(self, section, scalars=None, on_instruction=None):
         scalars = scalars or self.step_scalars()
         for index, ins in enumerate(self.plan.sections[section]):
-            x = self.lane if is_site(ins) else self.x
+            x = self.lane if self.relax(ins) else self.x
             fx.INTERPRETER[ins.opcode](self.mem, x, ins, scalars)
             if on_instruction:
                 on_instruction(index, ins)
@@ -256,6 +315,10 @@ class LockstepExecutor(fx.Executor):
     def __init__(self, plan, lanes, source=None):
         super().__init__(plan, fx.NumpyBackend("float64"), source)
         self.lane, self.sites = LaneBackend(lanes), {}
+        # The sites a kFlagRelaxed instruction was measured at: a relaxed
+        # attention site shares its name with the eval program's exact
+        # instructions, so `sites` alone cannot say a flagged one ran.
+        self.flagged_measured = set()
 
     def execute(self, section, scalars=None, on_instruction=None):
         np = self.x.np
@@ -277,6 +340,8 @@ class LockstepExecutor(fx.Executor):
                 "by_opcode": {}})
             stat["instances"] += 1
             stat["bound_rel"] = max(stat["bound_rel"], self.lane.bound_rel)
+            if is_flagged(ins):
+                self.flagged_measured.add(site_name(ins))
             # A site spans opcodes (the relaxed GEMM site covers every
             # kGemm* form): the certificate carries the worst relative
             # error per opcode as well as per site.
@@ -333,10 +398,25 @@ def cmd_certify(args):
         corpus.enable_shuffle(args.seed)
         return corpus, val
 
+    # The contract (F2 #130): what this plan relaxes decides which sites
+    # are enforced, what the relaxed arm relaxes, and the defaults of any
+    # tolerance not given on the command line.
+    family = family_of(plan)
+    defaults = FAMILY_DEFAULTS[family]
+    site_tol = (defaults["site_rel"] if args.max_site_error is None
+                else args.max_site_error)
+    gemm_tol = (defaults["relaxed_gemm_rel"]
+                if args.max_relaxed_gemm_error is None
+                else args.max_relaxed_gemm_error)
+    loss_tol = (defaults["loss_rel"] if args.max_loss_deviation is None
+                else args.max_loss_deviation)
+    relax = is_flagged if family == FLAGGED_FAMILY else is_site
+
     # Lockstep evidence rides the reference arm of the free run: the
     # operands every site sees are the ones real training produces.
     arms = {"reference": LockstepExecutor(plan, args.lanes, args.source),
-            "relaxed": RelaxedExecutor(plan, args.lanes, args.source)}
+            "relaxed": RelaxedExecutor(plan, args.lanes, args.source,
+                                       relax)}
     runs = {}
     for name, ex in arms.items():
         corpus, val = feed()
@@ -371,20 +451,27 @@ def cmd_certify(args):
                         val_rel_dev=rel(rlx["val_final"], ref["val_final"]))
 
     sites = arms["reference"].sites
+    flagged = flagged_sites(plan)
+    measured = arms["reference"].flagged_measured
+    enforced = (sorted(sites) if family == FAMILY
+                else [s for s in flagged if s in sites])
     reasons = []
     if not sites:
         reasons.append("the plan has no reduction site to relax")
-    for name, stat in sorted(sites.items()):
-        tolerance = (args.max_relaxed_gemm_error
-                     if name == RELAXED_GEMM_SITE else args.max_site_error)
+    elif family == FLAGGED_FAMILY and any(s not in measured for s in flagged):
+        reasons.append("a relaxed instruction never ran in the free run, so "
+                       "its site was not measured: raise --steps")
+    for name in enforced:
+        stat = sites[name]
+        tolerance = gemm_tol if name == RELAXED_GEMM_SITE else site_tol
         if not stat["observed_rel"] <= tolerance:
             reasons.append(f"{name}: observed relative error "
                            f"{stat['observed_rel']:.3e} exceeds "
                            f"{tolerance:.1e}")
     for key in ("loss_max_rel_dev", "val_rel_dev"):
-        if key in free_run and not free_run[key] <= args.max_loss_deviation:
+        if key in free_run and not free_run[key] <= loss_tol:
             reasons.append(f"{key} {free_run[key]:.3e} exceeds "
-                           f"{args.max_loss_deviation:.1e}")
+                           f"{loss_tol:.1e}")
     if ref["gate_improved"] != rlx["gate_improved"]:
         reasons.append("the update gate decides differently under the two "
                        "contracts")
@@ -401,26 +488,33 @@ def cmd_certify(args):
         "corpus": {"file": os.path.basename(args.corpus),
                    "sha256": sha256_file(args.corpus)},
         "source": source,
-        "contract": {"family": FAMILY, "model_lanes": args.lanes,
+        # `sites` are the enforced ones; evidence.sites is every site
+        # measured (under the flagged family, the reductions no backend
+        # relaxes appear there only).
+        "contract": {"family": family, "model_lanes": args.lanes,
                      "unit_roundoff": UNIT_ROUNDOFF,
                      "bf16_unit_roundoff": BF16_UNIT_ROUNDOFF,
-                     "sites": sorted(sites)},
+                     "sites": enforced},
         "evidence": {"steps": args.steps, "seed": args.seed,
                      "val_fraction": args.val_fraction,
                      "sites": {k: sites[k] for k in sorted(sites)},
                      "free_run": free_run},
-        "tolerances": {"site_rel": args.max_site_error,
-                       "relaxed_gemm_rel": args.max_relaxed_gemm_error,
-                       "loss_rel": args.max_loss_deviation},
+        "tolerances": {"site_rel": site_tol,
+                       "relaxed_gemm_rel": gemm_tol,
+                       "loss_rel": loss_tol},
         "verdict": "refused" if reasons else "granted",
         "reasons": reasons,
     }
     cert["digest"] = self_digest(cert)
 
+    print(f"certify_numerics: contract {family} over "
+          f"{len(enforced)} enforced site(s)")
     for name, stat in cert["evidence"]["sites"].items():
         print(f"certify_numerics: {name:<18} {stat['instances']:>5} "
               f"instance(s)  observed {stat['observed_rel']:.2e}  "
-              f"any-order bound {stat['bound_rel']:.2e}")
+              f"any-order bound {stat['bound_rel']:.2e}"
+              + ("" if name in enforced else
+                 "  (evidence only: no instruction runs it relaxed)"))
     print(f"certify_numerics: free run over {args.steps} step(s): loss "
           f"deviation {free_run['loss_max_rel_dev']:.2e}"
           + (f", validation {free_run['val_final_reference']:.6f} vs "
@@ -477,31 +571,45 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
                     math.isfinite(value) and value > 0.0):
                 problems.append(f"tolerance {key} is not a positive "
                                 f"finite number ({value!r})")
-        if cert["contract"]["family"] != FAMILY:
+        if cert["contract"]["family"] not in FAMILIES:
             problems.append(f"unknown contract family "
                             f"{cert['contract']['family']!r}")
-        # v18: a plan whose train / step programs carry relaxed GEMMs is
-        # vouched for only by a certificate that priced that site.
+        # v18 / v20: a plan whose train / step programs carry relaxed
+        # instructions is vouched for only by a certificate that priced
+        # every one of their sites — gemm.relaxed for the GEMMs, each
+        # attn.*.tiled site for the tiled attention family.
         with open(plan_path, "rb") as f:
-            relaxed = fx.formats.relaxed_gemm_count(f)
-        if relaxed and RELAXED_GEMM_SITE not in cert["contract"]["sites"]:
-            problems.append(f"the plan carries {relaxed} relaxed GEMM(s) "
-                            f"({RELAXED_GEMM_SITE}) the certificate does "
-                            "not cover")
+            opcodes = fx.formats.relaxed_opcodes(f)
+        needed = {}
+        for op in opcodes:
+            name = (RELAXED_GEMM_SITE
+                    if op in fx.formats.RELAXED_GEMM_OPCODES
+                    else fx.OPCODES.get(op, str(op)))
+            needed[name] = needed.get(name, 0) + 1
+        for name, count in sorted(needed.items()):
+            if name not in cert["contract"]["sites"]:
+                problems.append(f"the plan carries {count} relaxed "
+                                f"instruction(s) at the {name} site the "
+                                "certificate does not cover")
     except (KeyError, TypeError) as e:
         problems.append(f"malformed certificate ({e!r})")
     return problems
 
 
 def tolerance_notes(cert):
-    """Each certified tolerance looser than `certify`'s default, as a
-    sentence (empty: none is). Not a verification failure — the contract is
-    the issuer's to set — but one the packager repeats where the binary is
-    built, so the decision is read there rather than discovered when a row
-    is measured (F2 #130)."""
+    """Each certified tolerance looser than `certify`'s default for the
+    certificate's contract family, as a sentence (empty: none is). Not a
+    verification failure — the tolerances are the issuer's to set — but
+    one the packager repeats where the binary is built, so the choice is
+    read there rather than discovered when a row is measured (F2 #130)."""
     notes = []
-    tolerances = cert.get("tolerances") if isinstance(cert, dict) else None
-    for key, default in DEFAULT_TOLERANCES.items():
+    if not isinstance(cert, dict):
+        return notes
+    tolerances = cert.get("tolerances")
+    contract = cert.get("contract")
+    family = contract.get("family") if isinstance(contract, dict) else None
+    for key, default in FAMILY_DEFAULTS.get(family,
+                                            FAMILY_DEFAULTS[FAMILY]).items():
         value = (tolerances or {}).get(key)
         if isinstance(value, (int, float)) and value > default:
             notes.append(f"{key} {value:.1e} is looser than the certify "
@@ -547,7 +655,10 @@ def check_observed(cert, observed):
         # reference arm ran exact: --relaxed models the bf16 rounding on
         # the reference too, so the two would agree on the model, not on
         # the kernel.
-        if RELAXED_GEMM_SITE in cert["contract"]["sites"]:
+        # Every flagged-contract certificate covers relaxed instructions; an
+        # older P3-family one did when it named the relaxed GEMM site.
+        if (cert["contract"].get("family") == FLAGGED_FAMILY
+                or RELAXED_GEMM_SITE in cert["contract"]["sites"]):
             if observed.get("relaxed_modelled", False):
                 problems.append("the observed run modelled the relaxed "
                                 "rounding on the reference side (--relaxed): "
@@ -563,12 +674,12 @@ def check_observed(cert, observed):
                 problems.append(
                     "the observed run executed its "
                     f"{observed.get('relaxed_instructions', '?')} relaxed "
-                    "GEMM(s) on the exact kernels (C++ backend "
+                    "instruction(s) on the exact kernels (C++ backend "
                     f"{observed.get('cpp_backend', '?')}): it measures "
-                    f"nothing about the certified {RELAXED_GEMM_SITE} site; "
-                    "run the diff on a backend that carries the relaxed "
-                    "kernels (--cpp-backend metal, or a SEEML_ACCELERATE "
-                    "build of seeml-plan-probe)")
+                    "nothing about the certified relaxed sites; run the "
+                    "diff on a backend that carries the relaxed kernels "
+                    "(--cpp-backend metal, or a SEEML_ACCELERATE build of "
+                    "seeml-plan-probe)")
         # A certified site may sit past the diff tolerance by design (the
         # relaxed GEMMs: 2^-7 against the diff's 1e-5), so `agrees`, which
         # judges every site at that tolerance, is not the test here. The
@@ -648,17 +759,21 @@ def build_parser():
     c.add_argument("--lanes", type=int, default=8)
     c.add_argument("--seed", type=int, default=0)
     c.add_argument("--val-fraction", type=float, default=0.1)
-    c.add_argument("--max-site-error", type=float,
-                   default=DEFAULT_TOLERANCES["site_rel"])
-    c.add_argument("--max-relaxed-gemm-error", type=float,
-                   default=DEFAULT_TOLERANCES["relaxed_gemm_rel"],
+    # The tolerance defaults depend on the plan's contract family
+    # (FAMILY_DEFAULTS), so they are resolved once the plan is read.
+    c.add_argument("--max-site-error", type=float, default=None,
+                   help="tolerance for each enforced reduction site: "
+                        "default 1e-5")
+    c.add_argument("--max-relaxed-gemm-error", type=float, default=None,
                    help="tolerance for the v18 relaxed GEMM site (bf16 "
                         "input rounding): default 2^-7")
     c.add_argument("--source", metavar="SMF", default=None,
                    help="the source model (v17 plans whose eval program "
                         "reads it)")
-    c.add_argument("--max-loss-deviation", type=float,
-                   default=DEFAULT_TOLERANCES["loss_rel"])
+    c.add_argument("--max-loss-deviation", type=float, default=None,
+                   help="tolerance for the free run's loss and validation "
+                        "deviation: default 1e-3 for a plan with relaxed "
+                        "instructions, 1e-4 for an exact one")
     c.add_argument("--out", default=None)
     c.set_defaults(fn=cmd_certify)
     v = sub.add_parser("verify")
@@ -683,6 +798,8 @@ def main(argv=None):
         for name in ("max_site_error", "max_relaxed_gemm_error",
                      "max_loss_deviation"):
             value = getattr(args, name)
+            if value is None:  # the contract family's default
+                continue
             if not (math.isfinite(value) and value > 0.0):
                 print(f"certify_numerics: ERROR --{name.replace('_', '-')} "
                       f"must be positive and finite (got {value!r}): a "

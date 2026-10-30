@@ -721,8 +721,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the eval program lowered separately below: the gate scores what ships
   // in reference arithmetic. The bit is a permission the backend may
   // decline; what it permits is bounded by the certificate the package
-  // must carry.
-  uint64_t relaxed_gemms = 0;
+  // must carry. Plan v20 (F3 #131): the tiled attention instructions of the
+  // train stream carry it too — the backend may run their blocks' products
+  // on matrix tiles in another f32 summation order; the certificate prices
+  // their attn.*.tiled sites.
+  uint64_t relaxed_gemms = 0, relaxed_attention = 0;
   if (config_.precision == Precision::kCertifiedBf16) {
     for (UpdateInstruction& ins : *train_instrs) {
       const auto op = static_cast<OpCode>(ins.opcode);
@@ -731,14 +734,20 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
            op == OpCode::kGemmNNQ8 || op == OpCode::kGemmNTQ8 ||
            op == OpCode::kGemmNNBF16 || op == OpCode::kGemmNTBF16) &&
           IsRodataRef(ins.in[1]);
-      if (!frozen_gemm) continue;
+      const bool tiled_attention =
+          op == OpCode::kAttnFwdTiled || op == OpCode::kAttnDQTiled ||
+          op == OpCode::kAttnDKTiled || op == OpCode::kAttnDVTiled;
+      if (!frozen_gemm && !tiled_attention) continue;
       ins.flags |= kFlagRelaxed;
-      ++relaxed_gemms;
+      ++(frozen_gemm ? relaxed_gemms : relaxed_attention);
     }
     seeml::diag::Note(generating::kDriver,
                       "relaxed arithmetic: " + std::to_string(relaxed_gemms) +
-                          " frozen-weight GEMM(s) carry kFlagRelaxed; the "
-                          "package needs a numerics certificate");
+                          " frozen-weight GEMM(s) and " +
+                          std::to_string(relaxed_attention) +
+                          " tiled attention instruction(s) carry "
+                          "kFlagRelaxed; the package needs a numerics "
+                          "certificate");
   }
 
   // Under gradient accumulation the lowered stream is two programs: the
@@ -1105,6 +1114,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   result.rodata_size = header.rodata_size;
   result.scores_shipped = !shipped.empty();
   result.relaxed_gemms = relaxed_gemms;
+  result.relaxed_attention = relaxed_attention;
   // What the plan carries, from the pass that decided on exact shapes.
   result.attention_tiled =
       attention_decision.tiled && attention_decision.attention_ops > 0;

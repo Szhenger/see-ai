@@ -1,0 +1,2 @@
+certify_numerics: verified — relaxed-flagged-instructions over 5 site opcode(s), site tolerance 1.0e-05; bound to the source model; the observed run is inside the certified tolerances
+verify rc=0

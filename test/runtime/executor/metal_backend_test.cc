@@ -348,6 +348,8 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
 
 struct Twin {
   std::vector<float> cpu, gpu;
+  // The instructions each backend ran on a relaxed kernel (review F42).
+  uint64_t cpu_relaxed = 0, gpu_relaxed = 0;
 };
 
 // Runs `program` on the CPU and on Metal over identical arena/rodata
@@ -385,6 +387,8 @@ std::expected<Twin, std::string> RunTwin(
     std::vector<float>& out = which == 0 ? twin.cpu : twin.gpu;
     out.resize(arena_init.size());
     std::memcpy(out.data(), arena, arena_init.size() * sizeof(float));
+    (which == 0 ? twin.cpu_relaxed : twin.gpu_relaxed) =
+        (*backend)->relaxed_executions();
     backend->reset();  // unbind before the arena goes away
     std::free(arena);
   }
@@ -514,6 +518,85 @@ TEST(MetalBackend, TiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
     EXPECT_EQ(std::memcmp(&twin->gpu[o_at], &again->gpu[o_at],
                           (total - o_at) * sizeof(float)),
               0);
+  }
+}
+
+TEST(MetalBackend, RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
+  if (Skip()) return;
+  // F3 (#131) design item 2, plan v20: the four tiled opcodes under
+  // kFlagRelaxed take the matrix-tile form at head widths <= 64 — the
+  // blocked passes with every block's products on simdgroup_matrix tiles —
+  // against the CPU family at the same tolerance the exact kernels meet,
+  // bitwise against themselves, and counted as relaxed executions. The CPU
+  // ignores the bit: its bytes are the exact program's. Shapes: ragged S
+  // under one 32-row block and across several (40, 130, 300), the d = 64 a
+  // SmolLM head has, d = 16 and 48 (zero-padded columns), and d = 96, which
+  // keeps the exact per-row form and counts nothing.
+  struct Shape { uint32_t B, S, H, d; };
+  for (const Shape sh : {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48},
+                         Shape{1, 300, 2, 64}, Shape{2, 33, 1, 64},
+                         Shape{1, 70, 2, 96}}) {
+    const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
+    const size_t rows = size_t{sh.B} * sh.H * sh.S;
+    const size_t q_at = 0, k_at = n, v_at = 2 * n, do_at = 3 * n, o_at = 4 * n;
+    const size_t st_at = 5 * n, dq_at = st_at + rows * 4, dk_at = dq_at + n,
+                 dv_at = dk_at + n, total = dv_at + n;
+    std::vector<float> arena(total, 0.0f);
+    std::mt19937_64 rng(4077 + sh.S + sh.d);
+    std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+    for (size_t i = 0; i < 4 * n; ++i) arena[i] = unit(rng);
+    auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
+    auto program_with = [&](uint16_t flags) {
+      UpdateInstruction fwd;
+      fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdTiled);
+      fwd.flags = flags;
+      fwd.in[0] = ref(q_at); fwd.in[1] = ref(k_at); fwd.in[2] = ref(v_at);
+      fwd.in[3] = ref(o_at);
+      fwd.out[0] = ref(st_at);
+      fwd.out[1] = (uint64_t{sh.B} << 32) | sh.S;
+      fwd.out[2] = (uint64_t{sh.H} << 32) | sh.d;
+      std::vector<UpdateInstruction> program = {fwd};
+      for (const auto& [op, result] :
+           {std::pair{OpCode::kAttnDQTiled, dq_at},
+            std::pair{OpCode::kAttnDKTiled, dk_at},
+            std::pair{OpCode::kAttnDVTiled, dv_at}}) {
+        UpdateInstruction ins;
+        ins.opcode = static_cast<uint16_t>(op);
+        ins.flags = flags;
+        ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+        ins.in[3] = ref(do_at);
+        ins.out[0] = ref(st_at);
+        ins.out[1] = ref(result);
+        ins.out[2] = PackAttnGeometry(sh.B, sh.S, sh.H, sh.d);
+        program.push_back(ins);
+      }
+      return program;
+    };
+    const auto relaxed = program_with(kFlagRelaxed);
+    auto twin = RunTwin(relaxed, arena, {});
+    ASSERT_OK(twin);
+    auto again = RunTwin(relaxed, arena, {});
+    ASSERT_OK(again);
+    auto exact = RunTwin(program_with(0), arena, {});
+    ASSERT_OK(exact);
+    const std::string tag = std::to_string(sh.B) + "x" + std::to_string(sh.S) +
+                            "x" + std::to_string(sh.H) + "x" +
+                            std::to_string(sh.d) + " relaxed";
+    ExpectRangeClose((tag + " o").c_str(), *twin, o_at, n, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " stats").c_str(), *twin, st_at, rows * 4, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " dv").c_str(), *twin, dv_at, n, 1e-4, 1e-5);
+    EXPECT_EQ(std::memcmp(&twin->gpu[o_at], &again->gpu[o_at],
+                          (total - o_at) * sizeof(float)),
+              0);
+    // The CPU takes no permission: its bytes are the exact program's.
+    EXPECT_EQ(std::memcmp(twin->cpu.data(), exact->cpu.data(),
+                          total * sizeof(float)),
+              0);
+    EXPECT_EQ(twin->cpu_relaxed, 0u);
+    EXPECT_EQ(exact->gpu_relaxed, 0u);
+    EXPECT_EQ(twin->gpu_relaxed, sh.d <= 64 ? 4u : 0u);
   }
 }
 

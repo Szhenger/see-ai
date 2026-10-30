@@ -124,7 +124,13 @@ share. Its module docstring is the list of parity rules, each one a
 comparison that was silently wrong until 2026-09-22 (the tied head SeeAI
 adapts, mlx's uncorrected AdamW, an F32-stored checkpoint loaded as
 "bf16", MLX's TF32-class default matmul, `evaluate`'s dropped tail).
-Tier 2 for the framework rows; `seeml` and `check` are standard library.
+`synth --shape dec_wide --corpus TEXT --out DIR` writes the checkpoint a
+shape that exists only as a SeeAI fixture needs (F1's `dec_wide` column):
+a seeded random-init Llama at the shape, the head tied, and a byte-level
+BPE tokenizer of exactly its vocabulary trained on TEXT, so SeeAI
+(`export_model.py --hf`) and the frameworks load the same files.
+Tier 2 for the framework rows and `synth`; `seeml` and `check` are
+standard library.
 
 **`certify_numerics.py`** is the gate in front of any relaxed-reduction
 plan (P3): *no certificate, no relaxed plan*. It trains the plan twice
@@ -161,9 +167,17 @@ plan, and the package's own `build.sh` refuses, before its first
 compile line, without a granted certificate over its exact plan bytes;
 `--source model.smf` binds a v17 plan's eval program to the model file
 it scores. The relaxed GEMMs are the first member of the relaxed opcode
-family; for every other site (norms, losses, softmaxes, attention) the
-certificate is still the measured answer to "what would relaxing cost
-this plan", and the contract that family will be admitted under.
+family and the tiled attention instructions (plan v20, F3 #131) the
+second, keyed under their own `attn.*.tiled` sites. Which sites a
+certificate enforces is its plan's (F2 #130, 2026-10-30): a plan that
+marks instructions relaxed states the `relaxed-flagged-instructions`
+contract — exactly those sites enforced, the free run relaxing them alone,
+a loss default of 1e-3 — while an exact plan keeps P3's
+`relaxed-reductions-f32` contract over every reduction site (loss 1e-4);
+the sites a contract does not enforce are measured and printed as
+evidence only, the measured answer to "what would relaxing them cost this
+plan". `verify` refuses a certificate that leaves any relaxed site of its
+plan uncovered.
 
 **`autotune.py`** is the offline autotuner, the second Python-plane
 subsystem of the overhaul (P2): it sweeps CPU GEMM tile arms through

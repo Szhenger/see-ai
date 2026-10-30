@@ -1,0 +1,14 @@
+start 2026-10-30T15:55:12Z
+certify_numerics: contract relaxed-flagged-instructions over 5 enforced site(s)
+certify_numerics: attn.dk.tiled         80 instance(s)  observed 3.62e-07  any-order bound 9.64e-05
+certify_numerics: attn.dq.tiled         80 instance(s)  observed 5.61e-07  any-order bound 3.86e-05
+certify_numerics: attn.dv.tiled         80 instance(s)  observed 2.57e-07  any-order bound 3.60e-05
+certify_numerics: attn.fwd.tiled       216 instance(s)  observed 2.54e-07  any-order bound 1.54e-05
+certify_numerics: gemm.relaxed        1100 instance(s)  observed 2.54e-03  any-order bound 1.24e-02
+certify_numerics: rms_norm.bwd         160 instance(s)  observed 1.06e-07  any-order bound 1.27e-03  (evidence only: no instruction runs it relaxed)
+certify_numerics: rms_norm.fwd         486 instance(s)  observed 1.56e-07  any-order bound 3.05e-05  (evidence only: no instruction runs it relaxed)
+certify_numerics: softmax_xent.fwd      54 instance(s)  observed 3.40e-07  any-order bound 2.44e-04  (evidence only: no instruction runs it relaxed)
+certify_numerics: free run over 20 step(s): loss deviation 2.54e-05, validation 8.228805 vs 8.228845 (4.81e-06); gate improved: reference True, relaxed True
+certify_numerics: granted — wrote out/f3-2026-10-30/pkg_tiled_relaxed/numerics_certificate.json
+certify rc=0
+end 2026-10-30T16:47:36Z

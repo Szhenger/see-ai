@@ -1,0 +1,125 @@
+{
+  "contract": {
+    "bf16_unit_roundoff": 0.001953125,
+    "family": "relaxed-flagged-instructions",
+    "model_lanes": 8,
+    "sites": [
+      "attn.dk.tiled",
+      "attn.dq.tiled",
+      "attn.dv.tiled",
+      "attn.fwd.tiled",
+      "gemm.relaxed"
+    ],
+    "unit_roundoff": 5.960464477539063e-08
+  },
+  "corpus": {
+    "file": "dec_wide.sds",
+    "sha256": "6eef7016edde072f7d6aef16a9300db4500c0f5f710aaceb749159f02ea5908e"
+  },
+  "digest": "dbfa06ddeb3a790babc2d09a2bbc40f83f576b3a96e90f95ac876add23b92e90",
+  "evidence": {
+    "free_run": {
+      "gate_improved_reference": true,
+      "gate_improved_relaxed": true,
+      "loss_final_reference": 8.250709533691406,
+      "loss_final_relaxed": 8.250809669494629,
+      "loss_max_rel_dev": 2.5376260473879274e-05,
+      "val_final_reference": 8.228804981007295,
+      "val_final_relaxed": 8.228844530442181,
+      "val_initial": 8.412950010860667,
+      "val_rel_dev": 4.806218518659488e-06
+    },
+    "seed": 0,
+    "sites": {
+      "attn.dk.tiled": {
+        "bound_rel": 9.642273888278317e-05,
+        "by_opcode": {
+          "attn.dk.tiled": 3.623583258211923e-07
+        },
+        "instances": 80,
+        "observed_rel": 3.623583258211923e-07
+      },
+      "attn.dq.tiled": {
+        "bound_rel": 3.86051119651941e-05,
+        "by_opcode": {
+          "attn.dq.tiled": 5.611979760548047e-07
+        },
+        "instances": 80,
+        "observed_rel": 5.611979760548047e-07
+      },
+      "attn.dv.tiled": {
+        "bound_rel": 3.5970424923142154e-05,
+        "by_opcode": {
+          "attn.dv.tiled": 2.570560107696186e-07
+        },
+        "instances": 80,
+        "observed_rel": 2.570560107696186e-07
+      },
+      "attn.fwd.tiled": {
+        "bound_rel": 1.5355727559831024e-05,
+        "by_opcode": {
+          "attn.fwd.tiled": 2.541831988125239e-07
+        },
+        "instances": 216,
+        "observed_rel": 2.541831988125239e-07
+      },
+      "gemm.relaxed": {
+        "bound_rel": 0.012406846581002558,
+        "by_opcode": {
+          "gemm.nn": 0.0025390537199638805,
+          "gemm.nt": 0.0024691010406755875
+        },
+        "instances": 1100,
+        "observed_rel": 0.0025390537199638805
+      },
+      "rms_norm.bwd": {
+        "bound_rel": 0.0012714281348047607,
+        "by_opcode": {
+          "rms_norm.bwd": 1.0551716547972166e-07
+        },
+        "instances": 160,
+        "observed_rel": 1.0551716547972166e-07
+      },
+      "rms_norm.fwd": {
+        "bound_rel": 3.051851422164543e-05,
+        "by_opcode": {
+          "rms_norm.fwd": 1.5568084057690337e-07
+        },
+        "instances": 486,
+        "observed_rel": 1.5568084057690337e-07
+      },
+      "softmax_xent.fwd": {
+        "bound_rel": 0.00024420031543442725,
+        "by_opcode": {
+          "softmax_xent.fwd": 3.3952147435977964e-07
+        },
+        "instances": 54,
+        "observed_rel": 3.3952147435977964e-07
+      }
+    },
+    "steps": 20,
+    "val_fraction": 0.1
+  },
+  "kind": "seeml-numerics-certificate",
+  "plan": {
+    "file": "update_plan.seeu",
+    "plan_hash": "c9c6c47b676f33d9",
+    "relaxed_gemms": 55,
+    "sha256": "cebcdb869f6dad61baa860b01fe61cf38d14eb41d5afdebe2920d240e017c617",
+    "source_model_hash": "591f8c61b39b6058",
+    "version": 20
+  },
+  "reasons": [],
+  "schema": 1,
+  "seeml_tool": "certify_numerics",
+  "source": {
+    "file": "dec_wide.smf",
+    "sha256": "f433280c3055bcdaba04c7af31b6d2b1277f17660382eaf56521ed8310d95248"
+  },
+  "tolerances": {
+    "loss_rel": 0.001,
+    "relaxed_gemm_rel": 0.0078125,
+    "site_rel": 1e-05
+  },
+  "verdict": "granted"
+}

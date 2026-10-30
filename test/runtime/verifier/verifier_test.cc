@@ -240,6 +240,54 @@ TEST(PlanValidator, TheTiledAttentionFamilyIsVersionedAndBounded) {
   }
 }
 
+TEST(PlanValidator, TheRelaxedBitReachesTheTiledAttentionFamilyAtV20) {
+  // F3 (#131), plan v20: kFlagRelaxed on the four tiled attention opcodes —
+  // a permission a backend may take with its matrix-tile kernels — from
+  // v20 on, and not on the cached family, whose kernels have no relaxed
+  // form. Same geometry and slots as the test above.
+  up::UpdateInstruction fwd;
+  fwd.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwdTiled);
+  fwd.flags = up::kFlagRelaxed;
+  fwd.in[0] = up::MakeArenaRef(0);
+  fwd.in[1] = up::MakeArenaRef(128);
+  fwd.in[2] = up::MakeArenaRef(256);
+  fwd.in[3] = up::MakeArenaRef(384);
+  fwd.out[0] = up::MakeArenaRef(512);
+  fwd.out[1] = (uint64_t{1} << 32) | 4;
+  fwd.out[2] = (uint64_t{2} << 32) | 4;
+  EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
+  EXPECT_ERROR(ValidateInstruction(fwd, kArena, kRodata,
+                                   up::kSeeuRelaxedAttentionVersion - 1));
+  for (const up::OpCode op : {up::OpCode::kAttnDQTiled,
+                              up::OpCode::kAttnDKTiled,
+                              up::OpCode::kAttnDVTiled}) {
+    up::UpdateInstruction bwd;
+    bwd.opcode = static_cast<uint16_t>(op);
+    bwd.flags = up::kFlagRelaxed;
+    bwd.in[0] = up::MakeArenaRef(0);
+    bwd.in[1] = up::MakeArenaRef(128);
+    bwd.in[2] = up::MakeArenaRef(256);
+    bwd.in[3] = up::MakeArenaRef(384);
+    bwd.out[0] = up::MakeArenaRef(512);
+    bwd.out[1] = up::MakeArenaRef(640);
+    bwd.out[2] = up::PackAttnGeometry(1, 4, 2, 4);
+    EXPECT_OK(ValidateInstruction(bwd, kArena, kRodata, up::kSeeuVersion));
+    EXPECT_ERROR(ValidateInstruction(bwd, kArena, kRodata,
+                                     up::kSeeuRelaxedAttentionVersion - 1));
+    // Any other flag bit stays corruption on these opcodes.
+    bwd.flags = up::kFlagRelaxed | up::kFlagGemmAddend;
+    EXPECT_ERROR(ValidateInstruction(bwd, kArena, kRodata, up::kSeeuVersion));
+  }
+  // The cached family's forward score kernel takes no flag at any version
+  // (the same instruction without the bit is valid: the P cache is 32
+  // floats at 512, inside the arena).
+  up::UpdateInstruction cached = fwd;
+  cached.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwd);
+  EXPECT_ERROR(ValidateInstruction(cached, kArena, kRodata, up::kSeeuVersion));
+  cached.flags = 0;
+  EXPECT_OK(ValidateInstruction(cached, kArena, kRodata, up::kSeeuVersion));
+}
+
 TEST(PlanValidator, AttentionBackwardExtentsAreProven) {
   // kAttnDP writes the [B*H*S, S] probability-shaped dP; the write extent
   // derives from the packed geometry and must stay inside the arena, and

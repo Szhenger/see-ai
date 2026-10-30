@@ -1736,6 +1736,381 @@ kernel void k_attn_dv_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
   }
 }
 
+// --- Tiled attention, the relaxed form (F3 #131 design item 2; plan v20:
+// kFlagRelaxed on opcodes 47-50; head width <= 64) ---------------------------
+// The blocked kernels' passes with every block's products on
+// simdgroup_matrix tiles. A threadgroup of 4 simdgroups owns 32
+// consecutive query rows (forward, dQ) or key rows (dK, dV) of one (b, h),
+// 8 per simdgroup, held as eight 8 x 8 fragments over the 64 head columns
+// (zero past d); the other operand's rows come through threadgroup memory
+// 32 at a time, as in the blocked form. Each block's row-by-row dot
+// products — Q K^T, dO V^T, and the transposes dK and dV take — are one
+// 8 x 32 tile of fragment products; each accumulation over the other index
+// — P V, dS K, dS^T Q, P^T dO — a fragment product into 8 x 64
+// accumulators. The elementwise work between them (the 1/sqrt(d) scale,
+// the causal mask, exp against the row's stats, the delta and dS
+// expressions, all the blocked kernels' own) runs on the block staged in
+// threadgroup memory, one lane per 8 entries of a row, a row's reductions
+// over its 4 lanes by a fixed shuffle tree. What differs from the
+// reference is the order of the f32 sums inside the fragment products and
+// the 1/l scale applied once to the forward's sum rather than to each
+// probability: a relaxed kernel, priced by the certificate's
+// attn.*.tiled sites for any summation order, and bitwise run-to-run on
+// its device. Each simdgroup's share of `own` is its own 8 x 64 region —
+// the staged operand rows first, then its S / dP blocks, then its output
+// rows — so no simdgroup ever reads another's scratch. The hand-offs
+// inside that region — a block stored as a matrix and read by lanes,
+// rewritten by lanes and loaded as a matrix — are threadgroup barriers
+// nonetheless: on the hosted Apple M1 (Virtual) GPU the simdgroup-barrier
+// form failed the twin test (wrong forward and dQ rows, different run to
+// run), and every such point is in uniform control flow.
+#define AMM_ROWS 32u
+// The simdgroup's 8 rows of a staged [32 x 64] tile as eight fragments.
+static inline void amm_rows(thread simdgroup_float8x8* f,
+                            threadgroup const float* tile, uint sg) {
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < 8u; ++c)
+    simdgroup_load(f[c], tile + sg * 8u * ATT_D + c * 8u, ATT_D);
+}
+// s[n] = rows (8 x 64, fragments f) . tile[8n .. 8n+8)^T: the 8 x 32 block
+// of dot products of the simdgroup's rows with the tile's 32 rows.
+static inline void amm_dots(thread simdgroup_float8x8* s,
+                            thread const simdgroup_float8x8* f,
+                            threadgroup const float* tile) {
+#pragma clang loop unroll(full)
+  for (uint n = 0; n < 4u; ++n) {
+    s[n] = simdgroup_float8x8(0.0f);
+#pragma clang loop unroll(full)
+    for (uint c = 0; c < 8u; ++c) {
+      simdgroup_float8x8 kt;
+      simdgroup_load(kt, tile + n * 8u * ATT_D + c * 8u, ATT_D, ulong2(0, 0),
+                     true);
+      simdgroup_multiply_accumulate(s[n], f[c], kt, s[n]);
+    }
+  }
+}
+static inline void amm_store_block(thread const simdgroup_float8x8* s,
+                                   threadgroup float* w) {
+#pragma clang loop unroll(full)
+  for (uint n = 0; n < 4u; ++n) simdgroup_store(s[n], w + n * 8u, 32u);
+}
+// acc (8 x 64) += w (8 x 32, row stride 32) . tile (32 x 64).
+static inline void amm_accumulate(thread simdgroup_float8x8* acc,
+                                  threadgroup const float* w,
+                                  threadgroup const float* tile) {
+#pragma clang loop unroll(full)
+  for (uint j = 0; j < 4u; ++j) {
+    simdgroup_float8x8 wf;
+    simdgroup_load(wf, w + j * 8u, 32u);
+#pragma clang loop unroll(full)
+    for (uint c = 0; c < 8u; ++c) {
+      simdgroup_float8x8 vt;
+      simdgroup_load(vt, tile + j * 8u * ATT_D + c * 8u, ATT_D);
+      simdgroup_multiply_accumulate(acc[c], wf, vt, acc[c]);
+    }
+  }
+}
+// The accumulators' 8 x 64 rows out through the simdgroup's region `ow`,
+// row (lane / 4) and 16 of its columns per lane, times `scale`, the first
+// d columns to `dst` (the row's own address) when the row is live.
+static inline void amm_write_rows(thread const simdgroup_float8x8* acc,
+                                  threadgroup float* ow, device float* dst,
+                                  bool live, float scale, uint d, uint lane) {
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < 8u; ++c) simdgroup_store(acc[c], ow + c * 8u, ATT_D);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (!live) return;
+  const uint r = lane >> 2, c0 = (lane & 3u) * 16u;
+  for (uint e = 0; e < 16u; ++e)
+    if (c0 + e < d) dst[c0 + e] = ow[r * ATT_D + c0 + e] * scale;
+}
+kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                 uint t [[thread_index_in_threadgroup]],
+                                 uint sg [[simdgroup_index_in_threadgroup]],
+                                 uint lane [[thread_index_in_simdgroup]]) {
+  threadgroup float own[AMM_ROWS * ATT_D];
+  threadgroup float kt[ATT_BLK * ATT_D];
+  threadgroup float vt[ATT_BLK * ATT_D];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + AMM_ROWS - 1u) / AMM_ROWS;
+  const uint bh = tg.x / nblk, i0 = (tg.x % nblk) * AMM_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  stage_rows(own, qbase, i0, S, D, d, t, vec);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  simdgroup_float8x8 qf[8];
+  amm_rows(qf, own, sg);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  threadgroup float* w = own + sg * 8u * ATT_D;  // [8 x 32] S / P block
+  const uint r = lane >> 2, c0 = (lane & 3u) * 8u;
+  const uint i = i0 + sg * 8u + r;
+  const uint last = min(i0 + AMM_ROWS, S);
+  const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
+  simdgroup_float8x8 s[4];
+  // Pass 1: the row max of the scaled scores.
+  float m = -INFINITY;
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_dots(s, qf, kt);
+    amm_store_block(s, w);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = 0; e < 8u; ++e) {
+      const uint j = kb * ATT_BLK + c0 + e;
+      if (j <= i && j < S) m = max(m, w[r * 32u + c0 + e] * inv_sqrt_d);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  m = max(m, simd_shuffle_xor(m, 1u));
+  m = max(m, simd_shuffle_xor(m, 2u));
+  // Pass 2: the denominator and P V in one sweep, P = exp(s - m) left
+  // unnormalized and the rows scaled by 1 / l once, on the way out.
+  float l = 0.0f;
+  simdgroup_float8x8 acc[8];
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < 8u; ++c) acc[c] = simdgroup_float8x8(0.0f);
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    stage_rows(vt, vbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_dots(s, qf, kt);
+    amm_store_block(s, w);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = 0; e < 8u; ++e) {
+      const uint j = kb * ATT_BLK + c0 + e;
+      threadgroup float* x = w + r * 32u + c0 + e;
+      const float pe = (j <= i && j < S) ? exp(*x * inv_sqrt_d - m) : 0.0f;
+      l += pe;
+      *x = pe;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_accumulate(acc, w, vt);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  l += simd_shuffle_xor(l, 1u);
+  l += simd_shuffle_xor(l, 2u);
+  const float inv = 1.0f / l;
+  const bool live = i < S;
+  amm_write_rows(acc, own + sg * 8u * ATT_D, WF(3) + (b * S + i) * D + h * d,
+                 live, inv, d, lane);
+  if (live && (lane & 3u) == 0u) {
+    device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
+    st[0] = m; st[1] = inv; st[2] = 0.0f; st[3] = 0.0f;
+  }
+}
+kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                uint t [[thread_index_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+  threadgroup float own[AMM_ROWS * ATT_D];
+  threadgroup float kt[ATT_BLK * ATT_D];
+  threadgroup float vt[ATT_BLK * ATT_D];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + AMM_ROWS - 1u) / AMM_ROWS;
+  const uint bh = tg.x / nblk, i0 = (tg.x % nblk) * AMM_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  const float inv_sqrt_d = p.f[0];
+  simdgroup_float8x8 qf[8], df[8];
+  stage_rows(own, qbase, i0, S, D, d, t, vec);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  amm_rows(qf, own, sg);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  stage_rows(own, dobase, i0, S, D, d, t, vec);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  amm_rows(df, own, sg);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  threadgroup float* w = own + sg * 8u * ATT_D;  // [8 x 32] S, then dS
+  threadgroup float* wp = w + 8u * 32u;          // [8 x 32] dP
+  const uint r = lane >> 2, c0 = (lane & 3u) * 8u;
+  const uint i = i0 + sg * 8u + r;
+  const bool live = i < S;
+  device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
+  const float m = live ? st[0] : 0.0f, inv = live ? st[1] : 0.0f;
+  const uint last = min(i0 + AMM_ROWS, S);
+  const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
+  simdgroup_float8x8 s[4], dp[4];
+  // Pass 1: delta = sum_j p_ij dp_ij, the softmax-backward rowsum.
+  float delta = 0.0f;
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    stage_rows(vt, vbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_dots(s, qf, kt);
+    amm_dots(dp, df, vt);
+    amm_store_block(s, w);
+    amm_store_block(dp, wp);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = 0; e < 8u; ++e) {
+      const uint j = kb * ATT_BLK + c0 + e;
+      if (live && j <= i && j < S) {
+        const float pj = exp(w[r * 32u + c0 + e] * inv_sqrt_d - m) * inv;
+        delta += wp[r * 32u + c0 + e] * pj;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  delta += simd_shuffle_xor(delta, 1u);
+  delta += simd_shuffle_xor(delta, 2u);
+  // Pass 2: dQ = sum_j dS_ij k_j, dS = p (dp - delta) / sqrt(d).
+  simdgroup_float8x8 acc[8];
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < 8u; ++c) acc[c] = simdgroup_float8x8(0.0f);
+  for (uint kb = 0; kb < kblocks; ++kb) {
+    stage_rows(kt, kbase, kb * ATT_BLK, S, D, d, t, vec);
+    stage_rows(vt, vbase, kb * ATT_BLK, S, D, d, t, vec);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_dots(s, qf, kt);
+    amm_dots(dp, df, vt);
+    amm_store_block(s, w);
+    amm_store_block(dp, wp);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = 0; e < 8u; ++e) {
+      const uint j = kb * ATT_BLK + c0 + e;
+      threadgroup float* x = w + r * 32u + c0 + e;
+      float gg = 0.0f;
+      if (live && j <= i && j < S) {
+        const float pj = exp(*x * inv_sqrt_d - m) * inv;
+        gg = pj * (wp[r * 32u + c0 + e] - delta) * inv_sqrt_d;
+      }
+      *x = gg;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_accumulate(acc, w, kt);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  amm_write_rows(acc, own + sg * 8u * ATT_D, WF(5) + (b * S + i) * D + h * d,
+                 live, 1.0f, d, lane);
+  if (live && (lane & 3u) == 0u) st[2] = delta;
+}
+// dK and dV: the threadgroup owns 32 key rows; the query rows, dO rows
+// and stats rows come in 32 at a time from the key block's first row on
+// (the causal triangle: no earlier query sees these keys).
+kernel void k_attn_dk_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                uint t [[thread_index_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+  threadgroup float own[AMM_ROWS * ATT_D];
+  threadgroup float qt[ATT_BLK * ATT_D];
+  threadgroup float dt[ATT_BLK * ATT_D];
+  threadgroup float stt[ATT_BLK * 4u];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + AMM_ROWS - 1u) / AMM_ROWS;
+  const uint bh = tg.x / nblk, j0 = (tg.x % nblk) * AMM_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* vbase = RF(2) + b * S * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device const float* stats = RF(4) + (b * H + h) * S * 4u;
+  const float inv_sqrt_d = p.f[0];
+  simdgroup_float8x8 kf[8], vf[8];
+  stage_rows(own, kbase, j0, S, D, d, t, vec);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  amm_rows(kf, own, sg);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  stage_rows(own, vbase, j0, S, D, d, t, vec);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  amm_rows(vf, own, sg);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  threadgroup float* w = own + sg * 8u * ATT_D;  // [8 x 32] S^T, then dS^T
+  threadgroup float* wp = w + 8u * 32u;          // [8 x 32] dP^T
+  const uint r = lane >> 2, c0 = (lane & 3u) * 8u;
+  const uint j = j0 + sg * 8u + r;
+  const bool live = j < S;
+  simdgroup_float8x8 s[4], dp[4], acc[8];
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < 8u; ++c) acc[c] = simdgroup_float8x8(0.0f);
+  for (uint ib = j0; ib < S; ib += ATT_BLK) {
+    stage_rows(qt, qbase, ib, S, D, d, t, vec);
+    stage_rows(dt, dobase, ib, S, D, d, t, vec);
+    stage_stats(stt, stats, ib, S, t);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_dots(s, kf, qt);
+    amm_dots(dp, vf, dt);
+    amm_store_block(s, w);
+    amm_store_block(dp, wp);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = 0; e < 8u; ++e) {
+      const uint ii = c0 + e, i = ib + ii;
+      threadgroup float* x = w + r * 32u + ii;
+      float gg = 0.0f;
+      if (live && i >= j && i < S) {
+        const float pij =
+            exp(*x * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u];
+        gg = pij * (wp[r * 32u + ii] - stt[ii * 4u + 2u]) * inv_sqrt_d;
+      }
+      *x = gg;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_accumulate(acc, w, qt);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  amm_write_rows(acc, own + sg * 8u * ATT_D, WF(5) + (b * S + j) * D + h * d,
+                 live, 1.0f, d, lane);
+}
+kernel void k_attn_dv_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
+                                uint t [[thread_index_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+  threadgroup float own[AMM_ROWS * ATT_D];
+  threadgroup float qt[ATT_BLK * ATT_D];
+  threadgroup float dt[ATT_BLK * ATT_D];
+  threadgroup float stt[ATT_BLK * 4u];
+  const uint S = p.S, H = p.H, d = p.D, D = H * d;
+  const uint nblk = (S + AMM_ROWS - 1u) / AMM_ROWS;
+  const uint bh = tg.x / nblk, j0 = (tg.x % nblk) * AMM_ROWS;
+  const uint b = bh / H, h = bh % H;
+  const bool vec = (p.flags & 1u) != 0u;
+  device const float* qbase = RF(0) + b * S * D + h * d;
+  device const float* kbase = RF(1) + b * S * D + h * d;
+  device const float* dobase = RF(3) + b * S * D + h * d;
+  device const float* stats = RF(4) + (b * H + h) * S * 4u;
+  const float inv_sqrt_d = p.f[0];
+  simdgroup_float8x8 kf[8];
+  stage_rows(own, kbase, j0, S, D, d, t, vec);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  amm_rows(kf, own, sg);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  threadgroup float* w = own + sg * 8u * ATT_D;  // [8 x 32] S^T, then P^T
+  const uint r = lane >> 2, c0 = (lane & 3u) * 8u;
+  const uint j = j0 + sg * 8u + r;
+  const bool live = j < S;
+  simdgroup_float8x8 s[4], acc[8];
+#pragma clang loop unroll(full)
+  for (uint c = 0; c < 8u; ++c) acc[c] = simdgroup_float8x8(0.0f);
+  for (uint ib = j0; ib < S; ib += ATT_BLK) {
+    stage_rows(qt, qbase, ib, S, D, d, t, vec);
+    stage_rows(dt, dobase, ib, S, D, d, t, vec);
+    stage_stats(stt, stats, ib, S, t);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_dots(s, kf, qt);
+    amm_store_block(s, w);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = 0; e < 8u; ++e) {
+      const uint ii = c0 + e, i = ib + ii;
+      threadgroup float* x = w + r * 32u + ii;
+      *x = (live && i >= j && i < S)
+               ? exp(*x * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u]
+               : 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    amm_accumulate(acc, w, dt);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  amm_write_rows(acc, own + sg * 8u * ATT_D, WF(5) + (b * S + j) * D + h * d,
+                 live, 1.0f, d, lane);
+}
+
 // --- Softmax cross-entropy (opcodes 11 / 12; F8 #139) ----------------------
 // The loss ran on the CPU until F8, draining the GPU every pass. One
 // simdgroup per row over C columns (49,152 at an LM head), max and sum by
