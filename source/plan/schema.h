@@ -119,7 +119,18 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // header change; a nonzero imm on the three f32 GEMMs below v19, beside
 // kFlagRelaxed, or on the int8 / bf16 forms is corruption; the CPU's v19
 // program computes the v18 program's bits for every alpha.
-inline constexpr uint32_t kSeeuVersion = 19;
+// v20: relaxed tiled attention (F3 #131) — kFlagRelaxed also on the four
+// tiled attention opcodes (47-50), in the train and step programs only:
+// the backend may run them on a relaxed kernel (Metal: the blocked passes'
+// products on simdgroup_matrix tiles, a different f32 summation order) or
+// on the exact one. Additive, one more opcode set for the same bit,
+// rejected below v20 and in the eval program; the CPU always runs the
+// exact family, and a package carries the bit only beside a numerics
+// certificate that priced the attn.*.tiled sites. No header change.
+inline constexpr uint32_t kSeeuVersion = 20;
+
+// The version that admitted kFlagRelaxed on the tiled attention opcodes.
+inline constexpr uint32_t kSeeuRelaxedAttentionVersion = 20;
 
 // The version that gave the f32 GEMMs' imm word meaning as alpha.
 inline constexpr uint32_t kSeeuGemmAlphaVersion = 19;

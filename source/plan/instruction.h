@@ -294,6 +294,12 @@ inline constexpr uint16_t kFlagQ8ColScale = 1u << 4;  // in[3] = scales ref
 // kernels stay run-to-run bitwise on a device (fixed reduction order, no
 // atomics); their bits differ from the reference's, so a relaxed plan
 // compares to the exact one at the certificate's tolerance.
+// Plan v20 (F3 #131) admits the same bit on the four tiled attention
+// opcodes (kAttnFwdTiled .. kAttnDVTiled): on Metal, at head widths <= 64,
+// the blocked kernels' passes with every block's products on
+// simdgroup_matrix tiles (the f32 sums reordered; the expressions, the
+// stats row and the causal mask the exact family's). The CPU runs the
+// exact family; the compiler sets the bit under certified precision.
 inline constexpr uint16_t kFlagRelaxed = 1u << 5;
 inline constexpr uint16_t kKnownFlagsMask =
     kEpilogueFlagsMask | kFlagGemmAddend | kFlagQ8ColScale | kFlagRelaxed;

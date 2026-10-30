@@ -120,6 +120,7 @@ enum Pipe : int {
   kPRopeTable, kPEmbedFwd,
   kPAttnFwdTiled, kPAttnDQTiled, kPAttnDKTiled, kPAttnDVTiled,
   kPAttnFwdTiledBlk, kPAttnDQTiledBlk, kPAttnDKTiledBlk, kPAttnDVTiledBlk,
+  kPAttnFwdTiledMma, kPAttnDQTiledMma, kPAttnDKTiledMma, kPAttnDVTiledMma,
   kPipeCount
 };
 const char* const kPipeNames[kPipeCount] = {
@@ -156,7 +157,9 @@ const char* const kPipeNames[kPipeCount] = {
     "k_attn_fwd_tiled", "k_attn_dq_tiled", "k_attn_dk_tiled",
     "k_attn_dv_tiled",
     "k_attn_fwd_tiled_blk", "k_attn_dq_tiled_blk", "k_attn_dk_tiled_blk",
-    "k_attn_dv_tiled_blk"};
+    "k_attn_dv_tiled_blk",
+    "k_attn_fwd_tiled_mma", "k_attn_dq_tiled_mma", "k_attn_dk_tiled_mma",
+    "k_attn_dv_tiled_mma"};
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -1246,13 +1249,20 @@ std::expected<void, std::string> MetalBackend::Encode(
       a.H = hi(ins.out[2]); a.D = lo(ins.out[2]);
       a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
       a.flags = TiledRowsVectorizable(a);
-      // The blocked form (F3 step 2) for head widths the 64-float row
-      // registers cover; wider heads take the per-row form.
-      if (a.D <= 64u)
+      // The relaxed form (F3 design item 2, plan v20) when the plan permits
+      // it, the products on simdgroup_matrix tiles, 32 rows a threadgroup;
+      // else the blocked form (F3 step 2) for head widths the 64-float row
+      // registers cover; wider heads take the per-row form either way.
+      if (a.D <= 64u && (ins.flags & up::kFlagRelaxed)) {
+        Dispatch(kPAttnFwdTiledMma, a,
+                 a.B * a.H * ((a.S + 31u) / 32u) * 128u, 128u);
+        ++relaxed_executions_;
+      } else if (a.D <= 64u) {
         Dispatch(kPAttnFwdTiledBlk, a,
                  a.B * a.H * ((a.S + 127u) / 128u) * 128u, 128u);
-      else
+      } else {
         Dispatch(kPAttnFwdTiled, a, a.B * a.H * a.S * 32u, kElementwiseGroup);
+      }
       return {};
     }
     case up::OpCode::kAttnDQTiled:
@@ -1264,16 +1274,23 @@ std::expected<void, std::string> MetalBackend::Encode(
       a.B = u32(geo.B); a.S = u32(geo.S); a.H = u32(geo.H); a.D = u32(geo.d);
       a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
       a.flags = TiledRowsVectorizable(a);
-      if (a.D <= 64u)
+      if (a.D <= 64u && (ins.flags & up::kFlagRelaxed)) {
+        Dispatch(op == up::OpCode::kAttnDQTiled   ? kPAttnDQTiledMma
+                 : op == up::OpCode::kAttnDKTiled ? kPAttnDKTiledMma
+                                                  : kPAttnDVTiledMma,
+                 a, a.B * a.H * ((a.S + 31u) / 32u) * 128u, 128u);
+        ++relaxed_executions_;
+      } else if (a.D <= 64u) {
         Dispatch(op == up::OpCode::kAttnDQTiled   ? kPAttnDQTiledBlk
                  : op == up::OpCode::kAttnDKTiled ? kPAttnDKTiledBlk
                                                   : kPAttnDVTiledBlk,
                  a, a.B * a.H * ((a.S + 127u) / 128u) * 128u, 128u);
-      else
+      } else {
         Dispatch(op == up::OpCode::kAttnDQTiled   ? kPAttnDQTiled
                  : op == up::OpCode::kAttnDKTiled ? kPAttnDKTiled
                                                   : kPAttnDVTiled,
                  a, a.B * a.H * a.S * 32u, kElementwiseGroup);
+      }
       return {};
     }
     case up::OpCode::kRopeTable: {

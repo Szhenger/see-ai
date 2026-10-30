@@ -86,12 +86,18 @@ std::expected<void, std::string> ValidateInstructionImpl(
     // program, which scores what ships in exact arithmetic, may not); a
     // backend re-validating a single instruction at dispatch sees the bit
     // as the opcode-level permission it is.
+    // v20 (F3 #131): the four tiled attention opcodes as well.
     const bool relaxed_ok =
-        plan_version >= up::kSeeuRelaxedVersion &&
-        (opcode == up::OpCode::kGemmNN || opcode == up::OpCode::kGemmNT ||
-         opcode == up::OpCode::kGemmNNQ8 || opcode == up::OpCode::kGemmNTQ8 ||
-         opcode == up::OpCode::kGemmNNBF16 ||
-         opcode == up::OpCode::kGemmNTBF16);
+        (plan_version >= up::kSeeuRelaxedVersion &&
+         (opcode == up::OpCode::kGemmNN || opcode == up::OpCode::kGemmNT ||
+          opcode == up::OpCode::kGemmNNQ8 || opcode == up::OpCode::kGemmNTQ8 ||
+          opcode == up::OpCode::kGemmNNBF16 ||
+          opcode == up::OpCode::kGemmNTBF16)) ||
+        (plan_version >= up::kSeeuRelaxedAttentionVersion &&
+         (opcode == up::OpCode::kAttnFwdTiled ||
+          opcode == up::OpCode::kAttnDQTiled ||
+          opcode == up::OpCode::kAttnDKTiled ||
+          opcode == up::OpCode::kAttnDVTiled));
     const uint16_t allowed = static_cast<uint16_t>(
         ((opcode == up::OpCode::kGemmNN || opcode == up::OpCode::kGemmNNBF16)
              ? up::kEpilogueFlagsMask

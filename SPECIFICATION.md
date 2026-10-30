@@ -310,7 +310,7 @@ raise the oldest-readable floor; newer-than-reader is always rejected):
 |---|---|---|---|
 | SMF (model container) | `"SMF1"` | v6 (readers accept v1–v6; writers emit the lowest version the model needs) | `source/language/model_format.*`, `compiler/frontend/ingressor/model_{reader,writer}.cc`, Python writer in `tool/export_model.py` |
 | SDS (dataset) | `"SDS1"` | v1 (feature rows) / v2 (token records) | `runtime/pipeline/dataset.{h,cc}`, Python writer |
-| SEEU (update plan) | `"SEEU"` | v19, oldest-readable v4 | written by `compiler/backend/*` + driver; read/validated by `runtime/verifier` + `runtime/dispatcher`; disassembled by `seeml-seeu-dump` |
+| SEEU (update plan) | `"SEEU"` | v20, oldest-readable v4 | written by `compiler/backend/*` + driver; read/validated by `runtime/verifier` + `runtime/dispatcher`; disassembled by `seeml-seeu-dump` |
 | SEKP (checkpoint) | `"SEKP"` | v5, oldest-readable v3 | `runtime/storage/checkpoint_format.h`, `runtime/storage/checkpoint.cc` |
 
 The Python plane restates these layouts exactly once, in

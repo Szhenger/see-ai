@@ -110,9 +110,11 @@ struct CompiledUpdate {
   // E12: the eval program reads the student's frozen weights from the
   // source model file (the shipped f32), not the plan's narrow copies.
   bool scores_shipped = false;
-  // Instructions of the train and step programs carrying kFlagRelaxed
-  // (plan v18): 0 under Precision::kF32.
+  // Instructions of the train and step programs carrying kFlagRelaxed: the
+  // frozen-weight GEMMs (plan v18) and the tiled attention instructions
+  // (plan v20). 0 under Precision::kF32.
   uint64_t relaxed_gemms = 0;
+  uint64_t relaxed_attention = 0;
 };
 
 struct TrainingFootprint;

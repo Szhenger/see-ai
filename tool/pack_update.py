@@ -400,8 +400,9 @@ def pack(opts: Options) -> dict:
         relaxed_gemms = formats.relaxed_gemm_count(f)
     if relaxed_gemms and certificate is None:
         raise PackError(
-            f"'{plan_path}' carries {relaxed_gemms} relaxed GEMM(s) "
-            "(--precision certified-bf16) and no numerics certificate: run "
+            f"'{plan_path}' carries {relaxed_gemms} relaxed instruction(s) "
+            "(GEMMs, tiled attention: --precision certified-bf16) and no "
+            "numerics certificate: run "
             f"tool/certify_numerics.py certify {pkg} --corpus <corpus.sds> "
             "[--source <model.smf>] first, or recompile with --precision f32")
 

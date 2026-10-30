@@ -191,7 +191,8 @@ class CertificateTest(unittest.TestCase):
                                            report(cpp_relaxed_executed=1)), [])
         exact = cn.check_observed(relaxed, report(cpp_relaxed_executed=0))
         self.assertEqual(len(exact), 1)
-        self.assertIn("4 relaxed GEMM(s) on the exact kernels", exact[0])
+        self.assertIn("4 relaxed instruction(s) on the exact kernels",
+                      exact[0])
         self.assertIn("--cpp-backend metal", exact[0])
         old = report()
         del old["cpp_relaxed_executed"]
@@ -486,7 +487,7 @@ class CertifyPlansTest(unittest.TestCase):
         self.assertGreater(plan.relaxed_gemms, 0)
         status, log = run(pack_update, [pkg])
         self.assertEqual(status, 1)
-        self.assertIn("relaxed GEMM", log)
+        self.assertIn("relaxed instruction", log)
         self.assertIn("no numerics certificate", log)
         # N17: neither the compiler's --build nor the package's own
         # build.sh links an uncertified relaxed plan — the script refuses
@@ -632,7 +633,7 @@ class CertifyPlansTest(unittest.TestCase):
         status, log = run(cn, ["verify", cert_path, "--plan", pkg,
                                "--observed", diff])
         self.assertEqual(status, 3)
-        self.assertIn(f"{plan.relaxed_gemms} relaxed GEMM(s) on the exact "
+        self.assertIn(f"{plan.relaxed_gemms} relaxed instruction(s) on the exact "
                       "kernels", log)
         rewrite(cpp_relaxed_executed=max(executed, 1), relaxed_modelled=True)
         status, log = run(cn, ["verify", cert_path, "--plan", pkg,
@@ -659,6 +660,48 @@ class CertifyPlansTest(unittest.TestCase):
             self.assertEqual(x.opcode, y.opcode)
             self.assertEqual(x.flags, y.flags & ~fx.FLAG_RELAXED)
             self.assertEqual(x.src, y.src)
+
+    def test_a_relaxed_tiled_attention_plan_certifies_its_attention_sites(self):
+        # Plan v20 (F3 #131): certified precision with tiled attention marks
+        # the four tiled opcodes of training kFlagRelaxed beside the frozen
+        # GEMMs. The flagged contract then enforces exactly those sites —
+        # gemm.relaxed and each attn.*.tiled, which the certifier prices
+        # for any summation order — and a certificate that left one of them
+        # out does not vouch for the plan.
+        corpus = os.path.join(self.dir, "decoder_corpus.sds")
+        pkg = self.compile("dec_relaxed_tiled", "decoder.smf", 12,
+                           "--precision", "certified-bf16",
+                           "--attention", "tiled")
+        plan = fx.Plan.load(os.path.join(pkg, cn.PLAN_FILE))
+        self.assertEqual(plan.version, fx.formats.SEEU_VERSION)
+        self.assertGreater(plan.relaxed_instructions, plan.relaxed_gemms)
+        attention = ["attn.dk.tiled", "attn.dq.tiled", "attn.dv.tiled",
+                     "attn.fwd.tiled"]
+        self.assertEqual(cn.flagged_sites(plan),
+                         attention + [cn.RELAXED_GEMM_SITE])
+        status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                               "--steps", "4", "--val-fraction", "0.25",
+                               "--max-loss-deviation", "1e-2"])
+        self.assertEqual(status, 0, log)
+        with open(os.path.join(pkg, cn.CERT_FILE)) as f:
+            cert = json.load(f)
+        self.assertEqual(cert["contract"]["family"], cn.FLAGGED_FAMILY)
+        self.assertEqual(cert["contract"]["sites"],
+                         attention + [cn.RELAXED_GEMM_SITE])
+        for name in attention:
+            site = cert["evidence"]["sites"][name]
+            self.assertGreater(site["instances"], 0)
+            self.assertLessEqual(site["observed_rel"], site["bound_rel"])
+        self.assertEqual(cn.check_certificate(
+            cert, os.path.join(pkg, cn.PLAN_FILE)), [])
+        short = dict(cert, contract=dict(cert["contract"], sites=[
+            s for s in cert["contract"]["sites"] if s != "attn.fwd.tiled"]))
+        short["digest"] = cn.self_digest(short)
+        problems = cn.check_certificate(short, os.path.join(pkg, cn.PLAN_FILE))
+        self.assertTrue(any("attn.fwd.tiled site the certificate does not "
+                            "cover" in p for p in problems), problems)
+        # The packer accepts the plan beside its certificate.
+        self.assertEqual(run(pack_update, [pkg])[0], 0)
 
     def test_a_tolerance_the_plan_cannot_meet_is_a_refusal(self):
         pkg = self.compile("mlp", "mlp.smf", 8, "--clip-norm", "0.5")

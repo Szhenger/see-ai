@@ -384,6 +384,57 @@ TEST(UpdateCompiler, CertifiedBf16MarksOnlyTheFrozenGemmsOfTraining) {
   }
 }
 
+TEST(UpdateCompiler, CertifiedPrecisionAlsoMarksTheTiledAttentionOfTraining) {
+  // Plan v20 (F3 #131): under --precision certified-bf16 the tiled
+  // attention instructions of the train program carry kFlagRelaxed beside
+  // the frozen-weight GEMMs — all four per attention op (forward, dQ, dK,
+  // dV) — and the eval program's do not; the cached family has no relaxed
+  // form, so a cached plan marks GEMMs only.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 8, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  UpdateConfig tiled = BaseConfig(batch);
+  tiled.attention = AttentionKind::kTiled;
+  tiled.precision = Precision::kCertifiedBf16;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate t, UpdateCompiler(tiled).Compile(model));
+  auto is_tiled = [](uint16_t opcode) {
+    const auto op = static_cast<OpCode>(opcode);
+    return op == OpCode::kAttnFwdTiled || op == OpCode::kAttnDQTiled ||
+           op == OpCode::kAttnDKTiled || op == OpCode::kAttnDVTiled;
+  };
+  uint64_t tiled_train = 0, flagged_attention = 0;
+  for (const auto& ins : TrainProgramOf(t)) {
+    if (!is_tiled(ins.opcode)) continue;
+    ++tiled_train;
+    flagged_attention += (ins.flags & kFlagRelaxed) != 0;
+  }
+  EXPECT_GT(tiled_train, 0u);
+  EXPECT_EQ(tiled_train % 4, 0u);
+  EXPECT_EQ(flagged_attention, tiled_train);
+  EXPECT_EQ(t.relaxed_attention, tiled_train);
+  EXPECT_GT(t.relaxed_gemms, 0u);
+  uint64_t tiled_eval = 0;
+  for (const auto& ins : EvalProgramOf(t)) {
+    tiled_eval += is_tiled(ins.opcode);
+    EXPECT_EQ(ins.flags & kFlagRelaxed, 0u);
+  }
+  EXPECT_GT(tiled_eval, 0u);  // the eval forward is tiled too, and exact
+  EXPECT_EQ(HeaderOf(t).version, kSeeuVersion);
+  EXPECT_GE(kSeeuVersion, kSeeuRelaxedAttentionVersion);
+  UpdateConfig cached = tiled;
+  cached.attention = AttentionKind::kCached;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(cached).Compile(model));
+  EXPECT_EQ(c.relaxed_attention, 0u);
+  EXPECT_EQ(c.relaxed_gemms, t.relaxed_gemms);
+  // f32 precision marks nothing, tiled or not.
+  UpdateConfig exact = tiled;
+  exact.precision = Precision::kF32;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate e, UpdateCompiler(exact).Compile(model));
+  EXPECT_EQ(e.relaxed_attention, 0u);
+  for (const auto& ins : TrainProgramOf(e))
+    EXPECT_EQ(ins.flags & kFlagRelaxed, 0u);
+}
+
 TEST(UpdateCompiler, Bf16BaseHalvesRodataAndLowersTheWideningGemms) {
   SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 53);
   UpdateConfig f32 = BaseConfig(kBatch);

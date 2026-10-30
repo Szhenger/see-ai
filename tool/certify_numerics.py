@@ -150,7 +150,10 @@ def is_site(ins):
 
 
 def site_name(ins):
-    return RELAXED_GEMM_SITE if ins.flags & fx.FLAG_RELAXED else \
+    """The one gemm.relaxed site for a relaxed GEMM (F72); every other site
+    instruction — a relaxed tiled attention one (v20) included — under its
+    opcode's reduction site."""
+    return fx.site_of(ins) if ins.flags & fx.FLAG_RELAXED else \
         SITES[ins.opcode]
 
 
@@ -163,9 +166,10 @@ def is_flagged(ins):
 
 def family_of(plan):
     """The contract a certificate of `plan` states: the flagged family when
-    its train or step program marks any instruction kFlagRelaxed, P3's
-    reduction family otherwise."""
-    return FLAGGED_FAMILY if plan.relaxed_gemms else FAMILY
+    its train or step program marks any instruction kFlagRelaxed (a GEMM,
+    v18, or a tiled attention instruction, v20), P3's reduction family
+    otherwise."""
+    return FLAGGED_FAMILY if plan.relaxed_instructions else FAMILY
 
 
 def flagged_sites(plan):
@@ -563,14 +567,23 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
         if cert["contract"]["family"] not in FAMILIES:
             problems.append(f"unknown contract family "
                             f"{cert['contract']['family']!r}")
-        # v18: a plan whose train / step programs carry relaxed GEMMs is
-        # vouched for only by a certificate that priced that site.
+        # v18 / v20: a plan whose train / step programs carry relaxed
+        # instructions is vouched for only by a certificate that priced
+        # every one of their sites — gemm.relaxed for the GEMMs, each
+        # attn.*.tiled site for the tiled attention family.
         with open(plan_path, "rb") as f:
-            relaxed = fx.formats.relaxed_gemm_count(f)
-        if relaxed and RELAXED_GEMM_SITE not in cert["contract"]["sites"]:
-            problems.append(f"the plan carries {relaxed} relaxed GEMM(s) "
-                            f"({RELAXED_GEMM_SITE}) the certificate does "
-                            "not cover")
+            opcodes = fx.formats.relaxed_opcodes(f)
+        needed = {}
+        for op in opcodes:
+            name = (RELAXED_GEMM_SITE
+                    if op in fx.formats.RELAXED_GEMM_OPCODES
+                    else fx.OPCODES.get(op, str(op)))
+            needed[name] = needed.get(name, 0) + 1
+        for name, count in sorted(needed.items()):
+            if name not in cert["contract"]["sites"]:
+                problems.append(f"the plan carries {count} relaxed "
+                                f"instruction(s) at the {name} site the "
+                                "certificate does not cover")
     except (KeyError, TypeError) as e:
         problems.append(f"malformed certificate ({e!r})")
     return problems
@@ -635,7 +648,10 @@ def check_observed(cert, observed):
         # reference arm ran exact: --relaxed models the bf16 rounding on
         # the reference too, so the two would agree on the model, not on
         # the kernel.
-        if RELAXED_GEMM_SITE in cert["contract"]["sites"]:
+        # Every flagged-contract certificate covers relaxed instructions; an
+        # older P3-family one did when it named the relaxed GEMM site.
+        if (cert["contract"].get("family") == FLAGGED_FAMILY
+                or RELAXED_GEMM_SITE in cert["contract"]["sites"]):
             if observed.get("relaxed_modelled", False):
                 problems.append("the observed run modelled the relaxed "
                                 "rounding on the reference side (--relaxed): "
@@ -651,12 +667,12 @@ def check_observed(cert, observed):
                 problems.append(
                     "the observed run executed its "
                     f"{observed.get('relaxed_instructions', '?')} relaxed "
-                    "GEMM(s) on the exact kernels (C++ backend "
+                    "instruction(s) on the exact kernels (C++ backend "
                     f"{observed.get('cpp_backend', '?')}): it measures "
-                    f"nothing about the certified {RELAXED_GEMM_SITE} site; "
-                    "run the diff on a backend that carries the relaxed "
-                    "kernels (--cpp-backend metal, or a SEEML_ACCELERATE "
-                    "build of seeml-plan-probe)")
+                    "nothing about the certified relaxed sites; run the "
+                    "diff on a backend that carries the relaxed kernels "
+                    "(--cpp-backend metal, or a SEEML_ACCELERATE build of "
+                    "seeml-plan-probe)")
         # A certified site may sit past the diff tolerance by design (the
         # relaxed GEMMs: 2^-7 against the diff's 1e-5), so `agrees`, which
         # judges every site at that tolerance, is not the test here. The
