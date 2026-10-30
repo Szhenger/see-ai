@@ -150,8 +150,17 @@ jobs:
           # mismatch" took down all seven Linux jobs). Keep Ubuntu's own
           # archive only; llvm.sh adds its source afterwards.
           sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          # apt-get has no timeout of its own: on 2026-10-22 the first
+          # attempt's update sat 8 minutes after noble-security InRelease
+          # and the step timed out before the loop could retry. Every
+          # fetch and every attempt is bounded (a green attempt is 18-52 s).
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' |
+            sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
+          attempt() {
+            wget -T 30 -t 1 -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19 all
+          }
           for i in 1 2 3; do
-            if wget -T 30 -t 1 -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19 all; then
+            if timeout 120 bash -ec "$(declare -f attempt); attempt"; then
               exit 0
             fi
             echo "apt.llvm.org attempt $i failed; retrying" >&2
@@ -187,8 +196,17 @@ jobs:
           # mismatch" took down all seven Linux jobs). Keep Ubuntu's own
           # archive only; llvm.sh adds its source afterwards.
           sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          # apt-get has no timeout of its own: on 2026-10-22 the first
+          # attempt's update sat 8 minutes after noble-security InRelease
+          # and the step timed out before the loop could retry. Every
+          # fetch and every attempt is bounded (a green attempt is 18-52 s).
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' |
+            sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
+          attempt() {
+            wget -T 30 -t 1 -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19 all
+          }
           for i in 1 2 3; do
-            if wget -T 30 -t 1 -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19 all; then
+            if timeout 120 bash -ec "$(declare -f attempt); attempt"; then
               exit 0
             fi
             echo "apt.llvm.org attempt $i failed; retrying" >&2
@@ -267,8 +285,17 @@ jobs:
           # mismatch" took down all seven Linux jobs). Keep Ubuntu's own
           # archive only; llvm.sh adds its source afterwards.
           sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          # apt-get has no timeout of its own: on 2026-10-22 the first
+          # attempt's update sat 8 minutes after noble-security InRelease
+          # and the step timed out before the loop could retry. Every
+          # fetch and every attempt is bounded (a green attempt is 18-52 s).
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' |
+            sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
+          attempt() {
+            wget -T 30 -t 1 -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19 all
+          }
           for i in 1 2 3; do
-            if wget -T 30 -t 1 -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19 all; then
+            if timeout 120 bash -ec "$(declare -f attempt); attempt"; then
               exit 0
             fi
             echo "apt.llvm.org attempt $i failed; retrying" >&2
