@@ -868,7 +868,7 @@ up to 64 (`docs/runtime.md`). Two questions, two measurements
 
 **Inside the certified bound.** `dec_wide` (V 4,096, D 512, H 8, S 256,
 4 blocks, f32 base, LoRA r16 — the `frontier_run.py synth` checkpoint of
-F1's row below) compiled `--attention tiled --precision certified-bf16`:
+F1's row above) compiled `--attention tiled --precision certified-bf16`:
 55 relaxed GEMMs and 16 relaxed attention instructions.
 `certify_numerics.py certify` at its defaults grants it under the flagged
 contract over five sites:
@@ -891,38 +891,54 @@ inside the diff's own 1e-5, as is every unrelaxed opcode's — and
 
 **What it buys at S = 2048.** SmolLM-135M at S = 2048 (the 10-20 export,
 2,048 tokens per step, int8 base), compiled from this tree three ways; the
-train program on `seeml-plan-probe --backend metal` (a zero arena, three
-timed runs after a warm-up, nothing else running, the certification
-paused as for F1's row; `--profile 2`, serialized, for the split):
+train program on `seeml-plan-probe --backend metal` with the shipped
+kernels, in one window (a zero arena, three timed runs after a warm-up,
+nothing else running, the certification paused as for F1's row;
+`--profile 2`, serialized, for the split):
 
 | plan | arena | train program (ms, median) | tok/s | attention, serialized (ms) | GEMMs, serialized (ms) |
 |---|---:|---:|---:|---:|---:|
-| cached, exact | 8.64 GB | 1,629 | 1,257 | — | — |
-| tiled, exact (the blocked kernels) | 4.12 GB | 3,417 | 599 | 2,541 (fwd 407, dQ 1,081, dK 730, dV 324) | 994 |
-| tiled, certified precision (matrix-tile attention, relaxed GEMMs) | 4.12 GB | 1,098 | 1,865 | 468 (110, 176, 105, 76) | 768 |
+| cached, exact | 8.64 GB | 1,548 | 1,323 | — | — |
+| tiled, exact (the blocked kernels) | 4.12 GB | 3,341 | 613 | 2,493 (fwd 404, dQ 1,060, dK 711, dV 317) | 984 |
+| tiled, certified precision (matrix-tile attention, relaxed GEMMs) | 4.12 GB | 1,102 | 1,858 | 469 (107, 176, 107, 79) | 753 |
 
-The attention kernels run 5.4× faster on the serialized profile, which is
-most of the train program's 3.1×; the relaxed GEMMs account for the rest.
-The certified tiled plan now runs **1.48× faster than the cached family,
+The attention kernels run 5.3× faster on the serialized profile, which is
+most of the train program's 3.0×; the relaxed GEMMs account for the rest.
+The certified tiled plan now runs **1.40× faster than the cached family,
 at less than half its arena** — the long-context form is no longer the
-slow one. The exact rows sit within 2 % of the 10-20 twenty-step package
-runs (cached 1,659 ms, blocked 3,473 ms), whose steps include the feeder
-and the loss read-back the probe leaves out; both arenas sit 390,555,520
-bytes under that day's compiles (9.03 and 4.51 GB). MLX-LM in the same
-session at the same 2,048 tokens per step (`frontier_run.py mlx`, 300
-steps, its trainer's own step): 823 ms all-bf16 (2,487 tok/s) and 1,732
-ms true f32 (1,183 tok/s), so the certified tiled plan runs at **0.75×
-MLX-LM's bf16 throughput and 1.58× its true-f32 throughput**. The 5 → 15
-step package slopes of the first window read the exact plans faster
-(cached 959 ms, blocked 2,961) — the optimism the 2026-09-22 section
-measured in short slopes — and are quoted nowhere else.
+slow one. Windows on this host differ by a few per cent: an earlier one
+the same day read cached 1,629, blocked 3,417 and certified 1,098 ms
+(1.48×; `window2/`). The exact rows sit 4–7 % under the 10-20 twenty-step
+package runs (cached 1,659 ms, blocked 3,473 ms), whose steps also hold
+the feeder and the loss read-back the probe leaves out; both arenas sit
+390,555,520 bytes under that day's compiles (9.03 and 4.51 GB). MLX-LM in
+the same session at the same 2,048 tokens per step (`frontier_run.py
+mlx`, 300 steps, its trainer's own step): 823 ms all-bf16 (2,487 tok/s)
+and 1,732 ms true f32 (1,183 tok/s), so the certified tiled plan runs at
+**0.75× MLX-LM's bf16 throughput and 1.57× its true-f32 throughput**. The
+5 → 15 step package slopes of the first window read the exact plans
+faster (cached 959 ms, blocked 2,961) — the optimism the 2026-09-22
+section measured in short slopes — and are quoted nowhere else.
+
+**Barriers, and the hosted M1.** The first form of these kernels handed a
+simdgroup's scratch between its matrix and lane views with
+`simdgroup_barrier`s. On GitHub's hosted Apple M1 (Virtual) GPU that form
+failed the twin test at every head width up to 64 (PR #173's first CI
+run, 41104700907): forward and dQ rows wrong and different run to run,
+the stats, dK and dV right — and the two failing kernels are the two
+whose lanes do the least threadgroup-memory work between rewriting a
+block and the next `simdgroup_load`. The shipped kernels use threadgroup
+barriers at those points (all in uniform control flow), and the hosted
+runner's twin test passes with them. On the M5 they change no bit — the
+one-step Metal diff of `dec_wide` repeats the report above exactly
+(`diff_metal_shipped.json`) — and no time: serialized attention 469 ms
+against the first form's 468 in the earlier window.
 
 The probe now reads its arena image straight into the aligned allocation,
 one resident copy as the engine holds. It used to stage the image in a
 vector beside that allocation, twice the arena (17 GB for the cached
-plan on this 16 GB host); the cached row is the single-copy probe's. The
-first window's tiled rows, taken with the staging copy, read 3,426 and
-1,212 ms.
+plan on this 16 GB host). The first window's tiled rows, taken with the
+staging copy and the first-form kernels, read 3,426 and 1,212 ms.
 
 ### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
 

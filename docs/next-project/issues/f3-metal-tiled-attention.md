@@ -97,13 +97,17 @@ fragments over the head columns; each block's dot products are one
 into 8 × 64 accumulators, the elementwise work between on the block staged
 in threadgroup memory. Nothing is S × S, every kernel is bitwise run to
 run, and the CPU and wider heads keep the exact family. On SmolLM-135M at
-S = 2048 the attention kernels run 5.4× faster than the blocked ones
-(2,541 → 468 ms per step, serialized) and the certified tiled plan's step
-is 1,098 ms: 1.48× faster than the cached family's 1,629 at less than
-half its arena, and 0.75× / 1.58× the throughput of MLX-LM all-bf16 /
+S = 2048 the attention kernels run 5.3× faster than the blocked ones
+(2,493 → 469 ms per step, serialized) and the certified tiled plan's step
+is 1,102 ms: 1.40× faster than the cached family's 1,548 at less than
+half its arena, and 0.75× / 1.57× the throughput of MLX-LM all-bf16 /
 true f32 measured the same day
 (`docs/benchmarks.md`, "The relaxed tiled attention family: certified,
-then measured at S = 2048"). Every acceptance line is met.
+then measured at S = 2048"). The first form handed each block between
+the matrix and lane views with simdgroup barriers and failed the twin
+test on GitHub's hosted M1 (Virtual) GPU; the shipped kernels use
+threadgroup barriers there, pass on that GPU, and change no bit and no
+measurable time on the M5. Every acceptance line is met.
 
 ## Acceptance
 
@@ -123,7 +127,8 @@ then measured at S = 2048"). Every acceptance line is met.
   `simdgroup_matrix` tiles) within the certified bound — 2026-10-30, plan
   v20. The twin test drives it against the CPU family at the exact
   kernels' tolerance (1e-4 / 1e-5, five shapes, ragged S, d 16 / 48 / 64)
-  and run to run bitwise; `dec_wide` tiled under certified precision is
+  and run to run bitwise, on the M5 and on GitHub's hosted M1 (Virtual)
+  GPU; `dec_wide` tiled under certified precision is
   granted at the certifier's defaults (the four attention sites observed
   2.5e-7 to 5.6e-7 against 1e-5), and a Metal diff of that plan that ran
   all 71 relaxed instructions on relaxed kernels passes `verify
@@ -136,9 +141,9 @@ then measured at S = 2048"). Every acceptance line is met.
   bf16's 789 ms. Reported, not at parity: the blocked kernels are still
   2.1× the cached family, and the simdgroup-matrix form above is the
   remaining step. Re-measured 2026-10-30 with that form: the certified
-  tiled plan's step is 1,098 ms (1,865 tok/s) against the cached
-  family's 1,629 and the blocked kernels' 3,417 on the same day, and
-  0.75× / 1.58× the throughput of MLX-LM all-bf16 / true f32 (823 / 1,732
+  tiled plan's step is 1,102 ms (1,858 tok/s) against the cached
+  family's 1,548 and the blocked kernels' 3,341 in the same window, and
+  0.75× / 1.57× the throughput of MLX-LM all-bf16 / true f32 (823 / 1,732
   ms) in the same session.
 - [x] `--attention auto` chooses the tiled family for either backend from
   `--attention-cache-budget-mib` (design item 3) and, when

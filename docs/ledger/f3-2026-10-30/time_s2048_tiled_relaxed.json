@@ -1,1 +1,1 @@
-{"backend": "metal", "section": "train", "executions": 3, "ms_median": 1097.9816, "ms_min": 1096.4346, "ms_max": 1104.5502, "relaxed_executions": 1617}
+{"backend": "metal", "section": "train", "executions": 3, "ms_median": 1102.4864, "ms_min": 1100.9946, "ms_max": 1114.9853, "relaxed_executions": 1617}
