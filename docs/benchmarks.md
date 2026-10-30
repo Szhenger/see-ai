@@ -401,8 +401,9 @@ at the same validation loss, ln 4096 ≈ 8.32 plus the init's spread.
 
 **On the M5, through the harness** (`docs/ledger/f1-2026-10-30/`; 348
 records of 257 ids, 2 × 256 tokens per step, LoRA r16 / α32, 300 steps,
-10 threads, the machine otherwise idle; every parity check passes, the
-records digest `07c6337e…`):
+10 threads, nothing else running — the 2026-10-30 SmolLM-135M
+certification of F2 #130 paused with `SIGSTOP`, its 2.5 GB left resident;
+every parity check passes, the records digest `07c6337e…`):
 
 | row | tokens/s | step (ms) | validation 0 → 300 |
 |---|---:|---:|---|
@@ -413,10 +414,11 @@ records digest `07c6337e…`):
 | MLX-LM all-bf16 | 27,444 | 18.7 | 8.4129 → 6.9166 |
 | MLX-LM true f32 (`MLX_ENABLE_TF32=0`) | 17,128 | 29.9 | 8.4129 → 6.9126 |
 
-On this shape SeeAI's f32 Metal package is **1.04× MLX-LM's true-f32
-trainer** and 0.65× its all-bf16 one (0.83× of torch.compile's bf16 base);
-the CPU package is 0.39× of torch.compile CPU, where it was 0.40× on
-SmolLM-135M. The two SeeAI backends end within 5e-7 of each other.
+On this shape SeeAI's f32 Metal package runs at **1.04× MLX-LM's
+true-f32 throughput** and 0.65× its all-bf16 one (0.83× of torch.compile's
+bf16 base); the CPU package is 0.39× of torch.compile CPU, where it was
+0.40× on SmolLM-135M on 2026-10-15. The two SeeAI backends end within
+5e-7 of each other.
 
 **On GitHub's hosted runner, nightly.** The frontier job of `nightly.yml`
 now runs on `macos-latest`: a self-hosted runner on this public
@@ -880,7 +882,7 @@ contract over five sites:
 | gemm.relaxed | 2.5e-3 | 1.2e-2 | 2⁻⁷ |
 
 The 20-step free run's loss deviates by 2.5e-5 and its validation loss by
-4.8e-6 relative, and the gate decides the same under both contracts. A
+4.8e-6 relative, and the improvement gate passes on both arms. A
 one-step `frontier_exec.py diff --cpp-backend metal` of the same plan ran
 all 71 relaxed instructions on relaxed kernels, the attention sites'
 worst relative error against the float64 reference 3.9e-7 to 9.0e-7 —
@@ -890,8 +892,8 @@ inside the diff's own 1e-5, as is every unrelaxed opcode's — and
 **What it buys at S = 2048.** SmolLM-135M at S = 2048 (the 10-20 export,
 2,048 tokens per step, int8 base), compiled from this tree three ways; the
 train program on `seeml-plan-probe --backend metal` (a zero arena, three
-timed runs after a warm-up, the machine otherwise idle; `--profile 2`,
-serialized, for the split):
+timed runs after a warm-up, nothing else running, the certification
+paused as for F1's row; `--profile 2`, serialized, for the split):
 
 | plan | arena | train program (ms, median) | tok/s | attention, serialized (ms) | GEMMs, serialized (ms) |
 |---|---:|---:|---:|---:|---:|
@@ -901,22 +903,26 @@ serialized, for the split):
 
 The attention kernels run 5.4× faster on the serialized profile, which is
 most of the train program's 3.1×; the relaxed GEMMs account for the rest.
-The certified tiled plan is now **1.48× the cached family's step at less
-than half its arena** — the long-context form is no longer the slow one.
-The exact rows agree with the 10-20 twenty-step runs (cached 1,659 ms,
-blocked 3,473 ms). MLX-LM in the same session at the same 2,048 tokens
-per step (`frontier_run.py mlx`, 300 steps, its trainer's own step): 823
-ms all-bf16 (2,487 tok/s) and 1,732 ms true f32 (1,183 tok/s), so the
-certified tiled plan's train program runs at **0.75× MLX-LM's bf16
-trainer and 1.58× its true-f32 one** (a probe's program time against a
-trainer's step: the probe leaves out the feeder and the loss read-back,
-well under 1 % of a step here). The 5 → 15-step package slopes this
-session read the exact plans faster (cached 959 ms, blocked 2,961) — the
-optimism the 2026-09-22 section measured in short slopes — and are quoted
-nowhere else.
-The probe now reads its arena image straight into the aligned allocation
-(one resident copy, as the engine holds), which is what let the 8.6 GB
-cached plan run on this 16 GB host at all.
+The certified tiled plan now runs **1.48× faster than the cached family,
+at less than half its arena** — the long-context form is no longer the
+slow one. The exact rows sit within 2 % of the 10-20 twenty-step package
+runs (cached 1,659 ms, blocked 3,473 ms), whose steps include the feeder
+and the loss read-back the probe leaves out; both arenas sit 390,555,520
+bytes under that day's compiles (9.03 and 4.51 GB). MLX-LM in the same
+session at the same 2,048 tokens per step (`frontier_run.py mlx`, 300
+steps, its trainer's own step): 823 ms all-bf16 (2,487 tok/s) and 1,732
+ms true f32 (1,183 tok/s), so the certified tiled plan runs at **0.75×
+MLX-LM's bf16 throughput and 1.58× its true-f32 throughput**. The 5 → 15
+step package slopes of the first window read the exact plans faster
+(cached 959 ms, blocked 2,961) — the optimism the 2026-09-22 section
+measured in short slopes — and are quoted nowhere else.
+
+The probe now reads its arena image straight into the aligned allocation,
+one resident copy as the engine holds. It used to stage the image in a
+vector beside that allocation, twice the arena (17 GB for the cached
+plan on this 16 GB host); the cached row is the single-copy probe's. The
+first window's tiled rows, taken with the staging copy, read 3,426 and
+1,212 ms.
 
 ### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
 

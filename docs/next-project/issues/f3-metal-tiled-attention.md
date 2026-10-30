@@ -99,8 +99,9 @@ in threadgroup memory. Nothing is S × S, every kernel is bitwise run to
 run, and the CPU and wider heads keep the exact family. On SmolLM-135M at
 S = 2048 the attention kernels run 5.4× faster than the blocked ones
 (2,541 → 468 ms per step, serialized) and the certified tiled plan's step
-is 1,098 ms: 1.48× the cached family's 1,629 at less than half its arena,
-0.75× MLX-LM all-bf16 and 1.58× MLX-LM true f32 measured the same day
+is 1,098 ms: 1.48× faster than the cached family's 1,629 at less than
+half its arena, and 0.75× / 1.58× the throughput of MLX-LM all-bf16 /
+true f32 measured the same day
 (`docs/benchmarks.md`, "The relaxed tiled attention family: certified,
 then measured at S = 2048"). Every acceptance line is met.
 
@@ -136,9 +137,9 @@ then measured at S = 2048"). Every acceptance line is met.
   2.1× the cached family, and the simdgroup-matrix form above is the
   remaining step. Re-measured 2026-10-30 with that form: the certified
   tiled plan's step is 1,098 ms (1,865 tok/s) against the cached
-  family's 1,629 and the blocked kernels' 3,417 on the same day, and 0.75×
-  / 1.58× of MLX-LM all-bf16 / true f32 (823 / 1,732 ms) in the same
-  session.
+  family's 1,629 and the blocked kernels' 3,417 on the same day, and
+  0.75× / 1.58× the throughput of MLX-LM all-bf16 / true f32 (823 / 1,732
+  ms) in the same session.
 - [x] `--attention auto` chooses the tiled family for either backend from
   `--attention-cache-budget-mib` (design item 3) and, when
   `--memory-budget-mib` is given, from the step-0 footprint against that
