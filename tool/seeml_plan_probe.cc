@@ -546,12 +546,15 @@ int main(int argc, char** argv) {
     return Fail(err);
   const up::PlanHeader& h = program.header;
 
-  // The arena: the caller's image in a backend-aligned allocation.
-  std::vector<uint8_t> image;
-  if (!ReadFile(opts.arena_in, &image))
-    return Fail("cannot read the arena image");
-  if (image.size() != h.arena_size)
-    return Fail("the arena image is " + std::to_string(image.size()) +
+  // The arena: the caller's image read straight into the backend-aligned
+  // allocation — one resident copy, as the engine holds, not a staging
+  // vector beside it (twice the arena: 17 GB for an 8.6 GB arena, which a
+  // 16 GB host cannot hold at all and which skews a timing well before).
+  std::error_code size_ec;
+  const uintmax_t image_bytes = fs::file_size(opts.arena_in, size_ec);
+  if (size_ec) return Fail("cannot read the arena image");
+  if (image_bytes != h.arena_size)
+    return Fail("the arena image is " + std::to_string(image_bytes) +
                 " bytes; the plan declares " + std::to_string(h.arena_size));
   const size_t aligned =
       std::max<size_t>(1, (static_cast<size_t>(h.arena_size) +
@@ -563,8 +566,14 @@ int main(int argc, char** argv) {
   std::unique_ptr<uint8_t, Free> arena(
       static_cast<uint8_t*>(std::aligned_alloc(rt::kArenaAlignment, aligned)));
   if (!arena) return Fail("cannot allocate the arena");
-  std::memset(arena.get(), 0, aligned);
-  std::memcpy(arena.get(), image.data(), image.size());
+  std::memset(arena.get() + h.arena_size, 0, aligned - h.arena_size);
+  {
+    std::ifstream f(opts.arena_in, std::ios::binary);
+    f.read(reinterpret_cast<char*>(arena.get()),
+           static_cast<std::streamsize>(h.arena_size));
+    if (!f || static_cast<uint64_t>(f.gcount()) != h.arena_size)
+      return Fail("cannot read the arena image");
+  }
 
   // The backend: bound and configured exactly as the engine binds it.
   auto selected = rt::CreateBackend(opts.backend);

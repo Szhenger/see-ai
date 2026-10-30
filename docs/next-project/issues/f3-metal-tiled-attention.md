@@ -84,6 +84,26 @@ per multiply-add. The remaining step is the same blocking on
 which changes the reduction order and takes the certificate the issue
 names for it. Memory line met; tok/s line reported, not met.
 
+## Status 2026-10-30
+
+Design item 2 landed, in the form the status above named: the blocked
+kernels' passes with every block's products on `simdgroup_matrix` tiles
+(`k_attn_{fwd,dq,dk,dv}_tiled_mma`, head widths up to 64), behind
+`kFlagRelaxed` on the four tiled opcodes (plan v20), set under certified
+precision, priced by the certificate's `attn.*.tiled` sites. A
+threadgroup of four simdgroups owns 32 query or key rows as 8 × 8
+fragments over the head columns; each block's dot products are one
+8 × 32 tile of fragment products and each accumulation a fragment product
+into 8 × 64 accumulators, the elementwise work between on the block staged
+in threadgroup memory. Nothing is S × S, every kernel is bitwise run to
+run, and the CPU and wider heads keep the exact family. On SmolLM-135M at
+S = 2048 the attention kernels run 5.4× faster than the blocked ones
+(2,541 → 468 ms per step, serialized) and the certified tiled plan's step
+is 1,098 ms: 1.48× the cached family's 1,629 at less than half its arena,
+0.75× MLX-LM all-bf16 and 1.58× MLX-LM true f32 measured the same day
+(`docs/benchmarks.md`, "The relaxed tiled attention family: certified,
+then measured at S = 2048"). Every acceptance line is met.
+
 ## Acceptance
 
 - Superseded 2026-10-23, the line as first written: *GPU and CPU tiled
@@ -98,9 +118,15 @@ names for it. Memory line met; tok/s line reported, not met.
   twin test in `seeml_metal_backend_test` (three shapes; d = 16 and 48
   drive the blocked form, d = 96 the per-row one) and the tiled decoder
   in the program-family test.
-- [ ] The fused flash-style form (design item 2: QKᵀ and PV on
-  `simdgroup_matrix` tiles) within the certified bound — not started; it
-  changes the reduction order and takes the certificate.
+- [x] The fused flash-style form (design item 2: QKᵀ and PV on
+  `simdgroup_matrix` tiles) within the certified bound — 2026-10-30, plan
+  v20. The twin test drives it against the CPU family at the exact
+  kernels' tolerance (1e-4 / 1e-5, five shapes, ragged S, d 16 / 48 / 64)
+  and run to run bitwise; `dec_wide` tiled under certified precision is
+  granted at the certifier's defaults (the four attention sites observed
+  2.5e-7 to 5.6e-7 against 1e-5), and a Metal diff of that plan that ran
+  all 71 relaxed instructions on relaxed kernels passes `verify
+  --observed` (attention sites 3.9e-7 to 9.0e-7).
 - [x] S=2048 SmolLM-shaped step runs entirely on the GPU — no CPU-resident
   opcode in the step; arena 4.12 GB against the cached family's 9.03 GB.
 - [x] Peak memory and tok/s reported against the cached family and F1's
@@ -108,7 +134,11 @@ names for it. Memory line met; tok/s line reported, not met.
   per step (590 tok/s) against the cached family's 1,659 ms and MLX-LM
   bf16's 789 ms. Reported, not at parity: the blocked kernels are still
   2.1× the cached family, and the simdgroup-matrix form above is the
-  remaining step.
+  remaining step. Re-measured 2026-10-30 with that form: the certified
+  tiled plan's step is 1,098 ms (1,865 tok/s) against the cached
+  family's 1,629 and the blocked kernels' 3,417 on the same day, and 0.75×
+  / 1.58× of MLX-LM all-bf16 / true f32 (823 / 1,732 ms) in the same
+  session.
 - [x] `--attention auto` chooses the tiled family for either backend from
   `--attention-cache-budget-mib` (design item 3) and, when
   `--memory-budget-mib` is given, from the step-0 footprint against that

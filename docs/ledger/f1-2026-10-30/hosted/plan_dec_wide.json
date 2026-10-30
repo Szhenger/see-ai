@@ -1,0 +1,7 @@
+{"model_dir": "out/frontier/dec_wide_hf", "rank": 16, "rows": [
+  {"kind": "seeml", "args": ["--package", "out/frontier/pkg_dec_wide", "--model", "out/frontier/dec_wide.smf", "--data", "out/frontier/dec_wide.sds", "--backend", "metal", "--threads", "3"]},
+  {"kind": "seeml", "args": ["--package", "out/frontier/pkg_dec_wide", "--model", "out/frontier/dec_wide.smf", "--data", "out/frontier/dec_wide.sds", "--backend", "cpu", "--lo", "15", "--hi", "45", "--repeats", "1", "--quality-steps", "300", "--threads", "3"]},
+  {"kind": "torch", "args": ["--model-dir", "out/frontier/dec_wide_hf", "--corpus", "out/frontier/corpus.txt", "--device", "cpu", "--compile", "1", "--dtype", "f32", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
+  {"kind": "mlx", "args": ["--model-dir", "out/frontier/dec_wide_hf", "--corpus", "out/frontier/corpus.txt", "--dtype", "bf16", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]},
+  {"kind": "mlx", "args": ["--model-dir", "out/frontier/dec_wide_hf", "--corpus", "out/frontier/corpus.txt", "--dtype", "f32", "--seq-len", "256", "--batch", "2", "--rank", "16", "--alpha", "32"]}
+]}

@@ -1,0 +1,12 @@
+{
+ "machine": "arm64",
+ "cpu": "Apple M1 (Virtual)",
+ "cores": 3,
+ "memory_bytes": 7516192768,
+ "mlx": "0.32.2",
+ "mlx_metal": true,
+ "torch": "2.14.0",
+ "torch_mps": true,
+ "mlx_device": "Device(gpu, 0)",
+ "torch_mps_matmul": 16777216.0
+}

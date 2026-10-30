@@ -1,0 +1,8 @@
+hf import: tied lm_head (w_head = embedding^T; the merged head adapter is not written back into the embedding)
+text corpus: 89609 tokens -> 348 records of 257
+wrote out/f1-2026-10-30/dec_wide.smf (4 decoder blocks, seq_len=256, heads=8, vocab=4096, token-native, rope_base=10000)
+wrote out/f1-2026-10-30/dec_wide.sds (348 records, seq_len=256, token-native)
+
+Loading weights:   0%|          | 0/38 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 38/38 [00:00<00:00, 27670.76it/s]
+hf parity: max |Δ logits| = 2.62e-06 (max |logits| 2.25) vs transformers

@@ -378,9 +378,71 @@ records, so 300 steps of 4 are 23 epochs, every stack's validation loss
 *rose* (SeeAI 4.19 → 5.72, torch 4.19 → 5.30, MLX 4.19 → 5.23) and the
 gate declined — and its CPU row ran no 300-step pass, so the parity check
 refused it as "not a measurement" and the matrix exited 3 on every run.
-Raw JSON in `out/frontier-2026-10-15b/` (`docs/ledger/frontier-2026-10-15b/`). The job itself
-still waits on a runner labelled `self-hosted, macOS, ARM64` with the
-checkpoint path passed as `frontier_model_dir` or set in its environment.
+Raw JSON in `out/frontier-2026-10-15b/` (`docs/ledger/frontier-2026-10-15b/`). The job then
+still waited on a runner labelled `self-hosted, macOS, ARM64`; since
+2026-10-30 it runs on GitHub's hosted Apple silicon instead (next section).
+
+### The dec_wide row, and the frontier rows on GitHub's hosted Apple silicon (F1 #129, 2026-10-30)
+
+**The checkpoint.** `dec_wide` existed only as a SeeAI shape
+(`export_model.py --demo-decoder`: V 4,096, D 512, H 8, S 256, 4 blocks,
+FFN 1,024), and the framework rows load a Hugging Face directory.
+`frontier_run.py synth --shape dec_wide` writes one: a seeded random-init
+Llama at the shape (full multi-head attention, the head tied, f32
+safetensors, 12,587,520 parameters) and a byte-level BPE tokenizer of
+exactly 4,096 entries trained on the docs tree with no special tokens.
+Two runs on today's corpus (sha256 `edfe026a…`) wrote the same tokenizer
+(`d61d37b5…`) and weights (`a7d7dc76…`); `export_model.py --hf
+--hf-parity` reads 2.6e-6 max |Δ logits| against Transformers (max
+|logits| 2.25); the compiled package is F8's `dec_wide` plan to the byte
+count (29 adapters, 381 train instructions, a 163,287,104-byte arena).
+The weights are random, so this is a throughput row: every stack starts
+at the same validation loss, ln 4096 ≈ 8.32 plus the init's spread.
+
+**On the M5, through the harness** (`docs/ledger/f1-2026-10-30/`; 348
+records of 257 ids, 2 × 256 tokens per step, LoRA r16 / α32, 300 steps,
+10 threads, the machine otherwise idle; every parity check passes, the
+records digest `07c6337e…`):
+
+| row | tokens/s | step (ms) | validation 0 → 300 |
+|---|---:|---:|---|
+| SeeAI `metal` (f32 base) | 17,853 | 28.7 | 8.4129 → 6.9120 |
+| SeeAI `cpu` (f32 base) | 2,917 | 175.5 | 8.4130 → 6.9120 |
+| torch.compile MPS, bf16 base, f32 adapters | 21,390 | 23.9 | 8.4129 → 6.9190 |
+| torch.compile CPU f32 | 7,461 | 68.6 | 8.4130 → 6.9190 |
+| MLX-LM all-bf16 | 27,444 | 18.7 | 8.4129 → 6.9166 |
+| MLX-LM true f32 (`MLX_ENABLE_TF32=0`) | 17,128 | 29.9 | 8.4129 → 6.9126 |
+
+On this shape SeeAI's f32 Metal package is **1.04× MLX-LM's true-f32
+trainer** and 0.65× its all-bf16 one (0.83× of torch.compile's bf16 base);
+the CPU package is 0.39× of torch.compile CPU, where it was 0.40× on
+SmolLM-135M. The two SeeAI backends end within 5e-7 of each other.
+
+**On GitHub's hosted runner, nightly.** The frontier job of `nightly.yml`
+now runs on `macos-latest`: a self-hosted runner on this public
+repository would run whatever workflow a fork's pull request brings.
+Dispatch 41093112857 of the branch: a 3-core Apple M1 (Virtual), 7.5 GB,
+MLX 0.32.2 on its paravirtual GPU, both matrices with every parity check
+passing (`docs/ledger/f1-2026-10-30/hosted/`), tokens per second:
+
+| row | SmolLM-135M (r8, int8 base) | dec_wide (r16, f32 base) |
+|---|---:|---:|
+| SeeAI `metal` | 878 | 6,656 |
+| SeeAI `cpu` | 184 | 1,917 |
+| torch.compile CPU f32 | 634 | 5,205 |
+| MLX-LM all-bf16 | 1,181 | 6,249 |
+| MLX-LM true f32 | — | 4,919 |
+
+The VM's absolute numbers are not the M5's; the ratios inside one run are
+the nightly trend. PyTorch MPS is not among them: on the paravirtual GPU
+torch 2.14's MPS evaluation fails to build a Metal pipeline over
+cooperative tensors (the Metal 4 tensor-op family, which SeeAI's relaxed
+GEMM library cannot build there either), so the MPS rows stay on real
+hardware, above. The first two dispatches found two bugs in the job, both
+fixed: its compile steps wrote no `report.json` for the seeml rows to
+read, and an MPS row aborted each matrix at its first framework row. The
+schedule runs the job once the repository variable
+`SEEML_FRONTIER_NIGHTLY` is `true`.
 
 ### The loss on the GPU, and the dispatch model measured (F8 #139, 2026-10-15)
 
@@ -792,6 +854,69 @@ now is the scalar dot: one threadgroup-memory read per multiply-add, at
 QKᵀ and PV products on `simdgroup_matrix` tiles — the fused flash-style
 kernel the issue's step 2 names — which changes the reduction order and
 so needs the certificate the issue provides for it.
+
+### The relaxed tiled attention family: certified, then measured at S = 2048 (F3 #131 design item 2, 2026-10-30)
+
+Plan v20 lets certified precision mark a tiled plan's training attention
+relaxed (`kFlagRelaxed` on opcodes 47–50), and the Metal backend then
+runs the blocked kernels' passes with every block's products on
+`simdgroup_matrix` tiles: `k_attn_{fwd,dq,dk,dv}_tiled_mma`, head widths
+up to 64 (`docs/runtime.md`). Two questions, two measurements
+(`docs/ledger/f3-2026-10-30/`).
+
+**Inside the certified bound.** `dec_wide` (V 4,096, D 512, H 8, S 256,
+4 blocks, f32 base, LoRA r16 — the `frontier_run.py synth` checkpoint of
+F1's row below) compiled `--attention tiled --precision certified-bf16`:
+55 relaxed GEMMs and 16 relaxed attention instructions.
+`certify_numerics.py certify` at its defaults grants it under the flagged
+contract over five sites:
+
+| site | observed relative error | any-order bound | tolerance |
+|---|---:|---:|---:|
+| attn.fwd.tiled | 2.5e-7 | 1.5e-5 | 1e-5 |
+| attn.dq.tiled | 5.6e-7 | 3.9e-5 | 1e-5 |
+| attn.dk.tiled | 3.6e-7 | 9.6e-5 | 1e-5 |
+| attn.dv.tiled | 2.6e-7 | 3.6e-5 | 1e-5 |
+| gemm.relaxed | 2.5e-3 | 1.2e-2 | 2⁻⁷ |
+
+The 20-step free run's loss deviates by 2.5e-5 and its validation loss by
+4.8e-6 relative, and the gate decides the same under both contracts. A
+one-step `frontier_exec.py diff --cpp-backend metal` of the same plan ran
+all 71 relaxed instructions on relaxed kernels, the attention sites'
+worst relative error against the float64 reference 3.9e-7 to 9.0e-7 —
+inside the diff's own 1e-5, as is every unrelaxed opcode's — and
+`certify_numerics.py verify --observed` accepts it.
+
+**What it buys at S = 2048.** SmolLM-135M at S = 2048 (the 10-20 export,
+2,048 tokens per step, int8 base), compiled from this tree three ways; the
+train program on `seeml-plan-probe --backend metal` (a zero arena, three
+timed runs after a warm-up, the machine otherwise idle; `--profile 2`,
+serialized, for the split):
+
+| plan | arena | train program (ms, median) | tok/s | attention, serialized (ms) | GEMMs, serialized (ms) |
+|---|---:|---:|---:|---:|---:|
+| cached, exact | 8.64 GB | 1,629 | 1,257 | — | — |
+| tiled, exact (the blocked kernels) | 4.12 GB | 3,417 | 599 | 2,541 (fwd 407, dQ 1,081, dK 730, dV 324) | 994 |
+| tiled, certified precision (matrix-tile attention, relaxed GEMMs) | 4.12 GB | 1,098 | 1,865 | 468 (110, 176, 105, 76) | 768 |
+
+The attention kernels run 5.4× faster on the serialized profile, which is
+most of the train program's 3.1×; the relaxed GEMMs account for the rest.
+The certified tiled plan is now **1.48× the cached family's step at less
+than half its arena** — the long-context form is no longer the slow one.
+The exact rows agree with the 10-20 twenty-step runs (cached 1,659 ms,
+blocked 3,473 ms). MLX-LM in the same session at the same 2,048 tokens
+per step (`frontier_run.py mlx`, 300 steps, its trainer's own step): 823
+ms all-bf16 (2,487 tok/s) and 1,732 ms true f32 (1,183 tok/s), so the
+certified tiled plan's train program runs at **0.75× MLX-LM's bf16
+trainer and 1.58× its true-f32 one** (a probe's program time against a
+trainer's step: the probe leaves out the feeder and the loss read-back,
+well under 1 % of a step here). The 5 → 15-step package slopes this
+session read the exact plans faster (cached 959 ms, blocked 2,961) — the
+optimism the 2026-09-22 section measured in short slopes — and are quoted
+nowhere else.
+The probe now reads its arena image straight into the aligned allocation
+(one resident copy, as the engine holds), which is what let the 8.6 GB
+cached plan run on this 16 GB host at all.
 
 ### Rematerialization at three rungs (F5 #133 step 2, 2026-10-20)
 
