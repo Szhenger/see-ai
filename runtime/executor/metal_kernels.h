@@ -1758,7 +1758,12 @@ kernel void k_attn_dv_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
 // attn.*.tiled sites for any summation order, and bitwise run-to-run on
 // its device. Each simdgroup's share of `own` is its own 8 x 64 region —
 // the staged operand rows first, then its S / dP blocks, then its output
-// rows — so no simdgroup ever reads another's scratch.
+// rows — so no simdgroup ever reads another's scratch. The hand-offs
+// inside that region — a block stored as a matrix and read by lanes,
+// rewritten by lanes and loaded as a matrix — are threadgroup barriers
+// nonetheless: on the hosted Apple M1 (Virtual) GPU the simdgroup-barrier
+// form failed the twin test (wrong forward and dQ rows, different run to
+// run), and every such point is in uniform control flow.
 #define AMM_ROWS 32u
 // The simdgroup's 8 rows of a staged [32 x 64] tile as eight fragments.
 static inline void amm_rows(thread simdgroup_float8x8* f,
@@ -1813,7 +1818,7 @@ static inline void amm_write_rows(thread const simdgroup_float8x8* acc,
                                   bool live, float scale, uint d, uint lane) {
 #pragma clang loop unroll(full)
   for (uint c = 0; c < 8u; ++c) simdgroup_store(acc[c], ow + c * 8u, ATT_D);
-  simdgroup_barrier(mem_flags::mem_threadgroup);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
   if (!live) return;
   const uint r = lane >> 2, c0 = (lane & 3u) * 16u;
   for (uint e = 0; e < 16u; ++e)
@@ -1853,7 +1858,7 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
     threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_dots(s, qf, kt);
     amm_store_block(s, w);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
       if (j <= i && j < S) m = max(m, w[r * 32u + c0 + e] * inv_sqrt_d);
@@ -1874,7 +1879,7 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
     threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_dots(s, qf, kt);
     amm_store_block(s, w);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
       threadgroup float* x = w + r * 32u + c0 + e;
@@ -1882,7 +1887,7 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
       l += pe;
       *x = pe;
     }
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_accumulate(acc, w, vt);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
@@ -1943,7 +1948,7 @@ kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
     amm_dots(dp, df, vt);
     amm_store_block(s, w);
     amm_store_block(dp, wp);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
       if (live && j <= i && j < S) {
@@ -1967,7 +1972,7 @@ kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
     amm_dots(dp, df, vt);
     amm_store_block(s, w);
     amm_store_block(dp, wp);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
       threadgroup float* x = w + r * 32u + c0 + e;
@@ -1978,7 +1983,7 @@ kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
       }
       *x = gg;
     }
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_accumulate(acc, w, kt);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
@@ -2034,7 +2039,7 @@ kernel void k_attn_dk_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
     amm_dots(dp, vf, dt);
     amm_store_block(s, w);
     amm_store_block(dp, wp);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint ii = c0 + e, i = ib + ii;
       threadgroup float* x = w + r * 32u + ii;
@@ -2046,7 +2051,7 @@ kernel void k_attn_dk_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
       }
       *x = gg;
     }
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_accumulate(acc, w, qt);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
@@ -2090,7 +2095,7 @@ kernel void k_attn_dv_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_dots(s, kf, qt);
     amm_store_block(s, w);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint ii = c0 + e, i = ib + ii;
       threadgroup float* x = w + r * 32u + ii;
@@ -2098,7 +2103,7 @@ kernel void k_attn_dv_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
                ? exp(*x * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u]
                : 0.0f;
     }
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     amm_accumulate(acc, w, dt);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
