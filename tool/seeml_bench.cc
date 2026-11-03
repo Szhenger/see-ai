@@ -82,6 +82,7 @@
 #include "source/parallel/parallel_for.h"
 #include "source/plan/update_types.h"
 #include "test/support/builders.h"
+#include "tool/energy_meter.h"
 
 namespace {
 
@@ -733,6 +734,12 @@ int main(int argc, char** argv) {
       trained_steps += r.steps;
     };
 
+    // Energy per step (F6 #134): the SoC counters over the lo and hi runs,
+    // the same regression as the step time — the lifecycle's energy
+    // cancels — on the first domain both readings carry (the GPU's is what
+    // an unprivileged reader sees on macOS 26; whole-SoC either way).
+    seeml::bench::EnergyMeter energy;
+    std::string energy_domain;
     bool first_thread = true;
     for (uint64_t t : threads) {
       up::SetParallelThreadCount(t);
@@ -742,22 +749,35 @@ int main(int argc, char** argv) {
       else
         note(*r);
 
-      std::vector<double> per_step_ms, lifecycle_ms;
+      std::vector<double> per_step_ms, lifecycle_ms, energy_j_per_step;
       engine.ResetStepTimings();
       for (uint64_t rep = 0; rep < *repeats; ++rep) {
+        energy.Start();
         const auto t_lo = Clock::now();
         auto r_lo = engine.Train(*data, *lo, quiet);
         const double wall_lo = MsSince(t_lo);
+        const seeml::bench::EnergyReading e_lo = energy.Stop();
         if (!r_lo) return Fail(f->name + (": " + r_lo.error()));
         note(*r_lo);
+        energy.Start();
         const auto t_hi = Clock::now();
         auto r_hi = engine.Train(*data, *hi, quiet);
         const double wall_hi = MsSince(t_hi);
+        const seeml::bench::EnergyReading e_hi = energy.Stop();
         if (!r_hi) return Fail(f->name + (": " + r_hi.error()));
         note(*r_hi);
         const double slope = (wall_hi - wall_lo) /
                              static_cast<double>(*hi - *lo);
         per_step_ms.push_back(slope);
+        for (const char* domain : {"GPU Energy", "CPU Energy"}) {
+          const double j_lo = seeml::bench::EnergyMeter::Domain(e_lo, domain);
+          const double j_hi = seeml::bench::EnergyMeter::Domain(e_hi, domain);
+          if (j_lo < 0.0 || j_hi <= j_lo) continue;
+          energy_j_per_step.push_back((j_hi - j_lo) /
+                                      static_cast<double>(*hi - *lo));
+          energy_domain = domain;
+          break;
+        }
         lifecycle_ms.push_back(wall_lo - slope * static_cast<double>(*lo));
       }
       const double step_ms = Median(per_step_ms);
@@ -797,9 +817,28 @@ int main(int argc, char** argv) {
                    it_per_s, *lo_it, *hi_it);
       if (peak_gflops > 0.0)
         std::fprintf(out, ", \"mfu\": %.4f", gflops / peak_gflops);
+      if (!energy_j_per_step.empty()) {
+        const double j_step = Median(energy_j_per_step);
+        std::fprintf(out,
+                     ", \"energy_j_per_step\": %.5f, \"energy_j_per_token\": "
+                     "%.7f",
+                     j_step, j_step / static_cast<double>(f->batch_rows));
+      }
       std::fprintf(out, "}");
       first_thread = false;
     }
+    const std::string energy_json =
+        !energy_domain.empty()
+            ? "{\"attribution\": \"whole-SoC\", \"scope\": [\"" +
+                  JsonEscape(energy_domain) + "\"]}"
+            : "{\"unavailable\": \"" +
+                  JsonEscape(energy.available()
+                                 ? "no Energy Model counter moved for this "
+                                   "process (unprivileged readers see the "
+                                   "GPU's alone on macOS 26; the CPU's need "
+                                   "root)"
+                                 : energy.reason()) +
+                  "\"}";
 
     const auto t_merge = Clock::now();
     if (auto ok = engine.RunMerge(); !ok)
@@ -824,13 +863,14 @@ int main(int argc, char** argv) {
                  "      \"train_loss_first\": %.6f, "
                  "\"train_loss_last\": %.6f, \"trained_tokens\": %" PRIu64
                  ",\n      \"peak_rss_bytes\": %" PRIu64
-                 ", \"rss_over_planned\": %.3f\n    }",
+                 ", \"rss_over_planned\": %.3f,\n      \"energy\": %s\n    }",
                  merge_ms, ckpt_ms, static_cast<double>(train_loss_first),
                  static_cast<double>(train_loss_last),
                  trained_steps * static_cast<uint64_t>(f->batch_rows),
                  peak_rss,
                  planned > 0.0 ? static_cast<double>(peak_rss) / planned
-                               : 0.0);
+                               : 0.0,
+                 energy_json.c_str());
   }
 
   // The second calibration bracket: a runner whose speed moved during the

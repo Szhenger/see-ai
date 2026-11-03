@@ -42,8 +42,9 @@ inline bool RangeOk(uint64_t off, uint64_t bytes, uint64_t size) {
 /// joining the bounds and overlap discipline; kGemmNNQ8: activation only —
 /// its in[3] is the dequant scale). An unknown bit is a hard error, never a
 /// silent skip.
-/// `allow_source`: the instruction belongs to the eval program, the one
-/// stream that may read the source model file (v17).
+/// `allow_source`: the instruction may read the source model file — the
+/// eval program's from v17, every program's from v21 (an adapter-only
+/// plan, F6 #134); the caller decides from the program and the version.
 [[nodiscard]] std::expected<void, std::string> ValidateInstruction(
     const seeml::update::UpdateInstruction& ins, uint64_t arena_size,
     uint64_t rodata_size, uint32_t plan_version, bool allow_source = false);

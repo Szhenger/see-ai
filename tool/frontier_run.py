@@ -105,6 +105,32 @@ def records_digest(records):
     return hashlib.sha256(records.astype("<i4").tobytes()).hexdigest()[:16]
 
 
+def energy_meter():
+    """The SoC energy meter (tool/seeml/energy.py, F6 #134): IOReport's
+    counters without root on macOS; unavailable, with the reason, elsewhere.
+    Standard library only (ctypes)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from seeml.energy import EnergyMeter
+    return EnergyMeter()
+
+
+def energy_fields(reading, tokens, j_per_step=None, steps=None):
+    """The row's `energy` object from a meter reading: whole-SoC, the
+    domains that moved, joules per step (given from the lo/hi slope, or
+    the reading's GPU joules over `steps`) and per token from there."""
+    from seeml.energy import domain_joules
+    out = {"attribution": reading["attribution"], "available": reading["available"],
+           "scope": reading["scope"], "joules": reading["joules"], "reason": reading["reason"],
+           "j_per_step": None, "j_per_token": None}
+    if j_per_step is None and steps and reading["available"]:
+        total = domain_joules(reading)
+        j_per_step = total / steps if total else None
+    if j_per_step:
+        out["j_per_step"] = j_per_step
+        out["j_per_token"] = j_per_step / tokens if tokens else None
+    return out
+
+
 def sds_records_digest(path):
     """The same digest over a token corpus (SDS v2, i32 records) — how a
     SeeAI row proves it trained on the frameworks' records. Standard
@@ -345,6 +371,7 @@ def cmd_torch(args):
     perm, cursor = torch.randperm(len(train_rec), generator=sgen).numpy(), 0
     curve, wall, fwd, bwd, optt = [], [], [], [], []
     peak_dev = 0
+    meter = energy_meter().start()  # the training loop alone (F6 #134)
     for _ in range(args.steps):
         if cursor + args.batch > len(train_rec):
             perm, cursor = torch.randperm(len(train_rec), generator=sgen).numpy(), 0
@@ -371,6 +398,7 @@ def cmd_torch(args):
         optt.append(t3 - t2)
         if args.device == "mps":
             peak_dev = max(peak_dev, torch.mps.driver_allocated_memory())
+    energy = meter.stop()
     val1 = evaluate()
     w = args.warmup
     step_s = statistics.median(wall[w:])
@@ -396,7 +424,8 @@ def cmd_torch(args):
         train_loss=[float(np.mean(curve[:10])), float(np.mean(curve[-10:]))],
         val_loss=[val0[0], val1[0]], val_acc=[val0[1], val1[1]],
         peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-        peak_device_bytes=peak_dev, loss_curve=curve)
+        peak_device_bytes=peak_dev, loss_curve=curve,
+        energy=energy_fields(energy, tokens, steps=args.steps))
     write_report(args.report, report)
     print(f"frontier_run torch: {args.device} compile={bool(args.compile)} {args.dtype}: "
           f"{report['step_ms']:.1f} ms/step, {report['tokens_per_s']:.0f} tok/s, warm-up "
@@ -505,10 +534,12 @@ def cmd_mlx(args):
                          adapter_file=os.path.join(os.path.dirname(os.path.abspath(args.report)),
                                                    "mlx_adapters.safetensors"))
     mx.reset_peak_memory()
+    meter = energy_meter().start()  # the trainer's run alone (F6 #134)
     t1 = time.perf_counter()
     train(model, opt, CacheDataset(TokenRecords(train_rec)), CacheDataset(TokenRecords(val_rec)),
           args=targs, training_callback=cb)
     train_wall = time.perf_counter() - t1
+    energy = meter.stop()
     val1 = evaluate()
     reports = cb.train[1:] or cb.train
     it_s = statistics.median(r["iterations_per_second"] for r in reports)
@@ -533,7 +564,8 @@ def cmd_mlx(args):
         train_loss=[cb.train[0]["train_loss"], cb.train[-1]["train_loss"]],
         val_loss=[val0[0], val1[0]], val_acc=[val0[1], val1[1]],
         peak_device_bytes=int(mx.get_peak_memory()),
-        peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        energy=energy_fields(energy, tokens, steps=args.steps))
     write_report(args.report, report)
     print(f"frontier_run mlx: {precision}: {report['step_ms']:.1f} ms/step, "
           f"{report['tokens_per_s']:.0f} tok/s, val {val0[0]:.4f} -> {val1[0]:.4f}")
@@ -572,10 +604,12 @@ def cmd_seeml(args):
         for f in (model_out, rep):
             if os.path.exists(f):
                 os.remove(f)
+        meter = energy_meter().start()  # the whole run; the lo/hi slope removes the lifecycle
         rc, out, wall, rss = _timed(
             [binary, "--model", args.model, "--data", args.data, "--out", model_out,
              "--val-frac", str(args.val_frac), "--seed", str(args.seed), "--steps", str(steps),
              "--eval-every", "0", "--backend", args.backend, "--report", rep], env)
+        energy = meter.stop()
         report = json.load(open(rep)) if os.path.exists(rep) else {}
         sha = None
         if os.path.exists(model_out):
@@ -586,7 +620,7 @@ def cmd_seeml(args):
             raise SystemExit(f"frontier_run: model_update exited {rc} on the {steps}-step "
                              f"run:\n{out[-1500:]}")
         return {"steps": steps, "exit": rc, "wall_s": wall, "peak_rss_bytes": rss,
-                "report": report, "committed_sha256": sha,
+                "report": report, "committed_sha256": sha, "energy": energy,
                 "device": device.group(1) if device else None}
 
     slopes, runs = [], []
@@ -611,6 +645,14 @@ def cmd_seeml(args):
     compile_report = json.load(open(os.path.join(args.package, "report.json")))
     tokens = compile_report["effective_batch"]
     r0 = quality["report"] if quality else {}
+    # Energy per step by the step time's own regression (F6 #134): the hi
+    # run's joules less the lo run's over the extra steps, the lifecycle
+    # (load, the hash, the evaluations) removed — the median over repeats.
+    from seeml.energy import per_step_from_slope
+    energy_slopes = [s for s in (per_step_from_slope(lo["energy"], hi["energy"], args.lo, args.hi)
+                                 for lo, hi in zip(runs[0::2], runs[1::2])) if s]
+    energy = energy_fields((quality or runs[0])["energy"], tokens,
+                           j_per_step=statistics.median(energy_slopes) if energy_slopes else None)
     report = row(
         "SeeML", args.backend,
         "f32 math, int8 base" if compile_report["quantized_base"]
@@ -646,12 +688,15 @@ def cmd_seeml(args):
         suspect=suspect,
         wall_quality_s=quality["wall_s"] if quality else None,
         peak_rss_bytes=max(r["peak_rss_bytes"] for r in runs + ([quality] if quality else [])),
+        energy=energy,
         runs=runs + ([quality] if quality else []))
     write_report(args.report, report)
     print(f"frontier_run seeml: {args.backend}: {report['step_ms']:.1f} ms/step, "
           f"{report['tokens_per_s']:.0f} tok/s"
           + (f", val {r0['validation_loss'][0]:.4f} -> {r0['validation_loss'][1]:.4f}"
-             if r0.get("validation_loss") else ""))
+             if r0.get("validation_loss") else "")
+          + (f", {energy['j_per_token'] * 1000:.3f} mJ/token ({'+'.join(energy['scope'])}, whole-SoC)"
+             if energy.get("j_per_token") else ""))
     return 0
 
 

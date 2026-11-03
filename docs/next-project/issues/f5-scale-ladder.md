@@ -143,9 +143,28 @@ run, not a design question.
   with the binder fix the arenas are 1.34 / 2.77 / 3.69 GB at the three
   rungs (−15.0 / −13.1 / −12.8 %), the committed model the same SHA-256
   on both backends.
-- [ ] 8-bit optimizer states (design item 3) — not started.
+- Superseded 2026-11-03 by measurement, the line as first written: *8-bit
+  optimizer states (design item 3).* The AdamW moments are 1.05–1.53 % of
+  the arena at every rung — 23 MiB of 1.47 GiB at SmolLM-135M, 39 of 3.05
+  at 360M, 45 of 4.20 at 0.5B, 84 MiB of 7.18 GiB at 1.5B
+  (`docs/ledger/f5-2026-11-03/moment_share.txt`, from the compile reports'
+  adapter shapes) — so block-quantizing them would save 17–63 MiB, under
+  1 % of the arena, for a new opcode, an SEKP change and a loss-curve
+  study. At LoRA rank 8 the persistent segment is not where the memory
+  is; the transient segment (activations, adjoints) and the merged deltas
+  are, and the ladder's levers are theirs. A decision the next milestone
+  may reverse for full fine-tuning, where the moments are 2× the weights.
+- [x] The moments' share of the arena recorded at each rung — the line
+  that replaces it: 1.53 / 1.24 / 1.05 / 1.15 % at 135M / 360M / 0.5B /
+  1.5B (2026-11-03).
 - [ ] The 1.5B rung: trains on 16 GB or is refused at compile time with a
   correct estimate, never an OOM at run time — not attempted; needs item
   3 and the disk-mode package (#158, landed).
-- [ ] The step-0 estimate-against-exact ratio at each rung — waits on S1
-  (#147) fixing N29.
+- [x] The step-0 estimate-against-exact ratio at each rung — N29 fixed
+  ahead of S1 on 2026-11-03 (the accountant's bound counts what the
+  backward reads; `docs/compiler.md`), the compile report states the
+  estimate, the exact arena + plan and their ratio, and at the ladder's
+  int8 recipe it reads 0.853 / 0.899 / 0.834 / 0.859 at 135M / 360M / 0.5B
+  / 1.5B for the plain plans and 0.818 / 0.874 / 0.810 / 0.882 with
+  rematerialization: a lower bound within 10–19 % of the exact, never
+  above it (`docs/ledger/f5-2026-11-03/ratio/`).

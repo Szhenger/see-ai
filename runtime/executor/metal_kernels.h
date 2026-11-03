@@ -537,6 +537,84 @@ static inline void gemm_rows_tg(device const float* A, device const EB* B,
                                             lda, ldb, ldc, alpha, act, m0,
                                             tid, sgid, lane, tile);
 }
+// The staged-B form (F7 #138, the nt_rows floor): for a transposed B — the
+// adapter's dt = dC @ Bᵀ, B [N x K] with N <= 16 — a threadgroup of 8
+// simdgroups owns 8 consecutive rows and, 32 k at a time, loads the
+// [N x 32 k] block of B cooperatively (simdgroup s loads row s, and s + 8
+// at NCAP 16, lane l column k0 + l: one coalesced line per row) into
+// threadgroup memory transposed, so each lane then reads its NCAP b
+// values as float4s instead of NCAP scalar loads from NCAP rows per k —
+// the loads that made the unstaged form latency-bound at 512 simdgroups.
+// Same lane-to-k assignment, the same products in the same order (the
+// per-column scale is applied to b as it is staged, where the unstaged
+// form applied it before the same multiply-add), the same shuffle tree:
+// every output is the same bits as gemm_rows. Rows past M load and store
+// nothing; every thread reaches every barrier.
+template <bool AT, bool BT, typename EB, bool ACC, uint NCAP>
+static inline void gemm_rows_tgb_impl(device const float* A,
+                                      device const EB* B, device float* C,
+                                      device const float* bias,
+                                      device const float* cs,
+                                      device const float* D, uint M, uint N,
+                                      uint K, uint lda, uint ldb, uint ldc,
+                                      float alpha, uint act, uint m0,
+                                      uint sgid, uint lane,
+                                      threadgroup float* tile) {
+  const uint m = m0 + sgid;
+  const bool live = m < M;
+  float acc[NCAP];
+#pragma clang loop unroll(full)
+  for (uint n = 0; n < NCAP; ++n) acc[n] = 0.0f;
+  for (uint k0 = 0; k0 < K; k0 += 32u) {
+    const uint k = k0 + lane;
+#pragma clang loop unroll(full)
+    for (uint r = 0; r < NCAP / 8u; ++r) {
+      const uint n = sgid + 8u * r;
+      const uint nc = min(n, N - 1u);  // past N: a duplicate, never stored
+      float b = 0.0f;
+      if (k < K) {
+        b = widen(BT ? B[nc * ldb + k] : B[k * ldb + nc]);
+        if (BT && cs) b *= cs[k];
+      }
+      tile[lane * NCAP + n] = b;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (live && k < K) {
+      const float a = AT ? A[k * lda + m] : A[m * lda + k];
+      const threadgroup float4* bv =
+          (const threadgroup float4*)(tile + lane * NCAP);
+#pragma clang loop unroll(full)
+      for (uint q = 0; q < NCAP / 4u; ++q) {
+        const float4 b4 = bv[q];
+        acc[4u * q] += a * b4[0];
+        acc[4u * q + 1u] += a * b4[1];
+        acc[4u * q + 2u] += a * b4[2];
+        acc[4u * q + 3u] += a * b4[3];
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (!live) return;
+  gemm_rows_finish<AT, BT, EB, ACC, NCAP>(C, bias, cs, D, N, ldc, alpha,
+                                          act, m, lane, acc);
+}
+template <bool AT, bool BT, typename EB, bool ACC>
+static inline void gemm_rows_tgb(device const float* A, device const EB* B,
+                                 device float* C, device const float* bias,
+                                 device const float* cs,
+                                 device const float* D, uint M, uint N,
+                                 uint K, uint lda, uint ldb, uint ldc,
+                                 float alpha, uint act, uint m0, uint sgid,
+                                 uint lane, threadgroup float* tile) {
+  if (N <= 8u)
+    gemm_rows_tgb_impl<AT, BT, EB, ACC, 8u>(A, B, C, bias, cs, D, M, N, K,
+                                            lda, ldb, ldc, alpha, act, m0,
+                                            sgid, lane, tile);
+  else
+    gemm_rows_tgb_impl<AT, BT, EB, ACC, 16u>(A, B, C, bias, cs, D, M, N, K,
+                                             lda, ldb, ldc, alpha, act, m0,
+                                             sgid, lane, tile);
+}
 // M <= 16: one thread per output column, serial K, all rows in registers
 // (row index clamped, as gemm_rows).
 template <bool AT, bool BT, typename EB, bool ACC>
@@ -749,6 +827,16 @@ static inline void gemm_colsg_tg(device const float* A, device const EB* B,
     gemm_rows_tg<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), m0, tid, sgid, lane,      \
                                   tile);                                                     \
   }                                                                           \
+  kernel void NAME##_rows_tgb(KSIG, uint g [[thread_position_in_grid]],       \
+                              uint sgid [[simdgroup_index_in_threadgroup]],   \
+                              uint lane [[thread_index_in_simdgroup]]) {      \
+    threadgroup float4 tile4[128]; /* [32 lanes x 16 n] */                    \
+    const uint group = g >> 8, groups_m = (p.m + 7u) / 8u;                    \
+    const uint z = group / groups_m, m0 = (group % groups_m) * 8u;            \
+    if (z >= p.batch) return;                                                 \
+    gemm_rows_tgb<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), m0, sgid, lane,          \
+                                   (threadgroup float*)tile4);                               \
+  }                                                                           \
   kernel void NAME##_colsg_tg(KSIG, uint g [[thread_position_in_grid]],       \
                               uint tid [[thread_index_in_threadgroup]],       \
                               uint sgid [[simdgroup_index_in_threadgroup]],   \
@@ -862,6 +950,11 @@ kernel void k_fused_map(KSIG, uint g [[thread_position_in_grid]]) {
 }
 kernel void k_fill(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(0)[g] = p.f[0];
+}
+// The backend's self-test at Bind (F5 #133): one thread writes p.f[0] into
+// the scratch buffer, proving a dispatch executes on this device.
+kernel void k_selftest(KSIG, device float* scratch [[buffer(3)]]) {
+  scratch[0] = p.f[0];
 }
 kernel void k_copy(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(1)[g] = RF(0)[g];

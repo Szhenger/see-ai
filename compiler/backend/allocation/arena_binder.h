@@ -114,11 +114,15 @@ uint64_t RebindTransients(
 /// (int8 for weights in `quant_scales`), then the transient scan.
 /// `bf16_weights`: frozen weights packed as bfloat16 rodata (half of f32,
 /// round-to-nearest-even; roadmap 2c), disjoint from `quant_scales`.
+/// `adapter_only` (F6 #134, plan v21): no rodata at all — every frozen
+/// weight binds to a source ref, its f32 payload's offset in the model
+/// file the plan is bound to (both narrow sets must be empty).
 [[nodiscard]] std::expected<ArenaBinding, std::string> BindArena(
     seeml::sir::Block& train_block, const GraphBuild& build,
     const std::unordered_set<const seeml::sir::Value*>& pinned,
     const std::unordered_map<const seeml::sir::Value*, float>& quant_scales,
-    const std::unordered_set<const seeml::sir::Value*>& bf16_weights = {});
+    const std::unordered_set<const seeml::sir::Value*>& bf16_weights = {},
+    bool adapter_only = false);
 
 }  // namespace seeml::update
 

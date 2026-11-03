@@ -44,6 +44,11 @@
 //       [--gemm-tiles K,N]             set the CPU GEMM tiles explicitly
 //                                      (throughput only, never bits)
 //       [--report report.json]         machine-readable compile report
+//       [--adapter-only]               the adapter-only package (F6 #134,
+//                                      plan v21): the frozen weights stay
+//                                      in the source model file, read there
+//                                      at run time; the plan carries no
+//                                      rodata (f32 base, exact kernels)
 //       [--no-embed]                   skip the decimal byte-array TU; let
 //                                      tool/pack_update.py embed the plan
 //                                      (.incbin) or, above its embed limit,
@@ -106,6 +111,7 @@ void PrintUsage() {
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
                "  [--remat auto|off|on] [--memory-budget-mib N]\n"
+               "  [--adapter-only]\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -402,6 +408,11 @@ int main(int argc, char** argv) {
     else if (*v == "on") config.remat = RematKind::kOn;
     else return Fail("unknown --remat '" + *v + "' (auto, off or on)");
   }
+  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
+  // in the source model file, read there at run time; the plan carries no
+  // rodata. The driver refuses the narrow bases, the relaxed kernels and an
+  // in-memory model with it.
+  if (args.Take("--adapter-only")) config.adapter_only = true;
   // The memory gate's budget. Without it the gate uses the host's memory,
   // which is fine for a refusal but not for a decision that changes the
   // plan's bytes: --remat auto decides against this budget only.
@@ -608,6 +619,7 @@ int main(int argc, char** argv) {
                  "  \"effective_batch\": %" PRIu64 ",\n"
                  "  \"quantized_base\": %s,\n"
                  "  \"bf16_base\": %s,\n"
+                 "  \"adapter_only\": %s,\n"
                  "  \"precision\": \"%s\",\n"
                  "  \"relaxed_gemms\": %" PRIu64 ",\n"
                  "  \"relaxed_attention\": %" PRIu64 ",\n"
@@ -647,6 +659,7 @@ int main(int argc, char** argv) {
                  static_cast<uint64_t>(config.batch) * compiled->grad_accum_steps,
                  config.quantize_base ? "true" : "false",
                  config.bf16_base ? "true" : "false",
+                 compiled->adapter_only ? "true" : "false",
                  config.precision == Precision::kCertifiedBf16
                      ? "certified-bf16" : "f32",
                  compiled->relaxed_gemms, compiled->relaxed_attention,

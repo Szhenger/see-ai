@@ -351,18 +351,22 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // they already are from accuracy. A composite loss (xent + KL, pure KL)
   // is not row-separable from what the program keeps; it is weighted.
   EvalTail eval_tail;
-  // The source model extent the eval program reads (v17): the file bound
-  // at BindSourceModel must cover it. The contract proved every source ref
-  // against kSourceSpaceLimit; this recovers the real requirement.
+  // The source model extent the programs read (v17: the eval program's
+  // f32 weights; v21: every program's, in an adapter-only plan): the file
+  // bound at BindSourceModel must cover it. The contract proved every
+  // source ref against kSourceSpaceLimit; this recovers the real
+  // requirement.
   uint64_t source_required = 0;
-  for (const up::UpdateInstruction& ins : eval)
-    if (auto ex = DescribeInstruction(ins, header.arena_size,
-                                      header.rodata_size, header.version,
-                                      /*allow_source=*/true))
-      for (size_t i = 0; i < ex->count; ++i)
-        if (ex->ranges[i].source)
-          source_required = std::max(source_required,
-                                     ex->ranges[i].off + ex->ranges[i].bytes);
+  for (const auto* program : {&train, &merge, &eval, &step})
+    for (const up::UpdateInstruction& ins : *program)
+      if (auto ex = DescribeInstruction(ins, header.arena_size,
+                                        header.rodata_size, header.version,
+                                        /*allow_source=*/true))
+        for (size_t i = 0; i < ex->count; ++i)
+          if (ex->ranges[i].source)
+            source_required =
+                std::max(source_required,
+                         ex->ranges[i].off + ex->ranges[i].bytes);
   for (const up::UpdateInstruction& ins : eval) {
     const auto op = static_cast<up::OpCode>(ins.opcode);
     if (op == up::OpCode::kSoftmaxXEntFwd) {

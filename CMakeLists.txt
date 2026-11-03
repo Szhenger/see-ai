@@ -222,6 +222,11 @@ if(SEEML_BENCH)
     target_compile_definitions(seeml_update_rt PRIVATE SEEML_STEP_TIMING)
     add_executable(seeml-bench tool/seeml_bench.cc)
     target_link_libraries(seeml-bench PRIVATE seeml_update seeml_testing)
+    if(APPLE)
+      # The energy meter (tool/energy_meter.h) reads IOReport through
+      # CoreFoundation; the library itself is opened at run time.
+      target_link_libraries(seeml-bench PRIVATE "-framework CoreFoundation")
+    endif()
 endif()
 
 function(seeml_add_test name src)

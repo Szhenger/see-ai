@@ -120,6 +120,9 @@ struct CompiledUpdate {
   // E12: the eval program reads the student's frozen weights from the
   // source model file (the shipped f32), not the plan's narrow copies.
   bool scores_shipped = false;
+  // F6 #134 (plan v21): every program reads every frozen weight from the
+  // source model file; the plan carries no rodata.
+  bool adapter_only = false;
   // Instructions of the train and step programs carrying kFlagRelaxed: the
   // frozen-weight GEMMs (plan v18) and the tiled attention instructions
   // (plan v20). 0 under Precision::kF32.

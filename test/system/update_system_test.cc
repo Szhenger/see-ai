@@ -1622,6 +1622,67 @@ TEST(UpdateSystem, ElementwiseChainFusionChangesNoTrainingBits) {
   seeml::update::SetParallelThreadCount(0);
 }
 
+TEST(UpdateSystem, AnAdapterOnlyPlanTrainsThePlainPlansBits) {
+  // F6 (#134), plan v21: the adapter-only plan reads every frozen weight
+  // from the source model file instead of its own rodata — the same f32
+  // bits at another address — so it trains the same losses, the same
+  // validation loss and the same persistent segment as the plain f32 plan,
+  // byte for byte, from a plan a fraction of the size. Both plans bind the
+  // file (the plain one verifies its hash; the adapter-only one reads it).
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel saved, LoadSmf(path));
+  std::vector<float> want_curve;
+  std::vector<uint8_t> want_state;
+  float want_val = 0.0f;
+  size_t plain_plan_bytes = 0;
+  for (int adapter_only = 0; adapter_only < 2; ++adapter_only) {
+    UpdateConfig config = BaseConfig(batch);
+    config.optimizer.lr = 5e-3f;
+    config.optimizer.kind = OptimizerKind::kAdamW;
+    config.adapter_only = adapter_only == 1;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                         UpdateCompiler(config).Compile(saved));
+    const PlanHeader h = HeaderOf(compiled);
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
+                                    compiled.plan.size()));
+    ASSERT_OK(engine.BindSourceModel(path));
+    ASSERT_OK_AND_ASSIGN(Dataset data,
+                         seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
+    data.EnableShuffle(9);
+    TrainOptions options = Quiet();
+    options.record_loss_curve = true;
+    ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 20, options));
+    ASSERT_OK_AND_ASSIGN(float val, engine.Evaluate(data));
+    std::vector<uint8_t> state(engine.arena(),
+                               engine.arena() + h.persistent_size);
+    if (!adapter_only) {
+      EXPECT_GT(h.rodata_size, 0u);
+      EXPECT_FALSE(engine.scores_shipped());
+      want_curve = report.loss_curve;
+      want_state = state;
+      want_val = val;
+      plain_plan_bytes = compiled.plan.size();
+      continue;
+    }
+    EXPECT_EQ(h.rodata_size, 0u);
+    EXPECT_TRUE(engine.scores_shipped());
+    // No larger: at this toy size both plans pad to one 16 KiB multiple;
+    // the bytes the package saves are the SmolLM measurement's claim.
+    EXPECT_LE(compiled.plan.size(), plain_plan_bytes);
+    EXPECT_EQ(val, want_val);
+    ASSERT_EQ(report.loss_curve.size(), want_curve.size());
+    for (size_t i = 0; i < want_curve.size(); ++i)
+      EXPECT_EQ(report.loss_curve[i], want_curve[i]);
+    EXPECT_TRUE(state == want_state);
+  }
+}
+
 TEST(UpdateSystem, RematerializationChangesNoBits) {
   // Roadmap 2b (F5, #133): the remat plan recomputes the cheap forward
   // activations in the backward with the same opcodes over the same

@@ -594,7 +594,31 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   pinned.insert(loss);
   for (const auto& [p, g] : param_grads) pinned.insert(g);
 
-  auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights);
+  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
+  // in the model file the device already holds, bound by hash at run time,
+  // so the plan ships at adapter scale. That needs the file (offsets and
+  // the hash), the f32 base the file holds, and the exact kernels (the
+  // relaxed ones read rodata weights).
+  if (config_.adapter_only) {
+    if (source.content_hash == 0)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only needs a model loaded from a file: the plan reads "
+          "the frozen weights from it at run time, bound by its hash");
+    if (config_.quantize_base || config_.bf16_base)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only keeps the frozen weights in the source model, which "
+          "is f32: --quantize-base / --bf16-base would store narrow copies "
+          "in the plan");
+    if (config_.precision != Precision::kF32)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only runs the exact kernels: the relaxed GEMMs read "
+          "rodata weights, and an adapter-only plan carries none");
+  }
+  auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights,
+                           config_.adapter_only);
   if (!binding) return std::unexpected(binding.error());
 
   // Bind the merge program into the same arena: A/B mirrors resolve through
@@ -1140,7 +1164,16 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   result.merge_instruction_count = header.merge_instr_count;
   result.eval_instruction_count = header.eval_instr_count;
   result.rodata_size = header.rodata_size;
-  result.scores_shipped = !shipped.empty();
+  // The eval program scores the f32 file either way: the narrow students'
+  // source refs (E12), or every weight's (an adapter-only plan).
+  result.scores_shipped = !shipped.empty() || config_.adapter_only;
+  result.adapter_only = config_.adapter_only;
+  if (config_.adapter_only)
+    seeml::diag::Note(generating::kDriver,
+                      "adapter-only: the plan carries no rodata — " +
+                          std::to_string(build.weight_sources.size()) +
+                          " frozen weight(s) are read from the source model "
+                          "at run time, in every program");
   result.relaxed_gemms = relaxed_gemms;
   result.relaxed_attention = relaxed_attention;
   // What the plan carries, from the pass that decided on exact shapes.

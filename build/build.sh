@@ -85,11 +85,15 @@ compile runtime/executor/cpu_backend.cc       rt_cpu_backend.o
 # ObjC++ front end rejects it) — the rest of the tree is standard C++23.
 METAL_OBJS=""
 METAL_LDFLAGS=""
+# The bench's energy meter (tool/energy_meter.h, F6 #134) reads IOReport
+# through CoreFoundation on Darwin; the library itself is opened at run time.
+BENCH_LDFLAGS=""
 if [ "$(uname)" = "Darwin" ]; then
   echo "  OBJCXX runtime/executor/metal_gemm.mm"
   eval "$CXX $FLAGS -x objective-c++ -fobjc-arc -c runtime/executor/metal_gemm.mm -o build/rt_metal_gemm.o"
   METAL_OBJS="build/rt_metal_gemm.o"
   METAL_LDFLAGS="-framework Metal -framework Foundation"
+  BENCH_LDFLAGS="-framework CoreFoundation"
 fi
 # The Metal executor backend (G1b) exists on Darwin unless SEEML_NO_METAL=1
 # (mirroring CMake's option); the stub takes its place everywhere else. The
@@ -167,7 +171,7 @@ if seeml_bench_enabled; then
   eval "$CXX $FLAGS -c tool/seeml_bench.cc -o build/seeml_bench.o"
   eval "$CXX -pthread build/seeml_bench.o build/fixtures_models.o \
         build/fixtures_corpora.o build/fixtures_probes.o \
-        $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o build/seeml-bench"
+        $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS $BENCH_LDFLAGS -o build/seeml-bench"
 fi
 
 for suite in \
