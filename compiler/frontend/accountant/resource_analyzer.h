@@ -14,8 +14,23 @@
 // a conservative LOWER BOUND on the bytes training must keep resident:
 //
 //   weight_bytes      one copy of every frozen constant tensor (rodata)
-//   activation_bytes  every forward activation at the compiled batch size —
-//                     all of them are cached for the backward pass
+//   activation_bytes  the forward values the backward READS, at the compiled
+//                     batch size — the inputs of the adapted products,
+//                     attention's operands, the inputs of the norms and
+//                     activation functions, both factors of a product, and
+//                     the output the loss differentiates. All of them are
+//                     alive together when the backward begins. A value no
+//                     backward rule reads (a residual add's or bias add's
+//                     inputs, a rotation's input) dies in the forward and
+//                     is not counted: until 2026-11-03 the sum took every
+//                     forward value, and that over-count refused compiles
+//                     the exact arena would have fit (N29, S1 #147).
+//   recomputable_bytes the part of activation_bytes rematerialization
+//                     recomputes in the backward instead of keeping — the
+//                     norm outputs, the activation functions' outputs, the
+//                     gated product, the embedding gather, each rebuilt
+//                     from operands the backward holds anyway — so a gate
+//                     that admits --remat subtracts it.
 //
 // The bound deliberately excludes gradients, optimizer state, and transient
 // buffers (they depend on the LoRA/optimizer configuration): everything it
@@ -43,6 +58,11 @@ struct TrainingFootprint {
   // floats per query row instead — and the choice is made on this number.
   uint64_t probs_cache_bytes = 0;
   uint64_t attention_stats_bytes = 0;  // what the tiled family holds instead
+  // The subset of activation_bytes that rematerialization (F5 #133)
+  // recomputes in the backward rather than keeps: not part of the total,
+  // which is the plain plan's bound; the caller subtracts it from
+  // activation_bytes where --remat may run.
+  uint64_t recomputable_bytes = 0;
 
   /// Saturating sum of the components.
   uint64_t total_bytes() const;
@@ -54,9 +74,12 @@ struct TrainingFootprint {
 /// Statically analyzes `model`'s training footprint at `batch`. Activation
 /// widths are propagated through the op list with the same shape rules the
 /// parser applies; anything unresolvable contributes zero, keeping the
-/// estimate a lower bound.
-TrainingFootprint EstimateTrainingFootprint(const SmfModel& model,
-                                            int64_t batch);
+/// estimate a lower bound. `target_filters` names the weights LoRA adapts
+/// (the grafter's rule, empty = every eligible one): which products are
+/// adapted decides which forward values the backward reads.
+TrainingFootprint EstimateTrainingFootprint(
+    const SmfModel& model, int64_t batch,
+    std::span<const std::string> target_filters = {});
 
 /// f32 bytes of the delta segment LoRA will need for `model`: every constant
 /// tensor the grafter would adapt — consumed only as the weight (second)

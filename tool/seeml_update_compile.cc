@@ -572,6 +572,10 @@ int main(int argc, char** argv) {
         paths->embedded_tu.empty()
             ? "null"
             : "\"" + JsonEscape(paths->embedded_tu) + "\"";
+    // The exact resident footprint the final gate checked (the arena plus
+    // the plan blob), which the step-0 estimate is a lower bound on.
+    const uint64_t exact_footprint =
+        compiled->arena_size + static_cast<uint64_t>(compiled->plan.size());
     std::fprintf(f,
                  "{\n"
                  "  \"schema\": 1,\n"
@@ -588,6 +592,10 @@ int main(int argc, char** argv) {
                  "  \"persistent_bytes\": %" PRIu64 ",\n"
                  "  \"io_bytes\": %" PRIu64 ",\n"
                  "  \"transient_bytes\": %" PRIu64 ",\n"
+                 "  \"footprint_estimate\": {\"weights\": %" PRIu64
+                 ", \"activations\": %" PRIu64 ", \"deltas\": %" PRIu64
+                 ", \"attention_caches\": %" PRIu64 ", \"total\": %" PRIu64
+                 ", \"exact\": %" PRIu64 ", \"ratio\": %.4f},\n"
                  "  \"remat\": {\"policy\": \"%s\", \"applied\": %s, "
                  "\"recomputed_values\": %" PRIu64 ", \"bytes_saved\": %" PRIu64
                  "},\n"
@@ -619,7 +627,13 @@ int main(int argc, char** argv) {
                  host_arch.l2_bytes, host_arch.simd_width_f32,
                  compiled->arena_size,
                  compiled->persistent_size, compiled->io_size,
-                 compiled->transient_size,
+                 compiled->transient_size, compiled->estimate_weight_bytes,
+                 compiled->estimate_activation_bytes,
+                 compiled->estimate_delta_bytes, compiled->estimate_cache_bytes,
+                 compiled->estimate_bytes, exact_footprint,
+                 exact_footprint ? static_cast<double>(compiled->estimate_bytes) /
+                                       static_cast<double>(exact_footprint)
+                                 : 0.0,
                  compiled->remat_policy == RematKind::kAuto  ? "auto"
                  : compiled->remat_policy == RematKind::kOn ? "on"
                                                              : "off",

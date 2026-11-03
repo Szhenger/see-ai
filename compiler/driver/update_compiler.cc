@@ -174,10 +174,23 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the student's frozen weights as int8 rodata at 1/4 size (under-counting the
   // unselected remainder keeps the bound a lower bound). Both matter:
   // an over-count here refuses compiles the exact final gate would pass.
-  TrainingFootprint footprint = EstimateTrainingFootprint(source, batch);
-  // Only the student's weights take int8 storage: the teacher stays f32
+  TrainingFootprint footprint =
+      EstimateTrainingFootprint(source, batch, config_.lora.target_filters);
+  // Only the student's weights take narrow storage: the teacher stays f32
   // (E12 — it is the distillation target), so it is added after the cut.
-  if (config_.quantize_base) footprint.weight_bytes /= 4;
+  if (config_.quantize_base)
+    footprint.weight_bytes /= 4;
+  else if (config_.bf16_base)
+    footprint.weight_bytes /= 2;
+  // Rematerialization (step 8b) frees the recomputable activations in the
+  // forward wherever it may run — forced, or `auto` against a configured
+  // budget (with none, auto keeps the plan plain) — so there the bound is
+  // taken without them: a refusal must hold for the plan that would
+  // actually be built, and the final gate checks that plan exactly.
+  if (config_.remat == RematKind::kOn ||
+      (config_.remat == RematKind::kAuto && config_.memory_budget_bytes != 0))
+    footprint.activation_bytes -=
+        std::min(footprint.recomputable_bytes, footprint.activation_bytes);
   if (wants_teacher)
     footprint += EstimateFrozenForwardFootprint(*teacher, batch);
   // The merged deltas are full-size f32 whatever the base is stored as
@@ -1101,6 +1114,21 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   result.persistent_size = header.persistent_size;
   result.io_size = binding->io_end - binding->persistent_size;
   result.transient_size = header.arena_size - binding->io_end;
+  // The step-0 bound the early gate proved feasibility from, beside the
+  // exact footprint the final gate just checked: estimate <= arena + plan
+  // is the bound's contract, and their ratio is the accountant's honesty
+  // at this shape (F5 #133).
+  result.estimate_weight_bytes = footprint.weight_bytes;
+  result.estimate_activation_bytes = footprint.activation_bytes;
+  result.estimate_delta_bytes = footprint.delta_bytes;
+  result.estimate_cache_bytes = footprint.probs_cache_bytes;
+  result.estimate_bytes = footprint.total_bytes();
+  seeml::diag::Note(generating::kDriver,
+                    "memory: the step-0 bound is " +
+                        std::to_string(result.estimate_bytes) +
+                        " B against the exact arena + plan of " +
+                        std::to_string(header.arena_size + result.plan.size()) +
+                        " B");
   result.remat_policy = config_.remat;
   result.remat_applied = remat_on;
   result.remat_recomputed_values = remat.recomputed_values;
