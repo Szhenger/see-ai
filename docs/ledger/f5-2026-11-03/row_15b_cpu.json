@@ -1,0 +1,263 @@
+{
+ "schema": 1,
+ "system": "SeeML",
+ "backend": "cpu",
+ "precision": "f32 math, int8 base",
+ "host": {
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "package": "out/f5-2026-11-03/arm_fit",
+ "seeml_version": "1.2.4",
+ "plan_version": 20,
+ "plan_hash": "66d7ae5e8b901ebc",
+ "precision_flag": "f32",
+ "relaxed_gemms": 0,
+ "relaxed_attention": 0,
+ "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+ "device": "host CPU, relaxed GEMMs on the exact kernels",
+ "threads": 10,
+ "config": {
+  "steps": 5,
+  "tokens_per_step": 512,
+  "lo": 2,
+  "hi": 4,
+  "repeats": 1
+ },
+ "records_digest": "9c9c409144e68379",
+ "adapters": 197,
+ "adapter_params": 11033600,
+ "arena_bytes": 7704605824,
+ "plan_bytes": 2768388096,
+ "step_ms": 13209.99999999998,
+ "step_ms_lohi": 19915.000000000007,
+ "step_ms_min": 19915.000000000007,
+ "step_ms_max": 19915.000000000007,
+ "tokens_per_s": 38.758516275548885,
+ "it_per_s": 0.07570022710068142,
+ "tokens_per_step": 512,
+ "intercept_s": 74.44999999999999,
+ "val_loss": [
+  4.343472,
+  4.246717
+ ],
+ "val_acc": [
+  0.2857143,
+  0.29799107
+ ],
+ "train_loss": [
+  4.9115152,
+  3.9943147
+ ],
+ "verdict": "accepted",
+ "committed": true,
+ "lifecycle": {
+  "load_s": 4.9556,
+  "data_s": 0.0012,
+  "train_s": 141.3145,
+  "eval_s": 55.1649,
+  "evaluations": 2,
+  "merge_s": 4.3498,
+  "commit_s": 16.2416,
+  "wall_s": 166.8633
+ },
+ "relaxed_executions": 0,
+ "committed_sha256": "c08a3b3b5dde6b19fe57e8c4018ad0e3c70a3861876ce755472be407e726f97d",
+ "suspect": false,
+ "wall_quality_s": 167.32,
+ "peak_rss_bytes": 11795120128,
+ "energy": {
+  "attribution": "whole-SoC",
+  "available": false,
+  "scope": [],
+  "joules": {},
+  "reason": "IOReport unavailable: libIOReport not found",
+  "j_per_step": null,
+  "j_per_token": null
+ },
+ "runs": [
+  {
+   "steps": 2,
+   "exit": 0,
+   "wall_s": 114.28,
+   "peak_rss_bytes": 11795120128,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU, relaxed GEMMs on the exact kernels",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "file",
+     "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu",
+     "bytes": 2768388096
+    },
+    "steps": 2,
+    "train_loss": [
+     4.9115152,
+     3.6776195
+    ],
+    "validation_loss": [
+     4.343472,
+     4.3075199
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.2857143,
+     0.2890625
+    ],
+    "lifecycle": {
+     "load_s": 4.8115,
+     "data_s": 0.0003,
+     "train_s": 88.014,
+     "eval_s": 55.1353,
+     "evaluations": 2,
+     "merge_s": 5.1716,
+     "commit_s": 15.8547,
+     "wall_s": 113.8536
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "1bc6ce5fbe1cd33de5b0a157f957b5d36bd4e7a3f295c317a6691511bffbe1f8",
+   "energy": {
+    "available": false,
+    "attribution": "whole-SoC",
+    "scope": [],
+    "joules": {},
+    "reason": "IOReport unavailable: libIOReport not found"
+   },
+   "device": "host CPU, relaxed GEMMs on the exact kernels"
+  },
+  {
+   "steps": 4,
+   "exit": 0,
+   "wall_s": 154.11,
+   "peak_rss_bytes": 11636654080,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU, relaxed GEMMs on the exact kernels",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "file",
+     "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu",
+     "bytes": 2768388096
+    },
+    "steps": 4,
+    "train_loss": [
+     4.9115152,
+     4.2359161
+    ],
+    "validation_loss": [
+     4.343472,
+     4.266573
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.2857143,
+     0.2935268
+    ],
+    "lifecycle": {
+     "load_s": 4.8369,
+     "data_s": 0.0012,
+     "train_s": 127.8049,
+     "eval_s": 60.3285,
+     "evaluations": 2,
+     "merge_s": 5.1442,
+     "commit_s": 15.8349,
+     "wall_s": 153.6251
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "14e9f87b4abefc2446981cb885b65b494c8c5474fc961b58692e73133d0e5e33",
+   "energy": {
+    "available": false,
+    "attribution": "whole-SoC",
+    "scope": [],
+    "joules": {},
+    "reason": "IOReport unavailable: libIOReport not found"
+   },
+   "device": "host CPU, relaxed GEMMs on the exact kernels"
+  },
+  {
+   "steps": 5,
+   "exit": 0,
+   "wall_s": 167.32,
+   "peak_rss_bytes": 11282202624,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU, relaxed GEMMs on the exact kernels",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "file",
+     "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu",
+     "bytes": 2768388096
+    },
+    "steps": 5,
+    "train_loss": [
+     4.9115152,
+     3.9943147
+    ],
+    "validation_loss": [
+     4.343472,
+     4.246717
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.2857143,
+     0.29799107
+    ],
+    "lifecycle": {
+     "load_s": 4.9556,
+     "data_s": 0.0012,
+     "train_s": 141.3145,
+     "eval_s": 55.1649,
+     "evaluations": 2,
+     "merge_s": 4.3498,
+     "commit_s": 16.2416,
+     "wall_s": 166.8633
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "c08a3b3b5dde6b19fe57e8c4018ad0e3c70a3861876ce755472be407e726f97d",
+   "energy": {
+    "available": false,
+    "attribution": "whole-SoC",
+    "scope": [],
+    "joules": {},
+    "reason": "IOReport unavailable: libIOReport not found"
+   },
+   "device": "host CPU, relaxed GEMMs on the exact kernels"
+  }
+ ]
+}

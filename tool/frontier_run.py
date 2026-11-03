@@ -114,14 +114,24 @@ def energy_meter():
     return EnergyMeter()
 
 
-def energy_fields(reading, tokens, j_per_step=None, steps=None):
+def energy_fields(reading, tokens, j_per_step=None, steps=None, compute="gpu"):
     """The row's `energy` object from a meter reading: whole-SoC, the
-    domains that moved, joules per step (given from the lo/hi slope, or
-    the reading's GPU joules over `steps`) and per token from there."""
+    continuously published domains that moved (`scope`), the burst ones
+    (`burst`), joules per step (given from the lo/hi slope, or the reading's
+    GPU joules over `steps`) and per token from there — only where the
+    row's `compute` is the GPU: a CPU row has no continuously readable
+    domain, and the GPU's idle draw is not its energy."""
     from seeml.energy import domain_joules
     out = {"attribution": reading["attribution"], "available": reading["available"],
-           "scope": reading["scope"], "joules": reading["joules"], "reason": reading["reason"],
+           "compute": compute, "scope": reading["scope"], "burst": reading.get("burst", []),
+           "joules": reading["joules"], "reason": reading["reason"],
            "j_per_step": None, "j_per_token": None}
+    if compute != "gpu":
+        out["available"] = False
+        out["reason"] = ("this row computes on the CPU: the CPU domain is published in "
+                         "bursts to an unprivileged reader (not a per-interval measurement) "
+                         "and the GPU domain is not this row's compute")
+        return out
     if j_per_step is None and steps and reading["available"]:
         total = domain_joules(reading)
         j_per_step = total / steps if total else None
@@ -425,7 +435,8 @@ def cmd_torch(args):
         val_loss=[val0[0], val1[0]], val_acc=[val0[1], val1[1]],
         peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         peak_device_bytes=peak_dev, loss_curve=curve,
-        energy=energy_fields(energy, tokens, steps=args.steps))
+        energy=energy_fields(energy, tokens, steps=args.steps,
+                             compute="gpu" if args.device == "mps" else "cpu"))
     write_report(args.report, report)
     print(f"frontier_run torch: {args.device} compile={bool(args.compile)} {args.dtype}: "
           f"{report['step_ms']:.1f} ms/step, {report['tokens_per_s']:.0f} tok/s, warm-up "
@@ -652,7 +663,8 @@ def cmd_seeml(args):
     energy_slopes = [s for s in (per_step_from_slope(lo["energy"], hi["energy"], args.lo, args.hi)
                                  for lo, hi in zip(runs[0::2], runs[1::2])) if s]
     energy = energy_fields((quality or runs[0])["energy"], tokens,
-                           j_per_step=statistics.median(energy_slopes) if energy_slopes else None)
+                           j_per_step=statistics.median(energy_slopes) if energy_slopes else None,
+                           compute="gpu" if args.backend == "metal" else "cpu")
     report = row(
         "SeeML", args.backend,
         "f32 math, int8 base" if compile_report["quantized_base"]

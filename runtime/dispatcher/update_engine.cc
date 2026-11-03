@@ -603,20 +603,29 @@ std::expected<void, std::string> UpdateEngine::ExecuteRange(
                           .eps = header_.eps,
                           .weight_decay = header_.weight_decay,
                           .step = step_};
+  // The backend sees the range before its first instruction: where the
+  // source model is off the device, a range that reads it runs on the CPU
+  // whole (BeginRange), and EndRange follows the Flush below.
+  backend_->BeginRange(std::span<const up::UpdateInstruction>(program)
+                           .subspan(begin, end - begin));
   for (size_t idx = begin; idx < end; ++idx)
-    if (auto r = backend_->Execute(program[idx], params); !r)
+    if (auto r = backend_->Execute(program[idx], params); !r) {
+      backend_->EndRange();
       return diag::executing::Error("backend '" +
                                     std::string(backend_->name()) +
                                     "' failed at instruction " +
                                     std::to_string(idx) + ": " + r.error());
+    }
   // Every range ends coherent: the engine reads the loss slot, the eval
   // probabilities, the merge deltas and the persistent segment straight off
   // the arena after Execute returns, and the step-timing split (below)
   // must charge deferred GPU work to the phase that issued it.
-  if (auto r = backend_->Flush(); !r)
+  auto flushed = backend_->Flush();
+  backend_->EndRange();
+  if (!flushed)
     return diag::executing::Error("backend '" +
                                   std::string(backend_->name()) +
-                                  "' failed to complete: " + r.error());
+                                  "' failed to complete: " + flushed.error());
   return {};
 }
 

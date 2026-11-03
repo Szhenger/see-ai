@@ -130,6 +130,35 @@ Metal was not measured (the GPU was in use); the pass is backend-neutral
 (the same opcodes), so the byte-identity claim on Metal is a test to
 run, not a design question.
 
+## Status 2026-11-03
+
+The three open lines closed in one day, and the fourth rung said where
+the arena goes (`docs/benchmarks.md`, "The scale ladder's 1.5B rung, the
+accountant's bound, and where the arena goes"; `docs/ledger/f5-2026-11-03/`).
+N29 landed ahead of S1: the step-0 bound counts the forward values the
+backward reads (the VJP rules decide which, the adapted targets which
+products), the base at its stored width, less rematerialization's share
+where `--remat` may run, and the compile report states it beside the
+exact footprint — 0.81–0.90 of the exact at every rung, never above it.
+Qwen2.5-1.5B (1.65 B effective parameters once the 2 KV heads are
+repeated to 12; a 7.55 GB f32 SMF the lazy `--hf` import writes in 16 s
+at a 4.4 GB peak) compiles for a 16 GiB budget as four micro-batches of
+128 tokens: the arms above. Of its 7.70 GB arena the merged LoRA deltas —
+one f32 image per adapted weight, pinned for the commit — are about 6.6
+GB, which is why rematerialization saves 3.6 % here against 13–20 % at
+the smaller rungs and why the moments (84 MiB) are not the lever; the
+next one is a merge that materializes one delta at a time, for the next
+milestone. The rung also found the GPU's silent failure: the first Metal
+run reported every loss as 0.000000 with every command buffer completed,
+because the backend bound the 7.55 GB source model on every encoder
+beside the 7.7 GB arena and 2.6 GB rodata, past the device's 12.7 GB
+working set. The backend now refuses at `Bind` an arena above the
+largest buffer or an arena plus rodata above the working set, keeps the
+source model on the CPU when it would not fit beside them (the eval
+program's source-weight GEMMs run there; the device line says so), and
+self-tests one dispatch at `Bind` so a later buffer that completes
+without executing is an error (`docs/runtime.md`). ROWS_STATUS_SENTENCE
+
 ## Acceptance
 
 - [x] A field-report table per model for the first two rungs — arena,
@@ -157,9 +186,20 @@ run, not a design question.
 - [x] The moments' share of the arena recorded at each rung — the line
   that replaces it: 1.53 / 1.24 / 1.05 / 1.15 % at 135M / 360M / 0.5B /
   1.5B (2026-11-03).
-- [ ] The 1.5B rung: trains on 16 GB or is refused at compile time with a
-  correct estimate, never an OOM at run time — not attempted; needs item
-  3 and the disk-mode package (#158, landed).
+- [x] The 1.5B rung: trains on 16 GB or is refused at compile time with a
+  correct estimate, never an OOM at run time — 2026-11-03, Qwen2.5-1.5B
+  (int8 base, LoRA r8, 512 tokens per step as four 128-token
+  micro-batches under `--grad-accum 4`, a 16 GiB budget; `docs/benchmarks.md`,
+  "The scale ladder's 1.5B rung"). Four compiles of one SMF: the plain
+  plan fits (arena 7.70 GB + plan 2.77 GB = 9,988 MiB); `--remat auto` one
+  MiB under that recomputes and emits the forced plan byte for byte;
+  `--remat on` one MiB under its own footprint is refused at compile time
+  with the exact shortfall ("arena 7082 MiB + plan 2641 MiB need 9722 MiB,
+  but the local memory budget is 9720 MiB"). ROWS_SENTENCE Not with the
+  8-bit states item 3 named (superseded above) but with gradient
+  accumulation: at 512-token micro-batches the same plan's 10.3 GB arena
+  exceeds this GPU's 9.53 GB largest buffer, and the Metal backend now
+  refuses that at `Bind` with the numbers rather than running it.
 - [x] The step-0 estimate-against-exact ratio at each rung — N29 fixed
   ahead of S1 on 2026-11-03 (the accountant's bound counts what the
   backward reads; `docs/compiler.md`), the compile report states the

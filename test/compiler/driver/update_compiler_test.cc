@@ -1078,6 +1078,56 @@ TEST(UpdateCompiler, AnAdapterOnlyPlanCarriesNoRodataAndReadsTheSourceModel) {
                         "exact kernels");
 }
 
+TEST(UpdateCompiler, TheEvalProgramScoresThePlanByRequest) {
+  // E12 scores the shipped f32 file for a narrow-base plan compiled from a
+  // file; --validation-scores plan keeps the eval program on the plan's own
+  // narrow copies — a proxy, for a device that cannot hold the file beside
+  // the arena (F5 #133's 1.5B rung on 16 GB) — and the report says so. An
+  // adapter-only plan has no weights of its own and refuses it.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  seeml::testing::ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel saved, LoadSmf(path));
+  UpdateConfig config = BaseConfig(batch);
+  config.quantize_base = true;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate shipped,
+                       UpdateCompiler(config).Compile(saved));
+  EXPECT_TRUE(shipped.scores_shipped);
+  config.eval_on_plan = true;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate proxy, UpdateCompiler(config).Compile(saved));
+  EXPECT_FALSE(proxy.scores_shipped);
+  // The eval program of the proxy plan reads no source ref; the shipped
+  // plan's does.
+  auto source_reads = [](const CompiledUpdate& c) {
+    const PlanHeader h = HeaderOf(c);
+    size_t n = 0;
+    for (uint64_t i = 0; i < h.eval_instr_count; ++i) {
+      UpdateInstruction ins;
+      std::memcpy(&ins, c.plan.data() + h.eval_instr_offset + i * sizeof(ins),
+                  sizeof(ins));
+      for (uint64_t ref : ins.in)
+        if (ref != kNullRef && IsSourceRef(ref)) ++n;
+    }
+    return n;
+  };
+  EXPECT_GT(source_reads(shipped), 0u);
+  EXPECT_EQ(source_reads(proxy), 0u);
+  // The train programs are the same bytes: the request touches eval alone.
+  const std::vector<UpdateInstruction> train_proxy = TrainProgramOf(proxy);
+  const std::vector<UpdateInstruction> train_shipped = TrainProgramOf(shipped);
+  ASSERT_EQ(train_proxy.size(), train_shipped.size());
+  EXPECT_EQ(std::memcmp(train_proxy.data(), train_shipped.data(),
+                        train_proxy.size() * sizeof(UpdateInstruction)),
+            0);
+  config.quantize_base = false;
+  config.adapter_only = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved),
+                        "no weights of its own");
+}
+
 TEST(UpdateCompiler, AttentionAutoDecidesAgainstAConfiguredBudgetOnly) {
   // F3 (#131) design item 3, by the rule --remat auto already follows: a
   // decision that changes the plan's bytes may weigh the footprint against

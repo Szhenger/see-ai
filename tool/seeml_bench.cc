@@ -769,14 +769,18 @@ int main(int argc, char** argv) {
         const double slope = (wall_hi - wall_lo) /
                              static_cast<double>(*hi - *lo);
         per_step_ms.push_back(slope);
-        for (const char* domain : {"GPU Energy", "CPU Energy"}) {
+        // The GPU domain is the one an unprivileged reader sees advance
+        // per sample (the CPU's arrives in bursts), and it is this run's
+        // compute only on the Metal backend: a CPU run has no number.
+        if (backend_resolved == "metal") {
+          const char* domain = "GPU Energy";
           const double j_lo = seeml::bench::EnergyMeter::Domain(e_lo, domain);
           const double j_hi = seeml::bench::EnergyMeter::Domain(e_hi, domain);
-          if (j_lo < 0.0 || j_hi <= j_lo) continue;
-          energy_j_per_step.push_back((j_hi - j_lo) /
-                                      static_cast<double>(*hi - *lo));
-          energy_domain = domain;
-          break;
+          if (j_lo >= 0.0 && j_hi > j_lo) {
+            energy_j_per_step.push_back((j_hi - j_lo) /
+                                        static_cast<double>(*hi - *lo));
+            energy_domain = domain;
+          }
         }
         lifecycle_ms.push_back(wall_lo - slope * static_cast<double>(*lo));
       }
@@ -832,12 +836,14 @@ int main(int argc, char** argv) {
             ? "{\"attribution\": \"whole-SoC\", \"scope\": [\"" +
                   JsonEscape(energy_domain) + "\"]}"
             : "{\"unavailable\": \"" +
-                  JsonEscape(energy.available()
-                                 ? "no Energy Model counter moved for this "
-                                   "process (unprivileged readers see the "
-                                   "GPU's alone on macOS 26; the CPU's need "
-                                   "root)"
-                                 : energy.reason()) +
+                  JsonEscape(!energy.available() ? energy.reason()
+                             : backend_resolved != "metal"
+                                 ? "this run computes on the CPU: the CPU "
+                                   "domain is published in bursts to an "
+                                   "unprivileged reader, and the GPU domain "
+                                   "is not its compute"
+                                 : "the GPU domain did not advance over the "
+                                   "timed runs") +
                   "\"}";
 
     const auto t_merge = Clock::now();

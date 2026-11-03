@@ -49,6 +49,12 @@
 //                                      in the source model file, read there
 //                                      at run time; the plan carries no
 //                                      rodata (f32 base, exact kernels)
+//       [--validation-scores shipped|plan] where a narrow-base plan's eval
+//                                      program reads the frozen weights: the
+//                                      shipped f32 file (default from a file)
+//                                      or the plan's own narrow copies, for a
+//                                      device that cannot hold the file
+//                                      beside the arena (reported)
 //       [--no-embed]                   skip the decimal byte-array TU; let
 //                                      tool/pack_update.py embed the plan
 //                                      (.incbin) or, above its embed limit,
@@ -111,7 +117,7 @@ void PrintUsage() {
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
                "  [--remat auto|off|on] [--memory-budget-mib N]\n"
-               "  [--adapter-only]\n"
+               "  [--adapter-only] [--validation-scores shipped|plan]\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -413,6 +419,16 @@ int main(int argc, char** argv) {
   // rodata. The driver refuses the narrow bases, the relaxed kernels and an
   // in-memory model with it.
   if (args.Take("--adapter-only")) config.adapter_only = true;
+  // Where a narrow-base plan's eval program reads the frozen weights (E12):
+  // the shipped f32 file (the default where the model came from a file) or
+  // the plan's own narrow copies — a proxy, for a device that cannot hold
+  // the file beside the arena. The report records which.
+  if (auto v = args.TakeValue("--validation-scores")) {
+    if (*v == "shipped") config.eval_on_plan = false;
+    else if (*v == "plan") config.eval_on_plan = true;
+    else return Fail("unknown --validation-scores '" + *v +
+                     "' (shipped or plan)");
+  }
   // The memory gate's budget. Without it the gate uses the host's memory,
   // which is fine for a refusal but not for a decision that changes the
   // plan's bytes: --remat auto decides against this budget only.

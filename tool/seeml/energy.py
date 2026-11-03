@@ -10,12 +10,17 @@ joules. Two honest limits, both stated in every report:
 - the counters are *whole-SoC*: every process on the machine is in them,
   so a measurement means something on a quiet machine, and the rows say
   `attribution: whole-SoC`;
-- what an unprivileged reader sees is the OS's choice: on macOS 26 only
-  the GPU's counter moves without root (the CPU, ANE and DRAM channels read
-  zero for an unprivileged process; `sudo powermetrics` sees them). The
-  meter reports the domains that moved as `scope`, and `joules` only for
-  those; a GPU-only scope is what a Metal row can show here, and a CPU row
-  shows nothing — `available` is false — rather than a zero.
+- what an unprivileged reader sees is the OS's choice: on macOS 26 the
+  GPU's counter advances with every sample, while the CPU, DRAM and ANE
+  counters are published in bursts — nothing for seconds, then the whole
+  backlog at once (747 J of CPU energy landed in one 8-second window, none
+  in the next; `sudo powermetrics` sees them continuously). An interval
+  reading of a burst domain is not a measurement, so the meter keeps every
+  raw delta in `joules` but counts only the continuous domains as `scope`
+  (`available` follows it) and lists the others under `burst`. A GPU-only
+  scope is what a Metal row can show here; a row that computes on the CPU
+  has no energy number to show and must not borrow the GPU's idle draw
+  (the harness and the bench attribute by the row's compute).
 
 The harness (frontier_run.py) and the bench take the same regression the
 step time takes: the energy of the lo and hi runs, divided by the extra
@@ -34,6 +39,9 @@ LIBRARIES: Sequence[str] = ("/usr/lib/libIOReport.dylib",
                             "/System/Library/PrivateFrameworks/IOReport.framework/IOReport")
 _UNITS: Dict[str, float] = {"nJ": 1e-9, "uJ": 1e-6, "µJ": 1e-6, "mJ": 1e-3, "J": 1.0}
 _UTF8 = 0x08000100
+# The domains an unprivileged reader sees advance with every sample on
+# macOS 26: the ones an interval reading can measure.
+CONTINUOUS: Sequence[str] = ("GPU Energy",)
 Reading = Dict[str, Any]
 
 
@@ -144,7 +152,7 @@ class EnergyMeter:
 
     def stop(self) -> Reading:
         out: Reading = {"available": False, "attribution": "whole-SoC", "scope": [],
-                        "joules": {}, "reason": self.reason}
+                        "burst": [], "joules": {}, "reason": self.reason}
         if self._lib is None or self._start is None:
             out["reason"] = out["reason"] or "meter not started"
             return out
@@ -166,18 +174,20 @@ class EnergyMeter:
         for ref in (delta, end):
             self._cf.CFRelease(ref)
         out["joules"] = joules
-        out["scope"] = sorted(joules)
-        out["available"] = bool(joules)
-        if not joules:
-            out["reason"] = ("no Energy Model counter moved for this process "
-                             "(unprivileged readers see the GPU's alone on "
-                             "macOS 26; the CPU's need root)")
+        out["scope"] = [d for d in CONTINUOUS if d in joules]
+        out["burst"] = sorted(d for d in joules if d not in CONTINUOUS)
+        out["available"] = bool(out["scope"])
+        if not out["scope"]:
+            out["reason"] = ("no continuously published Energy Model counter "
+                             "moved for this process (an unprivileged reader "
+                             "sees the GPU's advance per sample on macOS 26; "
+                             "the CPU, DRAM and ANE counters arrive in bursts, "
+                             "and need root to read continuously)")
         return out
 
 
 def domain_joules(reading: Mapping[str, Any],
-                  names: Sequence[str] = ("GPU Energy", "CPU Energy", "DRAM", "ANE")
-                  ) -> Optional[float]:
+                  names: Sequence[str] = CONTINUOUS) -> Optional[float]:
     """The joules of the first named domain the reading holds, else None."""
     joules: Mapping[str, float] = reading.get("joules", {})
     for name in names:

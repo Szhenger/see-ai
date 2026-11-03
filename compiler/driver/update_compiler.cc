@@ -616,6 +616,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           generating::kDriver,
           "--adapter-only runs the exact kernels: the relaxed GEMMs read "
           "rodata weights, and an adapter-only plan carries none");
+    if (config_.eval_on_plan)
+      return generating::Error(
+          generating::kDriver,
+          "--validation-scores plan: an adapter-only plan has no weights of "
+          "its own to score; every program reads the source model");
   }
   auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights,
                            config_.adapter_only);
@@ -832,7 +837,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
            !std::string_view(v->id()).starts_with("t::") &&
            src->second->data_offset != 0;
   };
-  if (from_file) {
+  if (from_file && !config_.eval_on_plan) {
     for (const auto& [w, s] : quant_scales)
       if (narrow_student(w)) shipped.insert(w);
     for (const sir::Value* w : bf16_weights)
@@ -843,6 +848,14 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                       "the model was not loaded from a file, so the eval "
                       "program scores the narrow in-plan weights — a proxy "
                       "for the committed f32 model");
+  if (from_file && config_.eval_on_plan &&
+      (!quant_scales.empty() || !bf16_weights.empty()))
+    seeml::diag::Note(generating::kDriver,
+                      "--validation-scores plan: the eval program scores the "
+                      "narrow in-plan weights — a proxy for the committed f32 "
+                      "model, for a device that cannot hold the source model "
+                      "beside the arena; the report says validation_scores "
+                      "\"plan\"");
   auto resolve_eval =
       [&](const sir::Value* v) -> std::expected<uint64_t, std::string> {
     if (shipped.contains(v))

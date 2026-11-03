@@ -296,6 +296,20 @@ class MetalBackend final : public ExecutorBackend {
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
   std::expected<void, std::string> SelfTest();
+  void BeginRange(std::span<const up::UpdateInstruction> range) override {
+    range_on_cpu_ = false;
+    if (!source_on_cpu_) return;
+    for (const up::UpdateInstruction& ins : range)
+      if (const InstructionExtents* ex = ExtentsOf(ins); ex && ReadsSource(*ex)) {
+        range_on_cpu_ = true;
+        return;
+      }
+  }
+  void EndRange() override { range_on_cpu_ = false; }
+  static bool ReadsSource(const InstructionExtents& ex) {
+    return std::any_of(ex.ranges, ex.ranges + ex.count,
+                       [](const OperandExtent& r) { return r.source; });
+  }
   // Its own tensor-op GEMMs and matrix-tile tiled attention dispatches
   // (v20) plus the relaxed GEMMs it hands the CPU
   // backend (a GEMM whose dimensions overflow 32 bits, DimsFit32), which
@@ -364,6 +378,11 @@ class MetalBackend final : public ExecutorBackend {
   bool source_on_cpu_ = false;
   uint64_t source_bytes_ = 0;
   uint64_t working_set_limit_ = 0;
+  // Set by BeginRange while source_on_cpu_: the range being executed reads
+  // the source model, so every instruction of it runs on cpu_ — one
+  // hand-off per range, not a drain around each source-weight GEMM (which
+  // made the 1.5B rung's evaluation eight times the CPU backend's).
+  bool range_on_cpu_ = false;
   // Whether this GPU reports command-buffer execution times (learned from
   // the self-test): where it does, a buffer that completes with none is
   // one the device declined, and Flush refuses it.
@@ -405,6 +424,12 @@ class MetalBackend final : public ExecutorBackend {
   // completion, and the dispatch count — the time outside kernels is the
   // difference, measured without serializing the stream the way the
   // profile does. A table on stderr at destruction. Diagnostic only.
+  // SEEML_METAL_UNSTAGED_ROWS=1 keeps the transposed-B rows sites on the
+  // unstaged kernel: the same-session control for the staged form's bits
+  // and time (F7 #138), diagnostic only.
+  const bool rows_tgb_ = std::getenv("SEEML_METAL_UNSTAGED_ROWS") == nullptr ||
+                         *std::getenv("SEEML_METAL_UNSTAGED_ROWS") == '\0' ||
+                         *std::getenv("SEEML_METAL_UNSTAGED_ROWS") == '0';
   const bool spans_ = std::getenv("SEEML_METAL_SPANS") != nullptr &&
                       *std::getenv("SEEML_METAL_SPANS") != '\0' &&
                       *std::getenv("SEEML_METAL_SPANS") != '0';
@@ -952,7 +977,7 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
     if (at)  // A[k, m] with the lanes striding k: stage it (F7 step 3)
       Dispatch(static_cast<Pipe>(pipe + kGemmRowsTg), a,
                a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
-    else if (bt)  // B[n, k]: N rows per k — stage the block (the nt_rows floor)
+    else if (bt && rows_tgb_)  // B[n, k]: N rows per k — stage the block
       Dispatch(static_cast<Pipe>(pipe + kGemmRowsTgB), a,
                a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
     else
@@ -1538,11 +1563,10 @@ std::expected<void, std::string> MetalBackend::Execute(
       return std::unexpected("instruction " + std::to_string(ins.opcode) +
                              " failed re-validation at dispatch");
     // A reader of the source model runs where the model is: on cpu_ when
-    // BindSource kept it off the GPU (source_on_cpu_).
+    // BindSource kept it off the GPU (source_on_cpu_) — and so does every
+    // instruction of a range that holds one (range_on_cpu_, BeginRange).
     const bool reads_source =
-        source_on_cpu_ && ex &&
-        std::any_of(ex->ranges, ex->ranges + ex->count,
-                    [](const OperandExtent& r) { return r.source; });
+        source_on_cpu_ && (range_on_cpu_ || (ex && ReadsSource(*ex)));
     if (!IsGpuOpcode(op) || !DimsFit32(op, ins) || reads_source) {
       // CPU-resident: wait for any pending GPU work it depends on.
       if (ex && HazardWithPending(*ex))

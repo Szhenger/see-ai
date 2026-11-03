@@ -27,10 +27,14 @@ class EnergyMeterTest(unittest.TestCase):
         # asserted. Elsewhere the meter is unavailable, which is the same
         # contract from the other side.
         reading = energy.EnergyMeter().start().stop()
-        for key in ("available", "attribution", "scope", "joules", "reason"):
+        for key in ("available", "attribution", "scope", "burst", "joules", "reason"):
             self.assertIn(key, reading)
-        self.assertEqual(sorted(reading["joules"]), reading["scope"])
-        self.assertEqual(reading["available"], bool(reading["joules"]))
+        # Only the continuously published domains count; the burst ones
+        # (the CPU's, DRAM's, ANE's backlog landing at once) are listed apart.
+        self.assertTrue(set(reading["scope"]) <= set(energy.CONTINUOUS))
+        self.assertEqual(sorted(reading["scope"]) + reading["burst"],
+                         sorted(reading["joules"]))
+        self.assertEqual(reading["available"], bool(reading["scope"]))
         for joules in reading["joules"].values():
             self.assertGreater(joules, 0.0)
 

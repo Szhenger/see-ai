@@ -121,6 +121,16 @@ step 272.6–274.1 → 238.1–242.8 ms, the step 278.8 → 245.5 ms, 1,837 →
 38 µs: latency-bound at 512 simdgroups), step 2, step 4, the relaxed
 row.
 
+## Status 2026-11-03
+
+The `nt_rows` floor landed: `k_gemm_nt_rows_tgb` (`docs/benchmarks.md`,
+"The `nt_rows` sites off their floor: the staged-B rows kernel"),
+dispatched for a transposed B at N ≤ 16 — the adapter backward's `dt`
+sites, where the unstaged form issued nine loads per eight multiply-adds
+and ran at 31–34 GB/s. NT_F7_STATUS Steps 2 (the batched A-projections,
+which need strided operands in the ISA) and 4 (`B(Ax)` folded into the
+base GEMM under the certificate) stay open and are this issue's remainder.
+
 ## Acceptance
 
 - [x] Train-only Metal profile of SmolLM-135M with the LoRA family's share
@@ -133,8 +143,14 @@ row.
 - [x] Design item 3's target, ≥ 100 GB/s effective on `512x1536x8+add` —
   44 µs for the 6 MB of C and D the row moves (the doc's own figure: 92 µs
   was 65 GB/s), so about 137 GB/s.
-- [ ] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
-  simdgroups) — the family's next floor.
+- [x] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
+  simdgroups) — 2026-11-03, `k_gemm_nt_rows_tgb`: the `[N × 32 k]` block
+  of the transposed B staged through threadgroup memory and read as
+  float4s (four loads per eight multiply-adds instead of nine), the
+  lane-to-k assignment, the product order, the per-column scale's place
+  and the shuffle tree unchanged. NT_F7_LINE The 10-24 exact SmolLM-135M
+  plan recompiled on this tree commits SHA_F7_WORD after the 10-24 recipe
+  (`docs/benchmarks.md`, "The `nt_rows` sites off their floor").
 - [ ] Step 2, the batched A-projections — not started; needs strided
   operands in the ISA.
 - [ ] Step 4, B(Ax) folded into the base GEMM, certified — not started.

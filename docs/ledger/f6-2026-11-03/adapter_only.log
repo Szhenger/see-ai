@@ -1,0 +1,14 @@
+f6 start 23:32:10Z
+rodata compile rc=0 plan_bytes": 740982784 persistent_bytes": 36292608 rodata_bytes": 704390400 
+rodata pack rc=0 binary 747391920 plan 740982784
+rodata metal rc=0 frontier_run seeml: metal: 222.0 ms/step, 2306 tok/s, val 4.5744 -> 4.4790, 2.765 mJ/token (GPU Energy, whole-SoC)
+rodata cpu rc=0 frontier_run seeml: cpu: 1832.0 ms/step, 279 tok/s, val 4.5743 -> 4.4789, 0.089 mJ/token (GPU Energy, whole-SoC)
+adapter compile rc=0 plan_bytes": 36585472 persistent_bytes": 36292608 rodata_bytes": 0 
+[32m[INFO]  18:35:08 compiler/driver/update_compiler.cc:1172 — UpdateCompiler: adapter-only: the plan carries no rodata — 273 frozen weight(s) are read from the source model at run time, in every pro
+adapter pack rc=0 binary 37404848 plan 36585472
+adapter metal rc=0 frontier_run seeml: metal: 250.0 ms/step, 2048 tok/s, val 4.5744 -> 4.4790, 3.004 mJ/token (GPU Energy, whole-SoC)
+adapter cpu rc=0 frontier_run seeml: cpu: 1872.0 ms/step, 274 tok/s, val 4.5743 -> 4.4789, 0.109 mJ/token (AMCC+ANE+AVE+CPU Energy+DCS+DISP+DISPEXT+DRAM+ECPM+ECPM_SRAM+ECPU+ECPU0+ECPU0_SRAM+ECPU1+ECPU1_SRAM+ECPU2+ECPU
+metal rodata eb4f7b752d8f27f8f9ad64a66799f6d24285d4e6d06f29df9ad06253f99039c5 2306.3063063063037 adapter eb4f7b752d8f27f8f9ad64a66799f6d24285d4e6d06f29df9ad06253f99039c5 2047.9999999999986 same: True devices Apple M5, ro
+cpu rodata acedf11a59cbf81d1007c1d8bdbc4fe6429301bf5ca77ef2ec5e0ed23e35b8d7 279.475982532751 adapter acedf11a59cbf81d1007c1d8bdbc4fe6429301bf5ca77ef2ec5e0ed23e35b8d7 273.5042735042735 same: True devices host CPU, relaxed
+int8 package (10-24 pkg_exact) binary: 301495056 bytes
+f6 end 23:37:57Z

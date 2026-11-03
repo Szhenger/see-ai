@@ -6,6 +6,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -104,6 +105,18 @@ class ExecutorBackend {
   [[nodiscard]] virtual std::expected<void, std::string> Execute(
       const seeml::update::UpdateInstruction& ins,
       const StepParams& params) = 0;
+
+  /// The engine is about to execute `range`, one program's instructions in
+  /// order (ExecuteRange), and EndRange follows its Flush. A backend that
+  /// keeps the source model off its device (Metal, past the GPU's working
+  /// set; F5 #133) runs the whole range on its CPU sub-backend when any
+  /// instruction of it reads the source — draining the device around each
+  /// such instruction cost eight times the CPU's own evaluation. The
+  /// defaults do nothing: a backend that executes everything where it is
+  /// told needs neither.
+  virtual void BeginRange(
+      std::span<const seeml::update::UpdateInstruction> /*range*/) {}
+  virtual void EndRange() {}
 
   /// Completes all deferred work. After a successful Flush the arena's
   /// bytes are what the instruction sequence so far computed, readable by

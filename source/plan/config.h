@@ -138,6 +138,14 @@ struct UpdateConfig {
   // rodata weights), and a model loaded from a file (the offsets and the
   // hash that binds them).
   bool adapter_only = false;
+  // Where the eval program reads the frozen weights of a narrow-base plan
+  // compiled from a file (E12, plan v17): the source model's f32 — the
+  // function that ships, scored exactly — unless this asks for the plan's
+  // own narrow copies, a proxy for a device that cannot hold the f32 file
+  // beside the arena (the 1.5B rung on 16 GB, F5 #133; a phone). The
+  // report says which (`validation_scores`); an adapter-only plan has no
+  // weights of its own and refuses the request.
+  bool eval_on_plan = false;
   // The bitwise-safe kernel batch (E3, plan v12), each exposed for the same
   // reason: so a compilation with and without it can be compared
   // bit-for-bit. rope_table hoists the RoPE angles into one device-built
