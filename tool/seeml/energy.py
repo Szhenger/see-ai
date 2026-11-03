@@ -22,17 +22,19 @@ step time takes: the energy of the lo and hi runs, divided by the extra
 steps, is the energy per step with the lifecycle removed, and per token
 from there. Elsewhere — Linux, a VM without the library or the channel
 group, an OS that hides them — the meter is unavailable and says why; it
-never raises.
+never raises. Standard library only (ctypes): tier 0.
 """
 import ctypes
 import ctypes.util
-import os
 import sys
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 GROUP = "Energy Model"
-LIBRARIES = ("/usr/lib/libIOReport.dylib",
-             "/System/Library/PrivateFrameworks/IOReport.framework/IOReport")
-_UNITS = {"nJ": 1e-9, "uJ": 1e-6, "µJ": 1e-6, "mJ": 1e-3, "J": 1.0}
+LIBRARIES: Sequence[str] = ("/usr/lib/libIOReport.dylib",
+                            "/System/Library/PrivateFrameworks/IOReport.framework/IOReport")
+_UNITS: Dict[str, float] = {"nJ": 1e-9, "uJ": 1e-6, "µJ": 1e-6, "mJ": 1e-3, "J": 1.0}
+_UTF8 = 0x08000100
+Reading = Dict[str, Any]
 
 
 class EnergyMeter:
@@ -40,12 +42,14 @@ class EnergyMeter:
     reading: {"available": bool, "attribution": "whole-SoC", "scope":
     [domains that moved], "joules": {domain: J}, "reason": str}."""
 
-    def __init__(self, libraries=LIBRARIES):
-        self.reason = None
-        self._lib = None
-        self._sub = None
-        self._channels = None
-        self._start = None
+    def __init__(self, libraries: Sequence[str] = LIBRARIES) -> None:
+        self.reason: Optional[str] = None
+        self._lib: Any = None  # the IOReport library, a ctypes.CDLL
+        self._cf: Any = None   # CoreFoundation
+        self._sub: Any = None
+        self._channels: Any = None
+        self._key: Any = None
+        self._start: Any = None
         if sys.platform != "darwin":
             self.reason = f"no IOReport on {sys.platform}"
             return
@@ -56,15 +60,19 @@ class EnergyMeter:
             self._lib = None
 
     # --- the IOReport binding ------------------------------------------------
-    def _open(self, libraries):
-        lib = None
+    def _open(self, libraries: Sequence[str]) -> None:
+        # The library lives in the dyld shared cache, not as a file on disk
+        # (os.path.exists is false for it): the loader is the only test.
+        lib: Any = None
         for path in libraries:
-            if os.path.exists(path):
+            try:
                 lib = ctypes.CDLL(path)
                 break
+            except OSError:
+                continue
         if lib is None:
             raise RuntimeError("libIOReport not found")
-        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+        cf: Any = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
         self._cf = cf
         cf.CFStringCreateWithCString.restype = ctypes.c_void_p
         cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
@@ -101,8 +109,7 @@ class EnergyMeter:
             getattr(lib, name).argtypes = [ctypes.c_void_p]
         lib.IOReportSimpleGetIntegerValue.restype = ctypes.c_int64
         lib.IOReportSimpleGetIntegerValue.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        utf8 = 0x08000100
-        group = cf.CFStringCreateWithCString(None, GROUP.encode(), utf8)
+        group = cf.CFStringCreateWithCString(None, GROUP.encode(), _UTF8)
         channels = lib.IOReportCopyChannelsInGroup(group, None, 0, 0, 0)
         cf.CFRelease(group)
         if not channels:
@@ -114,30 +121,30 @@ class EnergyMeter:
         if not sub or not subscribed.value:
             raise RuntimeError("subscription refused")
         self._lib, self._sub, self._channels = lib, sub, subscribed.value
-        self._key = cf.CFStringCreateWithCString(None, b"IOReportChannels", utf8)
+        self._key = cf.CFStringCreateWithCString(None, b"IOReportChannels", _UTF8)
 
-    def _cfstr(self, ref):
+    def _cfstr(self, ref: Any) -> str:
         buf = ctypes.create_string_buffer(256)
-        if ref and self._cf.CFStringGetCString(ref, buf, 256, 0x08000100):
-            return buf.value.decode("utf-8", "replace")
+        if ref and self._cf.CFStringGetCString(ref, buf, 256, _UTF8):
+            return str(buf.value.decode("utf-8", "replace"))
         return "?"
 
-    def _sample(self):
+    def _sample(self) -> Any:
         return self._lib.IOReportCreateSamples(self._sub, self._channels, None)
 
     # --- the interval --------------------------------------------------------
     @property
-    def available(self):
+    def available(self) -> bool:
         return self._lib is not None
 
-    def start(self):
+    def start(self) -> "EnergyMeter":
         if self._lib is not None:
             self._start = self._sample()
         return self
 
-    def stop(self):
-        out = {"available": False, "attribution": "whole-SoC", "scope": [],
-               "joules": {}, "reason": self.reason}
+    def stop(self) -> Reading:
+        out: Reading = {"available": False, "attribution": "whole-SoC", "scope": [],
+                        "joules": {}, "reason": self.reason}
         if self._lib is None or self._start is None:
             out["reason"] = out["reason"] or "meter not started"
             return out
@@ -145,10 +152,10 @@ class EnergyMeter:
         delta = self._lib.IOReportCreateSamplesDelta(self._start, end, None)
         self._start = None
         rows = self._cf.CFDictionaryGetValue(delta, self._key)
-        joules = {}
-        for i in range(self._cf.CFArrayGetCount(rows) if rows else 0):
+        joules: Dict[str, float] = {}
+        for i in range(int(self._cf.CFArrayGetCount(rows)) if rows else 0):
             row = self._cf.CFArrayGetValueAtIndex(rows, i)
-            value = self._lib.IOReportSimpleGetIntegerValue(row, 0)
+            value = int(self._lib.IOReportSimpleGetIntegerValue(row, 0))
             if value <= 0:
                 continue
             name = self._cfstr(self._lib.IOReportChannelGetChannelName(row))
@@ -168,15 +175,20 @@ class EnergyMeter:
         return out
 
 
-def domain_joules(reading, names=("GPU Energy", "CPU Energy", "DRAM", "ANE")):
+def domain_joules(reading: Mapping[str, Any],
+                  names: Sequence[str] = ("GPU Energy", "CPU Energy", "DRAM", "ANE")
+                  ) -> Optional[float]:
     """The joules of the first named domain the reading holds, else None."""
+    joules: Mapping[str, float] = reading.get("joules", {})
     for name in names:
-        if name in reading.get("joules", {}):
-            return reading["joules"][name]
+        if name in joules:
+            return float(joules[name])
     return None
 
 
-def per_step_from_slope(lo_reading, hi_reading, lo_steps, hi_steps, domain="GPU Energy"):
+def per_step_from_slope(lo_reading: Mapping[str, Any], hi_reading: Mapping[str, Any],
+                        lo_steps: int, hi_steps: int,
+                        domain: str = "GPU Energy") -> Optional[float]:
     """Energy per step by the same regression the step time takes: the hi
     run's joules less the lo run's, over the extra steps — the lifecycle
     (load, the evaluations) cancels. None where either reading lacks the
@@ -185,5 +197,5 @@ def per_step_from_slope(lo_reading, hi_reading, lo_steps, hi_steps, domain="GPU 
     hi = hi_reading.get("joules", {}).get(domain)
     if lo is None or hi is None or hi_steps <= lo_steps:
         return None
-    slope = (hi - lo) / (hi_steps - lo_steps)
+    slope = (float(hi) - float(lo)) / (hi_steps - lo_steps)
     return slope if slope > 0 else None
