@@ -157,7 +157,7 @@ largest buffer or an arena plus rodata above the working set, keeps the
 source model on the CPU when it would not fit beside them (the eval
 program's source-weight GEMMs run there; the device line says so), and
 self-tests one dispatch at `Bind` so a later buffer that completes
-without executing is an error (`docs/runtime.md`). The rung trained on this host on both backends: the CPU at 13.2 s per 512-token step (39 tok/s) and Metal at 1.9 s (263 tok/s, validation 4.3487 → 4.0050, accuracy 28.7 → 31.1 %) with `--validation-scores plan` — the evaluation on the plan's int8 copies, because the 7.55 GB f32 file beside the 7.7 GB arena pages a 16 GB host (the shipped-scored Metal run reads 8.8 s per step for that reason alone); the gate accepted and committed on each, the two Metal runs the same model (`eecfde4b…`) (`docs/benchmarks.md`, "The scale ladder's 1.5B rung").
+without executing is an error (`docs/runtime.md`). The rung trained on this host on both backends: the CPU at 13.2 s per 512-token step (39 tok/s) and Metal at 1.9 s (263 tok/s, validation 4.3487 → 4.0050, accuracy 28.7 → 31.1 %) with `--validation-scores plan` — the evaluation on the plan's int8 copies, because the 7.55 GB f32 file beside the 7.7 GB arena pages a 16 GB host (the shipped-scored Metal run reads 8.8 s per step for that reason alone); the gate accepted and committed on each, the two Metal runs the same model (`eecfde4b…`); the host was on battery with Low Power Mode on for every row, so the absolute times are that state's and the comparisons the measurement (`docs/benchmarks.md`, "The scale ladder's 1.5B rung").
 
 ## Acceptance
 

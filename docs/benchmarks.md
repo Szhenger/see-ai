@@ -1398,7 +1398,7 @@ harness's regression over that noise, and the CPU's 13.2 s the same story
 on the CPU's own kernels. The third row is the device recipe:
 `--validation-scores plan` keeps the evaluation on the plan's int8 copies
 and on the GPU, the working set is the arena and rodata (10.3 GB), and the
-step is the probe's. The three-step diagnosis runs in the ledger (`diag_step_*.json`, the Metal spans on) say the same from the other side: without a validation split the three steps take 7.7 s — 2.56 s per step, the GPU busy 73 % of the wall — and with the 14-record split the same three steps take 65 s, of which the command buffers' wall is 7.3 s (GPU busy 77 %, the arithmetic unchanged): the 58 s between them is the arena faulting back after the evaluation pass streamed the 7.55 GB source through memory, and the pass itself takes 29 s. Every row here was measured on battery with Low Power Mode on (`docs/ledger/f7-2026-11-03/host_state.txt`, read at the end of the session; the 10-24 SmolLM package's own binary runs 35 % slower in this state than it did on 10-24), so the absolute times are this host's in that state and the comparisons between the rows are the measurement.
+step is the probe's. The three-step diagnosis runs in the ledger (`diag_step_*.json`, the Metal spans on) say the same from the other side: without a validation split the three steps take 7.7 s — 2.56 s per step, the GPU busy 73 % of the wall — and with the 14-record split the same three steps take 65 s, of which the command buffers' wall is 7.3 s (GPU busy 77 %, the arithmetic unchanged): the 58 s between them is a per-run constant, not a per-step cost — the two-step run of `eval_speed.json` pays the same 58 s — the arena faulting back after the evaluation pass streamed the 7.55 GB source through memory; the pass itself takes 29 s. Every row here was measured on battery with Low Power Mode on (`docs/ledger/f7-2026-11-03/host_state.txt`, read at the end of the session; the 10-24 SmolLM package's own binary runs 35 % slower in this state than it did on 10-24), so the absolute times are this host's in that state and the comparisons between the rows are the measurement.
 
 **What the GPU can hold, and what it silently cannot.** The first Metal
 run of the fit arm reported every loss as 0.000000, 20 steps in 4.3 s and
@@ -1484,7 +1484,7 @@ measurement, so the meter keeps the raw deltas, counts the GPU alone as
 compute: a Metal row carries a GPU-scoped number, a row that computes on
 the CPU says `unavailable` rather than borrow the GPU's idle draw (the
 first two CPU rows of the day did exactly that, at 0.05 J per step, and
-were corrected). Measured today on the M5, SmolLM-135M r8, f32 base, 20
+were corrected). Measured on 2026-11-04 on the M5, SmolLM-135M r8, f32 base, 20
 quality steps, the lo/hi regression:
 
 | row | tok/s | energy (GPU domain, whole-SoC) |

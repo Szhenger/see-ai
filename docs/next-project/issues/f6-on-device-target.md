@@ -60,7 +60,8 @@ the rows are in the ledger), so a Metal row carries a GPU-scoped number
 and a row that computes on the CPU says `unavailable` rather than borrow
 the GPU's idle draw. SmolLM-135M r8 on Metal: 2.98 mJ per token on the
 rodata plan (1.52 J per 512-token step, 6.8 W), 3.04 on the adapter-only
-one. The device line
+one — the host on battery with Low Power Mode on, that state's joules, the
+comparison between the plans the measurement. The device line
 stays open: this host has no iPhone or iPad and no iOS SDK (`xcrun` finds
 none), and nothing in the tree pretends otherwise.
 
@@ -78,7 +79,8 @@ none), and nothing in the tree pretends otherwise.
   counters without root, by the lo/hi regression; whole-SoC, GPU-scoped on
   an unprivileged macOS 26, `unavailable` with the reason elsewhere.
   SmolLM-135M r8 on Metal reads 2.98 mJ per token (the rodata plan) and
-  3.04 (the adapter-only plan); the CPU rows say `unavailable`, since
+  3.04 (the adapter-only plan), the host on battery with Low Power Mode on;
+  the CPU rows say `unavailable`, since
   the CPU domain reaches an unprivileged reader in bursts.
 - [x] Adapter-only package for SmolLM-135M r8 measured in bytes against
   today's package — 2026-11-03, `--adapter-only` (plan v21): a 37,404,848-
