@@ -1076,6 +1076,13 @@ TEST(UpdateCompiler, AnAdapterOnlyPlanCarriesNoRodataAndReadsTheSourceModel) {
   config.precision = Precision::kCertifiedBf16;
   EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved),
                         "exact kernels");
+  // A teacher's weights live in another file than the one the runtime
+  // binds: refused by name, never bound to the student's bytes at the
+  // teacher's offsets.
+  config.precision = Precision::kF32;
+  config.loss = LossKind::kKLDistill;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved, &saved),
+                        "teacher");
 }
 
 TEST(UpdateCompiler, TheEvalProgramScoresThePlanByRequest) {

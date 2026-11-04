@@ -261,6 +261,11 @@ bool PagesWritable(const void* ptr, uint64_t len) {
 bool Overlaps(const Extent& a, const Extent& b) {
   return a.off < b.off + b.bytes && b.off < a.off + a.bytes;
 }
+// A diagnostic switch in the environment: set to anything but "" or "0".
+bool EnvFlag(const char* name) {
+  const char* v = std::getenv(name);
+  return v != nullptr && *v != '\0' && *v != '0';
+}
 
 class MetalBackend final : public ExecutorBackend {
  public:
@@ -282,7 +287,8 @@ class MetalBackend final : public ExecutorBackend {
                         relaxed_reason_ + ")";
     if (source_on_cpu_)
       s += ", source model on the CPU (" + std::to_string(source_bytes_) +
-           " B beyond the GPU working set)";
+           " B; with the arena and the rodata it exceeds the GPU working "
+           "set of " + std::to_string(working_set_limit_) + " B)";
     return s;
   }
 
@@ -404,9 +410,7 @@ class MetalBackend final : public ExecutorBackend {
   // GPU time (GPUStartTime..GPUEndTime) accumulated per kernel and shape,
   // CPU-resident instructions by wall clock; a table on stderr at
   // destruction. Diagnostic only — it serializes the stream.
-  const bool profile_ = std::getenv("SEEML_METAL_PROFILE") != nullptr &&
-                        *std::getenv("SEEML_METAL_PROFILE") != '\0' &&
-                        *std::getenv("SEEML_METAL_PROFILE") != '0';
+  const bool profile_ = EnvFlag("SEEML_METAL_PROFILE");
   struct ProfRow { double seconds = 0; uint64_t count = 0; };
   std::map<std::string, ProfRow> prof_;
   std::string prof_pipes_;  // every kernel the current instruction dispatched
@@ -427,12 +431,8 @@ class MetalBackend final : public ExecutorBackend {
   // SEEML_METAL_UNSTAGED_ROWS=1 keeps the transposed-B rows sites on the
   // unstaged kernel: the same-session control for the staged form's bits
   // and time (F7 #138), diagnostic only.
-  const bool rows_tgb_ = std::getenv("SEEML_METAL_UNSTAGED_ROWS") == nullptr ||
-                         *std::getenv("SEEML_METAL_UNSTAGED_ROWS") == '\0' ||
-                         *std::getenv("SEEML_METAL_UNSTAGED_ROWS") == '0';
-  const bool spans_ = std::getenv("SEEML_METAL_SPANS") != nullptr &&
-                      *std::getenv("SEEML_METAL_SPANS") != '\0' &&
-                      *std::getenv("SEEML_METAL_SPANS") != '0';
+  const bool rows_tgb_ = !EnvFlag("SEEML_METAL_UNSTAGED_ROWS");
+  const bool spans_ = EnvFlag("SEEML_METAL_SPANS");
   struct SpanRow { uint64_t dispatches; double gpu_seconds, wall_seconds; };
   std::vector<SpanRow> spans_rows_;
   std::chrono::steady_clock::time_point cb_t0_;
@@ -723,10 +723,14 @@ MetalBackend::Create() {
     if (!be->scratch_) return std::unexpected("scratch allocation failed");
     be->scratch_floats_ = kScratchFloats;
     be->cpu_ = CreateCpuBackend();
+    // Zero — a device that reports no working set, or an override that
+    // does not parse — means unknown: the Bind and BindSource checks stand
+    // down rather than refuse every arena and divert every source.
     be->working_set_limit_ = be->device_.recommendedMaxWorkingSetSize;
     if (const char* ws = std::getenv("SEEML_METAL_WORKING_SET");
         ws && *ws != '\0')
-      be->working_set_limit_ = std::strtoull(ws, nullptr, 10);
+      if (const uint64_t v = std::strtoull(ws, nullptr, 10); v != 0)
+        be->working_set_limit_ = v;
     return std::unique_ptr<ExecutorBackend>(std::move(be));
   }
 }
@@ -784,7 +788,7 @@ std::expected<void, std::string> MetalBackend::Bind(
     }
     const uint64_t resident =
         arena_bytes + (rodata_buf ? static_cast<uint64_t>(rodata_buf.length) : 0);
-    if (resident > working_set_limit_)
+    if (working_set_limit_ != 0 && resident > working_set_limit_)
       return std::unexpected(
           "the arena (" + std::to_string(arena_bytes) + " bytes) plus the "
           "rodata (" + std::to_string(resident - arena_bytes) +
@@ -853,7 +857,7 @@ std::expected<void, std::string> MetalBackend::BindSource(const uint8_t* data,
     const uint64_t resident =
         (arena_buf_ ? static_cast<uint64_t>(arena_buf_.length) : 0) +
         (rodata_buf_ ? static_cast<uint64_t>(rodata_buf_.length) : 0) + wrapped;
-    if (resident > working_set_limit_) {
+    if (working_set_limit_ != 0 && resident > working_set_limit_) {
       source_buf_ = nil;
       source_on_cpu_ = true;
       return {};

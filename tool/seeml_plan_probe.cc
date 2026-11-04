@@ -281,8 +281,9 @@ int ParseOptions(int argc, char** argv, Options* opts) {
   opts->arena_in = *in_arena;
   opts->arena_out = *out_arena;
   if (source) {
-    if (*section != "eval")
-      return Usage("--source applies to --section eval only");
+    // Any section may read the source model: the eval program's f32
+    // weights (v17), every program's in an adapter-only plan (v21). The
+    // file is read only where the section's extents need it.
     const auto in_source = InputFile(*source, &why);
     if (!in_source) return Fail(why);
     opts->source = *in_source;
@@ -596,14 +597,14 @@ int main(int argc, char** argv) {
             std::max(source_needed, ex.ranges[i].off + ex.ranges[i].bytes);
   if (source_needed > 0) {
     if (opts.source.empty())
-      return Fail("the eval program reads the source model: pass --source");
+      return Fail("the program reads the source model: pass --source");
     if (!ReadFile(opts.source, &source_bytes))
       return Fail("cannot read --source");
     if (up::ContentHash64(source_bytes.data(), source_bytes.size()) !=
         h.source_model_hash)
       return Fail("--source does not match the plan's source_model_hash");
     if (source_bytes.size() < source_needed)
-      return Fail("--source is shorter than the eval program reads");
+      return Fail("--source is shorter than the program reads");
     if (auto r = backend.BindSource(source_bytes.data(), source_bytes.size());
         !r)
       return Fail("bind source: " + r.error());

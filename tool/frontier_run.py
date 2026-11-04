@@ -109,7 +109,9 @@ def energy_meter():
     """The SoC energy meter (tool/seeml/energy.py, F6 #134): IOReport's
     counters without root on macOS; unavailable, with the reason, elsewhere.
     Standard library only (ctypes)."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:  # called once per timed run
+        sys.path.insert(0, here)
     from seeml.energy import EnergyMeter
     return EnergyMeter()
 

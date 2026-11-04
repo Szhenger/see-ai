@@ -1651,10 +1651,14 @@ TEST(UpdateSystem, AnAdapterOnlyPlanTrainsThePlainPlansBits) {
     UpdateEngine engine;
     ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
                                     compiled.plan.size()));
-    ASSERT_OK(engine.BindSourceModel(path));
     ASSERT_OK_AND_ASSIGN(Dataset data,
                          seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
     data.EnableShuffle(9);
+    // Unbound, the adapter-only plan's train program would read through no
+    // mapping: refused by name, as Evaluate refuses, before any step runs.
+    if (adapter_only)
+      EXPECT_ERROR_CONTAINS(engine.Train(data, 1, Quiet()), "BindSourceModel");
+    ASSERT_OK(engine.BindSourceModel(path));
     TrainOptions options = Quiet();
     options.record_loss_curve = true;
     ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 20, options));

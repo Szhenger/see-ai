@@ -344,7 +344,6 @@ TEST(PlanValidator, EmbedProvesBuffersAndDemandsRodataTable) {
   EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata,
                                    up::kSeeuSourceWeightsVersion - 1, true));
   emb.in[1] = up::MakeRodataRef(0);
-  emb.in[1] = up::MakeRodataRef(0);
   EXPECT_ERROR_CONTAINS(
       ValidateInstruction(emb, kArena, kRodata, up::kSeeuTokenVersion - 1),
       "token opcode");

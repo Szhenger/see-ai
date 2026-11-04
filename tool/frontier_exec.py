@@ -761,10 +761,11 @@ class Memory:
             np, n = self.np, _count(shape)
             if is_source_ref(ref):
                 # v17: the eval program reads the shipped f32 weights from
-                # the source model file, at their absolute SMF offsets.
+                # the source model file, at their absolute SMF offsets; v21:
+                # every program of an adapter-only plan does.
                 if self.source is None:
-                    raise PlanError("the eval program reads the source "
-                                    "model: pass --source model.smf")
+                    raise PlanError("the plan reads the source model: pass "
+                                    "--source model.smf")
                 blob, off = self.source, ref & ~SOURCE_BIT
                 if off + n * _DTYPE_BYTES[kind] > len(blob):
                     raise PlanError("a source operand lies outside the "
@@ -1631,7 +1632,7 @@ class Probe:
         self.base = [path, "--plan", plan_path, "--backend", backend]
         if threads:
             self.base += ["--threads", str(threads)]
-        self.source = source  # v17: passed to eval sections
+        self.source = source  # v17: the eval program's; v21: any program's
         self.tmp = tempfile.TemporaryDirectory(prefix="seeml-frontier-")
 
     def close(self):
@@ -1646,7 +1647,10 @@ class Probe:
                            "--arena-out", a_out,
                            "--lr-bits", f"{f32_bits(scalars['lr']):08x}",
                            "--step", str(scalars["step"])] + extra
-        if section == "eval" and self.source:
+        # The probe reads --source only where the section's extents need
+        # it: the eval program's source-weight GEMMs (v17), every program's
+        # frozen weights in an adapter-only plan (v21).
+        if self.source:
             cmd += ["--source", self.source]
         done = subprocess.run(cmd, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
@@ -2112,7 +2116,8 @@ def build_parser():
         sp.add_argument("--report", metavar="JSON", default=None)
         sp.add_argument("--source", metavar="SMF", default=None,
                         help="the model the plan was compiled from — a v17 "
-                             "plan's eval program reads its f32 weights")
+                             "plan's eval program reads its f32 weights, every "
+                             "program of a v21 adapter-only plan")
 
         sp.add_argument("--relaxed", action="store_true",
                         help="model the relaxed GEMM family (v18): round each "

@@ -140,6 +140,10 @@ class EnergyMeter:
     def _sample(self) -> Any:
         return self._lib.IOReportCreateSamples(self._sub, self._channels, None)
 
+    def _release(self, ref: Any) -> None:
+        if ref:  # CFRelease(NULL) aborts the process
+            self._cf.CFRelease(ref)
+
     # --- the interval --------------------------------------------------------
     @property
     def available(self) -> bool:
@@ -147,6 +151,7 @@ class EnergyMeter:
 
     def start(self) -> "EnergyMeter":
         if self._lib is not None:
+            self._release(self._start)  # a start never stopped
             self._start = self._sample()
         return self
 
@@ -156,10 +161,13 @@ class EnergyMeter:
         if self._lib is None or self._start is None:
             out["reason"] = out["reason"] or "meter not started"
             return out
+        start, self._start = self._start, None
         end = self._sample()
-        delta = self._lib.IOReportCreateSamplesDelta(self._start, end, None)
-        self._start = None
-        rows = self._cf.CFDictionaryGetValue(delta, self._key)
+        # A NULL sample or delta (IOReport declined) is an unavailable
+        # reading, never a NULL handed on to CoreFoundation.
+        delta = (self._lib.IOReportCreateSamplesDelta(start, end, None)
+                 if end else None)
+        rows = self._cf.CFDictionaryGetValue(delta, self._key) if delta else None
         joules: Dict[str, float] = {}
         for i in range(int(self._cf.CFArrayGetCount(rows)) if rows else 0):
             row = self._cf.CFArrayGetValueAtIndex(rows, i)
@@ -171,13 +179,15 @@ class EnergyMeter:
             if unit not in _UNITS:
                 continue
             joules[name] = joules.get(name, 0.0) + value * _UNITS[unit]
-        for ref in (delta, end):
-            self._cf.CFRelease(ref)
+        for ref in (delta, end, start):
+            self._release(ref)
         out["joules"] = joules
         out["scope"] = [d for d in CONTINUOUS if d in joules]
         out["burst"] = sorted(d for d in joules if d not in CONTINUOUS)
         out["available"] = bool(out["scope"])
-        if not out["scope"]:
+        if delta is None:
+            out["reason"] = "IOReport returned no sample"
+        elif not out["scope"]:
             out["reason"] = ("no continuously published Energy Model counter "
                              "moved for this process (an unprivileged reader "
                              "sees the GPU's advance per sample on macOS 26; "

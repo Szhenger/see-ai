@@ -168,8 +168,9 @@ exact) against its own tolerance (`--max-relaxed-gemm-error`, 2⁻⁷) — and
 that never saw that site; the compiler refuses `--build` for a relaxed
 plan, and the package's own `build.sh` refuses, before its first
 compile line, without a granted certificate over its exact plan bytes;
-`--source model.smf` binds a v17 plan's eval program to the model file
-it scores. The relaxed GEMMs are the first member of the relaxed opcode
+`--source model.smf` binds the model file to the programs that read it
+(a v17 plan's eval program; every program of a v21 adapter-only plan).
+The relaxed GEMMs are the first member of the relaxed opcode
 family and the tiled attention instructions (plan v20, F3 #131) the
 second, keyed under their own `attn.*.tiled` sites. Which sites a
 certificate enforces is its plan's (F2 #130, 2026-10-30): a plan that

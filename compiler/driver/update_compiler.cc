@@ -94,6 +94,45 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   if (wants_teacher && !teacher)
     return generating::Error(generating::kDriver,
                              "the selected loss requires a teacher model");
+  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
+  // in the model file the device already holds, bound by hash at run time,
+  // so the plan ships at adapter scale. Its preconditions are the config
+  // and the file alone, so they are checked here, before any work: a model
+  // loaded from a file (the offsets and the hash), the f32 base the file
+  // holds, the exact kernels (the relaxed ones read rodata weights), an
+  // evaluation that reads the file (the plan has no weights of its own to
+  // score), and no teacher — its weights live in another file, and the one
+  // file BindSourceModel maps is the student's, so a teacher's source ref
+  // would read the student's bytes at the teacher's offsets.
+  if (config_.adapter_only) {
+    if (source.content_hash == 0)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only needs a model loaded from a file: the plan reads "
+          "the frozen weights from it at run time, bound by its hash");
+    if (config_.quantize_base || config_.bf16_base)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only keeps the frozen weights in the source model, which "
+          "is f32: --quantize-base / --bf16-base would store narrow copies "
+          "in the plan");
+    if (config_.precision != Precision::kF32)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only runs the exact kernels: the relaxed GEMMs read "
+          "rodata weights, and an adapter-only plan carries none");
+    if (config_.eval_on_plan)
+      return generating::Error(
+          generating::kDriver,
+          "--validation-scores plan: an adapter-only plan has no weights of "
+          "its own to score; every program reads the source model");
+    if (wants_teacher)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only binds every frozen weight to the source model file, "
+          "and a teacher's weights live in another file the runtime does not "
+          "bind: distillation keeps its rodata");
+  }
 
   // The kernel policy is written into the header verbatim; the only
   // contract the kernels have is the K tile's 4-wide unroll alignment
@@ -594,34 +633,9 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   pinned.insert(loss);
   for (const auto& [p, g] : param_grads) pinned.insert(g);
 
-  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
-  // in the model file the device already holds, bound by hash at run time,
-  // so the plan ships at adapter scale. That needs the file (offsets and
-  // the hash), the f32 base the file holds, and the exact kernels (the
-  // relaxed ones read rodata weights).
-  if (config_.adapter_only) {
-    if (source.content_hash == 0)
-      return generating::Error(
-          generating::kDriver,
-          "--adapter-only needs a model loaded from a file: the plan reads "
-          "the frozen weights from it at run time, bound by its hash");
-    if (config_.quantize_base || config_.bf16_base)
-      return generating::Error(
-          generating::kDriver,
-          "--adapter-only keeps the frozen weights in the source model, which "
-          "is f32: --quantize-base / --bf16-base would store narrow copies "
-          "in the plan");
-    if (config_.precision != Precision::kF32)
-      return generating::Error(
-          generating::kDriver,
-          "--adapter-only runs the exact kernels: the relaxed GEMMs read "
-          "rodata weights, and an adapter-only plan carries none");
-    if (config_.eval_on_plan)
-      return generating::Error(
-          generating::kDriver,
-          "--validation-scores plan: an adapter-only plan has no weights of "
-          "its own to score; every program reads the source model");
-  }
+  // An adapter-only plan (F6 #134, v21; its preconditions were checked at
+  // the top of this function) binds every frozen weight to a source ref
+  // and lays out no rodata.
   auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights,
                            config_.adapter_only);
   if (!binding) return std::unexpected(binding.error());

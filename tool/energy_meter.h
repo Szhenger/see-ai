@@ -63,7 +63,9 @@ class EnergyMeter {
       return out;
     }
     CFDictionaryRef end = create_samples_(sub_, channels_, nullptr);
-    CFDictionaryRef delta = create_delta_(start_, end, nullptr);
+    // A NULL sample (IOReport declined) is an unavailable reading, never a
+    // NULL handed on to IOReport or CoreFoundation.
+    CFDictionaryRef delta = end ? create_delta_(start_, end, nullptr) : nullptr;
     CFRelease(start_);
     start_ = nullptr;
     CFArrayRef rows = delta ? static_cast<CFArrayRef>(CFDictionaryGetValue(
@@ -84,13 +86,15 @@ class EnergyMeter {
       else continue;
       out.joules[Str(get_name_(row))] += static_cast<double>(value) * scale;
     }
+    const bool sampled = delta != nullptr;
     if (delta) CFRelease(delta);
     if (end) CFRelease(end);
     out.available = !out.joules.empty();
     if (!out.available)
-      out.reason = "no Energy Model counter moved for this process "
-                   "(unprivileged readers see the GPU's alone on macOS 26; "
-                   "the CPU's need root)";
+      out.reason = sampled ? "no Energy Model counter moved for this process "
+                             "(unprivileged readers see the GPU's alone on "
+                             "macOS 26; the CPU's need root)"
+                           : "IOReport returned no sample";
 #else
     if (out.reason.empty()) out.reason = "no IOReport on this platform";
 #endif
