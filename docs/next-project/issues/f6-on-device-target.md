@@ -58,8 +58,8 @@ with every sample while the CPU, DRAM and ANE counters arrive in bursts
 (747 J landing in one 8-second window, none in the next; the probe and
 the rows are in the ledger), so a Metal row carries a GPU-scoped number
 and a row that computes on the CPU says `unavailable` rather than borrow
-the GPU's idle draw. SmolLM-135M r8 on Metal: 2.77 mJ per token on the
-rodata plan (1.42 J per 512-token step, 6.4 W), 3.00 on the adapter-only
+the GPU's idle draw. SmolLM-135M r8 on Metal: 2.98 mJ per token on the
+rodata plan (1.52 J per 512-token step, 6.8 W), 3.04 on the adapter-only
 one. The device line
 stays open: this host has no iPhone or iPad and no iOS SDK (`xcrun` finds
 none), and nothing in the tree pretends otherwise.
@@ -77,8 +77,8 @@ none), and nothing in the tree pretends otherwise.
   block and an `energy` object on every frontier row, from IOReport's
   counters without root, by the lo/hi regression; whole-SoC, GPU-scoped on
   an unprivileged macOS 26, `unavailable` with the reason elsewhere.
-  SmolLM-135M r8 on Metal reads 2.77 mJ per token (the rodata plan) and
-  3.00 (the adapter-only plan); the CPU rows say `unavailable`, since
+  SmolLM-135M r8 on Metal reads 2.98 mJ per token (the rodata plan) and
+  3.04 (the adapter-only plan); the CPU rows say `unavailable`, since
   the CPU domain reaches an unprivileged reader in bursts.
 - [x] Adapter-only package for SmolLM-135M r8 measured in bytes against
   today's package — 2026-11-03, `--adapter-only` (plan v21): a 37,404,848-

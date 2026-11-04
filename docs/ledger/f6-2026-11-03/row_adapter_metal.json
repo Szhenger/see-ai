@@ -32,14 +32,14 @@
  "adapter_params": 3024384,
  "arena_bytes": 1576898688,
  "plan_bytes": 36585472,
- "step_ms": 250.00000000000017,
- "step_ms_lohi": 83.0,
- "step_ms_min": 83.0,
- "step_ms_max": 83.0,
- "tokens_per_s": 2047.9999999999986,
- "it_per_s": 3.9999999999999973,
+ "step_ms": 232.00000000000003,
+ "step_ms_lohi": 185.99999999999994,
+ "step_ms_min": 185.99999999999994,
+ "step_ms_max": 185.99999999999994,
+ "tokens_per_s": 2206.8965517241377,
+ "it_per_s": 4.310344827586206,
  "tokens_per_step": 512,
- "intercept_s": 6.215,
+ "intercept_s": 4.550000000000001,
  "val_loss": [
   4.574419,
   4.4790378
@@ -55,39 +55,41 @@
  "verdict": "accepted",
  "committed": true,
  "lifecycle": {
-  "load_s": 0.1851,
+  "load_s": 0.1773,
   "data_s": 0.0002,
-  "train_s": 7.6201,
-  "eval_s": 2.9436,
+  "train_s": 7.4218,
+  "eval_s": 2.8808,
   "evaluations": 2,
-  "merge_s": 0.0994,
-  "commit_s": 0.7323,
-  "wall_s": 8.6737
+  "merge_s": 0.0887,
+  "commit_s": 0.7381,
+  "wall_s": 8.4579
  },
  "relaxed_executions": 0,
  "committed_sha256": "eb4f7b752d8f27f8f9ad64a66799f6d24285d4e6d06f29df9ad06253f99039c5",
  "suspect": false,
- "wall_quality_s": 8.71,
- "peak_rss_bytes": 2342633472,
+ "wall_quality_s": 8.5,
+ "peak_rss_bytes": 2342420480,
  "energy": {
   "attribution": "whole-SoC",
   "available": true,
+  "compute": "gpu",
   "scope": [
    "GPU Energy"
   ],
+  "burst": [],
   "joules": {
-   "GPU Energy": 48.734621487000005
+   "GPU Energy": 50.045855243000005
   },
   "reason": null,
-  "j_per_step": 1.5378671723000004,
-  "j_per_token": 0.003003646820898438
+  "j_per_step": 1.5542004467,
+  "j_per_token": 0.0030355477474609373
  },
  "runs": [
   {
    "steps": 5,
    "exit": 0,
-   "wall_s": 6.63,
-   "peak_rss_bytes": 2342633472,
+   "wall_s": 5.48,
+   "peak_rss_bytes": 2342420480,
    "report": {
     "schema": 3,
     "backend": "metal",
@@ -113,14 +115,14 @@
      0.28265625
     ],
     "lifecycle": {
-     "load_s": 0.1861,
+     "load_s": 0.2014,
      "data_s": 0.0002,
-     "train_s": 4.024,
-     "eval_s": 2.884,
+     "train_s": 3.9897,
+     "eval_s": 2.8581,
      "evaluations": 2,
-     "merge_s": 0.0984,
-     "commit_s": 0.7383,
-     "wall_s": 6.1703
+     "merge_s": 0.09,
+     "commit_s": 0.7494,
+     "wall_s": 5.0689
     },
     "gate": {
      "min_improvement": 0,
@@ -140,8 +142,9 @@
     "scope": [
      "GPU Energy"
     ],
+    "burst": [],
     "joules": {
-     "GPU Energy": 26.465016962
+     "GPU Energy": 26.784303282000003
     },
     "reason": null
    },
@@ -150,8 +153,8 @@
   {
    "steps": 15,
    "exit": 0,
-   "wall_s": 7.46,
-   "peak_rss_bytes": 2342240256,
+   "wall_s": 7.34,
+   "peak_rss_bytes": 2342322176,
    "report": {
     "schema": 3,
     "backend": "metal",
@@ -177,14 +180,14 @@
      0.28453124
     ],
     "lifecycle": {
-     "load_s": 0.1796,
+     "load_s": 0.1782,
      "data_s": 0.0002,
-     "train_s": 6.4087,
-     "eval_s": 2.9653,
+     "train_s": 6.2626,
+     "eval_s": 2.8893,
      "evaluations": 2,
-     "merge_s": 0.1037,
-     "commit_s": 0.7044,
-     "wall_s": 7.4255
+     "merge_s": 0.0907,
+     "commit_s": 0.7416,
+     "wall_s": 7.3061
     },
     "gate": {
      "min_improvement": 0,
@@ -204,8 +207,9 @@
     "scope": [
      "GPU Energy"
     ],
+    "burst": [],
     "joules": {
-     "GPU Energy": 41.843688685000004
+     "GPU Energy": 42.326307749
     },
     "reason": null
    },
@@ -214,8 +218,8 @@
   {
    "steps": 20,
    "exit": 0,
-   "wall_s": 8.71,
-   "peak_rss_bytes": 2342273024,
+   "wall_s": 8.5,
+   "peak_rss_bytes": 2342305792,
    "report": {
     "schema": 3,
     "backend": "metal",
@@ -241,14 +245,14 @@
      0.2853125
     ],
     "lifecycle": {
-     "load_s": 0.1851,
+     "load_s": 0.1773,
      "data_s": 0.0002,
-     "train_s": 7.6201,
-     "eval_s": 2.9436,
+     "train_s": 7.4218,
+     "eval_s": 2.8808,
      "evaluations": 2,
-     "merge_s": 0.0994,
-     "commit_s": 0.7323,
-     "wall_s": 8.6737
+     "merge_s": 0.0887,
+     "commit_s": 0.7381,
+     "wall_s": 8.4579
     },
     "gate": {
      "min_improvement": 0,
@@ -268,8 +272,9 @@
     "scope": [
      "GPU Energy"
     ],
+    "burst": [],
     "joules": {
-     "GPU Energy": 48.734621487000005
+     "GPU Energy": 50.045855243000005
     },
     "reason": null
    },

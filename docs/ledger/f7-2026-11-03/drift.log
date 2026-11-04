@@ -1,0 +1,8 @@
+drift start 14:51:55Z
+bin1024_a rc=0 frontier_run seeml: metal: 256.3 ms/step, 1998 tok/s, val 4.5744 -> 4.0045, 3.253 mJ/token (GPU Energy, whole-SoC)
+  bin1024_a committed ab2504dc5bd3ad69 step_ms(160->300) 256.3 lohi(40->160) 203.2 walls [(40, 18.2), (160, 42.6), (300, 78.5)] j/token 0.003252637036393229
+staged2 rc=0 frontier_run seeml: metal: 238.2 ms/step, 2149 tok/s, val 4.5744 -> 4.0045, 3.173 mJ/token (GPU Energy, whole-SoC)
+  staged2 committed ab2504dc5bd3ad69 step_ms(160->300) 238.2 lohi(40->160) 234.5 walls [(40, 13.8), (160, 42.0), (300, 75.3)] j/token 0.003173418161979166
+bin1024_b rc=0 frontier_run seeml: metal: 241.9 ms/step, 2116 tok/s, val 4.5744 -> 4.0045, 3.268 mJ/token (GPU Energy, whole-SoC)
+  bin1024_b committed ab2504dc5bd3ad69 step_ms(160->300) 241.9 lohi(40->160) 244.6 walls [(40, 14.2), (160, 43.5), (300, 77.4)] j/token 0.0032675884071126306
+drift end 14:58:47Z

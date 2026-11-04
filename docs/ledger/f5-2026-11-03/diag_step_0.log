@@ -1,0 +1,12 @@
+seeml-update: plan from '~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu' (2768388096 bytes, mapped)
+seeml-update: backend metal (Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops)
+seeml-update: validation scores the shipped model (the f32 weights of 'out/f5-2026-11-03/qwen25_15b.smf' plus the update)
+seeml-update: resource contract — arena 7704605824 bytes (176537600 persistent)
+seeml-update: step 1  loss 3.710763
+seeml-update: train loss 3.710763 -> 4.585597 over 3 steps
+seeml-update: gate min-improvement 0.99 require-accuracy no -> rejected [backend metal]
+seeml-update: REJECTED — training loss did not improve by the required margin; source model left untouched (--force to override)
+metal spans: 16 command buffer(s), 40069 dispatch(es); GPU busy 5.642 s, CPU wall 7.693 s, outside the GPU 2.051 s (26.7% of the wall; 51.19 us per dispatch)
+        1 dispatches x    1: GPU    0.007 ms, wall    4.321 ms, outside   4.314 ms (99.8%) per buffer
+      788 dispatches x    3: GPU    3.985 ms, wall    4.564 ms, outside   0.579 ms (12.7%) per buffer
+     3142 dispatches x   12: GPU  469.140 ms, wall  639.550 ms, outside 170.410 ms (26.6%) per buffer

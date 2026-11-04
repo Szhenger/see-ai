@@ -1,0 +1,16 @@
+{
+  "schema": 3,
+  "backend": "metal",
+  "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops, source model on the CPU (7549079360 B beyond the GPU working set)",
+  "relaxed_executions": 0,
+  "plan": {"source": "file", "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu", "bytes": 2768388096},
+  "steps": 2,
+  "train_loss": [4.3154335, 4.3585653],
+  "validation_loss": [4.343472, 4.3050523],
+  "validation_scores": "shipped",
+  "validation_accuracy": [0.2857143, 0.28794643],
+  "lifecycle": {"load_s": 3.9221, "data_s": 0.0013, "train_s": 64.0507, "eval_s": 58.4139, "evaluations": 2, "merge_s": 0.0000, "commit_s": 0.0000, "wall_s": 69.3587},
+  "gate": {"min_improvement": 0.99, "require_accuracy": false, "loss_ok": false, "accuracy_measured": true, "accuracy_ok": true, "forced": false},
+  "verdict": "rejected",
+  "committed": false
+}
