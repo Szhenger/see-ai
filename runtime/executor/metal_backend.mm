@@ -84,8 +84,12 @@ struct KArgs {
   uint32_t batch = 1, batch_h = 1;
   uint32_t pad2 = 0, pad3 = 0, pad4 = 0;
   uint64_t bs[6] = {0, 0, 0, 0, 0, 0};
+  // F7 #138 step 4: the low-rank epilogue's operands (PlanLowRank).
+  uint64_t lr_off[3] = {0, 0, 0};
+  uint32_t lr_k = 0;
+  float lr_alpha = 1.0f;
 };
-static_assert(sizeof(KArgs) == 216, "KArgs must match the MSL layout");
+static_assert(sizeof(KArgs) == 248, "KArgs must match the MSL layout");
 
 enum Pipe : int {
   kPGemmNN, kPGemmNT, kPGemmTN, kPGemmAcc, kPGemmNNQ8, kPGemmNTQ8,
@@ -116,6 +120,8 @@ enum Pipe : int {
   kPGemmNNQ8RowsTgB, kPGemmNTQ8RowsTgB, kPGemmNNBF16RowsTgB,
   kPGemmNTBF16RowsTgB,
   kPGemmSplitKFin,
+  // F7 #138 step 4: the tile kernel with the low-rank epilogue (NN forms).
+  kPGemmNNLR, kPGemmNNQ8LR,
   kPAddEW, kPMulEW, kPAddBias, kPReluFwd, kPReluBwd, kPGeluFwd, kPGeluBwd,
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
   kPReduceRows, kPLnFwd, kPLnBwd, kPRmsFwd, kPRmsBwd,
@@ -153,7 +159,7 @@ const char* const kPipeNames[kPipeCount] = {
     "k_gemm_nn_rows_tgb", "k_gemm_nt_rows_tgb", "k_gemm_tn_rows_tgb",
     "k_gemm_acc_rows_tgb", "k_gemm_nn_q8_rows_tgb", "k_gemm_nt_q8_rows_tgb",
     "k_gemm_nn_bf16_rows_tgb", "k_gemm_nt_bf16_rows_tgb",
-    "k_gemm_splitk_fin", "k_add_ew", "k_mul_ew", "k_add_bias", "k_relu_fwd",
+    "k_gemm_splitk_fin", "k_gemm_nn_lr", "k_gemm_nn_q8_lr", "k_add_ew", "k_mul_ew", "k_add_bias", "k_relu_fwd",
     "k_relu_bwd", "k_gelu_fwd", "k_gelu_bwd", "k_silu_fwd", "k_silu_bwd",
     "k_scale", "k_fused_map", "k_fill", "k_copy", "k_accumulate", "k_sgd", "k_adamw",
     "k_reduce_rows",
@@ -304,14 +310,23 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> SelfTest();
   void BeginRange(std::span<const up::UpdateInstruction> range) override {
     range_on_cpu_ = false;
-    if (!source_on_cpu_) return;
-    for (const up::UpdateInstruction& ins : range)
-      if (const InstructionExtents* ex = ExtentsOf(ins); ex && ReadsSource(*ex)) {
-        range_on_cpu_ = true;
-        return;
-      }
+    range_ = range;
+    plan_ = nullptr;
+    if (source_on_cpu_)
+      for (const up::UpdateInstruction& ins : range)
+        if (const InstructionExtents* ex = ExtentsOf(ins);
+            ex && ReadsSource(*ex)) {
+          range_on_cpu_ = true;
+          return;
+        }
+    // F7 #138 step 4: the instruction pairs this range runs as one dispatch.
+    if (fuse_lowrank_) plan_ = &PlanLowRank(range);
   }
-  void EndRange() override { range_on_cpu_ = false; }
+  void EndRange() override {
+    range_on_cpu_ = false;
+    plan_ = nullptr;
+    range_ = {};
+  }
   static bool ReadsSource(const InstructionExtents& ex) {
     return std::any_of(ex.ranges, ex.ranges + ex.count,
                        [](const OperandExtent& r) { return r.source; });
@@ -323,6 +338,7 @@ class MetalBackend final : public ExecutorBackend {
   uint64_t relaxed_executions() const override {
     return relaxed_executions_ + (cpu_ ? cpu_->relaxed_executions() : 0);
   }
+  uint64_t fused_dispatches() const override { return lowrank_fused_; }
 
  private:
   const InstructionExtents* ExtentsOf(const up::UpdateInstruction& ins);
@@ -432,6 +448,27 @@ class MetalBackend final : public ExecutorBackend {
   // unstaged kernel: the same-session control for the staged form's bits
   // and time (F7 #138), diagnostic only.
   const bool rows_tgb_ = !EnvFlag("SEEML_METAL_UNSTAGED_ROWS");
+  // F7 #138 step 4: the low-rank epilogue fold (PlanLowRank) — a base
+  // GEMM whose output the next rank-r GEMM takes as its addend runs as
+  // one dispatch at the second instruction's place (k_gemm_*_lr), both
+  // outputs written, the bits of the two dispatches.
+  // SEEML_METAL_UNFUSED_LOWRANK=1 keeps them apart: the same-session
+  // control for the fold's bits and time.
+  const bool fuse_lowrank_ = !EnvFlag("SEEML_METAL_UNFUSED_LOWRANK");
+  struct FusionPlan {
+    std::vector<int32_t> role;  // kRoleNone, kRoleDeferred, or the base's index
+    std::vector<uint8_t> drop_c;  // per fused j: the range never reads C again
+    uint64_t pairs = 0;
+  };
+  static constexpr int32_t kRoleNone = -1, kRoleDeferred = -2;
+  std::unordered_map<const void*, FusionPlan> fusion_plans_;
+  const FusionPlan* plan_ = nullptr;
+  std::span<const up::UpdateInstruction> range_;
+  uint64_t lowrank_fused_ = 0;
+  const FusionPlan& PlanLowRank(std::span<const up::UpdateInstruction> range);
+  std::expected<void, std::string> EncodeLowRank(
+      const up::UpdateInstruction& base, const up::UpdateInstruction& lr,
+      bool drop_c);
   const bool spans_ = EnvFlag("SEEML_METAL_SPANS");
   struct SpanRow { uint64_t dispatches; double gpu_seconds, wall_seconds; };
   std::vector<SpanRow> spans_rows_;
@@ -741,6 +778,8 @@ std::expected<void, std::string> MetalBackend::Bind(
   @autoreleasepool {
     // Nothing may still be in flight against the previous binding.
     if (auto r = Flush(); !r) return r;
+    fusion_plans_.clear();  // the ranges of the previous plan
+    plan_ = nullptr;
     const uint64_t page = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
     if (page == 0 || reinterpret_cast<uintptr_t>(arena) % page != 0 ||
         arena_bytes % page != 0)
@@ -1033,6 +1072,191 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
     if (pipe == kPGemmAcc) a.flags |= 64u;
     Dispatch(kPGemmSplitKFin, a, a.m * a.n, kElementwiseGroup);
   }
+}
+
+// F7 #138 step 4 — the low-rank epilogue, fused at dispatch. At a LoRA site
+// the plan carries two instructions: the base product into C (kGemmNN /
+// kGemmNNQ8 on the tile kernel), then C' = alpha·T@B + C — the rank-r
+// product with C as its addend (kGemmNN, K <= 16, kFlagGemmAddend). Where
+// nothing between them touches C or writes a base operand, the pair runs
+// as ONE dispatch at the second instruction's place: the tile kernel with
+// the low-rank epilogue (k_gemm_*_lr) writes C as before and C' as
+// k_gemm_nn_small would have — serial k from zero, alpha on the finished
+// sum, the addend first — so the arena holds the bits of the two dispatches
+// with one pass over the activation fewer. Decided once per program from
+// the extents the validator proved (cached by the range's identity, dropped
+// at Bind); the plan and the other backends are untouched, and
+// SEEML_METAL_UNFUSED_LOWRANK=1 is the same-session control.
+const MetalBackend::FusionPlan& MetalBackend::PlanLowRank(
+    std::span<const up::UpdateInstruction> range) {
+  FusionPlan& plan = fusion_plans_[range.data()];
+  if (plan.role.size() == range.size()) return plan;
+  plan.role.assign(range.size(), kRoleNone);
+  plan.drop_c.assign(range.size(), 0);
+  plan.pairs = 0;
+  auto arena_ref = [](uint64_t r) {
+    return r != up::kNullRef && !up::IsRodataRef(r) && !up::IsSourceRef(r);
+  };
+  // Two extents of one address space that share a byte.
+  auto overlap = [](const OperandExtent& a, const OperandExtent& b) {
+    return a.rodata == b.rodata && a.source == b.source &&
+           a.off < b.off + b.bytes && b.off < a.off + a.bytes;
+  };
+  for (size_t j = 0; j < range.size(); ++j) {
+    const up::UpdateInstruction& lr = range[j];
+    if (static_cast<up::OpCode>(lr.opcode) != up::OpCode::kGemmNN ||
+        lr.flags != up::kFlagGemmAddend || lr.out[2] == 0 ||
+        lr.out[2] > kGemmSkinnyDim || !arena_ref(lr.in[0]) ||
+        !arena_ref(lr.in[1]) || !arena_ref(lr.in[2]) || !arena_ref(lr.in[3]))
+      continue;
+    OperandExtent c;
+    c.off = up::RefOffset(lr.in[3]);
+    c.bytes = lr.out[0] * lr.out[1] * sizeof(float);
+    // The base: scanning back, the first instruction that touches C must
+    // be the GEMM that wrote exactly it.
+    size_t i = range.size();
+    for (size_t k = j; k-- > 0;) {
+      const InstructionExtents* ex = ExtentsOf(range[k]);
+      if (!ex) break;
+      bool touches = false;
+      for (size_t t = 0; t < ex->count; ++t)
+        touches = touches || overlap(ex->ranges[t], c);
+      if (!touches) continue;
+      i = k;
+      break;
+    }
+    if (i == range.size() || plan.role[i] != kRoleNone) continue;
+    const up::UpdateInstruction& base = range[i];
+    const auto bop = static_cast<up::OpCode>(base.opcode);
+    if ((bop != up::OpCode::kGemmNN && bop != up::OpCode::kGemmNNQ8) ||
+        base.in[2] != lr.in[3] || base.out[0] != lr.out[0] ||
+        base.out[1] != lr.out[1] || !DimsFit32(bop, base))
+      continue;
+    // The base must take the unsplit tile kernel, the one with the fused
+    // epilogue: no skinny dimension, no split-K, not the tensor-op path.
+    const auto bm = static_cast<uint32_t>(base.out[0]);
+    const auto bn = static_cast<uint32_t>(base.out[1]);
+    const auto bk = static_cast<uint32_t>(base.out[2]);
+    if (bm <= kGemmSkinnyDim || bn <= kGemmSkinnyDim || bk <= kGemmSkinnyDim)
+      continue;
+    if (SplitsFor(((bn + kGemmTile - 1) / kGemmTile) *
+                      ((bm + kGemmTile - 1) / kGemmTile),
+                  bk) != 1)
+      continue;
+    if ((base.flags & up::kFlagRelaxed) && relaxed_) {
+      // EncodeRelaxedGemm takes every non-skinny relaxed GEMM whose alpha
+      // (the q8 per-tensor scale included) is exactly 1.
+      const float f0 = bop == up::OpCode::kGemmNN
+                           ? up::GemmAlphaOf(base.imm)
+                           : (base.flags & up::kFlagQ8ColScale)
+                                 ? 1.0f
+                                 : BitsToF32(base.in[3]);
+      if (f0 == 1.0f) continue;
+    }
+    // Between the two: nothing touches C, nothing writes a base operand.
+    const InstructionExtents* bex = ExtentsOf(base);
+    if (!bex) continue;
+    bool legal = true;
+    for (size_t k = i + 1; k < j && legal; ++k) {
+      const InstructionExtents* ex = ExtentsOf(range[k]);
+      if (!ex) {
+        legal = false;
+        break;
+      }
+      for (size_t t = 0; t < ex->count && legal; ++t) {
+        const OperandExtent& r = ex->ranges[t];
+        if (overlap(r, c)) legal = false;
+        if (!r.write) continue;
+        for (size_t u = 0; u < bex->count; ++u)
+          if (!bex->ranges[u].write && overlap(r, bex->ranges[u]))
+            legal = false;
+      }
+    }
+    if (!legal) continue;
+    plan.role[i] = kRoleDeferred;
+    plan.role[j] = static_cast<int32_t>(i);
+    ++plan.pairs;
+    // The base value's store is dropped when the range never reads C
+    // again: the first touch of its extent after j is a write covering
+    // it, or there is none (a LoRA site's add is C's only reader; the
+    // compiler's use-lists said so when the addend fuser fired). A read,
+    // or a write of part of it, keeps the store.
+    bool dead = true;
+    for (size_t k = j + 1; k < range.size(); ++k) {
+      const InstructionExtents* ex = ExtentsOf(range[k]);
+      if (!ex) {
+        dead = false;
+        break;
+      }
+      bool touched = false;
+      for (size_t t = 0; t < ex->count && !touched; ++t) {
+        const OperandExtent& r = ex->ranges[t];
+        if (!overlap(r, c)) continue;
+        touched = true;
+        dead = r.write && r.off <= c.off &&
+               r.off + r.bytes >= c.off + c.bytes;
+      }
+      if (touched) break;
+    }
+    plan.drop_c[j] = dead ? 1 : 0;
+  }
+  return plan;
+}
+
+// The fused dispatch: the base GEMM's arguments exactly as Encode builds
+// them (the same tile, flags and geometry, so the base part computes the
+// same bits), plus the rank-r instruction's operands for the epilogue.
+std::expected<void, std::string> MetalBackend::EncodeLowRank(
+    const up::UpdateInstruction& base, const up::UpdateInstruction& lr,
+    bool drop_c) {
+  KArgs a;
+  auto ref = [&](int slot, uint64_t r) {
+    a.off[slot] = up::RefOffset(r);
+    if (up::IsRodataRef(r)) a.space |= 1u << slot;
+    if (up::IsSourceRef(r)) a.space |= 1u << (8 + slot);
+  };
+  auto u32 = [](uint64_t v) { return static_cast<uint32_t>(v); };
+  ref(0, base.in[0]);
+  ref(1, base.in[1]);
+  ref(2, base.in[2]);
+  a.m = u32(base.out[0]);
+  a.n = u32(base.out[1]);
+  a.k = u32(base.out[2]);
+  Pipe pipe;
+  uint32_t b_elem;
+  if (static_cast<up::OpCode>(base.opcode) == up::OpCode::kGemmNN) {
+    if (base.flags & up::kFlagEpilogueBias) ref(3, base.in[3]);
+    a.f[0] = up::GemmAlphaOf(base.imm);
+    a.flags = static_cast<uint32_t>(up::EpilogueActOf(base.flags)) |
+              ((base.flags & up::kFlagEpilogueBias) ? 8u : 0u);
+    if (base.flags & up::kFlagGemmAddend) {
+      ref(3, base.in[3]);
+      a.flags |= 2048u;
+    }
+    pipe = kPGemmNNLR;
+    b_elem = 4;
+  } else {
+    a.flags = static_cast<uint32_t>(up::EpilogueActOf(base.flags));
+    if (base.flags & up::kFlagQ8ColScale) {
+      ref(3, base.in[3]);
+      a.f[0] = 1.0f;
+      a.flags |= 128u;
+    } else {
+      a.f[0] = BitsToF32(base.in[3]);
+    }
+    pipe = kPGemmNNQ8LR;
+    b_elem = 1;
+  }
+  a.lr_off[0] = up::RefOffset(lr.in[0]);
+  a.lr_off[1] = up::RefOffset(lr.in[1]);
+  a.lr_off[2] = up::RefOffset(lr.in[2]);
+  a.lr_k = u32(lr.out[2]);
+  a.lr_alpha = up::GemmAlphaOf(lr.imm);
+  if (drop_c) a.flags |= 8192u;  // the base value is not stored
+  // C' moves as 16-byte vectors where its offset and N allow.
+  if (a.lr_off[2] % 16 == 0 && a.n % 4 == 0) a.flags |= 16384u;
+  DispatchGemm(pipe, a, false, false, b_elem);
+  return {};
 }
 
 // The relaxed family (plan v18): true when the instruction carries
@@ -1571,7 +1795,19 @@ std::expected<void, std::string> MetalBackend::Execute(
     // instruction of a range that holds one (range_on_cpu_, BeginRange).
     const bool reads_source =
         source_on_cpu_ && (range_on_cpu_ || (ex && ReadsSource(*ex)));
+    // F7 #138 step 4: a base GEMM deferred into the rank-r GEMM that
+    // reads it (PlanLowRank) dispatches nothing here and runs there, fused.
+    int32_t role = kRoleNone;
+    size_t idx = 0;
+    if (plan_ && !range_.empty() && &ins >= range_.data() &&
+        &ins < range_.data() + range_.size()) {
+      idx = static_cast<size_t>(&ins - range_.data());
+      role = plan_->role[idx];
+    }
+    if (role == kRoleDeferred) return {};
     if (!IsGpuOpcode(op) || !DimsFit32(op, ins) || reads_source) {
+      if (role >= 0)
+        return std::unexpected("a fused low-rank pair fell to the CPU path");
       // CPU-resident: wait for any pending GPU work it depends on.
       if (ex && HazardWithPending(*ex))
         if (auto r = Flush(); !r) return r;
@@ -1587,7 +1823,15 @@ std::expected<void, std::string> MetalBackend::Execute(
     }
     if (auto r = EnsureEncoder(); !r) return r;
     prof_pipes_.clear();
-    if (auto r = Encode(ins, params); !r) return r;
+    if (role >= 0) {
+      const up::UpdateInstruction& base = range_[static_cast<size_t>(role)];
+      if (auto r = EncodeLowRank(base, ins, plan_->drop_c[idx] != 0); !r)
+        return r;
+      if (const InstructionExtents* bex = ExtentsOf(base)) RecordPending(*bex);
+      ++lowrank_fused_;
+    } else if (auto r = Encode(ins, params); !r) {
+      return r;
+    }
     RecordPending(*ex);
     if (profile_) {
       if (auto r = Flush(); !r) return r;
@@ -1596,8 +1840,10 @@ std::expected<void, std::string> MetalBackend::Execute(
                              std::to_string(v & 0xFFFFFFFFu)
                        : std::to_string(v);
       };
-      ProfRow& row = prof_[prof_pipes_ + " " + dim(ins.out[0]) + "x" +
-                           dim(ins.out[1]) + "x" + dim(ins.out[2])];
+      const up::UpdateInstruction& keyed =
+          role >= 0 ? range_[static_cast<size_t>(role)] : ins;
+      ProfRow& row = prof_[prof_pipes_ + " " + dim(keyed.out[0]) + "x" +
+                           dim(keyed.out[1]) + "x" + dim(keyed.out[2])];
       row.seconds += last_gpu_seconds_;
       row.count++;
     }
@@ -1660,6 +1906,11 @@ void MetalBackend::PrintProfile() const {
                "%llu backward pass(es) (counted at the loss opcodes)\n",
                total, rows.size(), (unsigned long long)fwd_passes_,
                (unsigned long long)bwd_passes_);
+  if (lowrank_fused_)
+    std::fprintf(stderr,
+                 "  low-rank epilogue: %llu fused dispatch(es) (k_gemm_*_lr; "
+                 "SEEML_METAL_UNFUSED_LOWRANK=1 keeps the pairs apart)\n",
+                 (unsigned long long)lowrank_fused_);
   for (const auto& r : rows)
     std::fprintf(stderr, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
                  r.second.seconds,
@@ -1684,6 +1935,9 @@ void MetalBackend::PrintSpans() const {
                spans_rows_.size(), (unsigned long long)dispatches, gpu, wall,
                wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
                dispatches ? 1e6 * (wall - gpu) / (double)dispatches : 0.0);
+  if (lowrank_fused_)
+    std::fprintf(stderr, "  low-rank epilogue: %llu fused dispatch(es)\n",
+                 (unsigned long long)lowrank_fused_);
   // Per buffer size: the train, eval and merge programs are told apart by
   // their dispatch counts (one buffer per ExecuteRange).
   std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall

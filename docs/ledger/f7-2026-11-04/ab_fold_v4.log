@@ -1,0 +1,25 @@
+ab_fold2 start 19:28:37Z
+Now drawing from 'Battery Power'
+ -InternalBattery-0 (id=35520611)	62%; discharging; 3:38 remaining present: true
+compile rc=0 plan_hash": "9eeaf80e4ae801ea
+pack rc=0 vendored PlanLowRank: 6 drop-c: 3
+unfused row rc=0 frontier_run seeml: metal: 243.1 ms/step, 2106 tok/s, val 4.5744 -> 4.0045, 3.161 mJ/token (GPU Energy, whole-SoC)
+  unfused committed ab2504dc5bd3ad69 same as 10-24: True step_ms 243.1 lohi 197.2 walls [(40, 18.3), (160, 42.0), (300, 76.0)] j/token 0.0031613721381998704
+  unfused profile rc=3
+metal profile: 5.532 s over 136 keys; 46 forward pass(es), 20 backward pass(es) (counted at the loss opcodes)
+     0.363 s    6.6%     1200 x    302.2 us  k_gemm_nn_q8 512x1536x576
+     0.299 s    5.4%     2400 x    124.5 us  k_gemm_nn_q8 512x576x576
+     0.170 s    3.1%       20 x   8498.1 us  k_gemm_nn_q8 512x49152x576
+     0.125 s    2.3%     6900 x     18.1 us  k_gemm_nn_small 512x576x8
+     0.123 s    2.2%     2760 x     44.5 us  k_gemm_nn_small 512x1536x8
+     0.083 s    1.5%       46 x   1802.1 us  k_gemm_nn_small 512x49152x8
+fused row rc=0 frontier_run seeml: metal: 249.5 ms/step, 2052 tok/s, val 4.5744 -> 4.0045, 3.213 mJ/token (GPU Energy, whole-SoC)
+  fused committed ab2504dc5bd3ad69 same as 10-24: True step_ms 249.5 lohi 233.9 walls [(40, 13.8), (160, 41.8), (300, 76.8)] j/token 0.0032132205915690105
+  fused profile rc=3
+metal profile: 5.454 s over 134 keys; 46 forward pass(es), 20 backward pass(es) (counted at the loss opcodes)
+  low-rank epilogue: 8326 fused dispatch(es) (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 keeps the pairs apart)
+     0.406 s    7.5%     1200 x    338.7 us  k_gemm_nn_q8_lr 512x1536x576
+     0.341 s    6.2%     2400 x    141.9 us  k_gemm_nn_q8_lr 512x576x576
+     0.185 s    3.4%       20 x   9230.5 us  k_gemm_nn_q8_lr 512x49152x576
+     0.026 s    0.5%     1380 x     18.9 us  k_gemm_nn_small 512x576x8
+ab_fold2 end 19:34:06Z
