@@ -129,7 +129,8 @@ dispatched for a transposed B at N ≤ 16 — the adapter backward's `dt`
 sites, where the unstaged form issued nine loads per eight multiply-adds
 and ran at 31–34 GB/s. Measured in one session against the unstaged kernel on the 10-24 exact plan: 36.0 → 18.5, 89.1 → 44.5 and 2,831.6 → 1,286.6 µs per site, 248 → 233 ms per step, the committed model the 10-24 package's (`ab2504dc…`) under both; the step's level is the host's — on battery with Low Power Mode on, the 10-24 package's own binary ran 35 % slower than on 10-24 — and against that binary, bracketing it back to back, the staged kernel's 300 steps take 2.7–4.1 % less wall. Steps 2 (the batched A-projections,
 which need strided operands in the ISA) and 4 (`B(Ax)` folded into the
-base GEMM under the certificate) stay open and are this issue's remainder.
+base GEMM under the certificate) stayed open as this issue's remainder until
+the next day's fold (below).
 
 ## Status 2026-11-04
 
