@@ -233,6 +233,9 @@ class UpdateEngine {
   /// it into the run report so a measured row says which kernels it
   /// measured (review F42).
   uint64_t relaxed_executions() const;
+  /// Instruction pairs the backend ran as one dispatch — the Metal
+  /// backend's low-rank epilogue fold (F7 #138 step 4); zero elsewhere.
+  uint64_t fused_dispatches() const;
   /// The CPU GEMM tile geometry the loaded plan's header selects (v11;
   /// the runtime defaults for zero fields or a pre-v11 plan). A
   /// throughput knob the compiler decided; no result bit depends on it.

@@ -160,6 +160,10 @@ uint64_t UpdateEngine::relaxed_executions() const {
   return backend_->relaxed_executions();
 }
 
+uint64_t UpdateEngine::fused_dispatches() const {
+  return backend_->fused_dispatches();
+}
+
 const float* UpdateEngine::ReadPtr(uint64_t ref) const {
   const uint64_t offset = up::RefOffset(ref);
   if (up::IsRodataRef(ref))

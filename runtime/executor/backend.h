@@ -137,6 +137,9 @@ class ExecutorBackend {
   /// the instruction is dispatched or encoded, so it is current after
   /// Execute returns on a deferring backend too.
   virtual uint64_t relaxed_executions() const { return 0; }
+  /// F7 #138 step 4: instruction pairs this backend ran as one dispatch
+  /// (the Metal backend's low-rank epilogue fold); 0 elsewhere.
+  virtual uint64_t fused_dispatches() const { return 0; }
 };
 
 /// The reference backend: the portable kernel library, thread-count

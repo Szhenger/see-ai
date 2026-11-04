@@ -56,6 +56,12 @@ struct KArgs {
   uint batch, batch_h;
   uint pad2, pad3, pad4;
   ulong bs[6];
+  // F7 #138 step 4, the low-rank epilogue — the Metal backend's own
+  // dispatch fusion, no plan field: the arena offsets of the next rank-r
+  // GEMM's T [M, r] and B [r, N] and of its output C', its r and alpha.
+  ulong lr_off[3];
+  uint lr_k;
+  float lr_alpha;
 };
 
 #define KSIG device uchar* ar [[buffer(0)]], device const uchar* ro [[buffer(1)]], \
@@ -174,7 +180,7 @@ static inline ulong batch_off(constant KArgs& p, uint z, uint which) {
 // the workspace (buffer 4) at z*M*N; k_gemm_splitk_fin then sums the
 // partials in split order and applies the epilogue — a fixed order, so
 // the result is bitwise-reproducible run-to-run like every kernel here.
-template <bool AT, bool BT, typename EB, bool ACC>
+template <bool AT, bool BT, typename EB, bool ACC, bool LR>
 static inline void gemm_tile(device const float* A, device const EB* B,
                              device float* C, device const float* bias,
                              device const float* cs, device const float* D,
@@ -182,7 +188,11 @@ static inline void gemm_tile(device const float* A, device const EB* B,
                              uint ldc, float alpha, uint act, bool vecA,
                              bool vecB, uint splits, device float* ws,
                              threadgroup float* smem, uint3 tg, uint tid,
-                             uint sgid) {
+                             uint sgid, device const float* T,
+                             device const float* BL, device float* C2,
+                             uint Kt, float alpha_t, bool skip_c,
+                             bool vec_c2, threadgroup float* lr_t,
+                             threadgroup float4* lr_b4) {
   const uint m0 = tg.y * 64u, n0 = tg.x * 64u;
   uint kbeg = 0, kend = K;
   if (splits > 1u) {
@@ -277,6 +287,26 @@ static inline void gemm_tile(device const float* A, device const EB* B,
           simdgroup_store(acc[i][j], smem + (i * 8u) * 64u + sg_c + j * 8u, 64u);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (LR) {
+      // F7 #138 step 4: this half tile's operands of the low-rank epilogue
+      // through threadgroup memory — B's [Kt x 64] block and T's [32 x Kt]
+      // block, read once with coalesced loads — so the element loop reads
+      // them at threadgroup speed instead of 2·Kt device loads per element
+      // (the device-load forms cost about what the dispatches they replaced
+      // cost: the ledger's _v1.._v4 rows).
+      for (uint q = tid; q < Kt * 16u; q += 128u) {
+        const uint k = q >> 4, gn = n0 + (q & 15u) * 4u;
+        float4 b = float4(0.0f);
+        for (uint t = 0; t < 4u; ++t)
+          if (gn + t < N) b[t] = BL[k * N + gn + t];
+        lr_b4[q] = b;
+      }
+      for (uint q = tid; q < 32u * Kt; q += 128u) {
+        const uint row = q / Kt, k = q - row * Kt, gm = m0 + hf * 32u + row;
+        lr_t[q] = gm < M ? T[gm * Kt + k] : 0.0f;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
     for (uint e = tid; e < 2048u; e += 128u) {
       const uint r = e >> 6, c = e & 63u;
       const uint gm = m0 + hf * 32u + r, gn = n0 + c;
@@ -290,7 +320,39 @@ static inline void gemm_tile(device const float* A, device const EB* B,
           v = (!BT && cs) ? cs[gn] * v : alpha * v;  // v17 column scale
           if (D) v = D[gm * N + gn] + v;  // the addend: d + the finished product
           if (bias) v += bias[gn];
-          C[gm * ldc + gn] = apply_act(v, act);
+          const float out = apply_act(v, act);
+          // F7 #138 step 4: under the low-rank epilogue the base value is
+          // stored only where the program reads it again (skip_c clear);
+          // at a LoRA site the rank-r instruction is its only reader.
+          if (!(LR && skip_c)) C[gm * ldc + gn] = out;
+          if (LR) smem[e] = out;  // for the vector pass below
+        }
+      }
+    }
+    if (LR) {
+      // F7 #138 step 4: the rank-r product the next instruction adds to
+      // each base value, four consecutive columns per thread as
+      // k_gemm_nn_small takes them — serial k from zero, alpha on the
+      // finished sum, the addend first, per component — so C' holds the
+      // bits of the two dispatches this replaces. (A scalar pass per
+      // element cost what the small dispatch cost: the ledger's _v1.._v5.)
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      for (uint q = tid; q < 512u; q += 128u) {
+        const uint r = q >> 4, qd = q & 15u, c4 = qd * 4u;
+        const uint gm = m0 + hf * 32u + r, gn = n0 + c4;
+        if (gm < M && gn < N) {
+          float4 acc = float4(0.0f);
+          for (uint k = 0; k < Kt; ++k)
+            acc += lr_t[r * Kt + k] * lr_b4[k * 16u + qd];
+          float4 x = alpha_t * acc;
+          const uint s = r * 64u + c4;
+          x = float4(smem[s], smem[s + 1u], smem[s + 2u], smem[s + 3u]) + x;
+          if (vec_c2 && gn + 3u < N) {
+            *(device float4*)(C2 + gm * N + gn) = x;
+          } else {
+            for (uint t = 0; t < 4u; ++t)
+              if (gn + t < N) C2[gm * N + gn + t] = x[t];
+          }
         }
       }
     }
@@ -799,9 +861,9 @@ static inline void gemm_colsg_tg(device const float* A, device const EB* B,
                    uint sgid [[simdgroup_index_in_threadgroup]]) {            \
     threadgroup float smem[GEMM_SMEM];                                        \
     const uint z = p.pad0 > 1u ? 0u : tg.z;                                   \
-    gemm_tile<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), (p.flags & 16u) != 0u,       \
+    gemm_tile<AT, BT, EB, ACC, false>(GEMM_OPERANDS(z, EB, BIAS_EXPR), (p.flags & 16u) != 0u,       \
                                (p.flags & 32u) != 0u, p.pad0, ws, smem, tg,   \
-                               tid, sgid);                                    \
+                               tid, sgid, (device const float*)0, (device const float*)0, (device float*)0, 0u, 0.0f, false, false, (threadgroup float*)0, (threadgroup float4*)0);                                    \
   }                                                                           \
   kernel void NAME##_small(KSIG, uint g [[thread_position_in_grid]]) {        \
     const uint per = p.m * ((p.n + 3u) / 4u), z = g / per;                    \
@@ -868,6 +930,29 @@ GEMM_KERNELS(k_gemm_nn_q8, false, false, char, false, (device const float*)0)
 GEMM_KERNELS(k_gemm_nt_q8, false, true, char, false, (device const float*)0)
 GEMM_KERNELS(k_gemm_nn_bf16, false, false, ushort, false, ((p.flags & 8u) ? RF(3) : (device const float*)0))
 GEMM_KERNELS(k_gemm_nt_bf16, false, true, ushort, false, (device const float*)0)
+// F7 #138 step 4: the tile kernel with the low-rank epilogue, the NN forms
+// a LoRA site's base product takes. The backend dispatches it for a base
+// GEMM whose output the next rank-r GEMM reads as its addend
+// (MetalBackend::PlanLowRank), with that instruction's operands in
+// p.lr_*: one dispatch, both outputs, the bits of two.
+#define GEMM_TILE_LR(NAME, EB, BIAS_EXPR)                                      \
+  kernel void NAME(KSIG, device float* ws [[buffer(4)]],                      \
+                   uint3 tg [[threadgroup_position_in_grid]],                 \
+                   uint tid [[thread_index_in_threadgroup]],                  \
+                   uint sgid [[simdgroup_index_in_threadgroup]]) {            \
+    threadgroup float smem[GEMM_SMEM];                                        \
+    threadgroup float lr_t[512];    /* [32 rows x 16 r] */                     \
+    threadgroup float4 lr_b4[256];  /* [16 r x 16 quads of columns] */         \
+    gemm_tile<false, false, EB, false, true>(                                 \
+        GEMM_OPERANDS(0u, EB, BIAS_EXPR), (p.flags & 16u) != 0u,              \
+        (p.flags & 32u) != 0u, 1u, ws, smem, tg, tid, sgid,                   \
+        (device const float*)(ar + p.lr_off[0]),                              \
+        (device const float*)(ar + p.lr_off[1]),                              \
+        (device float*)(ar + p.lr_off[2]), p.lr_k, p.lr_alpha,                \
+        (p.flags & 8192u) != 0u, (p.flags & 16384u) != 0u, lr_t, lr_b4);     \
+  }
+GEMM_TILE_LR(k_gemm_nn_lr, float, ((p.flags & 8u) ? RF(3) : (device const float*)0))
+GEMM_TILE_LR(k_gemm_nn_q8_lr, char, (device const float*)0)
 
 // --- Elementwise (one thread per element; p.n = count) ---------------------
 kernel void k_add_ew(KSIG, uint g [[thread_position_in_grid]]) {
