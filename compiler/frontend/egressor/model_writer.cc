@@ -6,9 +6,12 @@
 #include <utility>
 #include <vector>
 #ifndef _WIN32
+#include <fcntl.h>
 #include <unistd.h>
 #else
+#include <fcntl.h>
 #include <io.h>
+#include <sys/stat.h>
 #endif
 
 #include "compiler/diagnostics/tokenizing/error.h"
@@ -145,7 +148,19 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   // data synced, then renamed into place; any failure removes the stage
   // and leaves the destination as it was (CR4 #145 F05).
   const std::string tmp = path + ".tmp";
-  std::FILE* f = std::fopen(tmp.c_str(), "wb");
+  // Created 0644 (the durable writer's mode; CodeQL's world-writable-file
+  // rule on fopen's 0666), then wrapped for the buffered writes below.
+#ifndef _WIN32
+  const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  std::FILE* f = fd < 0 ? nullptr : ::fdopen(fd, "wb");
+  if (!f && fd >= 0) ::close(fd);
+#else
+  const int fd = ::_open(tmp.c_str(),
+                         _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
+                         _S_IREAD | _S_IWRITE);
+  std::FILE* f = fd < 0 ? nullptr : ::_fdopen(fd, "wb");
+  if (!f && fd >= 0) ::_close(fd);
+#endif
   if (!f) return tokenizing::FileError("cannot write", tmp);
   auto fail = [&](const char* what) {
     std::remove(tmp.c_str());
