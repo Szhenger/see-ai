@@ -1,185 +1,185 @@
 [==========] running 16 of 16 registered test(s)
 [ RUN      ] MetalBackend.EveryProgramFamilyMatchesCpuAtTolerance
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.006 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.031 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.028 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.074 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.016 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.048 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.027 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9616 B against the exact arena + plan of 48512 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 2704 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.013 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (56 ops, 0.020 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (56 ops, 0.013 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (56 ops, 0.022 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (56 ops, 0.014 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (53 ops, 0.061 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 7440 B against the exact arena + plan of 46016 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge + 8 step instrs, arena 13248 B (5376 B persistent, 1344 B of it gradient accumulators for an effective batch of 16), rodata 2704 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.012 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.024 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.015 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:521 — UpdateCompiler: stored 2 frozen weight(s) as bf16 rodata[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.020 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.012 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:861 — UpdateCompiler: the model was not loaded from a file, so the eval program scores the narrow in-plan weights — a proxy for the committed f32 model[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 8264 B against the exact arena + plan of 48512 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 1424 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.006 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.020 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (36 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:515 — UpdateCompiler: quantized 2 frozen weight(s) to int8 rodata[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (36 ops, 0.010 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (36 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (36 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (33 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:861 — UpdateCompiler: the model was not loaded from a file, so the eval program scores the narrow in-plan weights — a proxy for the committed f32 model[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 7588 B against the exact arena + plan of 45824 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 13056 B (1344 B persistent), rodata 976 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (19 ops, 0.007 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (19 ops, 0.005 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 3 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (34 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (34 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 6 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (53 ops, 0.034 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (71 ops, 0.025 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (71 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 4 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (71 ops, 0.029 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (71 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 4 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (67 ops, 0.030 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 16912 B against the exact arena + plan of 55936 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 41 train + 17 eval + 6 merge instrs, arena 23168 B (5184 B persistent), rodata 3984 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (30 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (30 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (70 ops, 0.038 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (71 ops, 0.025 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (126 ops, 0.085 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (174 ops, 0.059 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (174 ops, 0.046 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (174 ops, 0.072 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (174 ops, 0.053 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (160 ops, 0.070 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 14816 B against the exact arena + plan of 58048 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 101 train + 36 eval + 16 merge instrs, arena 25280 B (7104 B persistent), rodata 2816 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:246 — UpdateCompiler: attention tiled: 512 B of probability caches become 512 B of stats rows[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (30 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/statistics/attention_tiling.cc:54 — AttentionTiling: tiled 1 attention op(s): a probability cache of 512 B becomes 1 stats row(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (30 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (70 ops, 0.048 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (71 ops, 0.031 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (124 ops, 0.072 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (172 ops, 0.055 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (172 ops, 0.045 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (172 ops, 0.068 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (172 ops, 0.049 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (158 ops, 0.068 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 14816 B against the exact arena + plan of 58048 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 99 train + 36 eval + 16 merge instrs, arena 25280 B (7104 B persistent), rodata 2816 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (32 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (32 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (72 ops, 0.034 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (73 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (128 ops, 0.067 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (176 ops, 0.055 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (176 ops, 0.046 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (176 ops, 0.068 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (176 ops, 0.053 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (162 ops, 0.068 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 17120 B against the exact arena + plan of 59840 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 102 train + 37 eval + 16 merge instrs, arena 27072 B (7680 B persistent), rodata 3776 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.020 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.014 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.012 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9292 B against the exact arena + plan of 49216 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 16448 B (4032 B persistent), rodata 2572 B[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (19 ops, 0.006 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (19 ops, 0.005 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (29 ops, 0.014 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (29 ops, 0.008 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (41 ops, 0.022 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (53 ops, 0.017 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/epilogue_fuser.cc:112 — GemmEpilogueFuser: fused 2 GEMM epilogue chain(s), orphaning 3 op(s) for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (53 ops, 0.020 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (53 ops, 0.025 ms)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (53 ops, 0.015 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 6 dead op(s)[0m
-[32m[INFO]  14:49:27 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (47 ops, 0.024 ms)[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 5344 B against the exact arena + plan of 40064 B[0m
-[32m[INFO]  14:49:27 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 27 train + 12 eval + 4 merge instrs, arena 7296 B (1728 B persistent), rodata 1808 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.015 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.028 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.008 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.041 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.025 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.015 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.028 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.015 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.025 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9616 B against the exact arena + plan of 48512 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 2704 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.013 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (56 ops, 0.020 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (56 ops, 0.013 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (56 ops, 0.026 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (56 ops, 0.016 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (53 ops, 0.088 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 7440 B against the exact arena + plan of 46016 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge + 8 step instrs, arena 13248 B (5376 B persistent, 1344 B of it gradient accumulators for an effective batch of 16), rodata 2704 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.012 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.021 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.014 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:521 — UpdateCompiler: stored 2 frozen weight(s) as bf16 rodata[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.022 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.017 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.021 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:861 — UpdateCompiler: the model was not loaded from a file, so the eval program scores the narrow in-plan weights — a proxy for the committed f32 model[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 8264 B against the exact arena + plan of 48512 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 1424 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.013 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.020 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (36 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:515 — UpdateCompiler: quantized 2 frozen weight(s) to int8 rodata[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (36 ops, 0.009 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (36 ops, 0.017 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (36 ops, 0.010 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (33 ops, 0.018 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:861 — UpdateCompiler: the model was not loaded from a file, so the eval program scores the narrow in-plan weights — a proxy for the committed f32 model[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 7588 B against the exact arena + plan of 45824 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 13056 B (1344 B persistent), rodata 976 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (19 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (19 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 3 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (34 ops, 0.017 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (34 ops, 0.012 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 6 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (53 ops, 0.035 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (71 ops, 0.025 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (71 ops, 0.019 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 4 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (71 ops, 0.036 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (71 ops, 0.020 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 4 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (67 ops, 0.030 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 16912 B against the exact arena + plan of 55936 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 41 train + 17 eval + 6 merge instrs, arena 23168 B (5184 B persistent), rodata 3984 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (30 ops, 0.009 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (30 ops, 0.008 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (70 ops, 0.037 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (71 ops, 0.029 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (126 ops, 0.080 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (174 ops, 0.063 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (174 ops, 0.044 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (174 ops, 0.070 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (174 ops, 0.047 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (160 ops, 0.068 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 14816 B against the exact arena + plan of 58048 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 101 train + 36 eval + 16 merge instrs, arena 25280 B (7104 B persistent), rodata 2816 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:246 — UpdateCompiler: attention tiled: 512 B of probability caches become 512 B of stats rows[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (30 ops, 0.009 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/statistics/attention_tiling.cc:54 — AttentionTiling: tiled 1 attention op(s): a probability cache of 512 B becomes 1 stats row(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (30 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (70 ops, 0.034 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (71 ops, 0.030 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (124 ops, 0.071 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (172 ops, 0.052 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (172 ops, 0.043 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (172 ops, 0.065 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (172 ops, 0.047 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (158 ops, 0.070 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 14816 B against the exact arena + plan of 58048 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 99 train + 36 eval + 16 merge instrs, arena 25280 B (7104 B persistent), rodata 2816 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (32 ops, 0.008 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (32 ops, 0.008 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (72 ops, 0.033 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (73 ops, 0.021 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (128 ops, 0.067 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (176 ops, 0.054 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (176 ops, 0.044 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (176 ops, 0.068 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (176 ops, 0.048 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (162 ops, 0.067 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 17120 B against the exact arena + plan of 59840 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 102 train + 37 eval + 16 merge instrs, arena 27072 B (7680 B persistent), rodata 3776 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.003 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.021 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.014 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.018 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.019 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9292 B against the exact arena + plan of 49216 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 16448 B (4032 B persistent), rodata 2572 B[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (19 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (19 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (29 ops, 0.013 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (29 ops, 0.007 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (41 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (53 ops, 0.016 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/epilogue_fuser.cc:112 — GemmEpilogueFuser: fused 2 GEMM epilogue chain(s), orphaning 3 op(s) for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (53 ops, 0.019 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (53 ops, 0.022 ms)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (53 ops, 0.014 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 6 dead op(s)[0m
+[32m[INFO]  18:57:40 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (47 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 5344 B against the exact arena + plan of 40064 B[0m
+[32m[INFO]  18:57:40 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 27 train + 12 eval + 4 merge instrs, arena 7296 B (1728 B persistent), rodata 1808 B[0m
   [ mlp_xent_adamw_clip_cosine       ] metal: Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops
   [ mlp_xent_grad_accum_2            ] metal: Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops
   [ mlp_xent_bf16_base               ] metal: Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops
@@ -190,111 +190,128 @@
   [ token_decoder_embed              ] metal: Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops
   [ mlp_mse                          ] metal: Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops
   [ mlp_kl_distill                   ] metal: Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops
-[       OK ] MetalBackend.EveryProgramFamilyMatchesCpuAtTolerance (1991 ms)
+[       OK ] MetalBackend.EveryProgramFamilyMatchesCpuAtTolerance (200 ms)
 [ RUN      ] MetalBackend.IsBitwiseReproducibleRunToRun
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (30 ops, 0.010 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (30 ops, 0.009 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (70 ops, 0.045 ms)[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (71 ops, 0.023 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (126 ops, 0.081 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (174 ops, 0.059 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (174 ops, 0.046 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (174 ops, 0.070 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (174 ops, 0.049 ms)[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (160 ops, 0.073 ms)[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 14816 B against the exact arena + plan of 58048 B[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 101 train + 36 eval + 16 merge instrs, arena 25280 B (7104 B persistent), rodata 2816 B[0m
-[       OK ] MetalBackend.IsBitwiseReproducibleRunToRun (39 ms)
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (30 ops, 0.010 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (30 ops, 0.009 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 8 adapter(s), rank=4[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (70 ops, 0.039 ms)[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:435 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (71 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 16 trainable parameter(s)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (126 ops, 0.077 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (174 ops, 0.060 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (174 ops, 0.045 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 14 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (174 ops, 0.076 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (174 ops, 0.050 ms)[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 14 dead op(s)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (160 ops, 0.071 ms)[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 14816 B against the exact arena + plan of 58048 B[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 101 train + 36 eval + 16 merge instrs, arena 25280 B (7104 B persistent), rodata 2816 B[0m
+[       OK ] MetalBackend.IsBitwiseReproducibleRunToRun (38 ms)
 [ RUN      ] MetalBackend.ZeroCopyResidencyWhenThePlanIsPageAligned
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.016 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.006 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.026 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.017 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.012 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.022 ms)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.013 ms)[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:29 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.022 ms)[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9616 B against the exact arena + plan of 48512 B[0m
-[32m[INFO]  14:49:29 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 2704 B[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.004 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.014 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.015 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.011 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.020 ms)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.012 ms)[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:41 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.020 ms)[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9616 B against the exact arena + plan of 48512 B[0m
+[32m[INFO]  18:57:41 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 2704 B[0m
 [       OK ] MetalBackend.ZeroCopyResidencyWhenThePlanIsPageAligned (4 ms)
 [ RUN      ] MetalBackend.CpuInstructionsWaitForThePendingGpuWorkTheyTouch
 [       OK ] MetalBackend.CpuInstructionsWaitForThePendingGpuWorkTheyTouch (2 ms)
 [ RUN      ] MetalBackend.RopeTableAndEmbeddingGatherRunOnTheGpu
 [       OK ] MetalBackend.RopeTableAndEmbeddingGatherRunOnTheGpu (2 ms)
 [ RUN      ] MetalBackend.TiledAttentionMatchesCpuAndIsBitwiseRunToRun
-[       OK ] MetalBackend.TiledAttentionMatchesCpuAndIsBitwiseRunToRun (23 ms)
+[       OK ] MetalBackend.TiledAttentionMatchesCpuAndIsBitwiseRunToRun (25 ms)
 [ RUN      ] MetalBackend.RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun
 [       OK ] MetalBackend.RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun (58 ms)
 [ RUN      ] MetalBackend.GemmShapesMatchCpuOnEveryKernelPath
-[       OK ] MetalBackend.GemmShapesMatchCpuOnEveryKernelPath (2636 ms)
+[       OK ] MetalBackend.GemmShapesMatchCpuOnEveryKernelPath (2585 ms)
 [ RUN      ] MetalBackend.RelaxedGemmsMatchCpuAtTheBf16Tolerance
-[       OK ] MetalBackend.RelaxedGemmsMatchCpuAtTheBf16Tolerance (563 ms)
+[       OK ] MetalBackend.RelaxedGemmsMatchCpuAtTheBf16Tolerance (621 ms)
 [ RUN      ] MetalBackend.AttentionMatchesCpuAtModelShape
-[       OK ] MetalBackend.AttentionMatchesCpuAtModelShape (24 ms)
+[       OK ] MetalBackend.AttentionMatchesCpuAtModelShape (25 ms)
 [ RUN      ] MetalBackend.SoftmaxCrossEntropyMatchesCpu
-[       OK ] MetalBackend.SoftmaxCrossEntropyMatchesCpu (35 ms)
+[       OK ] MetalBackend.SoftmaxCrossEntropyMatchesCpu (39 ms)
 [ RUN      ] MetalBackend.ActivationsStayFiniteAtLargeMagnitude
-[       OK ] MetalBackend.ActivationsStayFiniteAtLargeMagnitude (6 ms)
+[       OK ] MetalBackend.ActivationsStayFiniteAtLargeMagnitude (4 ms)
 [ RUN      ] MetalBackend.TheSourceModelStaysOnTheCpuBeyondTheWorkingSet
-[       OK ] MetalBackend.TheSourceModelStaysOnTheCpuBeyondTheWorkingSet (4 ms)
+[       OK ] MetalBackend.TheSourceModelStaysOnTheCpuBeyondTheWorkingSet (5 ms)
 [ RUN      ] MetalBackend.MergeDeltasMatchCpuAtTolerance
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.004 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.006 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.026 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.017 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.012 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.022 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.013 ms)[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.022 ms)[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9616 B against the exact arena + plan of 48512 B[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 2704 B[0m
-[       OK ] MetalBackend.MergeDeltasMatchCpuAtTolerance (8 ms)
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.004 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.020 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.006 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.030 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.019 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.012 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.014 ms)[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 9616 B against the exact arena + plan of 48512 B[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 15744 B (4032 B persistent), rodata 2704 B[0m
+[       OK ] MetalBackend.MergeDeltasMatchCpuAtTolerance (13 ms)
 [ RUN      ] MetalBackend.TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality
-  [ f32 site           ] fused dispatches 1 (expected 1), C not stored
-  [ q8 site            ] fused dispatches 1 (expected 1), C not stored
-  [ C read after       ] fused dispatches 1 (expected 1), C stored
-  [ C read between     ] fused dispatches 0 (expected 0), C stored
-  [ X written between  ] fused dispatches 0 (expected 0), C stored
-[       OK ] MetalBackend.TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality (36 ms)
+  [ geometry ] M=64 N=64 K=64 R=8
+  [ f32 site               ] fused dispatches 1 (expected 1), C not stored
+  [ q8 site                ] fused dispatches 1 (expected 1), C not stored
+  [ C read after           ] fused dispatches 1 (expected 1), C stored
+  [ C overwritten after    ] fused dispatches 1 (expected 1), C stored
+  [ C half-written after   ] fused dispatches 1 (expected 1), C stored
+  [ C accumulated after    ] fused dispatches 1 (expected 1), C stored
+  [ C read next range      ] fused dispatches 1 (expected 1), C stored
+  [ pair split             ] fused dispatches 0 (expected 0), C stored
+  [ C read between         ] fused dispatches 0 (expected 0), C stored
+  [ X written between      ] fused dispatches 0 (expected 0), C stored
+  [ geometry ] M=100 N=70 K=48 R=8
+  [ f32 site               ] fused dispatches 1 (expected 1), C not stored
+  [ q8 site                ] fused dispatches 1 (expected 1), C not stored
+  [ C read after           ] fused dispatches 1 (expected 1), C stored
+  [ C overwritten after    ] fused dispatches 1 (expected 1), C stored
+  [ C half-written after   ] fused dispatches 1 (expected 1), C stored
+  [ C accumulated after    ] fused dispatches 1 (expected 1), C stored
+  [ C read next range      ] fused dispatches 1 (expected 1), C stored
+  [ pair split             ] fused dispatches 0 (expected 0), C stored
+  [ C read between         ] fused dispatches 0 (expected 0), C stored
+  [ X written between      ] fused dispatches 0 (expected 0), C stored
+[       OK ] MetalBackend.TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality (162 ms)
 [ RUN      ] MetalBackend.TheLowRankFoldChangesNoTrainingBits
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.004 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.003 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.014 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.005 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.021 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.014 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.011 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.012 ms)[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
-[32m[INFO]  14:49:32 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.018 ms)[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 90496 B against the exact arena + plan of 180544 B[0m
-[32m[INFO]  14:49:32 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 115008 B (10752 B persistent), rodata 24960 B[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (10 ops, 0.005 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (10 ops, 0.004 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 2 adapter(s), rank=4[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (20 ops, 0.021 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (20 ops, 0.007 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 4 trainable parameter(s)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (32 ops, 0.029 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (44 ops, 0.018 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (44 ops, 0.012 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 3 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (44 ops, 0.023 ms)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (44 ops, 0.014 ms)[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:619 — UpdateCompiler: dce removed 3 dead op(s)[0m
+[32m[INFO]  18:57:44 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (41 ops, 0.024 ms)[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:712 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:1177 — UpdateCompiler: memory: the step-0 bound is 90496 B against the exact arena + plan of 180544 B[0m
+[32m[INFO]  18:57:44 compiler/driver/update_compiler.cc:1213 — UpdateCompiler: plan compiled — 25 train + 10 eval + 4 merge instrs, arena 115008 B (10752 B persistent), rodata 24960 B[0m
   [ low-rank fold ] 42 fused dispatches over 20 steps and an evaluation
-[       OK ] MetalBackend.TheLowRankFoldChangesNoTrainingBits (39 ms)
-[==========] 16 test(s) ran (5475 ms total)
+[       OK ] MetalBackend.TheLowRankFoldChangesNoTrainingBits (43 ms)
+[==========] 16 test(s) ran (3833 ms total)
 [  PASSED  ] 16 test(s)

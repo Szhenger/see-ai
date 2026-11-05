@@ -1581,13 +1581,23 @@ once per half tile, the rank-r term a vectorized pass of four columns per
 thread as the small kernel takes them) writes C' as `k_gemm_nn_small`
 would — serial k from zero, alpha on the finished sum, the addend first,
 per component, under the library's precise math — and C
-as the base kernel would only where the range reads C again, which at a
-LoRA site it never does (the rank-r instruction is C's only reader; the
-compiler's use-lists said so when the addend fuser fired). The arena holds
+as the base kernel would only where the program reads C again, which at a
+LoRA site nothing does (the rank-r instruction is C's only reader). That
+is the backend's own proof, not the compiler's: the addend fuser proves one
+reader for the rank-r product it folds, not for the addend, so
+`PlanLowRank` scans the whole program the engine hands it with each range
+(the bench build runs a step as three ranges) for the first instruction to
+touch C's bytes after the pair — a store is dropped only when that
+instruction overwrites all of C and reads none of it, or there is none; a
+read, a partial write, or a read-modify-write (an accumulate, an optimizer
+step) keeps it. The arena holds
 the bits of the two dispatches everywhere they are read (the Metal suite
-proves it on an f32 and a q8 site with C's store dropped, on a site that
-reads C again with the store kept, with a read of C and a write to X
-between as the negatives, and over a trained MLP: curve, evaluation loss
+proves it at one full tile and at ragged tiles with N = 70, on an f32 and
+a q8 site with C's store dropped, on sites that read, half-overwrite or
+accumulate into C after the pair with the store kept, on a site that reads
+C in the next range of the step split, with a read of C and a write to X
+between and a pair cut by the range boundary as the negatives, and over a
+trained MLP: curve, evaluation loss
 and persistent bytes equal to the unfused run's), with two passes over the
 activation fewer — the base's store and the small kernel's read of it; the
 certificate is not needed, so the exact package, the eval program and the

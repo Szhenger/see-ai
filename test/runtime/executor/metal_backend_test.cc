@@ -1181,7 +1181,7 @@ struct FoldRun {
 std::expected<FoldRun, std::string> RunMetalFold(
     const std::vector<UpdateInstruction>& program,
     const std::vector<float>& arena_init, const std::vector<uint8_t>& rodata,
-    bool unfused) {
+    bool unfused, size_t split_at = 0) {
   if (unfused)
     setenv("SEEML_METAL_UNFUSED_LOWRANK", "1", 1);
   else
@@ -1203,12 +1203,24 @@ std::expected<FoldRun, std::string> RunMetalFold(
       !r)
     return fail(r.error());
   StepParams params;
-  (*backend)->BeginRange(std::span<const UpdateInstruction>(program));
-  for (const auto& ins : program)
-    if (auto r = (*backend)->Execute(ins, params); !r) return fail(r.error());
-  auto flushed = (*backend)->Flush();
-  (*backend)->EndRange();
-  if (!flushed) return fail(flushed.error());
+  // As the engine's step-timing split shows it: the whole program, run as
+  // two ranges cut at `split` (the whole program as one range at 0).
+  const size_t split = std::min(split_at, program.size());
+  for (size_t half = 0; half < 2; ++half) {
+    const size_t begin = half == 0 ? 0 : split;
+    const size_t end = half == 0 ? split : program.size();
+    if (begin == end) continue;
+    (*backend)->BeginRange(std::span<const UpdateInstruction>(program), begin,
+                           end);
+    for (size_t idx = begin; idx < end; ++idx)
+      if (auto r = (*backend)->Execute(program[idx], params); !r) {
+        (*backend)->EndRange();
+        return fail(r.error());
+      }
+    auto flushed = (*backend)->Flush();
+    (*backend)->EndRange();
+    if (!flushed) return fail(flushed.error());
+  }
   FoldRun run;
   run.arena.resize(arena_init.size());
   std::memcpy(run.arena.data(), arena, arena_init.size() * sizeof(float));
@@ -1218,11 +1230,14 @@ std::expected<FoldRun, std::string> RunMetalFold(
   return run;
 }
 
-TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
-  if (Skip()) return;
-  constexpr uint32_t M = 64, N = 64, K = 64, R = 8;
+// One LoRA site's instruction stream at a geometry: the fold against the
+// unfused control, bit for bit, over the legality and store-drop cases.
+void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
+  constexpr uint32_t R = 8;
+  std::printf("  [ geometry ] M=%u N=%u K=%u R=%u\n", M, N, K, R);
   // Floats: X [M,K], W [K,N] (the f32 base), A [K,R], B [R,N], T [M,R],
-  // C [M,N], C' [M,N], Z [M,N] (a bystander), each 16-byte aligned.
+  // C [M,N], C' [M,N], Z [M,N] (a bystander), each 16-byte aligned (every
+  // extent is a multiple of four floats at both geometries).
   const uint64_t X = 0, W = X + M * K, A = W + K * N, B = A + K * R,
                  T = B + R * N, C = T + M * R, C2 = C + M * N, Z = C2 + M * N,
                  total = Z + M * N;
@@ -1260,12 +1275,24 @@ TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
   lora.flags = kFlagGemmAddend;
   lora.in[3] = C * sizeof(float);
   lora.imm = static_cast<uint32_t>(F32Bits(0.75f));
-  auto add = [](uint64_t a, uint64_t b, uint64_t out) {
+  auto add_n = [](uint64_t a, uint64_t b, uint64_t out, uint64_t n) {
     UpdateInstruction ins;
     ins.opcode = static_cast<uint16_t>(OpCode::kAddEW);
     ins.in[0] = a * sizeof(float);
     ins.in[1] = b * sizeof(float);
     ins.in[2] = out * sizeof(float);
+    ins.out[0] = n;
+    return ins;
+  };
+  auto add = [&](uint64_t a, uint64_t b, uint64_t out) {
+    return add_n(a, b, out, M * N);
+  };
+  // dst += src: a read-modify-write the validator describes as one write.
+  auto accumulate = [&](uint64_t dst, uint64_t src) {
+    UpdateInstruction ins;
+    ins.opcode = static_cast<uint16_t>(OpCode::kAccumulate);
+    ins.in[0] = dst * sizeof(float);
+    ins.in[1] = src * sizeof(float);
     ins.out[0] = M * N;
     return ins;
   };
@@ -1274,24 +1301,41 @@ TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
     std::vector<UpdateInstruction> program;
     uint64_t fused;  // pairs the fold may take
     bool c_stored;   // the base value's store stays (C is read again)
+    size_t split;    // the program run as two ranges cut here (0: one)
   };
   const Case cases[] = {
       // Nothing reads C after the pair: its store is dropped.
-      {"f32 site", {base, proj, lora}, 1, false},
-      {"q8 site", {base_q8, proj, lora}, 1, false},
+      {"f32 site", {base, proj, lora}, 1, false, 0},
+      {"q8 site", {base_q8, proj, lora}, 1, false, 0},
       // C read after the pair: fused, and C written as before.
-      {"C read after", {base, proj, lora, add(C, C, Z)}, 1, true},
+      {"C read after", {base, proj, lora, add(C, C, Z)}, 1, true, 0},
+      // C overwritten whole after the pair: fused, the store dropped (the
+      // arena ends the same either way; the drop is the kernel's).
+      {"C overwritten after", {base, proj, lora, add(Z, Z, C)}, 1, true, 0},
+      // Part of C overwritten after the pair: the rest may be read; stored.
+      {"C half-written after",
+       {base, proj, lora, add_n(Z, Z, C, M * N / 2)}, 1, true, 0},
+      // C accumulated into after the pair — a read-modify-write the
+      // validator describes as one covering write: stored.
+      {"C accumulated after", {base, proj, lora, accumulate(C, Z)}, 1, true, 0},
+      // C read in the NEXT range (the step-timing split): the plan sees the
+      // whole program, so the store stays.
+      {"C read next range", {base, proj, lora, add(C, C, Z)}, 1, true, 3},
+      // The pair cut by the range boundary: both halves run apart.
+      {"pair split", {base, proj, lora, add(C, C, Z)}, 0, true, 2},
       // A read of C between the two: the base must have written it by then.
-      {"C read between", {base, proj, add(C, C, Z), lora}, 0, true},
+      {"C read between", {base, proj, add(C, C, Z), lora}, 0, true, 0},
       // A write to X between: the deferred base would read the new X.
-      {"X written between", {base, proj, add(Z, Z, X), lora}, 0, true},
+      {"X written between", {base, proj, add(Z, Z, X), lora}, 0, true, 0},
   };
   for (const Case& cs : cases) {
-    auto fused = RunMetalFold(cs.program, arena, rodata, /*unfused=*/false);
-    auto apart = RunMetalFold(cs.program, arena, rodata, /*unfused=*/true);
+    auto fused = RunMetalFold(cs.program, arena, rodata, /*unfused=*/false,
+                              cs.split);
+    auto apart = RunMetalFold(cs.program, arena, rodata, /*unfused=*/true,
+                              cs.split);
     ASSERT_OK(fused);
     ASSERT_OK(apart);
-    std::printf("  [ %-18s ] fused dispatches %llu (expected %llu), C %s\n",
+    std::printf("  [ %-22s ] fused dispatches %llu (expected %llu), C %s\n",
                 cs.name, (unsigned long long)fused->fused,
                 (unsigned long long)cs.fused,
                 cs.c_stored ? "stored" : "not stored");
@@ -1322,6 +1366,15 @@ TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
     ExpectRangeClose((std::string(cs.name) + " C'").c_str(), *twin, C2, M * N,
                      2e-4, 2e-4);
   }
+}
+
+TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
+  if (Skip()) return;
+  // One full tile with N a multiple of four (C' as float4s), then ragged
+  // tiles in both M and N with N not a multiple of four: the zero-filled
+  // staging past the edges and the scalar store of C'.
+  CheckLowRankFoldAt(64, 64, 64);
+  CheckLowRankFoldAt(100, 70, 48);
 }
 
 std::expected<Dataset, std::string> WideClassData(uint64_t seed) {
