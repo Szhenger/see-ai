@@ -80,11 +80,13 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include "runtime/dispatcher/contract.h"
 #include "runtime/executor/backend.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
@@ -371,6 +373,36 @@ std::string LoadProgram(const std::vector<uint8_t>& plan,
   if (up::PlanSelfHash(plan.data(), plan.size(),
                        offsetof(up::PlanHeader, plan_hash)) != h.plan_hash)
     return "plan integrity check failed (plan_hash)";
+  // The engine's contracts, as the engine runs them (CR2 #143 F58): the
+  // header's sections, arena relations, slots and hyperparameters, then
+  // every instruction of every program — the staged slots unwritten, the
+  // softmax and gather provenance, the column scales, the emit table. A
+  // plan the device would refuse must not price or diff here as if it
+  // ran. (The Python plane cannot re-seal a plan, so this refusal has no
+  // Python test; the engine's own tests prove the contracts.)
+  if (auto r = rt::VerifyPlanContract(h, plan.size()); !r) return r.error();
+  {
+    auto decode = [&](uint64_t off, uint64_t count, auto& out) {
+      out.resize(static_cast<size_t>(count));
+      if (count)
+        std::memcpy(out.data(), plan.data() + off,
+                    static_cast<size_t>(count) * sizeof(out[0]));
+    };
+    std::vector<up::UpdateInstruction> train, merge, eval, step;
+    std::vector<up::EmitEntry> emit;
+    decode(h.train_instr_offset, h.train_instr_count, train);
+    decode(h.merge_instr_offset, h.merge_instr_count, merge);
+    decode(h.eval_instr_offset, h.eval_instr_count, eval);
+    decode(h.step_instr_offset, h.step_instr_count, step);
+    decode(h.emit_table_offset, h.emit_count, emit);
+    if (auto r = rt::VerifyExecutorContract(
+            train, merge, eval, step, emit,
+            std::span<const uint8_t>(plan.data() + h.rodata_offset,
+                                     h.rodata_size),
+            h);
+        !r)
+      return r.error();
+  }
 
   uint64_t off = h.train_instr_offset, count = h.train_instr_count;
   if (section == "eval") off = h.eval_instr_offset, count = h.eval_instr_count;

@@ -51,12 +51,27 @@ step program exists — class width, vocabulary, input- and label-slot
 writes and a write through a source ref, each × every program; the
 header's slot bits; the section alignment; the feeder's label kind,
 input kind and token bound. A check missing from a program is a failing
-row: with the old program sets the step rows fail. Design item 1 — the
-contract as pure functions in `source/contract/`, shared with the
-compiler's topology, the probe and the Python oracle — and F58 / F47 /
-N33 (the probe calling no contract; the oracle's `Corpus.check` and its
-`diff` over declared extents only) stay open: the Python plane's
-remainder.
+row: with the old program sets the step rows fail.
+
+The Python plane and the probe followed. F58: `seeml-plan-probe` runs
+`VerifyPlanContract` and `VerifyExecutorContract` exactly as the engine
+does before it prices or traces a plan (the Python plane cannot re-seal a
+plan, so the refusal has no Python test; the engine's tests prove the
+contracts, and the differential suite runs the probe on every matrix
+plan). F47: the oracle's `Corpus.check` mirrors `VerifyFeederContract`
+rule for rule — the geometry, the label kind and width, and every staged
+value's bound (class labels below the narrowest softmax width, token ids
+below the narrowest table) — and its `label_classes` / `vocab` scan all
+four programs as the engine does since F07. N33: the diff compares the
+whole C++ arena image against the one it sent and names the first byte
+changed outside every declared write extent — a kernel writing where the
+bounds proof says it does not, which the per-extent comparison could never
+see. Tests: four refused corpora and two accepted ones against the matrix's
+plans; a crafted image with one stray byte. Still open: design item 1 —
+the contract as pure functions in `source/contract/`, shared by the
+compiler's topology, the probe and the oracle — and the Python plane's
+own plan checks (`pack_update.py check_plan`, `formats.py`) do not mirror
+CR1's immediate-float rules.
 
 ## Acceptance
 

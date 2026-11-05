@@ -599,6 +599,46 @@ class DifferentialSuite(unittest.TestCase):
                 covered |= set(report["opcodes"])
         self.assertEqual(set(fx.OPCODES.values()) - covered, NEVER_COMPILED)
 
+    def test_the_corpus_check_mirrors_the_feeder_contract(self):
+        """CR2 #143 F47: Corpus.check holds the corpus to every rule the C++
+        feeder contract holds it to — the geometry, the label kind and
+        width, and every staged value's bound — so a corpus the device
+        would refuse is refused here, not blamed on a kernel."""
+        import export_model as em
+        plan = fx.Plan.load(self.plans["mlp_unfused"][0])
+        classes = plan.label_classes()
+        d = plan.input_floats // plan.batch
+        x = np.zeros((4, d), "<f4")
+
+        def corpus(name, write):
+            # Under its own prefix: the matrix's corpora share this directory.
+            path = os.path.join(self.dir, name)
+            write(path)
+            return fx.Corpus(np, path)
+        corpus("check_ok.sds", lambda p: em.export_sds(
+            x, np.zeros(4, "<i4"), p)).check(plan)
+        with self.assertRaisesRegex(fx.PlanError, "class label"):
+            corpus("check_high.sds", lambda p: em.export_sds(
+                x, np.array([0, 1, classes, 0], "<i4"), p)).check(plan)
+        with self.assertRaisesRegex(fx.PlanError, "label kind"):
+            corpus("check_dense.sds", lambda p: em.export_sds(
+                x, np.zeros((4, 3), "<f4"), p, label_kind=2)).check(plan)
+        with self.assertRaisesRegex(fx.PlanError, "input width"):
+            corpus("check_narrow.sds", lambda p: em.export_sds(
+                np.zeros((4, d + 1), "<f4"), np.zeros(4, "<i4"), p)).check(plan)
+        token_plan = fx.Plan.load(self.plans["dec_f32"][0])
+        s, vocab = token_plan.seq_len, token_plan.vocab()
+        records = np.zeros((3, s + 1), "<i4")
+        corpus("check_tok.sds", lambda p: em.export_token_sds(records, p)).check(
+            token_plan)
+        records[1, 2] = vocab
+        with self.assertRaisesRegex(fx.PlanError, "token id"):
+            corpus("check_tokbad.sds", lambda p: em.export_token_sds(records, p)).check(
+                token_plan)
+        with self.assertRaisesRegex(fx.PlanError, "token ids"):
+            corpus("check_tok2.sds", lambda p: em.export_token_sds(
+                np.zeros((3, s + 1), "<i4"), p)).check(plan)
+
     def test_the_oracle_has_teeth(self):
         """One wrong constant in one opcode is caught, and blamed on it."""
         for opcode, broken in (
@@ -781,6 +821,29 @@ class DifferentialSuite(unittest.TestCase):
                         "gemm_gflops", "mfu"):
                 self.assertGreater(entry[key], 0)
         self.assertIn("speedup_vs_cpp_cpu", priced["frontier"]["numpy32"])
+
+
+@unittest.skipIf(np is None, "NumPy not installed")
+class DifferTest(unittest.TestCase):
+    def test_a_write_outside_the_declared_extents_is_a_mismatch(self):
+        """CR2 #143 N33: the per-extent comparison never looked outside the
+        extents the validator declared written, so a kernel writing past
+        them agreed. A changed byte outside every declared extent is a
+        structural mismatch, named by its first byte."""
+        differ = fx.Differ(np, 1e-6, 1e-6)
+        before = bytes(64)
+        after = bytearray(before)
+        after[10] = 1   # inside the declared extent at [8, 12)
+        after[40] = 1   # outside every declared extent
+        trace = [(0, 5, [(8, np.zeros(1, "<f4"))], 0)]
+        differ.outside("step 1 train", before, bytes(after), trace)
+        self.assertEqual(len(differ.mismatches), 1)
+        self.assertIn("outside its declared write extents (first at byte 40)",
+                      differ.mismatches[0])
+        clean = fx.Differ(np, 1e-6, 1e-6)
+        clean.outside("step 1 train", before, bytes(after),
+                      trace + [(1, 5, [(40, np.zeros(1, "<f4"))], 0)])
+        self.assertEqual(clean.mismatches, [])
 
 
 if __name__ == "__main__":
