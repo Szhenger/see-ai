@@ -889,7 +889,15 @@ std::string BuildScript(bool relaxed_plan) {
   s += "METAL_LDFLAGS=\"\"\n";
   s += "# (-fobjc-arc needs a clang-family CXX; a GCC set via CXX takes the\n";
   s += "# stub, so the cross-toolchain promise holds on Darwin too.)\n";
-  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && [ -z \"${SEEML_NO_METAL:-}\" ] "
+  // The switch is tested as the tree's build.sh tests its own (CR3 #144
+  // F23): empty, 0, off, false, no and n are OFF; anything else is ON.
+  s += "seeml_on() {\n";
+  s += "  case \"$(printf '%s' \"$1\" | tr '[:upper:]' '[:lower:]')\" in\n";
+  s += "    \"\"|0|off|false|no|n) return 1 ;;\n";
+  s += "    *) return 0 ;;\n";
+  s += "  esac\n";
+  s += "}\n";
+  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && ! seeml_on \"${SEEML_NO_METAL:-}\" "
        "&& \"$CXX\" --version 2>/dev/null | grep -qi clang; then\n";
   s += "  $CXX $FLAGS -x objective-c++ -fobjc-arc -c "
        "runtime/executor/metal_backend.mm -o metal_backend.o\n";

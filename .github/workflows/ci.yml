@@ -19,6 +19,13 @@
 
 name: CI
 
+# Every run step names its shell: GitHub then runs `bash --noprofile --norc
+# -eo pipefail {0}`, so a failing producer fails its pipeline (CR3 #144, F00 /
+# F01); the unnamed default is `bash -e {0}`, errexit without pipefail.
+defaults:
+  run:
+    shell: bash
+
 on:
   pull_request:
   push:
@@ -372,7 +379,11 @@ jobs:
             --report out/pkg/report.json --build
           test -x out/pkg/model_update
       - name: Verify the plan seal with the disassembler
-        run: ./build/seeml-seeu-dump out/pkg/update_plan.seeu | grep -q "(verified)"
+        run: |
+          # Not a pipe into grep -q: it closes the pipe at its first match and
+          # the producer would die of SIGPIPE under pipefail.
+          ./build/seeml-seeu-dump out/pkg/update_plan.seeu > out/dump.log
+          grep -q "(verified)" out/dump.log
       - name: Run the update (parallel), tolerating a gate rejection
         run: |
           set +e
@@ -422,9 +433,15 @@ jobs:
           test -f out/pkg2/update_plan_embedded.S
           # Nothing Python ships in the package: no interpreter reference in
           # any source the device builds, none in the binary.
-          ! grep -rIl -i python out/pkg2 --include='*.cc' --include='*.h' \
-              --include='*.S' --include='*.sh'
-          ! grep -q -i python out/pkg2/model_update
+          if grep -rIl -i python out/pkg2 --include='*.cc' --include='*.h' \
+              --include='*.S' --include='*.sh'; then
+            echo "::error::a packaged source names Python"
+            exit 1
+          fi
+          if grep -q -i python out/pkg2/model_update; then
+            echo "::error::the packaged binary names Python"
+            exit 1
+          fi
       - name: Stub-built package commits the same bytes as the decimal one
         run: |
           out/pkg2/model_update --model out/model.smf --data out/corpus.sds \
@@ -452,7 +469,10 @@ jobs:
           test ! -e out/pkg3/update_plan_embedded.cc
           test ! -e out/pkg3/update_plan_none.cc
           grep -q '"mode": "disk"' out/pack3.json
-          ! grep -q -i python out/pkg3/model_update
+          if grep -q -i python out/pkg3/model_update; then
+            echo "::error::the disk-mode binary names Python"
+            exit 1
+          fi
       - name: Disk-mode package commits the same bytes and fails closed without its plan
         run: |
           out/pkg3/model_update --model out/model.smf --data out/corpus.sds \

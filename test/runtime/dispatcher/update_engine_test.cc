@@ -816,33 +816,43 @@ TEST(UpdateEngineValidate, EvaluateMetricsReportsExactAccuracy) {
   UpdateEngine engine;
   ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
 
-  // 10 samples at batch 4: three eval batches, the last of which wraps two
-  // duplicate rows. All inputs identical, so every probability row is the
-  // same and exactly one class wins every argmax. With labels all set to
-  // class k the exact accuracy is 1 for the winning k and 0 otherwise —
-  // so the accuracies over k must sum to exactly 1. A wrapped duplicate
-  // leaking into the count would break that identity.
+  // Ten identical rows at batch 4: three eval batches, the last padded with
+  // two wrapped duplicates. The labels are NOT uniform — rows 0-1 carry the
+  // class every row argmaxes to (hits), rows 2-9 another (misses) — so the
+  // exact accuracy is 2 / 10, and a duplicate leaking into the count moves
+  // it to 4 / 12 or 2 / 12 whichever rows wrap (CR3 #144 F28: with uniform
+  // labels hits and rows stayed in proportion, so the old identity held with
+  // or without the leak).
   constexpr uint64_t kN = 10, kClasses = 3;
   const std::vector<float> one_input = {0.3f, -0.1f, 0.7f, 0.2f, -0.5f, 0.4f};
   std::vector<float> inputs;
   for (uint64_t i = 0; i < kN; ++i)
     inputs.insert(inputs.end(), one_input.begin(), one_input.end());
-
-  float sum = 0.0f;
-  for (uint64_t k = 0; k < kClasses; ++k) {
-    std::vector<int32_t> labels(kN, static_cast<int32_t>(k));
+  auto accuracy_with = [&](const std::vector<int32_t>& labels)
+      -> std::expected<float, std::string> {
     std::vector<uint8_t> label_bytes(kN * sizeof(int32_t));
     std::memcpy(label_bytes.data(), labels.data(), label_bytes.size());
-    ASSERT_OK_AND_ASSIGN(
-        Dataset data,
-        Dataset::FromMemory(inputs, std::move(label_bytes), kN, kInDim,
-                            /*label_kind=*/1, /*label_dim=*/0));
-    ASSERT_OK_AND_ASSIGN(auto m, engine.EvaluateMetrics(data));
-    EXPECT_TRUE(m.has_accuracy);
-    EXPECT_TRUE(m.accuracy == 0.0f || m.accuracy == 1.0f);
-    sum += m.accuracy;
+    auto data = Dataset::FromMemory(inputs, std::move(label_bytes), kN, kInDim,
+                                    /*label_kind=*/1, /*label_dim=*/0);
+    if (!data) return std::unexpected(data.error());
+    auto m = engine.EvaluateMetrics(*data);
+    if (!m) return std::unexpected(m.error());
+    if (!m->has_accuracy) return std::unexpected("no accuracy");
+    return m->accuracy;
+  };
+  // The class every row argmaxes to: the labelling with accuracy 1.
+  int64_t ku = -1;
+  for (uint64_t k = 0; k < kClasses && ku < 0; ++k) {
+    ASSERT_OK_AND_ASSIGN(float acc,
+                         accuracy_with(std::vector<int32_t>(kN, static_cast<int32_t>(k))));
+    EXPECT_TRUE(acc == 0.0f || acc == 1.0f);
+    if (acc == 1.0f) ku = static_cast<int64_t>(k);
   }
-  EXPECT_EQ(sum, 1.0f);
+  ASSERT_TRUE(ku >= 0);
+  std::vector<int32_t> labels(kN, static_cast<int32_t>((ku + 1) % kClasses));
+  labels[0] = labels[1] = static_cast<int32_t>(ku);
+  ASSERT_OK_AND_ASSIGN(float acc, accuracy_with(labels));
+  EXPECT_EQ(acc, 2.0f / 10.0f);
 }
 
 TEST(UpdateEngineValidate, TrainReportCarriesValidationAccuracy) {

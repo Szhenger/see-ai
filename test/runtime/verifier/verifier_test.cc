@@ -306,15 +306,18 @@ TEST(PlanValidator, AttentionBackwardExtentsAreProven) {
   EXPECT_ERROR(ValidateInstruction(dp, kArena, kRodata, up::kSeeuVersion));
 }
 
-TEST(PlanValidator, SoftmaxRowsBackwardOverflowIsRejected) {
-  // rows and cols each fill their 32-bit half; their product must go
-  // through MulOk — 2^32 * 2^32 wraps u64 to zero-ish garbage.
+TEST(PlanValidator, SoftmaxRowsBackwardByteCountOverflowIsRejected) {
+  // rows = cols = 2^31: their product, 2^62 elements, fits u64, but the
+  // byte count 4 * 2^62 is 2^64 — without the MulOk on the element count
+  // it wraps to ZERO bytes and every range check passes (CR3 #144 F30:
+  // the old operands' product, (2^32 - 1)^2, never overflowed, and the
+  // range check alone carried the test).
   up::UpdateInstruction sm;
   sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxRowsBwd);
   sm.in[0] = up::MakeArenaRef(0);
   sm.in[1] = up::MakeArenaRef(256);
   sm.in[2] = up::MakeArenaRef(512);
-  sm.out[0] = (uint64_t{0xFFFFFFFFu} << 32) | 0xFFFFFFFFu;
+  sm.out[0] = (uint64_t{0x80000000u} << 32) | 0x80000000u;
   EXPECT_ERROR(ValidateInstruction(sm, kArena, kRodata, up::kSeeuVersion));
 }
 
@@ -494,10 +497,14 @@ TEST(PlanValidator, BoundsMathIsOverflowSafe) {
   // off + bytes wraps u64 — must reject, not wrap.
   EXPECT_FALSE(RangeOk(UINT64_MAX - 8, 64, 1024));
 
-  // A count chosen so elems * 4 wraps to something tiny.
+  // A count whose byte size wraps SMALL and nonzero: 4 * (2^62 + 64) is
+  // 2^64 + 256, so without the MulOk on the element count the three
+  // operands read as 256 bytes each at disjoint offsets inside the arena
+  // and nothing else refuses them (CR3 #144 F31: UINT64_MAX / 2 wrapped
+  // to 2^64 - 4, which the range check rejected on its own).
   EXPECT_ERROR(ValidateInstruction(
-      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(0), up::MakeArenaRef(0),
-            UINT64_MAX / 2),
+      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256), up::MakeArenaRef(512),
+            (uint64_t{1} << 62) + 64),
       kArena, kRodata, up::kSeeuVersion));
 }
 
@@ -803,12 +810,18 @@ TEST(PlanValidator, TheGemmAddendSharesItsSlotWithNothing) {
     ASSERT_FALSE(r.has_value());
     EXPECT_STR_CONTAINS(r.error(), "addend");
   }
+  // The accumulate and the narrow-weight forms admit no addend: the flags
+  // guard refuses the bit by name. B in rodata, as the narrow forms require
+  // anyway, so no other rule can take the credit (CR3 #144 F32).
   gemm.flags = up::kFlagGemmAddend;
+  gemm.in[1] = up::MakeRodataRef(0);
   for (const up::OpCode op :
        {up::OpCode::kGemmAccNN, up::OpCode::kGemmNNQ8, up::OpCode::kGemmNTQ8,
         up::OpCode::kGemmNNBF16, up::OpCode::kGemmNTBF16}) {
     gemm.opcode = static_cast<uint16_t>(op);
-    EXPECT_ERROR(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+    const auto r = ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), "misplaced instruction flags");
   }
   up::UpdateInstruction add = AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256),
                                     up::MakeArenaRef(512), 16);

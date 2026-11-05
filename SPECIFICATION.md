@@ -53,7 +53,7 @@ Two `.mm` files — `runtime/executor/metal_backend.mm` (the executor
 backend, §7) and `runtime/executor/metal_gemm.mm` (the G1a correctness
 harness) — compiled with ARC (`-fobjc-arc`) and linked against
 `-framework Metal -framework Foundation`, gated on Apple hosts in both build
-drivers and in the emitted package's `build.sh` (`SEEML_NO_METAL=1` opts
+drivers and in the emitted package's `build.sh` (`SEEML_NO_METAL=1` — any value but a falsy one: empty, 0, off, false, no — opts
 out; `metal_backend_stub.cc` takes the backend's place everywhere else, so no
 non-Apple translation unit references a Metal symbol). MSL kernels are
 **not** checked in as `.metal` files: the backend's kernel library is a C++

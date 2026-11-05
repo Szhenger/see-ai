@@ -109,16 +109,16 @@ TEST(DurableIo, ConcurrentWritersToOnePathYieldOneCompleteFile) {
   const std::vector<uint8_t> b(256 * 1024, 0xBB);
 
   for (int round = 0; round < 8; ++round) {
-    std::thread ta([&] {
-      auto r = WriteFileDurable(path, {{a.data(), a.size()}});
-      (void)r;
-    });
-    std::thread tb([&] {
-      auto r = WriteFileDurable(path, {{b.data(), b.size()}});
-      (void)r;
-    });
+    // Both writers must succeed every round (CR3 #144 F27: with the results
+    // discarded, a file left by an earlier round satisfied the content check
+    // even when every later write failed).
+    std::expected<void, std::string> ra, rb;
+    std::thread ta([&] { ra = WriteFileDurable(path, {{a.data(), a.size()}}); });
+    std::thread tb([&] { rb = WriteFileDurable(path, {{b.data(), b.size()}}); });
     ta.join();
     tb.join();
+    ASSERT_OK(ra);
+    ASSERT_OK(rb);
     ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> got, ReadFileBytes(path));
     EXPECT_TRUE(got == a || got == b);
   }
