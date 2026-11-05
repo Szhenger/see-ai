@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <cmath>
+#include <string>
 
 #include "runtime/diagnostics/validating/error.h"
 
@@ -224,12 +225,22 @@ std::expected<void, std::string> ValidateInstructionImpl(
   };
 
   const uint64_t d0 = ins.out[0], d1 = ins.out[1], d2 = ins.out[2];
-  // The KL temperature word's high half is the loss scale (v8). Pre-v8
-  // plans never wrote it: a nonzero high word there is corruption, exactly
-  // like flags before v5. From v8 on, zero means "absent" (scale 1.0) and
-  // any written scale must be a finite positive float — Execute() multiplies
-  // by it blindly, and a zero or NaN scale would train on nothing, silently.
-  auto kl_scale_ok = [&](uint64_t word) -> std::expected<void, std::string> {
+  // The KL temperature word: the low half is T at every version, and both
+  // softmaxes divide by it — a non-positive or non-finite T inverts or
+  // dissolves them (CR1 #142 F17 / F10), so it is a finite float within
+  // the bounds the compiler and the CLI apply. The high half is the loss
+  // scale (v8). Pre-v8 plans never wrote it: a nonzero high word there is
+  // corruption, exactly like flags before v5. From v8 on, zero means
+  // "absent" (scale 1.0) and any written scale must be a finite positive
+  // float — Execute() multiplies by it blindly, and a zero or NaN scale
+  // would train on nothing, silently.
+  auto kl_word_ok = [&](uint64_t word) -> std::expected<void, std::string> {
+    const float t = std::bit_cast<float>(static_cast<uint32_t>(word));
+    if (!std::isfinite(t) || t < up::kKlTemperatureMin ||
+        t > up::kKlTemperatureMax)
+      return diag::validating::Error(
+          std::string("kl_distill temperature must be a finite float in ") +
+          up::kKlTemperatureRangeText);
     const uint64_t hi = word >> 32;
     if (plan_version < up::kSeeuKlScaleVersion) {
       if (hi != 0)
@@ -282,20 +293,29 @@ std::expected<void, std::string> ValidateInstructionImpl(
     return diag::validating::Error(
         "rope_table opcode in a pre-v" +
         std::to_string(up::kSeeuKernelBatchVersion) + " plan");
-  // The fused clip threshold on the optimizer steps (v12, out[1]): absent
-  // below v12 — a nonzero word there is corruption — and from v12 on either
-  // zero or a finite positive f32, since Execute() clips by it blindly.
+  // A clip threshold as f32 bits in a word's low half: finite and positive,
+  // the high half zero — Execute() clips by it blindly. The standalone
+  // kClipNorm carries one in in[1] at every version, zero included in the
+  // refusal (CR1 #142 F13 / F18: a cap of 0 scaled g by 0 on the CPU and
+  // by stale scratch on the GPU, and -1 was gradient ascent); the fused
+  // form on the optimizer steps (v12, out[1]) is absent below v12 — a
+  // nonzero word there is corruption — and from v12 on either zero or such
+  // a float.
+  auto clip_threshold_ok = [&](uint64_t word, const char* what)
+      -> std::expected<void, std::string> {
+    const float clip = std::bit_cast<float>(static_cast<uint32_t>(word));
+    if ((word >> 32) != 0 || !std::isfinite(clip) || clip <= 0.0f)
+      return diag::validating::Error(std::string(what) +
+                                     " must be a finite positive float");
+    return {};
+  };
   auto clip_word_ok = [&](uint64_t word) -> std::expected<void, std::string> {
     if (word == 0) return {};
     if (plan_version < up::kSeeuKernelBatchVersion)
       return diag::validating::Error(
           "optimizer step carries a clip threshold in a pre-v" +
           std::to_string(up::kSeeuKernelBatchVersion) + " plan");
-    const float clip = std::bit_cast<float>(static_cast<uint32_t>(word));
-    if ((word >> 32) != 0 || !std::isfinite(clip) || clip <= 0.0f)
-      return diag::validating::Error(
-          "optimizer step clip threshold must be a finite positive float");
-    return {};
+    return clip_threshold_ok(word, "optimizer step clip threshold");
   };
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kEmbedFwd) &&
       plan_version < up::kSeeuTokenVersion)
@@ -347,6 +367,18 @@ std::expected<void, std::string> ValidateInstructionImpl(
       // against the written C range.
       if ((ins.flags & up::kFlagEpilogueBias) && !ref_ok(ins.in[3], d1, false))
         return fail();
+      // The per-tensor dequant scale (the q8 GEMMs' in[3] without the
+      // column-scale flag): every element of the widened weight is
+      // multiplied by it, so it is a finite positive f32 in the low word,
+      // the high word zero (CR1 #142 F33 — a zero or NaN scale passed, and
+      // dequantized the whole weight to nothing or to NaN).
+      if (q8 && !(ins.flags & up::kFlagQ8ColScale)) {
+        const float scale =
+            std::bit_cast<float>(static_cast<uint32_t>(ins.in[3]));
+        if ((ins.in[3] >> 32) != 0 || !std::isfinite(scale) || scale <= 0.0f)
+          return diag::validating::Error(
+              "quantized GEMM dequant scale must be a finite positive float");
+      }
       // Per-column int8 scales (v17): a rodata vector, one float per
       // output column of W — N in the forward (NN), the reduction extent K
       // in the dX GEMM (NT), where W is read as [N, K].
@@ -404,6 +436,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
       return disjoint();
     }
     case up::OpCode::kClipNorm:
+      if (auto r = clip_threshold_ok(ins.in[1], "clip_norm threshold"); !r)
+        return r;
       if (!ref_ok(ins.in[0], d0, true)) return fail();
       return disjoint();
     case up::OpCode::kReduceRows:
@@ -439,14 +473,14 @@ std::expected<void, std::string> ValidateInstructionImpl(
           !ref_ok(ins.in[2], 1, true) || !ref_ok(ins.in[3], nc, true) ||
           !ref_ok(ins.out[0], nc, true))
         return fail();
-      if (auto r = kl_scale_ok(d2); !r) return r;
+      if (auto r = kl_word_ok(d2); !r) return r;
       return disjoint();
     case up::OpCode::kKLDistillBwd:
       if (!MulOk(d0 >> 32, d0 & 0xFFFFFFFFu, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], nc, false) ||
           !ref_ok(ins.in[2], 1, false) || !ref_ok(ins.in[3], nc, true))
         return fail();
-      if (auto r = kl_scale_ok(d1); !r) return r;
+      if (auto r = kl_word_ok(d1); !r) return r;
       return disjoint();
     case up::OpCode::kSgdStep:
       if (auto r = clip_word_ok(d1); !r) return r;

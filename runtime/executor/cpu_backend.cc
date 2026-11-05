@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <vector>
 
 #include "runtime/executor/backend.h"
@@ -171,10 +172,6 @@ float BitsToF32(uint64_t bits) {
 // The KL temperature word packs (loss_scale bits << 32) | T bits. A zero
 // high word is a pre-v8 plan: no scale was ever written, and 1.0 selects
 // the pre-change behavior (schema.h, the additive-field rule).
-constexpr const char* kNonFiniteNorm =
-    "gradient norm is not finite — the step was refused with the parameters "
-    "and optimizer state untouched";
-
 float KlTemperatureOf(uint64_t word) { return BitsToF32(word & 0xFFFFFFFFu); }
 // v17: the q8 GEMM's in[3] is a ref to per-column scales, not scale bits.
 bool ColScaled(const up::UpdateInstruction& ins) {
@@ -405,9 +402,17 @@ std::expected<void, std::string> CpuBackend::Execute(
                       ReadPtr(ins.out[1]), WritePtr(ins.in[3]),
                       ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
       break;
-    case up::OpCode::kClipNorm:
-      k::ClipNorm(WritePtr(ins.in[0]), ins.out[0], BitsToF32(ins.in[1]));
+    case up::OpCode::kClipNorm: {
+      // CR1 #142 F09 / F13 / F18: the threshold is a finite positive float
+      // (the validator's rule, held here too), and a non-finite norm is a
+      // refusal with g untouched — the fused steps' verdict, in their words.
+      const float cap = BitsToF32(ins.in[1]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
+      if (!k::ClipNorm(WritePtr(ins.in[0]), ins.out[0], cap))
+        return std::unexpected(kNonFiniteNormRefusal);
       break;
+    }
     case up::OpCode::kScale:
       k::Scale(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), BitsToF32(ins.in[2]),
                ins.out[0]);
@@ -456,7 +461,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kSgdStep:
       if (!k::SgdStep(WritePtr(ins.in[0]), ReadPtr(ins.in[1]), ins.out[0],
                       params.lr, params.weight_decay, BitsToF32(ins.out[1])))
-        return std::unexpected(kNonFiniteNorm);
+        return std::unexpected(kNonFiniteNormRefusal);
       break;
     case up::OpCode::kAdamWStep:
       if (!k::AdamWStep(WritePtr(ins.in[0]), ReadPtr(ins.in[1]),
@@ -464,7 +469,7 @@ std::expected<void, std::string> CpuBackend::Execute(
                         params.lr, params.beta1, params.beta2, params.eps,
                         params.weight_decay, params.step,
                         BitsToF32(ins.out[1])))
-        return std::unexpected(kNonFiniteNorm);
+        return std::unexpected(kNonFiniteNormRefusal);
       break;
     case up::OpCode::kFill:
       k::Fill(WritePtr(ins.in[0]), BitsToF32(ins.in[1]), ins.out[0]);

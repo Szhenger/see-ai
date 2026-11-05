@@ -28,6 +28,11 @@
 
 name: Nightly
 
+# The shell named, as in ci.yml: `bash -eo pipefail` for every step (CR3 #144).
+defaults:
+  run:
+    shell: bash
+
 on:
   schedule:
     - cron: "17 7 * * *"

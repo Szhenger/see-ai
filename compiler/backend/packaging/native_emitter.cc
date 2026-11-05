@@ -235,7 +235,10 @@ constexpr const char* kUsage =
     "  --backend: the executor (default cpu, or $SEEML_BACKEND). cpu is the\n"
     "  bitwise-deterministic reference and builds anywhere; metal runs the\n"
     "  update on an Apple GPU (an error where none exists); auto takes the\n"
-    "  GPU when present and says so, else cpu.\n";
+    "  GPU when present and says so, else cpu.\n"
+    "  exit codes: 0 committed; 1 failed (the model untouched); 2 usage;\n"
+    "  3 rejected by the gate (the model untouched); 4 committed, but\n"
+    "  --report or --loss-log could not be written.\n";
 
 /// Every argv slot must be a known flag or a known flag's value: the
 /// compiler CLI treats unconsumed arguments as hard errors, and the device
@@ -560,13 +563,27 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "seeml-update: validation accuracy %.4f -> %.4f\n",
                  report->val_initial_accuracy, report->val_final_accuracy);
 
+  // Every requested output is checked (CR4 #145 F66): a full disk used to
+  // leave a truncated file and exit 0. A failed output after a commit is
+  // exit 4 — the model is updated, the record is not — never a silent 0.
+  bool outputs_ok = true;
   if (!loss_log.empty()) {
     std::FILE* f = std::fopen(loss_log.c_str(), "w");
-    if (f) {
+    if (!f) {
+      std::fprintf(stderr, "seeml-update: cannot write --loss-log '%s'\n",
+                   loss_log.c_str());
+      outputs_ok = false;
+    } else {
       std::fprintf(f, "step,loss\n");
       for (size_t i = 0; i < report->loss_curve.size(); ++i)
         std::fprintf(f, "%zu,%.6f\n", i + 1, report->loss_curve[i]);
-      std::fclose(f);
+      const bool bad = std::ferror(f) != 0;
+      if (std::fclose(f) != 0 || bad) {
+        std::fprintf(stderr,
+                     "seeml-update: failed writing --loss-log '%s'\n",
+                     loss_log.c_str());
+        outputs_ok = false;
+      }
     }
   }
 
@@ -590,10 +607,14 @@ int main(int argc, char** argv) {
   double merge_s = 0.0, commit_s = 0.0;
   auto write_report = [&](bool committed, const char* error) {
     if (report_path.empty()) return;
-    std::FILE* f = std::fopen(report_path.c_str(), "w");
+    // Staged and renamed into place, every write checked: a truncated
+    // report under the real name is worse than none (CR4 #145 F66).
+    const std::string staged = report_path + ".tmp";
+    std::FILE* f = std::fopen(staged.c_str(), "w");
     if (!f) {
       std::fprintf(stderr, "seeml-update: cannot write --report '%s'\n",
                    report_path.c_str());
+      outputs_ok = false;
       return;
     }
     // JSON has no NaN/inf and no raw quotes: non-finite numbers become
@@ -697,7 +718,14 @@ int main(int argc, char** argv) {
       str(error);
     }
     std::fputs("\n}\n", f);
-    std::fclose(f);
+    const bool bad = std::ferror(f) != 0;
+    if (std::fclose(f) != 0 || bad ||
+        std::rename(staged.c_str(), report_path.c_str()) != 0) {
+      std::fprintf(stderr, "seeml-update: failed writing --report '%s'\n",
+                   report_path.c_str());
+      std::remove(staged.c_str());
+      outputs_ok = false;
+    }
   };
   if (!accepted && !force) {
     const char* why =
@@ -734,6 +762,12 @@ int main(int argc, char** argv) {
   commit_s = since(t_commit0);
   write_report(true, nullptr);
   std::fprintf(stderr, "seeml-update: committed '%s'\n", out.c_str());
+  if (!outputs_ok) {
+    std::fprintf(stderr,
+                 "seeml-update: the update is committed, but a requested "
+                 "output could not be written (exit 4)\n");
+    return 4;
+  }
   return 0;
 }
 )cpp";
@@ -768,7 +802,7 @@ constexpr const char* kVendoredSources[] = {
     "source/plan/update_types.h",         "source/plan/config.h",
     "source/plan/bf16.h",
     "source/plan/instruction.h",          "source/plan/schema.h",
-    "source/identity/hash.h",
+    "source/identity/hash.h",             "source/identity/host_memory.h",
     "source/parallel/parallel_for.h",     "source/parallel/parallel_for.cc",
 };
 
@@ -889,7 +923,15 @@ std::string BuildScript(bool relaxed_plan) {
   s += "METAL_LDFLAGS=\"\"\n";
   s += "# (-fobjc-arc needs a clang-family CXX; a GCC set via CXX takes the\n";
   s += "# stub, so the cross-toolchain promise holds on Darwin too.)\n";
-  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && [ -z \"${SEEML_NO_METAL:-}\" ] "
+  // The switch is tested as the tree's build.sh tests its own (CR3 #144
+  // F23): empty, 0, off, false, no and n are OFF; anything else is ON.
+  s += "seeml_on() {\n";
+  s += "  case \"$(printf '%s' \"$1\" | tr '[:upper:]' '[:lower:]')\" in\n";
+  s += "    \"\"|0|off|false|no|n) return 1 ;;\n";
+  s += "    *) return 0 ;;\n";
+  s += "  esac\n";
+  s += "}\n";
+  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && ! seeml_on \"${SEEML_NO_METAL:-}\" "
        "&& \"$CXX\" --version 2>/dev/null | grep -qi clang; then\n";
   s += "  $CXX $FLAGS -x objective-c++ -fobjc-arc -c "
        "runtime/executor/metal_backend.mm -o metal_backend.o\n";

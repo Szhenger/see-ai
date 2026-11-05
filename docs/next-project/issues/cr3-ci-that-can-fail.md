@@ -32,6 +32,43 @@ step under ASan per accepted plan with the parsers instrumented; each named
 test rewritten so removing the guard it protects fails it; the falsy-value
 check shared by every build-script switch.
 
+## Status 2026-11-05
+
+F00 landed first, on its own (the seam job's pipe status checked behind the
+`tee`, the skipped-test check an explicit `if grep`). Then, in one commit:
+both workflows name their shell (`defaults: run: shell: bash`, which is
+`bash -eo pipefail` for every step), every `! grep` is an explicit if that
+exits 1, the one pipe into `grep -q` is a file and a grep (SIGPIPE under
+pipefail); `build.sh`'s three switches and the emitted build script's Metal
+switch share one falsy rule — `SEEML_NO_METAL=0` now leaves Metal built,
+the one semantic change (F23); the six named tests rewritten and proven by
+mutation — each fails with the guard it protects removed (the table is in
+the PR): F30 targets the byte count, F31 a count that wraps small and
+nonzero, F32 asserts the flags guard by message with a rodata B, F26
+presents a non-constant weight (the resolver tells a missing tensor from a
+non-constant one), F27 asserts both writers' results, F28 uses non-uniform
+labels. F36 was already fixed (the HF-import check builds first and fails
+on a skip). F22 / N41 followed: the fuzzer executes an accepted plan with
+the libraries instrumented and the job gates on coverage — and caught its
+first bug within the day: a header asking for an arena of exabytes passed
+every contract (the arena size was bounded against overflow alone) and
+reached `aligned_alloc`; the engine refuses an arena beyond the host's
+memory before the allocation now, by name, and the harness bounds the
+arena before the load as it bounds the step. N43 / N44 / N45
+are F9's (#140).
+
+The first run that could fail did, twice, on checks that had never run:
+the seam job's Python suite had died on import since it was written (the
+path form `-m unittest test/tool/formats_test.py` imports `test.tool`,
+which the hosted Python's standard-library `test` package shadows) and its
+`! grep skipped` turned the ImportError into a pass — it runs by discovery
+now, and its twelve tests ran in CI for the first time; and the e2e job's
+"nothing Python ships in the package" grep, dead under `set -e` as a
+`!`-inverted non-final line, matched the word in a comment of the vendored
+`dataset.h` — it asserts a dependency's shapes now (an interpreter invoked
+by a packaged script, an embedding API in a packaged source, the word in
+the binary), not prose.
+
 ## Acceptance
 
 - A deliberately failing Python test turns the seam job red.

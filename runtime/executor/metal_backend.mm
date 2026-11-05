@@ -351,6 +351,9 @@ class MetalBackend final : public ExecutorBackend {
 
  private:
   const InstructionExtents* ExtentsOf(const up::UpdateInstruction& ins);
+  // The validator's reason when ExtentsOf refuses an instruction, for the
+  // dispatch-time message (CR1 #142: a refused threshold names itself).
+  std::string revalidation_error_;
   bool HazardWithPending(const InstructionExtents& ex) const;
   void RecordPending(const InstructionExtents& ex);
   std::expected<void, std::string> EnsureEncoder();
@@ -371,6 +374,11 @@ class MetalBackend final : public ExecutorBackend {
   id<MTLCommandQueue> queue_ = nil;
   id<MTLComputePipelineState> pipes_[kPipeCount];
   id<MTLBuffer> scratch_ = nil;
+  // The clip refusal flag (CR1 #142 F11): one float in its own buffer,
+  // bound at index 7 for every encoder, raised by k_clip_finish on a
+  // non-finite norm, honored by the kernels that would write parameters,
+  // read and cleared by Flush.
+  id<MTLBuffer> clip_flag_ = nil;
   id<MTLBuffer> splitk_ws_ = nil;  // split-K partials, grown on demand
   uint64_t splitk_ws_bytes_ = 0;
   // The relaxed family (v18): its pipelines when the Metal 4 library built,
@@ -777,6 +785,12 @@ MetalBackend::Create() {
                                  options:MTLResourceStorageModeShared];
     if (!be->scratch_) return std::unexpected("scratch allocation failed");
     be->scratch_floats_ = kScratchFloats;
+    be->clip_flag_ =
+        [be->device_ newBufferWithLength:16
+                                 options:MTLResourceStorageModeShared];
+    if (!be->clip_flag_)
+      return std::unexpected("clip flag allocation failed");
+    static_cast<float*>(be->clip_flag_.contents)[0] = 0.0f;  // not zeroed
     be->cpu_ = CreateCpuBackend();
     // Zero — a device that reports no working set, or an override that
     // does not parse — means unknown: the Bind and BindSource checks stand
@@ -944,7 +958,10 @@ const InstructionExtents* MetalBackend::ExtentsOf(
   // describing an instruction here only recovers the extents it proved.
   auto ex = DescribeInstruction(ins, arena_bytes_, rodata_bytes_,
                                 up::kSeeuVersion, /*allow_source=*/true);
-  if (!ex) return nullptr;
+  if (!ex) {
+    revalidation_error_ = ex.error();
+    return nullptr;
+  }
   return &extents_.emplace(std::move(key), *ex).first->second;
 }
 
@@ -985,6 +1002,7 @@ std::expected<void, std::string> MetalBackend::EnsureEncoder() {
   [enc_ setBuffer:(rodata_buf_ ? rodata_buf_ : arena_buf_) offset:0 atIndex:1];
   [enc_ setBuffer:(source_buf_ ? source_buf_ : arena_buf_) offset:0 atIndex:5];
   [enc_ setBuffer:scratch_ offset:0 atIndex:3];
+  [enc_ setBuffer:clip_flag_ offset:0 atIndex:7];
   // Every tiled GEMM kernel declares the split-K workspace at index 4 and
   // reads it only when it splits; the binding must still exist (an unbound
   // argument is a contract violation the debug layer aborts on), so the
@@ -1655,6 +1673,12 @@ std::expected<void, std::string> MetalBackend::Encode(
       Dispatch(kPRmsBwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     case up::OpCode::kClipNorm: {
+      // CR1 #142 F13 / F18: a threshold that is not a finite positive float
+      // is refused before anything is encoded — a zero word skipped the
+      // norm dispatches and k_clip_apply multiplied by stale scratch.
+      const float cap = BitsToF32(ins.in[1]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
       ref(0, ins.in[0]);
       a.n = u32(ins.out[0]);
       EncodeClipScale(a, ins.in[1], /*slot=*/0);
@@ -1873,7 +1897,8 @@ std::expected<void, std::string> MetalBackend::Execute(
     const InstructionExtents* ex = ExtentsOf(ins);
     if (!ex && op != up::OpCode::kNop)
       return std::unexpected("instruction " + std::to_string(ins.opcode) +
-                             " failed re-validation at dispatch");
+                             " failed re-validation at dispatch: " +
+                             revalidation_error_);
     // A reader of the source model runs where the model is: on cpu_ when
     // BindSource kept it off the GPU (source_on_cpu_) — and so does every
     // instruction of a range that holds one (range_on_cpu_, BeginRange).
@@ -1984,6 +2009,16 @@ std::expected<void, std::string> MetalBackend::Flush() {
           std::to_string(source_buf_ ? source_bytes_ : 0) +
           " B; this GPU's working set is " +
           std::to_string(working_set_limit_) + " B)");
+    // A clip in this buffer saw a non-finite norm (CR1 #142 F11): the
+    // kernels after it wrote nothing, and the verdict is the CPU's, word
+    // for word. The flag is the buffer's; clear it for the next.
+    if (clip_flag_) {
+      float* flag = static_cast<float*>(clip_flag_.contents);
+      if (*flag != 0.0f) {
+        *flag = 0.0f;
+        return std::unexpected(kNonFiniteNormRefusal);
+      }
+    }
     return {};
   }
 }

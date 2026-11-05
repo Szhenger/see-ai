@@ -114,7 +114,10 @@ TEST(ForwardBuilder, RejectsNonConstWeight) {
   model.input_name = "x";
   model.output_name = "y";
   model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
-  // "w" is missing entirely.
+  // "w" is present but not a constant — an activation-shaped tensor where
+  // a weight must be (CR3 #144 F26: the old test left "w" out, and the
+  // missing-tensor branch answered for the non-constant one).
+  model.tensors.push_back({.name = "w", .dims = {4, 3}, .is_const = false});
   model.ops.push_back({SmfOpKind::kMatMul, "mm", {"x", "w"}, "y"});
 
   sir::Block block;
@@ -123,6 +126,23 @@ TEST(ForwardBuilder, RejectsNonConstWeight) {
   EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
                                      build),
                         "not a constant tensor");
+}
+
+TEST(ForwardBuilder, RejectsMissingWeightByName) {
+  // The other branch: a weight the model does not carry at all says so,
+  // apart from the non-constant case above.
+  SmfModel model;
+  model.input_name = "x";
+  model.output_name = "y";
+  model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+  model.ops.push_back({SmfOpKind::kMatMul, "mm", {"x", "w"}, "y"});
+
+  sir::Block block;
+  GraphBuild build;
+  build.input = AddInput(block, 4);
+  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
+                                     build),
+                        "not a tensor of the model");
 }
 
 TEST(ForwardBuilder, RejectsRank1MatMulOperand) {

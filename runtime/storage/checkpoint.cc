@@ -69,6 +69,7 @@ std::expected<void, std::string> SaveCheckpointRecord(
   if (record.has_val_initial) v5.flags |= kCkptHasValInitial;
   if (record.has_accuracy) v5.flags |= kCkptHasAccuracy;
   if (record.has_best) v5.flags |= kCkptHasBest;
+  if (record.has_binding) v5.flags |= kCkptHasBinding;
   const bool best = record.has_best && !record.best_payload.empty();
   if (best) {
     if (record.best_payload.size() != persistent_size)
@@ -116,7 +117,7 @@ std::expected<CheckpointRecord, std::string> LoadCheckpointRecord(
   record.step = h.step;
   record.horizon_steps = v4.horizon_steps;
   if (h.version >= 5) {
-    record.has_binding = true;
+    record.has_binding = (v5.flags & kCkptHasBinding) != 0;
     record.shuffle_origin = v5.shuffle_origin;
     record.train_samples = v5.train_samples;
     record.val_samples = v5.val_samples;
@@ -157,7 +158,7 @@ std::expected<CheckpointRecord, std::string> PeekCheckpointRecord(
   record.step = h.step;
   record.horizon_steps = v4.horizon_steps;
   if (h.version >= 5) {
-    record.has_binding = true;
+    record.has_binding = (v5.flags & kCkptHasBinding) != 0;
     record.shuffle_origin = v5.shuffle_origin;
     record.train_samples = v5.train_samples;
     record.val_samples = v5.val_samples;

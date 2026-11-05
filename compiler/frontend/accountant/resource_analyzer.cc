@@ -1,5 +1,6 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 
+#include "source/identity/host_memory.h"
 #include "source/plan/instruction.h"
 
 #include <algorithm>
@@ -337,17 +338,8 @@ uint64_t EstimateLoraDeltaBytes(const SmfModel& model,
 }
 
 uint64_t DetectLocalMemoryBytes() {
-#if defined(__APPLE__)
-  uint64_t mem = 0;
-  size_t len = sizeof(mem);
-  if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) != 0) return 0;
-  return mem;
-#else
-  const long pages = sysconf(_SC_PHYS_PAGES);
-  const long page_size = sysconf(_SC_PAGE_SIZE);
-  if (pages <= 0 || page_size <= 0) return 0;
-  return SatMul(static_cast<uint64_t>(pages), static_cast<uint64_t>(page_size));
-#endif
+  // One query, shared with the runtime's load (source/identity/host_memory.h).
+  return DetectHostMemoryBytes();
 }
 
 std::expected<void, std::string> CheckTrainableLocally(

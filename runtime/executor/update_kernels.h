@@ -240,8 +240,10 @@ void KLDistillBwd(const float* p_s, const float* p_t, const float* seed,
                   float loss_scale);
 
 // --- Gradient conditioning ---------------------------------------------------
-// Per-tensor L2 norm clip in place: g *= min(1, max_norm / ||g||_2).
-void ClipNorm(float* g, size_t n, float max_norm);
+// Per-tensor L2 norm clip in place: g *= min(1, max_norm / ||g||_2). Returns
+// false, touching nothing, when max_norm is not a finite positive float or
+// the norm is not finite (CR1 #142 F09) — the fused steps' rule below.
+bool ClipNorm(float* g, size_t n, float max_norm);
 
 // --- Optimizers (in-place) ---------------------------------------------------
 // `clip_norm` > 0 (plan v12) folds ClipNorm into the step: it consumes

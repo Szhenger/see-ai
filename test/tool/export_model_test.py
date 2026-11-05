@@ -247,6 +247,40 @@ class ContainerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nbytes"):
             b.add_tensor("v", [2], lambda: np.zeros(2, "<f4"))
 
+    def test_a_non_finite_weight_is_refused_at_export(self):
+        # CR1 #142 (S1): NaN and Inf are refused at the ingest boundary,
+        # from an eager or a callable payload, by tensor and element.
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("w", [2, 2], np.array([1.0, np.nan, 2.0, 3.0], "<f4"))
+        with self.assertRaisesRegex(ValueError, r"'w'.*element 1"):
+            b.serialize()
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("v", [2], lambda: np.array([np.inf, 1.0], "<f4"),
+                     nbytes=8)
+        with self.assertRaisesRegex(ValueError, r"'v'.*element 0"):
+            b.serialize()
+
+    def test_outputs_are_staged_and_a_failure_leaves_the_old_file(self):
+        # CR4 #145 F55: every file the module writes goes through
+        # _atomic_output — staged, synced, renamed; a failure midway removes
+        # the stage and leaves the destination as it was.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "out.bin")
+            with open(path, "wb") as f:
+                f.write(b"old")
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                with em._atomic_output(path) as f:
+                    f.write(b"partial")
+                    raise RuntimeError("disk full")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"old")
+            self.assertEqual(os.listdir(d), ["out.bin"])
+            with em._atomic_output(path) as f:
+                f.write(b"new")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"new")
+            self.assertEqual(os.listdir(d), ["out.bin"])
+
     def test_arrays_are_written_without_a_copy(self):
         b = em._SmfBuilder("x", 4)
         a = np.arange(8, dtype="<f4").reshape(2, 4)

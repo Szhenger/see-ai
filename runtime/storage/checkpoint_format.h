@@ -51,6 +51,12 @@ inline constexpr uint32_t kCkptHasValInitial = 1u << 0;
 inline constexpr uint32_t kCkptHasAccuracy = 1u << 1;
 inline constexpr uint32_t kCkptHasBestPayload = 1u << 2;
 inline constexpr uint32_t kCkptHasBest = 1u << 3;  // best_* fields are live
+// CR4 #145 F71: the run binding (shuffle_origin, train_samples,
+// val_samples) is live. Before this bit every v5 file read as bound —
+// one saved through the v3/v4-shaped call, whose binding fields are zero,
+// made a resume refuse any real seed or split. A v5 file written before
+// the bit existed reads as unbound.
+inline constexpr uint32_t kCkptHasBinding = 1u << 4;
 struct CkptHeaderV5Tail {
   uint64_t shuffle_origin = 0;   // Dataset::shuffle_origin(); 0 = unshuffled
   uint64_t train_samples = 0;    // the training set's size after the split

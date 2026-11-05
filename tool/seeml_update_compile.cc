@@ -308,8 +308,13 @@ int main(int argc, char** argv) {
       return Fail("--distill-weight must be in [0, 1], got '" + *v + "'");
   }
   if (auto v = args.TakeValue("--temperature")) {
-    if (!ParseF32(*v, &config.temperature) || config.temperature <= 0.0f)
-      return Fail("--temperature must be positive, got '" + *v + "'");
+    // Bounded at both ends (CR1 #142 N26): the validator and the compiler
+    // refuse what lies outside, so the flag says so first.
+    if (!ParseF32(*v, &config.temperature) ||
+        config.temperature < kKlTemperatureMin ||
+        config.temperature > kKlTemperatureMax)
+      return Fail(std::string("--temperature must be a finite value in ") +
+                  kKlTemperatureRangeText + ", got '" + *v + "'");
   }
   if (auto v = args.TakeValue("--lora-rank")) {
     if (!ParseI64(*v, &config.lora.rank) || config.lora.rank <= 0)

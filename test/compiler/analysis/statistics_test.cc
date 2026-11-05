@@ -5,8 +5,10 @@
 // chunked max-abs sweep on tensors larger than one sweep grain.
 // =============================================================================
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "compiler/analysis/statistics/quantization.h"
@@ -167,6 +169,23 @@ TEST(Reviewer, SweepFindsMaxBeyondTheFirstChunk) {
   const auto scales = SelectQuantizedWeights(block, build);
   ASSERT_TRUE(scales.contains(w));
   EXPECT_NEAR(scales.at(w), 8.0f / 127.0f, 1e-7);
+}
+
+TEST(Reviewer, ANonFiniteWeightIsNeverSelected) {
+  // CR1 #142 F12: std::max skips a NaN, so a NaN weight was selected at a
+  // finite scale and the pack cast it to int8. Neither a NaN nor an
+  // infinity is selected now, wherever it sits in the sweep.
+  for (const float bad :
+       {std::numeric_limits<float>::quiet_NaN(), INFINITY, -INFINITY}) {
+    sir::Block block;
+    GraphBuild build;
+    sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{4, 2});
+    SmfTensor tensor;
+    sir::Value* w = AddWeight(block, build, tensor, "w", {2, 2},
+                              {1.0f, bad, 2.0f, 0.5f});
+    AddMatmul(block, "y", x, w);
+    EXPECT_EQ(SelectQuantizedWeights(block, build).size(), 0u);
+  }
 }
 
 }  // namespace

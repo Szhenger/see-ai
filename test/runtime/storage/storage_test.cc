@@ -6,7 +6,9 @@
 // =============================================================================
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <thread>
@@ -109,16 +111,16 @@ TEST(DurableIo, ConcurrentWritersToOnePathYieldOneCompleteFile) {
   const std::vector<uint8_t> b(256 * 1024, 0xBB);
 
   for (int round = 0; round < 8; ++round) {
-    std::thread ta([&] {
-      auto r = WriteFileDurable(path, {{a.data(), a.size()}});
-      (void)r;
-    });
-    std::thread tb([&] {
-      auto r = WriteFileDurable(path, {{b.data(), b.size()}});
-      (void)r;
-    });
+    // Both writers must succeed every round (CR3 #144 F27: with the results
+    // discarded, a file left by an earlier round satisfied the content check
+    // even when every later write failed).
+    std::expected<void, std::string> ra, rb;
+    std::thread ta([&] { ra = WriteFileDurable(path, {{a.data(), a.size()}}); });
+    std::thread tb([&] { rb = WriteFileDurable(path, {{b.data(), b.size()}}); });
     ta.join();
     tb.join();
+    ASSERT_OK(ra);
+    ASSERT_OK(rb);
     ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> got, ReadFileBytes(path));
     EXPECT_TRUE(got == a || got == b);
   }
@@ -254,6 +256,7 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
   CheckpointRecord record;
   record.step = 12;
   record.horizon_steps = 30;
+  record.has_binding = true;
   record.shuffle_origin = 0x1234;
   record.train_samples = 100;
   record.val_samples = 11;
@@ -331,6 +334,75 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
   EXPECT_EQ(step, 12u);
   EXPECT_EQ(horizon, 30u);
   EXPECT_TRUE(dst == seg);
+}
+
+TEST(DurableIo, AFailedWriteLeavesNoSidecarAndTheOldFile) {
+  // CR4 #145 F08: every failure path removes the partial temp file and the
+  // destination keeps its previous bytes. The write fault is injected (a
+  // full disk, ENOSPC) — the one failure a test can ask for by name.
+  ScopedTempDir dir;
+  const std::string path = dir.File("state.bin");
+  const std::vector<uint8_t> old = {1, 2, 3, 4};
+  ASSERT_OK(WriteFileDurable(path, old.data(), old.size()));
+  const std::vector<uint8_t> next(4096, 0xAB);
+  FailNextDurableWriteForTesting(ENOSPC);
+  EXPECT_ERROR_CONTAINS(WriteFileDurable(path, next.data(), next.size()),
+                        "short write");
+  ASSERT_OK_AND_ASSIGN(auto bytes, ReadFileBytes(path));
+  EXPECT_TRUE(bytes == old);
+  size_t entries = 0;
+  for (const auto& e : std::filesystem::directory_iterator(dir.path())) {
+    ++entries;
+    EXPECT_EQ(e.path().filename().string(), std::string("state.bin"));
+  }
+  EXPECT_EQ(entries, 1u);
+  // Disarmed by its one use: the next write succeeds and replaces the file.
+  ASSERT_OK(WriteFileDurable(path, next.data(), next.size()));
+  ASSERT_OK_AND_ASSIGN(auto replaced, ReadFileBytes(path));
+  EXPECT_TRUE(replaced == next);
+}
+
+TEST(Checkpoint, TheBindingTravelsOnlyWhenSaidTo) {
+  // CR4 #145 F71: has_binding was never written, and every v5 file read as
+  // bound — one saved through the v3/v4-shaped call (zero binding fields)
+  // made a resume refuse any real seed or split. The bit round-trips both
+  // ways, through the load and the peek.
+  ScopedTempDir dir;
+  const std::vector<uint8_t> seg = Segment();
+  ASSERT_OK(SaveCheckpointFile(dir.File("plain.ckpt"), kPlanHash, 3,
+                               seg.data(), kBytes, 10));
+  std::vector<uint8_t> dst(kBytes, 0);
+  ASSERT_OK_AND_ASSIGN(CheckpointRecord plain,
+                       LoadCheckpointRecord(dir.File("plain.ckpt"), kPlanHash,
+                                            kBytes, dst.data()));
+  EXPECT_FALSE(plain.has_binding);
+  ASSERT_OK_AND_ASSIGN(CheckpointRecord plain_peek,
+                       PeekCheckpointRecord(dir.File("plain.ckpt")));
+  EXPECT_FALSE(plain_peek.has_binding);
+  CheckpointRecord bound;
+  bound.step = 3;
+  bound.has_binding = true;
+  bound.shuffle_origin = 77;
+  bound.train_samples = 90;
+  bound.val_samples = 10;
+  ASSERT_OK(SaveCheckpointRecord(dir.File("bound.ckpt"), kPlanHash, bound,
+                                 seg.data(), kBytes));
+  ASSERT_OK_AND_ASSIGN(CheckpointRecord got,
+                       LoadCheckpointRecord(dir.File("bound.ckpt"), kPlanHash,
+                                            kBytes, dst.data()));
+  EXPECT_TRUE(got.has_binding);
+  EXPECT_EQ(got.shuffle_origin, 77u);
+  ASSERT_OK_AND_ASSIGN(CheckpointRecord peek,
+                       PeekCheckpointRecord(dir.File("bound.ckpt")));
+  EXPECT_TRUE(peek.has_binding);
+  // The fields without the flag are not a binding.
+  CheckpointRecord unsaid = bound;
+  unsaid.has_binding = false;
+  ASSERT_OK(SaveCheckpointRecord(dir.File("unsaid.ckpt"), kPlanHash, unsaid,
+                                 seg.data(), kBytes));
+  ASSERT_OK_AND_ASSIGN(CheckpointRecord u,
+                       PeekCheckpointRecord(dir.File("unsaid.ckpt")));
+  EXPECT_FALSE(u.has_binding);
 }
 
 }  // namespace

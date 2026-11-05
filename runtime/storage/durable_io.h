@@ -39,6 +39,10 @@ struct ByteSpan {
 
 [[nodiscard]] std::expected<void, std::string> WriteFileDurable(
     const std::string& path, const uint8_t* data, size_t size);
+/// Fault injection for the tests of WriteFileDurable's failure paths (CR4
+/// #145 F08): the next write it issues fails with `errno_value` (ENOSPC
+/// for a full disk); 0 disarms. Process-global, consumed once; tests only.
+void FailNextDurableWriteForTesting(int errno_value);
 
 /// Whole-file read: stat once, size the vector once, one bulk transfer.
 [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> ReadFileBytes(

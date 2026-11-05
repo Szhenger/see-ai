@@ -62,6 +62,23 @@ struct StepParams {
   uint64_t step = 0;  // 1-indexed AdamW timestep
 };
 
+/// The one verdict both backends return for a gradient whose L2 norm is not
+/// finite at a clip — the fused optimizer steps' and the standalone
+/// kClipNorm's (CR1 #142 F09 / F11): the step is refused and nothing it
+/// would have written is written. The CPU refuses at Execute; the Metal
+/// backend's clip kernels raise a flag the parameter-writing kernels honor,
+/// and Flush reports it. One string, so a twin test can hold the two
+/// backends to the same words.
+inline constexpr const char* kNonFiniteNormRefusal =
+    "gradient norm is not finite — the step was refused with the parameters "
+    "and optimizer state untouched";
+/// kClipNorm's threshold is a finite positive float: the validator refuses
+/// any other, and a backend handed one anyway refuses the instruction
+/// rather than scale by it (CR1 #142 F13 / F18).
+inline constexpr const char* kClipThresholdRefusal =
+    "clip threshold is not a finite positive float — the instruction was "
+    "refused with the gradient untouched";
+
 class ExecutorBackend {
  public:
   virtual ~ExecutorBackend() = default;
