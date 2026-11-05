@@ -755,7 +755,7 @@ TEST(ParallelDeterminism, StatefulKernelsAreThreadCountInvariant) {
   };
   auto clip = [&](float* out) {
     std::memcpy(out, g.data(), n * sizeof(float));
-    k::ClipNorm(out, n, 1.0f);  // ||g|| >> 1 for n randn values: rescales
+    EXPECT_TRUE(k::ClipNorm(out, n, 1.0f));  // ||g|| >> 1: rescales
   };
   const size_t rows = 64, cols = 2048;
   const std::vector<float> dy = RandnVector(rows * cols, 34);
@@ -1021,21 +1021,27 @@ TEST(Loss, NanLogitPropagatesToTheLossSlot) {
   EXPECT_TRUE(std::isnan(loss));
 }
 
-TEST(ClipNorm, ZeroGradientAndZeroCapAreExact) {
+TEST(ClipNorm, ZeroGradientIsExactAndABadCapIsRefused) {
   std::vector<float> g = {0.0f, 0.0f, 0.0f};
-  k::ClipNorm(g.data(), g.size(), 1.0f);  // ||g|| = 0: no 0/0, unchanged
+  EXPECT_TRUE(k::ClipNorm(g.data(), g.size(), 1.0f));  // ||g|| = 0: no 0/0
   for (float v : g) EXPECT_EQ(v, 0.0f);
 
-  std::vector<float> h = {3.0f, -4.0f};
-  k::ClipNorm(h.data(), h.size(), 0.0f);  // cap 0: scaled by exactly 0
-  for (float v : h) EXPECT_EQ(v, 0.0f);
+  // CR1 #142 F13 / F18: a cap that is not a finite positive float is
+  // refused with g untouched — it used to scale by exactly 0 here and by
+  // stale scratch on the GPU; the validator refuses such a plan first.
+  const std::vector<float> h0 = {3.0f, -4.0f};
+  for (const float cap : {0.0f, -1.0f, INFINITY, NAN}) {
+    std::vector<float> h = h0;
+    EXPECT_FALSE(k::ClipNorm(h.data(), h.size(), cap));
+    EXPECT_BITWISE_EQ_F32(h0, h);
+  }
 }
 
 TEST(ClipNorm, AVectorAboveTheCapLandsOnIt) {
   // G13 (#97): ||g|| = 13 over a cap of 2 — the clipped vector's norm is
   // the cap, to the rounding of one f32 scale factor per element.
   std::vector<float> g = {3.0f, -4.0f, 12.0f};
-  k::ClipNorm(g.data(), g.size(), 2.0f);
+  EXPECT_TRUE(k::ClipNorm(g.data(), g.size(), 2.0f));
   double norm = 0.0;
   for (float v : g) norm += static_cast<double>(v) * v;
   EXPECT_NEAR(std::sqrt(norm), 2.0, 2.0 * 4e-7);
@@ -1043,21 +1049,22 @@ TEST(ClipNorm, AVectorAboveTheCapLandsOnIt) {
   // A vector under the cap is returned unchanged, bit for bit.
   std::vector<float> h = {0.1f, -0.2f};
   const std::vector<float> h0 = h;
-  k::ClipNorm(h.data(), h.size(), 2.0f);
+  EXPECT_TRUE(k::ClipNorm(h.data(), h.size(), 2.0f));
   EXPECT_BITWISE_EQ_F32(h0, h);
 }
 
-TEST(ClipNorm, ANonFiniteGradientIsNeverScrubbedToFinite) {
-  // G13 (#97): an inf or NaN element must survive the clip as a non-finite
-  // value — the engine's finite-loss guard is what stops the update, and a
-  // clip that turned the poison into zeros would hide it (the fused-clip
-  // steps refuse such a tensor outright; this is the standalone kernel).
+TEST(ClipNorm, ANonFiniteGradientIsRefusedUntouched) {
+  // CR1 #142 F09: an inf or NaN element makes the norm non-finite, and the
+  // standalone kernel refuses as the fused steps do — false, g bit for bit
+  // as it was — so the backends' verdict is one string and the engine
+  // stops before the step. (G13 #97 had it leave the poison in place for
+  // the finite-loss guard; refusing at the clip is earlier, and leaves no
+  // NaN-scaled gradient behind.)
   for (const float bad : {INFINITY, -INFINITY, NAN}) {
-    std::vector<float> g = {1.0f, bad, 2.0f};
-    k::ClipNorm(g.data(), g.size(), 1.0f);
-    bool non_finite = false;
-    for (float v : g) non_finite = non_finite || !std::isfinite(v);
-    EXPECT_TRUE(non_finite);
+    const std::vector<float> g0 = {1.0f, bad, 2.0f};
+    std::vector<float> g = g0;
+    EXPECT_FALSE(k::ClipNorm(g.data(), g.size(), 1.0f));
+    EXPECT_BITWISE_EQ_F32(g0, g);
   }
 }
 
@@ -1326,7 +1333,7 @@ TEST(KernelBatch, FusedClipStepsEqualClipThenStep) {
       std::vector<float> pb = p0, mb(n, 0.0f), vb(n, 0.0f);
       for (uint64_t step = 1; step <= 3; ++step) {
         std::vector<float> g = g0;
-        k::ClipNorm(g.data(), n, clip);
+        EXPECT_TRUE(k::ClipNorm(g.data(), n, clip));
         EXPECT_TRUE(k::AdamWStep(pa.data(), g.data(), ma.data(), va.data(), n,
                                  1e-2f, 0.9f, 0.999f, 1e-8f, 0.01f, step));
         std::vector<float> raw = g0;
@@ -1340,7 +1347,7 @@ TEST(KernelBatch, FusedClipStepsEqualClipThenStep) {
       EXPECT_BITWISE_EQ_F32(va, vb);
       // SGD: g * s feeds an add directly — the contraction hazard.
       std::vector<float> sa = p0, sb = p0, g = g0;
-      k::ClipNorm(g.data(), n, clip);
+      EXPECT_TRUE(k::ClipNorm(g.data(), n, clip));
       EXPECT_TRUE(k::SgdStep(sa.data(), g.data(), n, 0.1f, 0.2f));
       EXPECT_TRUE(k::SgdStep(sb.data(), g0.data(), n, 0.1f, 0.2f, clip));
       EXPECT_BITWISE_EQ_F32(sa, sb);

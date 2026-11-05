@@ -1047,15 +1047,21 @@ kernel void k_copy(KSIG, uint g [[thread_position_in_grid]]) {
 kernel void k_accumulate(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(0)[g] += RF(1)[g];
 }
+// The optimizer kernels honor the clip refusal flag at buffer 7 (CR1 #142
+// F11): once a clip in this command buffer has seen a non-finite norm, no
+// parameter-writing kernel after it writes — the CPU's abort at the first
+// refused step, for a backend that executes the buffer whole.
 // p.f: lr, weight_decay
-kernel void k_sgd(KSIG, uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+kernel void k_sgd(KSIG, device const float* flag [[buffer(7)]],
+                  uint g [[thread_position_in_grid]]) {
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   pp[g] -= p.f[0] * (RF(1)[g] + p.f[1] * pp[g]);
 }
 // p.f: lr, beta1, beta2, eps, weight_decay, inv_bc1, inv_bc2
-kernel void k_adamw(KSIG, uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+kernel void k_adamw(KSIG, device const float* flag [[buffer(7)]],
+                    uint g [[thread_position_in_grid]]) {
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   device float* m = WF(2);
   device float* v = WF(3);
@@ -1075,15 +1081,17 @@ kernel void k_adamw(KSIG, uint g [[thread_position_in_grid]]) {
 // left in scratch[256], never written back; g * s is a
 // product in a statement of its own, as the CPU kernels do.
 kernel void k_sgd_clip(KSIG, device float* scratch [[buffer(3)]],
+                       device const float* flag [[buffer(7)]],
                        uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   const float gi = RF(1)[g] * scratch[256];
   pp[g] -= p.f[0] * (gi + p.f[1] * pp[g]);
 }
 kernel void k_adamw_clip(KSIG, device float* scratch [[buffer(3)]],
+                         device const float* flag [[buffer(7)]],
                          uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   device float* m = WF(2);
   device float* v = WF(3);
@@ -1203,7 +1211,11 @@ kernel void k_rmsnorm_bwd(KSIG, uint g [[thread_position_in_grid]],
 
 // --- ClipNorm: the CPU's chunk geometry, partials combined in chunk order --
 // p.n = count, p.k = chunk grain, p.m = chunk count, p.f[0] = max_norm.
-// scratch[c] holds chunk c's partial; scratch[256] the resulting scale.
+// scratch[c] holds chunk c's partial; scratch[256] the resulting scale;
+// buffer 7 is the refusal flag (CR1 #142 F11): one float, its own buffer
+// so no kernel that grows or fills the scratch can touch it, raised by
+// k_clip_finish on a non-finite norm, honored by every kernel below and
+// by the optimizer steps, read and cleared by the host at Flush.
 kernel void k_clip_partials(KSIG, device float* scratch [[buffer(3)]],
                             uint c [[thread_position_in_grid]]) {
   if (c >= p.m) return;
@@ -1215,16 +1227,28 @@ kernel void k_clip_partials(KSIG, device float* scratch [[buffer(3)]],
   scratch[c] = sq;
 }
 kernel void k_clip_finish(KSIG, device float* scratch [[buffer(3)]],
+                          device float* flag [[buffer(7)]],
                           uint t [[thread_position_in_grid]]) {
   if (t != 0) return;
   float sq = 0.0f;
   for (uint c = 0; c < p.m; ++c) sq += scratch[c];
   const float norm = sqrt(sq);
+  // A non-finite norm raises the refusal flag (sticky for the command
+  // buffer; the host clears it) and leaves the scale at 1: the kernels
+  // that consume it skip their writes, and Flush reports the refusal in
+  // the CPU's words. The library is compiled with precise math, so
+  // isfinite is exact here.
+  if (!isfinite(norm)) {
+    flag[0] = 1.0f;
+    scratch[256] = 1.0f;
+    return;
+  }
   scratch[256] = (norm <= p.f[0] || norm == 0.0f) ? 1.0f : p.f[0] / norm;
 }
 kernel void k_clip_apply(KSIG, device float* scratch [[buffer(3)]],
+                         device const float* flag [[buffer(7)]],
                          uint g [[thread_position_in_grid]]) {
-  if (g < p.n) WF(0)[g] *= scratch[256];
+  if (g < p.n && flag[0] == 0.0f) WF(0)[g] *= scratch[256];
 }
 
 // --- Transformer family --------------------------------------------------

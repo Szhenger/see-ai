@@ -10,6 +10,7 @@
 // passes vacuously with a note.
 // =============================================================================
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -86,8 +87,12 @@ void ExpectClose(const char* what, const std::vector<float>& got,
   for (size_t i = 0; i < got.size(); ++i) {
     const double err = std::fabs(static_cast<double>(got[i]) - want[i]);
     const double tol = abs_floor + rel * std::fabs(static_cast<double>(want[i]));
-    if (err > tol && err > worst_err) {
-      worst_err = err;
+    // !(err <= tol): a NaN fails the comparison it could never pass, and
+    // is recorded as the worst (CR1 #142 F29 — `err > tol` was false for
+    // a NaN, so a NaN output matched anything).
+    const bool bad = !(err <= tol);
+    if (bad && (std::isnan(err) || err > worst_err)) {
+      worst_err = std::isnan(err) ? INFINITY : err;
       worst = i;
     }
   }
@@ -1379,6 +1384,119 @@ TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
 
 std::expected<Dataset, std::string> WideClassData(uint64_t seed) {
   return MakeClassificationData(64, 64, seed);
+}
+
+TEST(MetalBackend, ANonFiniteGradientNormIsRefusedAlikeOnBothBackends) {
+  // CR1 #142 F09 / F11 / F13 — the twin verdict: a gradient with an
+  // infinity in it reaches a clip (fused into SGD, fused into AdamW, or the
+  // standalone kClipNorm ahead of a plain step), and both backends refuse
+  // with one string, parameters, moments and gradient untouched; a zero
+  // clip threshold is refused before anything runs. The GPU used to write
+  // NaN into p, m and v where the CPU refused, and to scale by stale
+  // scratch on a zero threshold.
+  if (Skip()) return;
+  // Arena (bytes): p at 0, g at 64, m at 128, v at 192 — four floats each.
+  const std::vector<float> p0 = {1.0f, 2.0f, 3.0f, 4.0f};
+  const std::vector<float> g_inf = {1.0f, INFINITY, 2.0f, 3.0f};
+  const std::vector<float> g_ok = {3.0f, -4.0f, 12.0f, 0.0f};
+  auto arena_with = [&](const std::vector<float>& g) {
+    std::vector<float> a(64, 0.0f);
+    std::copy(p0.begin(), p0.end(), a.begin());
+    std::copy(g.begin(), g.end(), a.begin() + 16);
+    return a;
+  };
+  const std::vector<uint8_t> no_rodata(64, 0);
+  UpdateInstruction sgd;
+  sgd.opcode = static_cast<uint16_t>(OpCode::kSgdStep);
+  sgd.in[0] = MakeArenaRef(0);
+  sgd.in[1] = MakeArenaRef(64);
+  sgd.out[0] = 4;
+  UpdateInstruction sgd_clip = sgd;
+  sgd_clip.out[1] = F32Bits(1.0f);
+  UpdateInstruction adamw_clip;
+  adamw_clip.opcode = static_cast<uint16_t>(OpCode::kAdamWStep);
+  adamw_clip.in[0] = MakeArenaRef(0);
+  adamw_clip.in[1] = MakeArenaRef(64);
+  adamw_clip.in[2] = MakeArenaRef(128);
+  adamw_clip.in[3] = MakeArenaRef(192);
+  adamw_clip.out[0] = 4;
+  adamw_clip.out[1] = F32Bits(1.0f);
+  UpdateInstruction clip;
+  clip.opcode = static_cast<uint16_t>(OpCode::kClipNorm);
+  clip.in[0] = MakeArenaRef(64);
+  clip.in[1] = F32Bits(1.0f);
+  clip.out[0] = 4;
+  UpdateInstruction clip_zero = clip;
+  clip_zero.in[1] = F32Bits(0.0f);
+  struct Case {
+    const char* name;
+    std::vector<UpdateInstruction> program;
+    const char* verdict;  // the substring both backends must return
+  };
+  const Case cases[] = {
+      {"sgd + fused clip", {sgd_clip}, "gradient norm is not finite"},
+      {"adamw + fused clip", {adamw_clip}, "gradient norm is not finite"},
+      {"clip_norm, then a plain sgd", {clip, sgd},
+       "gradient norm is not finite"},
+      // Both name the threshold: the CPU in the executor's words, Metal in
+      // the validator's — it re-validates every instruction at dispatch,
+      // so the rule from the load refuses it before the executor's check.
+      {"clip_norm with a zero threshold", {clip_zero, sgd}, "threshold"},
+  };
+  StepParams params;
+  params.lr = 0.1f;
+  params.step = 1;
+  for (const Case& c : cases) {
+    for (int which = 0; which < 2; ++which) {
+      auto backend =
+          which == 0 ? std::expected<std::unique_ptr<ExecutorBackend>,
+                                     std::string>(CreateCpuBackend())
+                     : CreateMetalBackend();
+      ASSERT_OK(backend);
+      const std::vector<float> init = arena_with(g_inf);
+      const size_t bytes = 16384;
+      uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
+      ASSERT_TRUE(arena != nullptr);
+      std::memset(arena, 0, bytes);
+      std::memcpy(arena, init.data(), init.size() * sizeof(float));
+      ASSERT_OK((*backend)->Bind(arena, bytes, no_rodata.data(),
+                                 no_rodata.size(), no_rodata.size()));
+      // As the engine runs a program: stop at the first refusal.
+      std::string error;
+      for (const auto& ins : c.program)
+        if (auto r = (*backend)->Execute(ins, params); !r) {
+          error = r.error();
+          break;
+        }
+      if (auto r = (*backend)->Flush(); !r && error.empty()) error = r.error();
+      const std::string what =
+          std::string(c.name) + " on " + (*backend)->name();
+      if (error.find(c.verdict) == std::string::npos)
+        ADD_FAILURE(what + ": expected a refusal naming '" + c.verdict +
+                    "', got '" + error + "'");
+      // p, m, v and g: as they were, bit for bit — the refusal wrote nothing.
+      std::vector<float> after(init.size());
+      std::memcpy(after.data(), arena, after.size() * sizeof(float));
+      for (size_t i = 0; i < after.size(); ++i)
+        if (std::bit_cast<uint32_t>(after[i]) !=
+            std::bit_cast<uint32_t>(init[i])) {
+          ADD_FAILURE(what + ": arena float " + std::to_string(i) +
+                      " was written by a refused step");
+          break;
+        }
+      backend->reset();  // unbind before the arena goes away
+      std::free(arena);
+    }
+  }
+  // The positive control: a finite gradient over the cap, clipped and
+  // stepped alike (at tolerance: the GPU's norm sums in f32, the CPU's in
+  // f64), so the refusals above are not a backend that stopped working.
+  // (RunTwin steps with its default parameters — a learning rate of 0 —
+  // so the clipped gradient, floats 16..19, is what the two must agree on.)
+  auto twin = RunTwin({clip, sgd}, arena_with(g_ok), no_rodata);
+  ASSERT_OK(twin);
+  ExpectRangeClose("clip_norm over the cap", *twin, 16, 4, 1e-6, 1e-6);
+  EXPECT_NEAR(twin->cpu[16], 3.0f / 13.0f, 1e-6);  // ||g|| = 13, cap 1
 }
 
 TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
