@@ -331,4 +331,29 @@ TEST(NativeEmitter, TheStreamedDecimalTUIsCharacterIdenticalAcrossWindows) {
   EXPECT_TRUE(got.compare(body + 4, std::string::npos, want) == 0);
 }
 
+TEST(NativeEmitter, TheRunnerStagesItsReportAndExitsFourOnAFailedOutput) {
+  // CR4 #145 F66: the generated runner wrote --report in place and dropped
+  // write errors (a full disk left truncated JSON and exit 0), and ignored
+  // a --loss-log it could not open. The report is staged and renamed, every
+  // output's write and close is checked, and a failed output after a
+  // commit is exit 4 — the usage text says so. (The e2e job runs the built
+  // runner against an unwritable report and expects the 4.)
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(6, 10, 3, 4);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  const std::string out_dir = (dir.path() / "pkg").string();
+  std::filesystem::create_directories(out_dir);
+  ASSERT_OK_AND_ASSIGN(EmitPaths paths,
+                       EmitNativePackage(compiled.plan, out_dir, RepoRoot()));
+  const std::string main_tu = ReadText(paths.main_tu);
+  EXPECT_STR_CONTAINS(main_tu, "const std::string staged = report_path + \".tmp\";");
+  EXPECT_STR_CONTAINS(main_tu,
+                      "std::rename(staged.c_str(), report_path.c_str())");
+  EXPECT_STR_CONTAINS(main_tu, "cannot write --loss-log");
+  EXPECT_STR_CONTAINS(main_tu, "failed writing --loss-log");
+  EXPECT_STR_CONTAINS(main_tu, "4 committed, but");
+  EXPECT_STR_CONTAINS(main_tu, "return 4;");
+}
+
 }  // namespace

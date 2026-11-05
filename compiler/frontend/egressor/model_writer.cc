@@ -1,9 +1,15 @@
 #include "compiler/frontend/egressor/model_writer.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
-#include <fstream>
+#include <utility>
 #include <vector>
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include <io.h>
+#endif
 
 #include "compiler/diagnostics/tokenizing/error.h"
 #include "source/identity/hash.h"
@@ -70,6 +76,11 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
 
   // Pass 1: serialize the header/metadata with zeroed data offsets to learn
   // the metadata section size, then lay out the 64-aligned data section.
+  // The data layout is computed into `layout` and written from it; the
+  // model's own offsets, sizes and hash change only once the file is in
+  // place (CR4 #145 F05: a failed save used to leave new offsets paired
+  // with the old hash).
+  std::vector<std::pair<uint64_t, uint64_t>> layout(model.tensors.size());
   auto serialize_meta = [&](Writer& w) {
     w.Write<uint32_t>(kSmfMagic);
     w.Write<uint32_t>(kSmfVersion);
@@ -78,13 +89,14 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
     w.WriteStr(model.input_name);
     w.WriteStr(model.output_name);
     w.Write<uint64_t>(model.seq_len);
-    for (const auto& t : model.tensors) {
+    for (size_t i = 0; i < model.tensors.size(); ++i) {
+      const auto& t = model.tensors[i];
       w.WriteStr(t.name);
       w.Write<uint8_t>(static_cast<uint8_t>(t.dims.size()));
       w.Write<uint8_t>(t.is_const ? 1 : 0);
       for (int64_t d : t.dims) w.Write<int64_t>(d);
-      w.Write<uint64_t>(t.data_offset);
-      w.Write<uint64_t>(t.byte_size);
+      w.Write<uint64_t>(layout[i].first);
+      w.Write<uint64_t>(layout[i].second);
     }
     for (const auto& op : model.ops) {
       w.Write<uint8_t>(static_cast<uint8_t>(op.kind));
@@ -102,14 +114,14 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   serialize_meta(probe);
 
   uint64_t cursor = AlignUp(probe.buf.size(), kDataAlignment);
-  for (auto& t : model.tensors) {
+  for (size_t i = 0; i < model.tensors.size(); ++i) {
+    const auto& t = model.tensors[i];
     if (!t.is_const) continue;
     if (t.data.empty())
       return tokenizing::Error("constant tensor '" + t.name +
                                "' has no data to serialize");
-    t.byte_size = t.data.size();
-    t.data_offset = cursor;
-    cursor = AlignUp(cursor + t.byte_size, kDataAlignment);
+    layout[i] = {cursor, t.data.size()};
+    cursor = AlignUp(cursor + t.data.size(), kDataAlignment);
   }
 
   // Pass 2: re-serialize with the final offsets, append the data section.
@@ -121,24 +133,44 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   // Append, don't resize-then-overwrite: only the alignment gaps are zero
   // bytes; zero-filling the whole data section first wrote every payload
   // byte twice (E2, #81). The reservation above means no append reallocates.
-  for (const auto& t : model.tensors) {
+  for (size_t i = 0; i < model.tensors.size(); ++i) {
+    const auto& t = model.tensors[i];
     if (!t.is_const) continue;
-    w.buf.resize(static_cast<size_t>(t.data_offset), 0);  // the gap only
+    w.buf.resize(static_cast<size_t>(layout[i].first), 0);  // the gap only
     w.buf.insert(w.buf.end(), t.data.begin(), t.data.end());
   }
   w.buf.resize(static_cast<size_t>(cursor), 0);
 
-  std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  if (!f) return tokenizing::FileError("cannot write", path);
-  f.write(reinterpret_cast<const char*>(w.buf.data()),
-          static_cast<std::streamsize>(w.buf.size()));
-  // Close before the state check: the tail of the buffer is flushed at
-  // close, and a flush failure after an unchecked implicit close would be
-  // reported as success.
-  f.close();
-  if (f.fail()) return tokenizing::FileError("short write to", path);
-  // The model now corresponds to the saved bytes: bind its identity so a
-  // plan compiled from this in-memory model patches this exact file.
+  // Staged beside the destination, every write and the close checked, the
+  // data synced, then renamed into place; any failure removes the stage
+  // and leaves the destination as it was (CR4 #145 F05).
+  const std::string tmp = path + ".tmp";
+  std::FILE* f = std::fopen(tmp.c_str(), "wb");
+  if (!f) return tokenizing::FileError("cannot write", tmp);
+  auto fail = [&](const char* what) {
+    std::remove(tmp.c_str());
+    return tokenizing::FileError(what, tmp);
+  };
+  const bool written =
+      std::fwrite(w.buf.data(), 1, w.buf.size(), f) == w.buf.size() &&
+      std::fflush(f) == 0;
+#ifndef _WIN32
+  const bool synced = written && ::fsync(::fileno(f)) == 0;
+#else
+  const bool synced = written && ::_commit(::_fileno(f)) == 0;
+#endif
+  const bool closed = std::fclose(f) == 0;
+  if (!synced || !closed) return fail("short write to");
+  if (std::rename(tmp.c_str(), path.c_str()) != 0)
+    return fail("cannot move the staged file over");
+  // The file is in place: now the model corresponds to the saved bytes —
+  // its offsets and sizes, and its identity, so a plan compiled from this
+  // in-memory model patches this exact file.
+  for (size_t i = 0; i < model.tensors.size(); ++i) {
+    if (!model.tensors[i].is_const) continue;
+    model.tensors[i].data_offset = layout[i].first;
+    model.tensors[i].byte_size = layout[i].second;
+  }
   model.content_hash = ContentHash64(w.buf.data(), w.buf.size());
   return {};
 }

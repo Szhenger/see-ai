@@ -402,13 +402,24 @@ int AttentionSweep(const std::vector<size_t>& threads, uint64_t repeats,
   }
   up::SetParallelThreadCount(0);
   json += "\n  ]}\n}\n";
-  std::FILE* f = std::fopen(out_path.c_str(), "w");
+  // Staged and renamed into place, the write checked, as the main report
+  // is (CR4 #145 F61): a truncated sweep must not stand under the name a
+  // reader trusts.
+  const std::string tmp = out_path + ".tmp";
+  std::FILE* f = std::fopen(tmp.c_str(), "w");
   if (!f) {
-    std::fprintf(stderr, "seeml-bench: cannot write '%s'\n", out_path.c_str());
+    std::fprintf(stderr, "seeml-bench: cannot write '%s'\n", tmp.c_str());
     return 1;
   }
   std::fputs(json.c_str(), f);
-  std::fclose(f);
+  const bool bad = std::ferror(f) != 0;
+  if (std::fclose(f) != 0 || bad ||
+      std::rename(tmp.c_str(), out_path.c_str()) != 0) {
+    std::fprintf(stderr, "seeml-bench: failed writing '%s'\n",
+                 out_path.c_str());
+    std::remove(tmp.c_str());
+    return 1;
+  }
   return 0;
 }
 

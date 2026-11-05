@@ -469,4 +469,33 @@ TEST(ModelIo, ByteBalancedParallelLoadIsExactAtAnyWidth) {
   seeml::update::SetParallelThreadCount(0);
 }
 
+TEST(Smf, AFailedSaveLeavesTheModelAndTheDiskUntouched) {
+  // CR4 #145 F05: SaveSmf computed the new offsets into the model before a
+  // write that could fail, so a failed save left new offsets paired with
+  // the old hash. The offsets, sizes and hash change only once the file is
+  // in place, and the stage is gone either way.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(4, 8, 2, 2);
+  for (SmfTensor& t : model.tensors)
+    if (t.is_const) {
+      t.data_offset = 7777;
+      t.byte_size = 1;
+    }
+  model.content_hash = 42;
+  EXPECT_ERROR_CONTAINS(SaveSmf(dir.File("no-such-dir/model.smf"), model),
+                        "cannot write");
+  for (const SmfTensor& t : model.tensors)
+    if (t.is_const) {
+      EXPECT_EQ(t.data_offset, 7777u);
+      EXPECT_EQ(t.byte_size, 1u);
+    }
+  EXPECT_EQ(model.content_hash, 42u);
+  const std::string path = dir.File("model.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  EXPECT_FALSE(std::ifstream(path + ".tmp").good());
+  EXPECT_NE(model.content_hash, 42u);
+  for (const SmfTensor& t : model.tensors)
+    if (t.is_const) EXPECT_EQ(t.byte_size, t.data.size());
+}
+
 }  // namespace

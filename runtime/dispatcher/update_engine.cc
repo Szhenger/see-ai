@@ -1368,6 +1368,9 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
   CheckpointRecord record;
   record.step = step_;
   record.horizon_steps = horizon_;
+  // Say whether the binding is live (CR4 #145 F71): the file carries the
+  // flag, and a load no longer reads zero fields as a binding.
+  record.has_binding = binding_.bound;
   record.shuffle_origin = binding_.shuffle_origin;
   record.train_samples = binding_.train_samples;
   record.val_samples = binding_.val_samples;

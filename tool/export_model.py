@@ -63,6 +63,7 @@ Supported modules inside an nn.Sequential:
 """
 
 import argparse
+import contextlib
 import os
 import json
 import io
@@ -144,6 +145,30 @@ def _refuse_non_finite(name: str, view) -> None:
         i = int(np.flatnonzero(~finite)[0])
         raise ValueError(f"tensor {name!r} carries a non-finite value at "
                          f"element {i}: NaN and Inf are refused at export")
+
+
+@contextlib.contextmanager
+def _atomic_output(path: str):
+    """Every file this module writes is staged beside its destination,
+    flushed and synced, and renamed into place; any failure removes the
+    stage and leaves the destination as it was (CR4 #145 F55: a tensor
+    write that failed midway left a truncated model under the real name)."""
+    tmp = path + ".tmp"
+    f = open(tmp, "wb")
+    try:
+        yield f
+        f.flush()
+        os.fsync(f.fileno())
+        f.close()
+        os.replace(tmp, path)
+    except BaseException:
+        if not f.closed:
+            f.close()
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class _SmfBuilder:
@@ -347,7 +372,7 @@ def export_smf(model, path: str, input_name: str = "x",
         else:
             raise ValueError(f"export_smf: unsupported module {type(m).__name__}")
 
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({idx} linear layers)")
 
@@ -502,7 +527,7 @@ def export_decoder_smf(blocks, head, path: str, seq_len: int, num_heads: int,
     b = _SmfBuilder(input_name, D, seq_len=seq_len)
     _emit_decoder_graph(b, blocks, head, num_heads, prev=input_name,
                         rope_base=rope_base, norm_eps=norm_eps)
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({len(blocks)} decoder blocks, seq_len={seq_len}, "
           f"heads={num_heads}, rope_base={float(rope_base):g})")
@@ -537,7 +562,7 @@ def export_token_decoder_smf(embedding, blocks, head, path: str, seq_len: int,
     b.add_op(OP_EMBEDDING, "embed", [input_name, "emb"], "e")
     _emit_decoder_graph(b, blocks, head, num_heads, prev="e",
                         rope_base=rope_base, norm_eps=norm_eps)
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({len(blocks)} decoder blocks, seq_len={seq_len}, "
           f"heads={num_heads}, vocab={emb.shape[0]}, token-native, "
@@ -1046,7 +1071,7 @@ def export_sds(inputs, labels, path: str, label_kind: int = 1):
     else:
         record = np.dtype([("x", "<f4", (d,)), ("y", "<f4", (label_dim,))])
 
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         f.write(formats.SDS_HEADER.pack(SDS_MAGIC, 1, n, d, label_kind, 0, label_dim))
         for start in range(0, n, SDS_CHUNK_ROWS):
             end = min(n, start + SDS_CHUNK_ROWS)
@@ -1093,7 +1118,7 @@ def export_token_sds(records, path: str):
     if (a < 0).any():
         raise ValueError("export_token_sds: negative token id")
     n, s = a.shape[0], a.shape[1] - 1
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         f.write(formats.SDS_HEADER.pack(SDS_MAGIC, 2, n, s, 1, 1, 0))
         f.write(_flat_bytes(a))
     print(f"wrote {path} ({n} records, seq_len={s}, token-native)")

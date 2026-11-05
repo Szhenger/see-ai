@@ -413,6 +413,24 @@ jobs:
             exit "$rc"
           fi
           test -s out/updated.smf
+      - name: A report that cannot be written is exit 4, after the commit
+        run: |
+          # CR4 #145 F66: the runner used to drop the write error and exit 0
+          # with a truncated report. The model is updated all the same (the
+          # same bytes as the first run), and the exit code says the record
+          # is missing.
+          set +e
+          out/pkg/model_update --model out/model.smf --data out/corpus.sds \
+            --out out/updated_exit4.smf --seed 7 --val-frac 0.1 ${E2E_FORCE} \
+            --report out/no-such-dir/report.json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 4 ]; then
+            echo "::error::expected exit 4 for an unwritable --report, got $rc"
+            exit 1
+          fi
+          test -s out/updated_exit4.smf
+          cmp out/updated.smf out/updated_exit4.smf
       - name: Serial re-run commits a bitwise-identical model
         run: |
           # The gate's verdict is deterministic (same data, seed, and plan;
