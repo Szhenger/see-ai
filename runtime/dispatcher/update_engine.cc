@@ -160,6 +160,10 @@ uint64_t UpdateEngine::relaxed_executions() const {
   return backend_->relaxed_executions();
 }
 
+uint64_t UpdateEngine::fused_dispatches() const {
+  return backend_->fused_dispatches();
+}
+
 const float* UpdateEngine::ReadPtr(uint64_t ref) const {
   const uint64_t offset = up::RefOffset(ref);
   if (up::IsRodataRef(ref))
@@ -611,11 +615,14 @@ std::expected<void, std::string> UpdateEngine::ExecuteRange(
                           .eps = header_.eps,
                           .weight_decay = header_.weight_decay,
                           .step = step_};
-  // The backend sees the range before its first instruction: where the
-  // source model is off the device, a range that reads it runs on the CPU
-  // whole (BeginRange), and EndRange follows the Flush below.
-  backend_->BeginRange(std::span<const up::UpdateInstruction>(program)
-                           .subspan(begin, end - begin));
+  // The backend sees the range before its first instruction — and the
+  // whole program around it, so what it plans across instructions is
+  // decided from everything that follows (the Metal backend's low-rank
+  // fold), not from a phase of the step-timing split: where the source
+  // model is off the device, a range that reads it runs on the CPU whole
+  // (BeginRange), and EndRange follows the Flush below.
+  backend_->BeginRange(std::span<const up::UpdateInstruction>(program), begin,
+                       end);
   for (size_t idx = begin; idx < end; ++idx)
     if (auto r = backend_->Execute(program[idx], params); !r) {
       backend_->EndRange();

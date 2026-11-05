@@ -1562,6 +1562,69 @@ And an earlier run, at the nightly's lr 1e-4 header, read 19.1 / 46.2 /
 as the 10-24 table's control row has it: each header reproduces its own
 package's bits under the staged kernel.
 
+### The low-rank epilogue folded at dispatch (F7 #138 step 4, 2026-11-04)
+
+Every LoRA site's forward is two instructions on the plan: the base
+product `C = X @ W` (the q8 tile kernel on the int8-base plans, the f32
+one on the adapter-only plan and in the eval program) and `C' = α·T@B + C`
+— the rank-r product with C as its addend, K = r. The issue's item 4 priced
+folding the second into the first as a new plan form under the
+certificate; it is neither. A GEMM instruction's four input slots and its
+`imm` are all taken at these sites, and the fold needs no field: the
+Metal backend pairs the two instructions at dispatch (`PlanLowRank`, read
+once per program from the extents the validator proved), and where nothing
+between them touches C or writes a base operand, the base is not
+dispatched at its own place — at the second instruction's, the tile
+kernel with the low-rank epilogue (`k_gemm_nn_q8_lr`, `k_gemm_nn_lr`; B's
+[r × 64] block and T's [32 × r] block staged through threadgroup memory
+once per half tile, the rank-r term a vectorized pass of four columns per
+thread as the small kernel takes them) writes C' as `k_gemm_nn_small`
+would — serial k from zero, alpha on the finished sum, the addend first,
+per component, under the library's precise math — and C
+as the base kernel would only where the program reads C again, which at a
+LoRA site nothing does (the rank-r instruction is C's only reader). That
+is the backend's own proof, not the compiler's: the addend fuser proves one
+reader for the rank-r product it folds, not for the addend, so
+`PlanLowRank` scans the whole program the engine hands it with each range
+(the bench build runs a step as three ranges) for the first instruction to
+touch C's bytes after the pair — a store is dropped only when that
+instruction overwrites all of C and reads none of it, or there is none; a
+read, a partial write, or a read-modify-write (an accumulate, an optimizer
+step) keeps it. The arena holds
+the bits of the two dispatches everywhere they are read (the Metal suite
+proves it at one full tile and at ragged tiles with N = 70, on an f32 and
+a q8 site with C's store dropped, on sites that read, half-overwrite or
+accumulate into C after the pair with the store kept, on a site that reads
+C in the next range of the step split, with a read of C and a write to X
+between and a pair cut by the range boundary as the negatives, and over a
+trained MLP: curve, evaluation loss
+and persistent bytes equal to the unfused run's), with two passes over the
+activation fewer — the base's store and the small kernel's read of it; the
+certificate is not needed, so the exact package, the eval program and the
+adapter-only plans all take it.
+Not fused, by rule: a base on the split-K path (the down projection's
+`512x576x1536`), the tensor-op relaxed path, bf16 bases — the two
+instructions run as before. `SEEML_METAL_UNFUSED_LOWRANK=1` keeps every
+pair apart: the same-session control.
+
+**Measured in one session** (the 10-24 exact SmolLM-135M plan with its own
+header, the 10-24 recipe; the host on battery with Low Power Mode on, as
+every row of this branch; `docs/ledger/f7-2026-11-04/`):
+
+| | unfused | fused |
+|---|---:|---:|
+| `k_gemm_nn_q8 512x576x576` → `_lr` (q, k, v, o: 120 sites per step) | 124.5 µs | 133.5 µs |
+| `k_gemm_nn_q8 512x1536x576` → `_lr` (gate, up: 60 sites) | 302.1 µs | 300.7 µs |
+| `k_gemm_nn_q8 512x49152x576` → `_lr` (the head) | 8,488.0 µs | 8,860.2 µs |
+| `k_gemm_nn_small` `512x576x8` / `512x1536x8` / `512x49152x8`, the dispatches folded away | 17.9 / 43.8 / 1,797.5 µs | — |
+| fused pairs per forward pass | 0 | 181 |
+| the step, the 160 → 300 slope (ms) / tok/s; the 40 → 160 slope (ms) | 237 / 2,157; 189 | 237 / 2,159; 226 |
+| 300 steps, wall (s) | 74.8 | 74.4 |
+| energy, GPU domain (mJ per token) | 3.17 | 3.10 |
+| committed model after 300 steps | `ab2504dc…` | `ab2504dc…` |
+
+Per site the fused kernel costs 124.5 → 133.5 µs (`512x576x576`), 302.1 → 300.7 µs (`512x1536x576`) and 8,488.0 → 8,860.2 µs at the head — the epilogue's eight multiply-adds per output and the store of C' — where the small dispatches it folds away cost 17.9, 43.8 and 1,797.5 µs: 6.6 ms of small dispatches leave each forward pass and 1.4 ms of epilogue arrive, 181 pairs per pass (five earlier forms were a wash, each within 2 ms of neutral: with C stored as well, 4.2 ms of epilogue per pass against the 6.8 ms removed; hoisting B's column into registers, 7.9 and 6.6 ms; C's store dropped with the device loads per element kept, 5.0 ms; the operands staged through threadgroup memory but the pass still scalar per element, 4.8 ms — the `*_v1`..`*_v5` files. Neither the store nor the loads' source was the cost: the tile kernel's epilogue is scalar, sixteen guarded elements per thread, where the small kernel it replaces takes four outputs per thread as float4s — so the rank-r term is now its own vectorized pass over the staged tile, four columns per thread). The step reads 237 → 237 ms (2,157 → 2,159 tok/s), the 300-step wall 74.8 → 74.4 s (0.6 %), 3.17 → 3.10 mJ per token (unchanged within the meter's noise: the pass the fold saves and the epilogue's traffic cost about the same energy); both arms commit 10-24's `ab2504dc…`, and the adapter-only f32 plan (the `k_gemm_nn_lr` path, 20 steps by the driver) commits `1a736ae3…` under both.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

@@ -1,0 +1,16 @@
+{
+  "schema": 3,
+  "backend": "metal",
+  "device": "Apple M5, relaxed GEMMs on tensor ops",
+  "relaxed_executions": 0,
+  "plan": {"source": "embedded", "path": null, "bytes": 36585472},
+  "steps": 20,
+  "train_loss": [4.6839075, 4.6373968],
+  "validation_loss": [4.574419, 4.4814916],
+  "validation_scores": "shipped",
+  "validation_accuracy": [0.28109375, 0.28484374],
+  "lifecycle": {"load_s": 0.2281, "data_s": 0.0041, "train_s": 21.3502, "eval_s": 7.0205, "evaluations": 2, "merge_s": 0.2037, "commit_s": 0.8708, "wall_s": 23.9467},
+  "gate": {"min_improvement": 0.99, "require_accuracy": false, "loss_ok": false, "accuracy_measured": true, "accuracy_ok": true, "forced": true},
+  "verdict": "forced",
+  "committed": true
+}

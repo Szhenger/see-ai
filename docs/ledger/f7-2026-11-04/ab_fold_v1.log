@@ -1,0 +1,33 @@
+ab_fold start 16:46:29Z
+Now drawing from 'Battery Power'
+ -InternalBattery-0 (id=35520611)	74%; discharging; 7:10 remaining present: true
+compile rc=0 plan_hash": "9eeaf80e4ae801ea
+pack rc=0
+fused row rc=0 frontier_run seeml: metal: 234.7 ms/step, 2181 tok/s, val 4.5744 -> 4.0045, 3.147 mJ/token (GPU Energy, whole-SoC)
+  fused committed ab2504dc5bd3ad69 same as 10-24: True step_ms 234.7 lohi 190.4 walls [(40, 18.9), (160, 41.7), (300, 74.6)] j/token 0.00314711027639974
+  fused profile rc=3
+metal profile: 5.734 s over 134 keys; 46 forward pass(es), 20 backward pass(es) (counted at the loss opcodes)
+  low-rank epilogue: 8326 fused dispatch(es) (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 keeps the pairs apart)
+     0.410 s    7.2%     1200 x    341.7 us  k_gemm_nn_q8_lr 512x1536x576
+     0.345 s    6.0%     2400 x    143.7 us  k_gemm_nn_q8_lr 512x576x576
+     0.185 s    3.2%       20 x   9235.1 us  k_gemm_nn_q8_lr 512x49152x576
+     0.026 s    0.5%     1380 x     19.1 us  k_gemm_nn_small 512x576x8
+unfused row rc=0 frontier_run seeml: metal: 238.8 ms/step, 2144 tok/s, val 4.5744 -> 4.0045, 3.137 mJ/token (GPU Energy, whole-SoC)
+  unfused committed ab2504dc5bd3ad69 same as 10-24: True step_ms 238.8 lohi 232.8 walls [(40, 13.8), (160, 41.7), (300, 75.2)] j/token 0.003136583773795573
+  unfused profile rc=3
+metal profile: 5.721 s over 136 keys; 46 forward pass(es), 20 backward pass(es) (counted at the loss opcodes)
+     0.371 s    6.5%     1200 x    309.5 us  k_gemm_nn_q8 512x1536x576
+     0.306 s    5.3%     2400 x    127.3 us  k_gemm_nn_q8 512x576x576
+     0.178 s    3.1%       20 x   8915.1 us  k_gemm_nn_q8 512x49152x576
+     0.128 s    2.2%     6900 x     18.5 us  k_gemm_nn_small 512x576x8
+     0.127 s    2.2%     2760 x     46.1 us  k_gemm_nn_small 512x1536x8
+     0.084 s    1.5%       46 x   1816.8 us  k_gemm_nn_small 512x49152x8
+--- the adapter-only f32 plan (k_gemm_nn_lr): 20 steps, both arms
+adapter pack rc=0
+  adapter fused rc=0 sha 1a736ae304304cb1 
+     0.809 s   14.8%     2760 x    293.0 us  k_gemm_nn 512x1536x576
+     0.128 s    2.4%     2760 x     46.5 us  k_gemm_nn_small 512x1536x8
+  adapter unfused rc=0 sha 1a736ae304304cb1 
+     0.807 s   15.0%     2760 x    292.6 us  k_gemm_nn 512x1536x576
+     0.123 s    2.3%     2760 x     44.4 us  k_gemm_nn_small 512x1536x8
+ab_fold end 16:52:57Z

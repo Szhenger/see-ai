@@ -1163,6 +1163,285 @@ TEST(MetalBackend, MergeDeltasMatchCpuAtTolerance) {
   ExpectClose("merge deltas", deltas[1], deltas[0], 5e-3, 1e-6);
 }
 
+
+// --- F7 #138 step 4: the low-rank epilogue, fused at dispatch -----------------
+// At a LoRA site the plan carries the base product into C and then the
+// rank-r product with C as its addend; the Metal backend runs the pair as
+// one dispatch (PlanLowRank, k_gemm_*_lr) that writes C and C' with the
+// bits of the two. SEEML_METAL_UNFUSED_LOWRANK=1 keeps the pair apart —
+// the control these tests run against.
+
+struct FoldRun {
+  std::vector<float> arena;
+  uint64_t fused = 0;
+};
+
+// One instruction stream on Metal, with the fold on or off, the range
+// shown to the backend as the engine shows it (BeginRange / EndRange).
+std::expected<FoldRun, std::string> RunMetalFold(
+    const std::vector<UpdateInstruction>& program,
+    const std::vector<float>& arena_init, const std::vector<uint8_t>& rodata,
+    bool unfused, size_t split_at = 0) {
+  if (unfused)
+    setenv("SEEML_METAL_UNFUSED_LOWRANK", "1", 1);
+  else
+    unsetenv("SEEML_METAL_UNFUSED_LOWRANK");
+  auto backend = CreateMetalBackend();
+  unsetenv("SEEML_METAL_UNFUSED_LOWRANK");
+  if (!backend) return std::unexpected(backend.error());
+  const size_t bytes = (arena_init.size() * sizeof(float) + 16383) & ~size_t{16383};
+  uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
+  if (!arena) return std::unexpected("aligned_alloc failed");
+  std::memset(arena, 0, bytes);
+  std::memcpy(arena, arena_init.data(), arena_init.size() * sizeof(float));
+  auto fail = [&](std::string why) {
+    std::free(arena);
+    return std::unexpected(std::move(why));
+  };
+  if (auto r = (*backend)->Bind(arena, bytes, rodata.data(), rodata.size(),
+                                rodata.size());
+      !r)
+    return fail(r.error());
+  StepParams params;
+  // As the engine's step-timing split shows it: the whole program, run as
+  // two ranges cut at `split` (the whole program as one range at 0).
+  const size_t split = std::min(split_at, program.size());
+  for (size_t half = 0; half < 2; ++half) {
+    const size_t begin = half == 0 ? 0 : split;
+    const size_t end = half == 0 ? split : program.size();
+    if (begin == end) continue;
+    (*backend)->BeginRange(std::span<const UpdateInstruction>(program), begin,
+                           end);
+    for (size_t idx = begin; idx < end; ++idx)
+      if (auto r = (*backend)->Execute(program[idx], params); !r) {
+        (*backend)->EndRange();
+        return fail(r.error());
+      }
+    auto flushed = (*backend)->Flush();
+    (*backend)->EndRange();
+    if (!flushed) return fail(flushed.error());
+  }
+  FoldRun run;
+  run.arena.resize(arena_init.size());
+  std::memcpy(run.arena.data(), arena, arena_init.size() * sizeof(float));
+  run.fused = (*backend)->fused_dispatches();
+  backend->reset();
+  std::free(arena);
+  return run;
+}
+
+// One LoRA site's instruction stream at a geometry: the fold against the
+// unfused control, bit for bit, over the legality and store-drop cases.
+void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
+  constexpr uint32_t R = 8;
+  std::printf("  [ geometry ] M=%u N=%u K=%u R=%u\n", M, N, K, R);
+  // Floats: X [M,K], W [K,N] (the f32 base), A [K,R], B [R,N], T [M,R],
+  // C [M,N], C' [M,N], Z [M,N] (a bystander), each 16-byte aligned (every
+  // extent is a multiple of four floats at both geometries).
+  const uint64_t X = 0, W = X + M * K, A = W + K * N, B = A + K * R,
+                 T = B + R * N, C = T + M * R, C2 = C + M * N, Z = C2 + M * N,
+                 total = Z + M * N;
+  std::vector<float> arena(total, 0.0f);
+  std::mt19937 rng(2026);
+  std::normal_distribution<float> g(0.0f, 1.0f);
+  for (uint64_t i = X; i < W; ++i) arena[i] = 0.5f * g(rng);
+  for (uint64_t i = W; i < A; ++i) arena[i] = 0.1f * g(rng);
+  for (uint64_t i = A; i < B; ++i) arena[i] = 0.1f * g(rng);
+  for (uint64_t i = B; i < T; ++i) arena[i] = 0.1f * g(rng);
+  // The q8 base: W's int8 levels in rodata, one per-tensor scale.
+  std::vector<uint8_t> rodata(K * N);
+  std::uniform_int_distribution<int> q(-127, 127);
+  for (auto& b : rodata) b = static_cast<uint8_t>(static_cast<int8_t>(q(rng)));
+  const float q8_scale = 0.01f;
+
+  auto gemm = [](OpCode op, uint64_t a, uint64_t b, uint64_t c, uint32_t m,
+                 uint32_t n, uint32_t k) {
+    UpdateInstruction ins;
+    ins.opcode = static_cast<uint16_t>(op);
+    ins.in[0] = a * sizeof(float);
+    ins.in[1] = b * sizeof(float);
+    ins.in[2] = c * sizeof(float);
+    ins.out[0] = m;
+    ins.out[1] = n;
+    ins.out[2] = k;
+    return ins;
+  };
+  UpdateInstruction base = gemm(OpCode::kGemmNN, X, W, C, M, N, K);
+  UpdateInstruction base_q8 = gemm(OpCode::kGemmNNQ8, X, 0, C, M, N, K);
+  base_q8.in[1] = MakeRodataRef(0);
+  base_q8.in[3] = F32Bits(q8_scale);
+  UpdateInstruction proj = gemm(OpCode::kGemmNN, X, A, T, M, R, K);
+  UpdateInstruction lora = gemm(OpCode::kGemmNN, T, B, C2, M, N, R);
+  lora.flags = kFlagGemmAddend;
+  lora.in[3] = C * sizeof(float);
+  lora.imm = static_cast<uint32_t>(F32Bits(0.75f));
+  auto add_n = [](uint64_t a, uint64_t b, uint64_t out, uint64_t n) {
+    UpdateInstruction ins;
+    ins.opcode = static_cast<uint16_t>(OpCode::kAddEW);
+    ins.in[0] = a * sizeof(float);
+    ins.in[1] = b * sizeof(float);
+    ins.in[2] = out * sizeof(float);
+    ins.out[0] = n;
+    return ins;
+  };
+  auto add = [&](uint64_t a, uint64_t b, uint64_t out) {
+    return add_n(a, b, out, M * N);
+  };
+  // dst += src: a read-modify-write the validator describes as one write.
+  auto accumulate = [&](uint64_t dst, uint64_t src) {
+    UpdateInstruction ins;
+    ins.opcode = static_cast<uint16_t>(OpCode::kAccumulate);
+    ins.in[0] = dst * sizeof(float);
+    ins.in[1] = src * sizeof(float);
+    ins.out[0] = M * N;
+    return ins;
+  };
+  struct Case {
+    const char* name;
+    std::vector<UpdateInstruction> program;
+    uint64_t fused;  // pairs the fold may take
+    bool c_stored;   // the base value's store stays (C is read again)
+    size_t split;    // the program run as two ranges cut here (0: one)
+  };
+  const Case cases[] = {
+      // Nothing reads C after the pair: its store is dropped.
+      {"f32 site", {base, proj, lora}, 1, false, 0},
+      {"q8 site", {base_q8, proj, lora}, 1, false, 0},
+      // C read after the pair: fused, and C written as before.
+      {"C read after", {base, proj, lora, add(C, C, Z)}, 1, true, 0},
+      // C overwritten whole after the pair: fused, the store dropped (the
+      // arena ends the same either way; the drop is the kernel's).
+      {"C overwritten after", {base, proj, lora, add(Z, Z, C)}, 1, true, 0},
+      // Part of C overwritten after the pair: the rest may be read; stored.
+      {"C half-written after",
+       {base, proj, lora, add_n(Z, Z, C, M * N / 2)}, 1, true, 0},
+      // C accumulated into after the pair — a read-modify-write the
+      // validator describes as one covering write: stored.
+      {"C accumulated after", {base, proj, lora, accumulate(C, Z)}, 1, true, 0},
+      // C read in the NEXT range (the step-timing split): the plan sees the
+      // whole program, so the store stays.
+      {"C read next range", {base, proj, lora, add(C, C, Z)}, 1, true, 3},
+      // The pair cut by the range boundary: both halves run apart.
+      {"pair split", {base, proj, lora, add(C, C, Z)}, 0, true, 2},
+      // A read of C between the two: the base must have written it by then.
+      {"C read between", {base, proj, add(C, C, Z), lora}, 0, true, 0},
+      // A write to X between: the deferred base would read the new X.
+      {"X written between", {base, proj, add(Z, Z, X), lora}, 0, true, 0},
+  };
+  for (const Case& cs : cases) {
+    auto fused = RunMetalFold(cs.program, arena, rodata, /*unfused=*/false,
+                              cs.split);
+    auto apart = RunMetalFold(cs.program, arena, rodata, /*unfused=*/true,
+                              cs.split);
+    ASSERT_OK(fused);
+    ASSERT_OK(apart);
+    std::printf("  [ %-22s ] fused dispatches %llu (expected %llu), C %s\n",
+                cs.name, (unsigned long long)fused->fused,
+                (unsigned long long)cs.fused,
+                cs.c_stored ? "stored" : "not stored");
+    EXPECT_EQ(fused->fused, cs.fused);
+    EXPECT_EQ(apart->fused, 0u);
+    // Bit for bit: every float outside C, and C too where its store stays;
+    // where it is dropped C keeps its initial zeros in the fused run.
+    uint64_t first_diff = total;
+    bool c_zero = true;
+    for (uint64_t i = 0; i < total; ++i) {
+      const bool in_c = i >= C && i < C + M * N;
+      if (in_c && !cs.c_stored) {
+        c_zero = c_zero && fused->arena[i] == 0.0f;
+        continue;
+      }
+      if (fused->arena[i] != apart->arena[i] && first_diff == total)
+        first_diff = i;
+    }
+    EXPECT_EQ(first_diff, total);
+    if (first_diff != total)
+      std::printf("    first difference at float %llu: %.9g vs %.9g\n",
+                  (unsigned long long)first_diff, fused->arena[first_diff],
+                  apart->arena[first_diff]);
+    if (!cs.c_stored) EXPECT_TRUE(c_zero);
+    // And against the CPU reference at the GEMM twin's tolerance.
+    auto twin = RunTwin(cs.program, arena, rodata);
+    ASSERT_OK(twin);
+    ExpectRangeClose((std::string(cs.name) + " C'").c_str(), *twin, C2, M * N,
+                     2e-4, 2e-4);
+  }
+}
+
+TEST(MetalBackend, TheLowRankFoldIsTheTwoDispatchesAndKnowsItsLegality) {
+  if (Skip()) return;
+  // One full tile with N a multiple of four (C' as float4s), then ragged
+  // tiles in both M and N with N not a multiple of four: the zero-filled
+  // staging past the edges and the scalar store of C'.
+  CheckLowRankFoldAt(64, 64, 64);
+  CheckLowRankFoldAt(100, 70, 48);
+}
+
+std::expected<Dataset, std::string> WideClassData(uint64_t seed) {
+  return MakeClassificationData(64, 64, seed);
+}
+
+TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
+  if (Skip()) return;
+  // Both adapted products of this MLP are tile-sized and unsplit
+  // (64x64x64 and 64x32x64 at a batch of 64), so each forward carries two
+  // foldable pairs; alpha/r = 2 rides the rank-4 product's imm.
+  SmfModel m = MakeMlp(64, 64, 32, 42);
+  UpdateConfig c = BaseConfig(64);
+  auto compiled = UpdateCompiler(c).Compile(m);
+  ASSERT_OK(compiled);
+  struct Fold {
+    Run run;
+    uint64_t fused = 0;
+  };
+  auto train = [&](bool unfused) -> std::expected<Fold, std::string> {
+    if (unfused)
+      setenv("SEEML_METAL_UNFUSED_LOWRANK", "1", 1);
+    else
+      unsetenv("SEEML_METAL_UNFUSED_LOWRANK");
+    UpdateEngine engine;
+    auto selected = engine.SelectBackend(BackendKind::kMetal);
+    unsetenv("SEEML_METAL_UNFUSED_LOWRANK");
+    if (!selected) return std::unexpected(selected.error());
+    if (auto r = engine.LoadFromMemory(compiled->plan.data(),
+                                       compiled->plan.size());
+        !r)
+      return std::unexpected(r.error());
+    auto data = WideClassData(17);
+    if (!data) return std::unexpected(data.error());
+    data->EnableShuffle(3);
+    TrainOptions options;
+    options.log_every = 0;
+    options.record_loss_curve = true;
+    auto report = engine.Train(*data, 20, options);
+    if (!report) return std::unexpected(report.error());
+    Fold f;
+    f.run.curve = report->loss_curve;
+    const size_t floats = engine.header().persistent_size / sizeof(float);
+    f.run.persistent.resize(floats);
+    std::memcpy(f.run.persistent.data(), engine.arena(), floats * sizeof(float));
+    auto eval = engine.Evaluate(*data);
+    if (!eval) return std::unexpected(eval.error());
+    f.run.eval_loss = *eval;
+    f.fused = engine.fused_dispatches();
+    return f;
+  };
+  auto fused = train(false);
+  auto apart = train(true);
+  ASSERT_OK(fused);
+  ASSERT_OK(apart);
+  std::printf("  [ low-rank fold ] %llu fused dispatches over 20 steps and an "
+              "evaluation\n", (unsigned long long)fused->fused);
+  EXPECT_TRUE(fused->fused >= 40u);  // two pairs per training forward
+  EXPECT_EQ(apart->fused, 0u);
+  ASSERT_EQ(fused->run.curve.size(), 20u);
+  EXPECT_EQ(std::memcmp(fused->run.curve.data(), apart->run.curve.data(),
+                        fused->run.curve.size() * sizeof(float)),
+            0);
+  EXPECT_EQ(fused->run.eval_loss, apart->run.eval_loss);
+  EXPECT_TRUE(fused->run.persistent == apart->run.persistent);
+}
+
 }  // namespace
 
 #else  // !__APPLE__
