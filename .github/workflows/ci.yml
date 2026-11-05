@@ -616,7 +616,11 @@ jobs:
       - name: Python holds the seam (nothing skipped — the tools are built)
         run: |
           python -W error -m unittest test/tool/formats_test.py -v 2>&1 | tee seam.log
-          ! grep -q "skipped" seam.log
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -q "skipped" seam.log; then
+            echo "::error::a seam test skipped — the tools this job builds were not found"
+            exit 1
+          fi
       - name: export -> compile -> dump -> validate, no torch
         run: |
           python -W error tool/export_model.py --demo-decoder out/
