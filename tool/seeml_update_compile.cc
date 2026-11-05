@@ -44,6 +44,17 @@
 //       [--gemm-tiles K,N]             set the CPU GEMM tiles explicitly
 //                                      (throughput only, never bits)
 //       [--report report.json]         machine-readable compile report
+//       [--adapter-only]               the adapter-only package (F6 #134,
+//                                      plan v21): the frozen weights stay
+//                                      in the source model file, read there
+//                                      at run time; the plan carries no
+//                                      rodata (f32 base, exact kernels)
+//       [--validation-scores shipped|plan] where a narrow-base plan's eval
+//                                      program reads the frozen weights: the
+//                                      shipped f32 file (default from a file)
+//                                      or the plan's own narrow copies, for a
+//                                      device that cannot hold the file
+//                                      beside the arena (reported)
 //       [--no-embed]                   skip the decimal byte-array TU; let
 //                                      tool/pack_update.py embed the plan
 //                                      (.incbin) or, above its embed limit,
@@ -106,6 +117,7 @@ void PrintUsage() {
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
                "  [--remat auto|off|on] [--memory-budget-mib N]\n"
+               "  [--adapter-only] [--validation-scores shipped|plan]\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -296,8 +308,13 @@ int main(int argc, char** argv) {
       return Fail("--distill-weight must be in [0, 1], got '" + *v + "'");
   }
   if (auto v = args.TakeValue("--temperature")) {
-    if (!ParseF32(*v, &config.temperature) || config.temperature <= 0.0f)
-      return Fail("--temperature must be positive, got '" + *v + "'");
+    // Bounded at both ends (CR1 #142 N26): the validator and the compiler
+    // refuse what lies outside, so the flag says so first.
+    if (!ParseF32(*v, &config.temperature) ||
+        config.temperature < kKlTemperatureMin ||
+        config.temperature > kKlTemperatureMax)
+      return Fail(std::string("--temperature must be a finite value in ") +
+                  kKlTemperatureRangeText + ", got '" + *v + "'");
   }
   if (auto v = args.TakeValue("--lora-rank")) {
     if (!ParseI64(*v, &config.lora.rank) || config.lora.rank <= 0)
@@ -401,6 +418,21 @@ int main(int argc, char** argv) {
     else if (*v == "off") config.remat = RematKind::kOff;
     else if (*v == "on") config.remat = RematKind::kOn;
     else return Fail("unknown --remat '" + *v + "' (auto, off or on)");
+  }
+  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
+  // in the source model file, read there at run time; the plan carries no
+  // rodata. The driver refuses the narrow bases, the relaxed kernels and an
+  // in-memory model with it.
+  if (args.Take("--adapter-only")) config.adapter_only = true;
+  // Where a narrow-base plan's eval program reads the frozen weights (E12):
+  // the shipped f32 file (the default where the model came from a file) or
+  // the plan's own narrow copies — a proxy, for a device that cannot hold
+  // the file beside the arena. The report records which.
+  if (auto v = args.TakeValue("--validation-scores")) {
+    if (*v == "shipped") config.eval_on_plan = false;
+    else if (*v == "plan") config.eval_on_plan = true;
+    else return Fail("unknown --validation-scores '" + *v +
+                     "' (shipped or plan)");
   }
   // The memory gate's budget. Without it the gate uses the host's memory,
   // which is fine for a refusal but not for a decision that changes the
@@ -572,6 +604,10 @@ int main(int argc, char** argv) {
         paths->embedded_tu.empty()
             ? "null"
             : "\"" + JsonEscape(paths->embedded_tu) + "\"";
+    // The exact resident footprint the final gate checked (the arena plus
+    // the plan blob), which the step-0 estimate is a lower bound on.
+    const uint64_t exact_footprint =
+        compiled->arena_size + static_cast<uint64_t>(compiled->plan.size());
     std::fprintf(f,
                  "{\n"
                  "  \"schema\": 1,\n"
@@ -588,6 +624,10 @@ int main(int argc, char** argv) {
                  "  \"persistent_bytes\": %" PRIu64 ",\n"
                  "  \"io_bytes\": %" PRIu64 ",\n"
                  "  \"transient_bytes\": %" PRIu64 ",\n"
+                 "  \"footprint_estimate\": {\"weights\": %" PRIu64
+                 ", \"activations\": %" PRIu64 ", \"deltas\": %" PRIu64
+                 ", \"attention_caches\": %" PRIu64 ", \"total\": %" PRIu64
+                 ", \"exact\": %" PRIu64 ", \"ratio\": %.4f},\n"
                  "  \"remat\": {\"policy\": \"%s\", \"applied\": %s, "
                  "\"recomputed_values\": %" PRIu64 ", \"bytes_saved\": %" PRIu64
                  "},\n"
@@ -600,6 +640,7 @@ int main(int argc, char** argv) {
                  "  \"effective_batch\": %" PRIu64 ",\n"
                  "  \"quantized_base\": %s,\n"
                  "  \"bf16_base\": %s,\n"
+                 "  \"adapter_only\": %s,\n"
                  "  \"precision\": \"%s\",\n"
                  "  \"relaxed_gemms\": %" PRIu64 ",\n"
                  "  \"relaxed_attention\": %" PRIu64 ",\n"
@@ -619,7 +660,13 @@ int main(int argc, char** argv) {
                  host_arch.l2_bytes, host_arch.simd_width_f32,
                  compiled->arena_size,
                  compiled->persistent_size, compiled->io_size,
-                 compiled->transient_size,
+                 compiled->transient_size, compiled->estimate_weight_bytes,
+                 compiled->estimate_activation_bytes,
+                 compiled->estimate_delta_bytes, compiled->estimate_cache_bytes,
+                 compiled->estimate_bytes, exact_footprint,
+                 exact_footprint ? static_cast<double>(compiled->estimate_bytes) /
+                                       static_cast<double>(exact_footprint)
+                                 : 0.0,
                  compiled->remat_policy == RematKind::kAuto  ? "auto"
                  : compiled->remat_policy == RematKind::kOn ? "on"
                                                              : "off",
@@ -633,6 +680,7 @@ int main(int argc, char** argv) {
                  static_cast<uint64_t>(config.batch) * compiled->grad_accum_steps,
                  config.quantize_base ? "true" : "false",
                  config.bf16_base ? "true" : "false",
+                 compiled->adapter_only ? "true" : "false",
                  config.precision == Precision::kCertifiedBf16
                      ? "certified-bf16" : "f32",
                  compiled->relaxed_gemms, compiled->relaxed_attention,

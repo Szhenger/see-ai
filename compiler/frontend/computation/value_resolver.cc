@@ -35,7 +35,10 @@ std::expected<sir::Value*, std::string> ValueResolver::MaterializeWeight(
     std::string_view name) {
   auto found = tensor_index_.find(name);
   const SmfTensor* t = found == tensor_index_.end() ? nullptr : found->second;
-  if (!t || !t->is_const)
+  if (!t)
+    return seeml::diag::parsing::Error("'" + std::string(name) +
+                                       "' is not a tensor of the model");
+  if (!t->is_const)
     return seeml::diag::parsing::Error("'" + std::string(name) +
                                        "' is not a constant tensor in the model");
   sir::Operation* op = block_.appendOp("sc_mem.weight");

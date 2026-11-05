@@ -121,6 +121,45 @@ step 272.6–274.1 → 238.1–242.8 ms, the step 278.8 → 245.5 ms, 1,837 →
 38 µs: latency-bound at 512 simdgroups), step 2, step 4, the relaxed
 row.
 
+## Status 2026-11-03
+
+The `nt_rows` floor landed: `k_gemm_nt_rows_tgb` (`docs/benchmarks.md`,
+"The `nt_rows` sites off their floor: the staged-B rows kernel"),
+dispatched for a transposed B at N ≤ 16 — the adapter backward's `dt`
+sites, where the unstaged form issued nine loads per eight multiply-adds
+and ran at 31–34 GB/s. Measured in one session against the unstaged kernel on the 10-24 exact plan: 36.0 → 18.5, 89.1 → 44.5 and 2,831.6 → 1,286.6 µs per site, 248 → 233 ms per step, the committed model the 10-24 package's (`ab2504dc…`) under both; the step's level is the host's — on battery with Low Power Mode on, the 10-24 package's own binary ran 35 % slower than on 10-24 — and against that binary, bracketing it back to back, the staged kernel's 300 steps take 2.7–4.1 % less wall. Steps 2 (the batched A-projections,
+which need strided operands in the ISA) and 4 (`B(Ax)` folded into the
+base GEMM under the certificate) stayed open as this issue's remainder until
+the next day's fold (below).
+
+## Status 2026-11-04
+
+Step 4 landed, and not in the shape item 4 named. A GEMM instruction has
+four input slots and `imm`, all spoken for at these sites, so the fold is
+not a plan form at all: the Metal backend pairs the two instructions at
+dispatch (`PlanLowRank`, `docs/runtime.md`) — the base product into C and
+the rank-r product with C as its addend — and where nothing between them
+touches C or writes a base operand, runs one kernel at the second
+instruction's place that writes C' as `k_gemm_nn_small` would, under the
+library's precise math, and C only where the program reads it again (the
+backend's own scan of the whole program, every range of the step split
+included — the addend fuser proves one reader for the product it folds,
+not for the addend): the
+bits of the two dispatches everywhere they are read, so the certificate item 4 reached for is not needed,
+and the fold applies to the exact package, the eval program and the
+adapter-only plans alike (`docs/benchmarks.md`, "The low-rank epilogue
+folded at dispatch"). Measured on the 10-24 exact plan, fused against
+unfused in one session (`SEEML_METAL_UNFUSED_LOWRANK=1` the control):
+181 pairs per forward pass, 6.6 ms of small dispatches out
+and 1.4 ms of epilogue in per pass, the step 237 → 237 ms
+(2,157 → 2,159 tok/s), the 300-step wall 74.8 → 74.4 s;
+the committed model `ab2504dc…` under both, and the adapter-only f32 plan
+`1a736ae3…` under both. Not fused: a base on the split-K path (the down
+projection), the tensor-op path, bf16 bases — the two instructions run as
+before. Step 2's strided-operand route is superseded by the same move —
+consecutive rows GEMMs over one X can pair at dispatch once the grafter
+emits them together — and stays open.
+
 ## Acceptance
 
 - [x] Train-only Metal profile of SmolLM-135M with the LoRA family's share
@@ -133,11 +172,28 @@ row.
 - [x] Design item 3's target, ≥ 100 GB/s effective on `512x1536x8+add` —
   44 µs for the 6 MB of C and D the row moves (the doc's own figure: 92 µs
   was 65 GB/s), so about 137 GB/s.
-- [ ] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
-  simdgroups) — the family's next floor.
-- [ ] Step 2, the batched A-projections — not started; needs strided
-  operands in the ISA.
-- [ ] Step 4, B(Ax) folded into the base GEMM, certified — not started.
+- [x] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
+  simdgroups) — 2026-11-03, `k_gemm_nt_rows_tgb`: the `[N × 32 k]` block
+  of the transposed B staged through threadgroup memory and read as
+  float4s (four loads per eight multiply-adds instead of nine), the
+  lane-to-k assignment, the product order, the per-column scale's place
+  and the shuffle tree unchanged. Same session, both kernels: `512x8x576` 36.0 → 18.5 µs, `512x8x1536` 89.1 → 44.5 µs, the head 2,831.6 → 1,286.6 µs; the step 248 → 233 ms. The 10-24 exact SmolLM-135M
+  plan recompiled on this tree commits `ab2504dc…` — the 10-24 package's own bytes — under both kernels after the 10-24 recipe
+  (`docs/benchmarks.md`, "The `nt_rows` sites off their floor").
+- [ ] Step 2, the batched A-projections — not landed. The strided-operand
+  route is superseded (2026-11-04): the grafter emitting a block's
+  A-projections together and the backend pairing adjacent rows GEMMs at
+  dispatch, the step-4 move, keeps every column's K-sum in the rows
+  kernel's lane order; the `dX +=` leg stays three rounded partials in
+  instruction order.
+- [x] Step 4, B(Ax) folded into the base GEMM — 2026-11-04, at dispatch and
+  bit-identical, so uncertified: the Metal backend runs the base GEMM and
+  the rank-r GEMM that reads it as one kernel writing C' — and C only
+  where the program reads it again — with the two dispatches' bits (the fused epilogue is `k_gemm_nn_small`'s
+  arithmetic under precise math); the plan carries no new form. On the
+  10-24 exact plan: 181 pairs per forward pass, the step
+  237 → 237 ms, the 300-step wall 74.8 → 74.4 s,
+  `ab2504dc…` under both ("The low-rank epilogue folded at dispatch").
 - [x] SmolLM-135M `metal` tok/s against F1's MLX-LM rows — 2,085 tok/s,
   0.93× true-f32 and 0.45× all-bf16.
 - [x] The F2 relaxed package's tok/s on these kernels — 4,392–4,395 tok/s,

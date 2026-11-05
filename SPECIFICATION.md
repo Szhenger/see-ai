@@ -53,7 +53,7 @@ Two `.mm` files — `runtime/executor/metal_backend.mm` (the executor
 backend, §7) and `runtime/executor/metal_gemm.mm` (the G1a correctness
 harness) — compiled with ARC (`-fobjc-arc`) and linked against
 `-framework Metal -framework Foundation`, gated on Apple hosts in both build
-drivers and in the emitted package's `build.sh` (`SEEML_NO_METAL=1` opts
+drivers and in the emitted package's `build.sh` (`SEEML_NO_METAL=1` — any value but a falsy one: empty, 0, off, false, no — opts
 out; `metal_backend_stub.cc` takes the backend's place everywhere else, so no
 non-Apple translation unit references a Metal symbol). MSL kernels are
 **not** checked in as `.metal` files: the backend's kernel library is a C++
@@ -257,8 +257,10 @@ extracts them from the dispatcher. Subsystems with code today:
   three straight-line instruction programs (train / eval / merge) and
   orchestrates gate → merge → commit.
 - **verifier/** — load-time proof: every instruction operand is
-  bounds-checked against arena/rodata geometry *before* execution; `Execute()`
-  then runs unchecked by contract.
+  bounds-checked against arena/rodata geometry, and every immediate float
+  (clip thresholds, the distillation temperature, int8 dequant scales) is
+  proven finite and in range, *before* execution; `Execute()` then runs
+  unchecked by contract.
 - **executor/** — the kernel library (`gemm`, `elementwise`, `activation`,
   `normalization`, `loss`, `optimizer`, `attention`), each parallelized over
   the shared `ParallelFor` substrate with shape-derived chunking; grain
@@ -310,7 +312,7 @@ raise the oldest-readable floor; newer-than-reader is always rejected):
 |---|---|---|---|
 | SMF (model container) | `"SMF1"` | v6 (readers accept v1–v6; writers emit the lowest version the model needs) | `source/language/model_format.*`, `compiler/frontend/ingressor/model_{reader,writer}.cc`, Python writer in `tool/export_model.py` |
 | SDS (dataset) | `"SDS1"` | v1 (feature rows) / v2 (token records) | `runtime/pipeline/dataset.{h,cc}`, Python writer |
-| SEEU (update plan) | `"SEEU"` | v20, oldest-readable v4 | written by `compiler/backend/*` + driver; read/validated by `runtime/verifier` + `runtime/dispatcher`; disassembled by `seeml-seeu-dump` |
+| SEEU (update plan) | `"SEEU"` | v21, oldest-readable v4 | written by `compiler/backend/*` + driver; read/validated by `runtime/verifier` + `runtime/dispatcher`; disassembled by `seeml-seeu-dump` |
 | SEKP (checkpoint) | `"SEKP"` | v5, oldest-readable v3 | `runtime/storage/checkpoint_format.h`, `runtime/storage/checkpoint.cc` |
 
 The Python plane restates these layouts exactly once, in

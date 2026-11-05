@@ -4,6 +4,10 @@
 // engine's Train boundary, and the runtime unit registry.
 // =============================================================================
 
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <span>
 #include <string>
@@ -11,6 +15,7 @@
 #include "compiler/driver/update_compiler.h"
 #include "runtime/dispatcher/contract.h"
 #include "runtime/dispatcher/update_engine.h"
+#include "source/identity/hash.h"
 #include "source/plan/update_types.h"
 #include "test/framework/seetest.h"
 #include "test/support/builders.h"
@@ -80,6 +85,57 @@ TEST(EngineContract, PlanContractAcceptsACompiledPlanAndCatchesCorruption) {
       VerifyPlanContract(escaped, compiled.plan.size()).has_value());
 }
 
+TEST(EngineContract, HeaderHyperparametersAreFiniteAndInRange) {
+  // CR1 #142: the step kernels consume the header's floats blindly, so the
+  // load refuses any that is not finite and within the range the compiler
+  // accepts — by field name.
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.batch = 4;
+  header.input_floats = 16;
+  header.arena_size = 4096;
+  header.input_ref = up::MakeArenaRef(0);
+  header.loss_ref = up::MakeArenaRef(256);
+  constexpr uint64_t kPlanSize = 65536;
+  ASSERT_OK(VerifyPlanContract(header, kPlanSize));
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  struct Case {
+    const char* name;
+    void (*set)(up::PlanHeader&, float);
+    std::vector<float> bad;
+    std::vector<float> good;
+  };
+  const Case cases[] = {
+      {"lr", [](up::PlanHeader& h, float v) { h.lr = v; },
+       {0.0f, -1e-3f, nan, INFINITY}, {1e-3f, 1.0f}},
+      {"beta1", [](up::PlanHeader& h, float v) { h.beta1 = v; },
+       {1.0f, -0.1f, nan}, {0.0f, 0.9f}},
+      {"beta2", [](up::PlanHeader& h, float v) { h.beta2 = v; },
+       {1.0f, 1.5f, nan}, {0.999f}},
+      {"eps", [](up::PlanHeader& h, float v) { h.eps = v; },
+       {0.0f, -1e-8f, nan}, {1e-8f}},
+      {"weight_decay", [](up::PlanHeader& h, float v) { h.weight_decay = v; },
+       {-0.01f, nan, INFINITY}, {0.0f, 0.01f}},
+      {"clip_norm", [](up::PlanHeader& h, float v) { h.clip_norm = v; },
+       {-1.0f, nan, INFINITY}, {0.0f, 1.0f}},
+      {"min_lr_factor",
+       [](up::PlanHeader& h, float v) { h.min_lr_factor = v; },
+       {-0.1f, 1.5f, nan}, {0.0f, 1.0f}},
+  };
+  for (const Case& c : cases) {
+    for (const float v : c.bad) {
+      up::PlanHeader h = header;
+      c.set(h, v);
+      EXPECT_ERROR_CONTAINS(VerifyPlanContract(h, kPlanSize), c.name);
+    }
+    for (const float v : c.good) {
+      up::PlanHeader h = header;
+      c.set(h, v);
+      EXPECT_OK(VerifyPlanContract(h, kPlanSize));
+    }
+  }
+}
+
 // =============================================================================
 // The executor boundary
 // =============================================================================
@@ -90,7 +146,7 @@ TEST(EngineContract, ExecutorContractSpeaksAsThePlanValidator) {
   up::PlanHeader header{};
   header.arena_size = 1024;
 
-  const auto r = VerifyExecutorContract(std::span(&bogus, 1), {}, {}, {}, {},
+  const auto r = VerifyExecutorContract(std::span(&bogus, 1), {}, {}, {}, {}, {},
                                         header);
   ASSERT_FALSE(r.has_value());
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
@@ -177,6 +233,7 @@ TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
   header.arena_size = 4096;
   header.rodata_size = 1024;
   header.input_ref = up::MakeArenaRef(0);
+  const std::vector<uint8_t> rodata(header.rodata_size);  // the table's bytes
   up::UpdateInstruction emb{};
   emb.opcode = static_cast<uint16_t>(up::OpCode::kEmbedFwd);
   emb.in[0] = up::MakeArenaRef(0);   // the staged input slot
@@ -185,15 +242,15 @@ TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
   emb.out[0] = 4;
   emb.out[1] = (uint64_t{8} << 32) | 4;
   std::vector<up::UpdateInstruction> train = {emb};
-  EXPECT_OK(VerifyExecutorContract(train, {}, {}, {}, {}, header));
+  EXPECT_OK(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header));
   // Tokens read from anywhere but the staged slot: rejected.
   train[0].in[0] = up::MakeArenaRef(512);
-  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, header),
+  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
                         "staged input slot");
   // Embedding in a plan that does not declare token input: rejected.
   train[0].in[0] = up::MakeArenaRef(0);
   header.input_kind = 0;
-  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, header),
+  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
                         "without token input");
 }
 
@@ -227,6 +284,316 @@ TEST(Engine, ErrorsCrossingTheTrainBoundaryAreWellFormed) {
   ASSERT_FALSE(r.has_value());
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
   EXPECT_EQ(r.error(), "UpdateEngine: no plan loaded");
+}
+
+
+// =============================================================================
+// CR2 (#143): the coverage table — every program x every check, as refusals.
+// A check missing from a program is a failing row here, not a review finding
+// (F07 was one: the step program sat outside the width scans).
+// =============================================================================
+
+constexpr size_t kPlanHashAt = offsetof(up::PlanHeader, plan_hash);
+constexpr int kPrograms = 4;  // train, merge, eval, step
+const char* const kProgramName[kPrograms] = {"train", "merge", "eval", "step"};
+
+// A compiled plan opened for surgery: the header as a struct, the programs
+// addressable, and Seal() recomputing the self-hash the loader verifies.
+struct OpenPlan {
+  std::vector<uint8_t> bytes;
+  up::PlanHeader h{};
+  explicit OpenPlan(const std::vector<uint8_t>& plan) : bytes(plan) {
+    std::memcpy(&h, bytes.data(), sizeof(h));
+  }
+  uint64_t Offset(int program) const {
+    return program == 0   ? h.train_instr_offset
+           : program == 1 ? h.merge_instr_offset
+           : program == 2 ? h.eval_instr_offset
+                          : h.step_instr_offset;
+  }
+  uint64_t Count(int program) const {
+    return program == 0   ? h.train_instr_count
+           : program == 1 ? h.merge_instr_count
+           : program == 2 ? h.eval_instr_count
+                          : h.step_instr_count;
+  }
+  void Replace(int program, size_t index, const up::UpdateInstruction& ins) {
+    std::memcpy(bytes.data() + Offset(program) + index * sizeof(ins), &ins,
+                sizeof(ins));
+  }
+  std::vector<uint8_t> Sealed() {
+    std::memcpy(bytes.data(), &h, sizeof(h));
+    const uint64_t hash = up::PlanSelfHash(bytes.data(), bytes.size(), kPlanHashAt);
+    std::memcpy(bytes.data() + kPlanHashAt, &hash, sizeof(hash));
+    return bytes;
+  }
+  // An arena range of `bytes` at the arena's tail that touches no staged slot.
+  uint64_t Scratch(uint64_t bytes, uint64_t slot) const {
+    const uint64_t off = (h.arena_size - bytes - 64 * slot) & ~uint64_t{15};
+    auto overlaps = [&](uint64_t ref, uint64_t ref_bytes) {
+      const uint64_t s = up::RefOffset(ref);
+      return ref != up::kNullRef && off < s + ref_bytes && s < off + bytes;
+    };
+    if (overlaps(h.input_ref, h.input_floats * sizeof(float)) ||
+        overlaps(h.label_ref, h.label_bytes) || overlaps(h.loss_ref, 4))
+      return UINT64_MAX;
+    return off;
+  }
+};
+
+// Both fixtures accumulate gradients: the step program exists only then
+// (without accumulation the optimizer lives in the train program), and
+// the table's step rows need somewhere to plant their instruction.
+up::UpdateConfig AccumulatingConfig(int64_t batch) {
+  up::UpdateConfig c = BaseConfig(batch);
+  c.grad_accum_steps = 2;
+  return c;
+}
+std::vector<uint8_t> MlpPlan() {
+  up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
+  auto compiled = up::UpdateCompiler(AccumulatingConfig(kBatch)).Compile(model);
+  return compiled ? compiled->plan : std::vector<uint8_t>{};
+}
+constexpr int64_t kTokVocab = 16, kTokDim = 8, kTokSeq = 8, kTokBatch = 16;
+std::vector<uint8_t> TokenPlan() {
+  up::SmfModel model = seeml::testing::MakeTinyTokenDecoder(
+      kTokVocab, kTokDim, /*heads=*/2, kTokSeq, /*ffn=*/16, 41);
+  auto compiled = up::UpdateCompiler(AccumulatingConfig(kTokBatch)).Compile(model);
+  return compiled ? compiled->plan : std::vector<uint8_t>{};
+}
+TrainOptions QuietOptions() {
+  TrainOptions o;
+  o.log_every = 0;
+  return o;
+}
+
+TEST(CoverageTable, TheClassWidthScanCoversEveryProgram) {
+  // F07: a softmax of width 1 planted in any program disagrees with the
+  // plan's width, and the load refuses it — before, the merge and step
+  // programs were outside both the agreement check and the scan that
+  // bounds the staged labels, so a step-program softmax's rows could be
+  // indexed past by labels another program's width admitted.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  for (int p = 0; p < kPrograms; ++p) {
+    OpenPlan open(plan);
+    ASSERT_TRUE(open.Count(p) > 0);
+    const uint64_t logits = open.Scratch(kBatch * 4, 0);
+    const uint64_t loss = open.Scratch(16, 1);
+    const uint64_t probs = open.Scratch(kBatch * 4, 2);
+    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX && probs != UINT64_MAX);
+    up::UpdateInstruction sm{};
+    sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxXEntFwd);
+    sm.in[0] = up::MakeArenaRef(logits);
+    sm.in[1] = open.h.label_ref;
+    sm.in[2] = up::MakeArenaRef(loss);
+    sm.in[3] = up::MakeArenaRef(probs);
+    sm.out[0] = open.h.batch;
+    sm.out[1] = 1;  // narrower than the plan's 3 classes
+    open.Replace(p, 0, sm);
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto loaded = engine.LoadFromMemory(edited.data(), edited.size());
+    std::printf("  [ %-5s ] class width: %s\n", kProgramName[p],
+                loaded.has_value() ? "NOT checked" : loaded.error().c_str());
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), "class widths");
+  }
+}
+
+TEST(CoverageTable, TheVocabularyScanCoversEveryProgram) {
+  // F07's twin for token plans: an embedding gather over a one-row table
+  // planted in each program must bound every staged token id.
+  const std::vector<uint8_t> plan = TokenPlan();
+  ASSERT_FALSE(plan.empty());
+  for (int p = 0; p < kPrograms; ++p) {
+    OpenPlan open(plan);
+    ASSERT_TRUE(open.Count(p) > 0);
+    ASSERT_TRUE(open.h.rodata_size >= uint64_t{kTokDim} * sizeof(float));
+    const uint64_t out = open.Scratch(uint64_t{kTokBatch} * kTokDim * sizeof(float), 0);
+    ASSERT_TRUE(out != UINT64_MAX);
+    up::UpdateInstruction emb{};
+    emb.opcode = static_cast<uint16_t>(up::OpCode::kEmbedFwd);
+    emb.in[0] = open.h.input_ref;
+    emb.in[1] = up::MakeRodataRef(0);
+    emb.in[2] = up::MakeArenaRef(out);
+    emb.out[0] = open.h.batch;
+    emb.out[1] = (uint64_t{1} << 32) | uint64_t{kTokDim};  // V = 1
+    open.Replace(p, 0, emb);
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(edited.data(), edited.size()));
+    ASSERT_OK_AND_ASSIGN(Dataset data,
+                         seeml::testing::MakeTokenCorpus(10, kTokSeq, kTokVocab, 43));
+    const auto r = engine.Train(data, 1, QuietOptions());
+    std::printf("  [ %-5s ] vocabulary: %s\n", kProgramName[p],
+                r.has_value() ? "NOT scanned" : "refused");
+    EXPECT_FALSE(r.has_value());
+  }
+}
+
+TEST(CoverageTable, NoProgramWritesTheStagedSlots) {
+  // N03: the feeder's proofs hold only while the staged input and label
+  // slots stay the feeder's; a write to either from any program is refused
+  // at load.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  for (int p = 0; p < kPrograms; ++p) {
+    for (int slot = 0; slot < 2; ++slot) {
+      OpenPlan open(plan);
+      ASSERT_TRUE(open.Count(p) > 0);
+      const uint64_t count = slot == 0 ? open.h.input_floats
+                                       : open.h.label_bytes / sizeof(float);
+      const uint64_t src = open.Scratch(count * sizeof(float), 0);
+      ASSERT_TRUE(src != UINT64_MAX);
+      up::UpdateInstruction add{};
+      add.opcode = static_cast<uint16_t>(up::OpCode::kAddEW);
+      add.in[0] = up::MakeArenaRef(src);
+      add.in[1] = up::MakeArenaRef(src);
+      add.in[2] = slot == 0 ? open.h.input_ref : open.h.label_ref;
+      add.out[0] = count;
+      open.Replace(p, 0, add);
+      const std::vector<uint8_t> edited = open.Sealed();
+      UpdateEngine engine;
+      const auto r = engine.LoadFromMemory(edited.data(), edited.size());
+      std::printf("  [ %-5s ] %s slot write: %s\n", kProgramName[p],
+                  slot ? "label" : "input", r.has_value() ? "ACCEPTED" : "refused");
+      ASSERT_FALSE(r.has_value());
+      EXPECT_STR_CONTAINS(r.error(), slot == 0 ? "staged input slot" : "staged label slot");
+    }
+  }
+}
+
+TEST(CoverageTable, NoProgramWritesThroughASourceRef) {
+  // The validator's rule, per program: a source ref is read-only everywhere.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  for (int p = 0; p < kPrograms; ++p) {
+    OpenPlan open(plan);
+    ASSERT_TRUE(open.Count(p) > 0);
+    const uint64_t src = open.Scratch(64, 0);
+    ASSERT_TRUE(src != UINT64_MAX);
+    up::UpdateInstruction add{};
+    add.opcode = static_cast<uint16_t>(up::OpCode::kAddEW);
+    add.in[0] = up::MakeArenaRef(src);
+    add.in[1] = up::MakeArenaRef(src);
+    add.in[2] = up::MakeSourceRef(0);
+    add.out[0] = 16;
+    open.Replace(p, 0, add);
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto r = engine.LoadFromMemory(edited.data(), edited.size());
+    std::printf("  [ %-5s ] write through a source ref: %s\n", kProgramName[p],
+                r.has_value() ? "ACCEPTED" : "refused");
+    EXPECT_FALSE(r.has_value());
+  }
+}
+
+TEST(CoverageTable, TheHeaderSlotsAndTheRodataSectionAreProven) {
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  {
+    // N04: a header slot carrying the source bit would bypass the feeder's
+    // validated labels.
+    OpenPlan open(plan);
+    open.h.label_ref = up::MakeSourceRef(up::RefOffset(open.h.label_ref));
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    EXPECT_ERROR(engine.LoadFromMemory(edited.data(), edited.size()));
+  }
+  {
+    OpenPlan open(plan);
+    open.h.input_ref = up::MakeRodataRef(0);
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    EXPECT_ERROR(engine.LoadFromMemory(edited.data(), edited.size()));
+  }
+  {
+    // N05: the rodata section's own offset, which every rodata ref is
+    // relative to.
+    OpenPlan open(plan);
+    ASSERT_TRUE(open.h.rodata_size > 0);
+    open.h.rodata_offset += 4;
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto r = engine.LoadFromMemory(edited.data(), edited.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), "rodata section");
+  }
+}
+
+TEST(CoverageTable, TheFeederRefusesTheWrongCorpus) {
+  // Label kind, label width and the token bound — the dataset side of the
+  // table, one row each against the plans above.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  UpdateEngine engine;
+  ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
+  ASSERT_OK_AND_ASSIGN(Dataset dense,
+                       seeml::testing::MakeRegressionData(64, kInDim, 3, 7));
+  EXPECT_ERROR(engine.Train(dense, 1, QuietOptions()));  // label kind
+  ASSERT_OK_AND_ASSIGN(Dataset tokens,
+                       seeml::testing::MakeTokenCorpus(10, kTokSeq, kTokVocab, 43));
+  EXPECT_ERROR(engine.Train(tokens, 1, QuietOptions()));  // input kind
+  const std::vector<uint8_t> token_plan = TokenPlan();
+  ASSERT_FALSE(token_plan.empty());
+  UpdateEngine token_engine;
+  ASSERT_OK(token_engine.LoadFromMemory(token_plan.data(), token_plan.size()));
+  ASSERT_OK_AND_ASSIGN(Dataset wide,
+                       seeml::testing::MakeTokenCorpus(10, kTokSeq, 2 * kTokVocab, 43));
+  EXPECT_ERROR(token_engine.Train(wide, 1, QuietOptions()));  // token bound
+}
+
+TEST(CoverageTable, QuantizedColumnScalesAreFinitePositive) {
+  // F33: the column scales a q8 GEMM reads from rodata are multiplied in
+  // blindly; a NaN or a zero among them is refused at load, by index. A
+  // 2x2x2 q8 GEMM planted as train[0]: A and C in scratch, B (4 int8) at
+  // rodata 16, its two column scales at rodata 0.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_TRUE(!plan.empty());
+  OpenPlan open(plan);
+  ASSERT_TRUE(open.h.rodata_size >= 64);
+  const uint64_t a = open.Scratch(64, 0), c = open.Scratch(64, 1);
+  ASSERT_TRUE(a != UINT64_MAX && c != UINT64_MAX);
+  up::UpdateInstruction g{};
+  g.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
+  g.flags = up::kFlagQ8ColScale;
+  g.in[0] = up::MakeArenaRef(a);
+  g.in[1] = up::MakeRodataRef(16);
+  g.in[2] = up::MakeArenaRef(c);
+  g.in[3] = up::MakeRodataRef(0);
+  g.out[0] = 2;
+  g.out[1] = 2;
+  g.out[2] = 2;
+  open.Replace(0, 0, g);
+  auto load_with = [&](float s0, float s1) {
+    OpenPlan o = open;
+    const float scales[2] = {s0, s1};
+    std::memcpy(o.bytes.data() + o.h.rodata_offset, scales, sizeof(scales));
+    const std::vector<uint8_t> sealed = o.Sealed();
+    UpdateEngine engine;
+    return engine.LoadFromMemory(sealed.data(), sealed.size());
+  };
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  ASSERT_OK(load_with(1.0f, 0.5f));
+  EXPECT_ERROR_CONTAINS(load_with(1.0f, nan), "column scale 1");
+  EXPECT_ERROR_CONTAINS(load_with(0.0f, 1.0f), "column scale 0");
+  EXPECT_ERROR_CONTAINS(load_with(INFINITY, 1.0f), "column scale 0");
+}
+
+TEST(CoverageTable, AnArenaBeyondTheHostsMemoryIsRefusedBeforeAllocation) {
+  // The executing fuzzer's first catch (CR3 #144 F22): a header asking for
+  // an arena of exabytes passed every contract (the arena size is bounded
+  // against overflow alone) and reached aligned_alloc. Refused by name,
+  // against the host's memory, before the allocation.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_TRUE(!plan.empty());
+  OpenPlan open(plan);
+  open.h.arena_size = uint64_t{1} << 62;
+  const std::vector<uint8_t> sealed = open.Sealed();
+  UpdateEngine engine;
+  EXPECT_ERROR_CONTAINS(engine.LoadFromMemory(sealed.data(), sealed.size()),
+                        "exceeds this host's memory");
 }
 
 }  // namespace

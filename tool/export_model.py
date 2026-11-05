@@ -63,6 +63,7 @@ Supported modules inside an nn.Sequential:
 """
 
 import argparse
+import contextlib
 import os
 import json
 import io
@@ -119,6 +120,55 @@ def _flat_bytes(data) -> memoryview:
         raise ValueError("tensor payloads must be C-contiguous (pass the "
                          "array through numpy.ascontiguousarray)")
     return mv.cast("B")
+
+
+def _refuse_non_finite(name: str, view) -> None:
+    """Every constant tensor is an f32 blob, and a NaN or an Inf in it is
+    refused here, at the ingest boundary (CR1 #142, S1): the compiler
+    refuses the same model, and without either the quantization review's
+    max-abs scan would select a NaN weight for int8 (max skips NaN) and the
+    pack would cast it. One pass over the payload as it is written."""
+    if view.nbytes % 4:
+        return  # not an f32 blob; the container's own checks speak to it
+    try:
+        import numpy as np
+    except ImportError:  # tier 0: the standard library only
+        import math
+        for i, (x,) in enumerate(struct.iter_unpack("<f", view)):
+            if not math.isfinite(x):
+                raise ValueError(f"tensor {name!r} carries a non-finite value "
+                                 f"at element {i}: NaN and Inf are refused "
+                                 "at export")
+        return
+    finite = np.isfinite(np.frombuffer(view, dtype="<f4"))
+    if not finite.all():
+        i = int(np.flatnonzero(~finite)[0])
+        raise ValueError(f"tensor {name!r} carries a non-finite value at "
+                         f"element {i}: NaN and Inf are refused at export")
+
+
+@contextlib.contextmanager
+def _atomic_output(path: str):
+    """Every file this module writes is staged beside its destination,
+    flushed and synced, and renamed into place; any failure removes the
+    stage and leaves the destination as it was (CR4 #145 F55: a tensor
+    write that failed midway left a truncated model under the real name)."""
+    tmp = path + ".tmp"
+    f = open(tmp, "wb")
+    try:
+        yield f
+        f.flush()
+        os.fsync(f.fileno())
+        f.close()
+        os.replace(tmp, path)
+    except BaseException:
+        if not f.closed:
+            f.close()
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class _SmfBuilder:
@@ -224,6 +274,7 @@ class _SmfBuilder:
             if view.nbytes != t["nbytes"]:
                 raise ValueError(f"tensor {t['name']!r}: payload is "
                                  f"{view.nbytes} bytes, declared {t['nbytes']}")
+            _refuse_non_finite(t["name"], view)
             f.write(view)
             pos = o + view.nbytes
         if total > pos:
@@ -321,7 +372,7 @@ def export_smf(model, path: str, input_name: str = "x",
         else:
             raise ValueError(f"export_smf: unsupported module {type(m).__name__}")
 
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({idx} linear layers)")
 
@@ -396,7 +447,11 @@ def _emit_decoder_graph(b, blocks, head, num_heads: int, prev: str,
 
     def tensor(name, arr):
         # Explicit little-endian f32 — the container's byte order, whatever
-        # the host's — and no bytes() copy: the builder writes the array.
+        # the host's — and no bytes() copy: the builder writes the array. A
+        # deferred weight (the --hf import's) is built while it is written.
+        if isinstance(arr, _Deferred):
+            b.add_tensor(name, list(arr.shape), arr, nbytes=arr.nbytes)
+            return name
         a = np.ascontiguousarray(np.asarray(arr, dtype="<f4"))
         b.add_tensor(name, list(a.shape), a)
         return name
@@ -472,7 +527,7 @@ def export_decoder_smf(blocks, head, path: str, seq_len: int, num_heads: int,
     b = _SmfBuilder(input_name, D, seq_len=seq_len)
     _emit_decoder_graph(b, blocks, head, num_heads, prev=input_name,
                         rope_base=rope_base, norm_eps=norm_eps)
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({len(blocks)} decoder blocks, seq_len={seq_len}, "
           f"heads={num_heads}, rope_base={float(rope_base):g})")
@@ -494,7 +549,8 @@ def export_token_decoder_smf(embedding, blocks, head, path: str, seq_len: int,
     """
     import numpy as np
 
-    emb = np.ascontiguousarray(np.asarray(embedding, dtype="<f4"))
+    emb = (embedding if isinstance(embedding, _Deferred) else
+           np.ascontiguousarray(np.asarray(embedding, dtype="<f4")))
     if emb.ndim != 2:
         raise ValueError("export_token_decoder_smf: embedding must be [V, D]")
     D = _decoder_dim(blocks, head, num_heads, "export_token_decoder_smf")
@@ -502,11 +558,11 @@ def export_token_decoder_smf(embedding, blocks, head, path: str, seq_len: int,
         raise ValueError("export_token_decoder_smf: embedding width "
                          f"{emb.shape[1]} does not match block width {D}")
     b = _SmfBuilder(input_name, D, seq_len=seq_len, token_input=True)
-    b.add_tensor("emb", list(emb.shape), emb)
+    b.add_tensor("emb", list(emb.shape), emb, nbytes=emb.nbytes)
     b.add_op(OP_EMBEDDING, "embed", [input_name, "emb"], "e")
     _emit_decoder_graph(b, blocks, head, num_heads, prev="e",
                         rope_base=rope_base, norm_eps=norm_eps)
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({len(blocks)} decoder blocks, seq_len={seq_len}, "
           f"heads={num_heads}, vocab={emb.shape[0]}, token-native, "
@@ -545,18 +601,68 @@ RUNTIME_NORM_EPS = DEFAULT_NORM_EPS  # what a norm with no attr2 computes
 _SAFETENSORS_DTYPES = {"F32": "<f4", "F16": "<f2", "BF16": "<u2", "F64": "<f8"}
 
 
-def read_safetensors(path: str):
+class _Deferred:
+    """A float32 tensor whose bytes are built only when they are needed:
+    `shape` and `nbytes` are known up front, and calling it returns the
+    C-contiguous little-endian f32 array. The --hf import hands these to
+    the SMF writer as callable payloads, so a 1.5B checkpoint exports
+    holding one converted weight at a time (each read from a mapping of
+    the safetensors file) rather than the whole model twice; `np.asarray`
+    materializes one where an array is wanted (the parity forward)."""
+
+    def __init__(self, shape, fn):
+        self.shape = tuple(int(s) for s in shape)
+        self.ndim = len(self.shape)
+        n = 1
+        for s in self.shape:
+            n *= s
+        self.nbytes = 4 * n
+        self._fn = fn
+
+    def __call__(self):
+        import numpy as np
+
+        a = np.ascontiguousarray(np.asarray(self._fn(), dtype="<f4"))
+        if a.shape != self.shape:
+            raise ValueError(f"deferred tensor built {a.shape}, declared "
+                             f"{self.shape}")
+        return a
+
+    def __array__(self, dtype=None, copy=None):
+        a = self()
+        return a if dtype is None else a.astype(dtype, copy=False)
+
+
+def _deferred(shape, fn, *srcs):
+    """fn(*srcs) now when every source is an array; a _Deferred of `shape`
+    that applies fn to the materialized sources when any one is lazy."""
+    import numpy as np
+
+    if not any(isinstance(s, _Deferred) for s in srcs):
+        return fn(*srcs)
+    return _Deferred(shape, lambda: fn(*(np.asarray(s) for s in srcs)))
+
+
+def read_safetensors(path: str, lazy: bool = False):
     """{name: float32 array} from one safetensors file (F32/F16/BF16/F64).
 
     The format is an 8-byte little-endian header length, a JSON header
     mapping tensor names to {dtype, shape, data_offsets}, then the raw
     tensor bytes. BF16 is widened by placing the 16 bits in the top half
     of a float32 — exact, since bf16 is float32 with the low mantissa
-    dropped."""
+    dropped. With `lazy`, the file is mapped rather than read and each
+    value is a _Deferred that widens its tensor from the mapping when
+    called: the same arrays, built one at a time."""
     import numpy as np
 
-    with open(path, "rb") as f:
-        raw = f.read()
+    if lazy:
+        import mmap
+        with open(path, "rb") as f:
+            raw = (mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                   if os.fstat(f.fileno()).st_size else b"")
+    else:
+        with open(path, "rb") as f:
+            raw = f.read()
     if len(raw) < 8:
         raise ValueError(f"{path}: not a safetensors file (too short)")
     n = struct.unpack("<Q", raw[:8])[0]
@@ -576,21 +682,28 @@ def read_safetensors(path: str):
         if b > e or base + e > len(raw):
             raise ValueError(f"{path}: tensor '{name}' offsets run past "
                              "the file")
-        arr = np.frombuffer(raw, dtype=_SAFETENSORS_DTYPES[dtype],
-                            count=(e - b) // np.dtype(
-                                _SAFETENSORS_DTYPES[dtype]).itemsize,
-                            offset=base + b)
-        if dtype == "BF16":
-            arr = (arr.astype(np.uint32) << 16).view(np.float32)
-        else:
-            arr = arr.astype(np.float32)
-        out[name] = arr.reshape(info["shape"])
+        src = _SAFETENSORS_DTYPES[dtype]
+        count = (e - b) // np.dtype(src).itemsize
+
+        def widen(off=base + b, count=count, src=src, bf16=dtype == "BF16",
+                  shape=info["shape"]):
+            arr = np.frombuffer(raw, dtype=src, count=count, offset=off)
+            if bf16:
+                wide = arr.astype(np.uint32)
+                wide <<= 16
+                arr = wide.view(np.float32)
+            else:
+                arr = arr.astype(np.float32)
+            return arr.reshape(shape)
+
+        out[name] = _Deferred(info["shape"], widen) if lazy else widen()
     return out
 
 
-def load_hf_checkpoint(model_dir: str):
+def load_hf_checkpoint(model_dir: str, lazy: bool = False):
     """(config, {name: float32 array}) from a Hugging Face model directory:
-    config.json plus model.safetensors or the shards its index names."""
+    config.json plus model.safetensors or the shards its index names
+    (`lazy`: the values are read_safetensors' mapped _Deferred tensors)."""
     if not os.path.isdir(model_dir):
         raise ValueError(f"{model_dir}: not a directory (pass a local "
                          "checkout — `huggingface-cli download <id>` first)")
@@ -603,12 +716,13 @@ def load_hf_checkpoint(model_dir: str):
     index = os.path.join(model_dir, "model.safetensors.index.json")
     tensors = {}
     if os.path.isfile(single):
-        tensors.update(read_safetensors(single))
+        tensors.update(read_safetensors(single, lazy=lazy))
     elif os.path.isfile(index):
         with open(index) as f:
             shards = sorted(set(json.load(f)["weight_map"].values()))
         for shard in shards:
-            tensors.update(read_safetensors(os.path.join(model_dir, shard)))
+            tensors.update(read_safetensors(os.path.join(model_dir, shard),
+                                            lazy=lazy))
     else:
         raise ValueError(f"{model_dir}: no model.safetensors (nor an index "
                          "over shards); .bin checkpoints are not read")
@@ -706,6 +820,14 @@ def hf_llama_to_seeml(config: dict, tensors: dict, seq_len: int,
             raise ValueError(f"checkpoint lacks tensor '{name}'")
         return tensors[name]
 
+    def small(name):  # gains and biases: read now, whatever the source
+        return np.asarray(take(name))
+
+    def cols(name):  # [out, in] -> [in, out], deferred when lazy
+        w = take(name)
+        return _deferred(tuple(reversed(w.shape)),
+                         lambda a: np.ascontiguousarray(a.T), w)
+
     order = _rope_interleave_order(d)
     rep = H // Hkv
     kv_of = np.arange(H) // rep  # kv head serving each query head
@@ -733,34 +855,38 @@ def hf_llama_to_seeml(config: dict, tensors: dict, seq_len: int,
     for i in range(L):
         p = f"model.layers.{i}."
         blk = {
-            "ln1_g": take(p + "input_layernorm.weight"),
-            "wq": q_cols(take(p + "self_attn.q_proj.weight")),
-            "wk": kv_cols(take(p + "self_attn.k_proj.weight"), True),
-            "wv": kv_cols(take(p + "self_attn.v_proj.weight"), False),
-            "wo": np.ascontiguousarray(take(p + "self_attn.o_proj.weight").T),
-            "ln2_g": take(p + "post_attention_layernorm.weight"),
-            "w_gate": np.ascontiguousarray(take(p + "mlp.gate_proj.weight").T),
-            "w_up": np.ascontiguousarray(take(p + "mlp.up_proj.weight").T),
-            "w_down": np.ascontiguousarray(take(p + "mlp.down_proj.weight").T),
+            "ln1_g": small(p + "input_layernorm.weight"),
+            "wq": _deferred((D, H * d), q_cols,
+                            take(p + "self_attn.q_proj.weight")),
+            "wk": _deferred((D, H * d), lambda w: kv_cols(w, True),
+                            take(p + "self_attn.k_proj.weight")),
+            "wv": _deferred((D, H * d), lambda w: kv_cols(w, False),
+                            take(p + "self_attn.v_proj.weight")),
+            "wo": cols(p + "self_attn.o_proj.weight"),
+            "ln2_g": small(p + "post_attention_layernorm.weight"),
+            "w_gate": cols(p + "mlp.gate_proj.weight"),
+            "w_up": cols(p + "mlp.up_proj.weight"),
+            "w_down": cols(p + "mlp.down_proj.weight"),
         }
         if p + "self_attn.q_proj.bias" in tensors:  # Qwen2-class
-            blk["bq"] = q_bias(take(p + "self_attn.q_proj.bias"))
-            blk["bk"] = kv_bias(take(p + "self_attn.k_proj.bias"), True)
-            blk["bv"] = kv_bias(take(p + "self_attn.v_proj.bias"), False)
+            blk["bq"] = q_bias(small(p + "self_attn.q_proj.bias"))
+            blk["bk"] = kv_bias(small(p + "self_attn.k_proj.bias"), True)
+            blk["bv"] = kv_bias(small(p + "self_attn.v_proj.bias"), False)
         if p + "self_attn.o_proj.bias" in tensors:
             raise ValueError("o_proj has a bias; the SeeAI block has none")
         blocks.append(blk)
-    emb = np.ascontiguousarray(take("model.embed_tokens.weight"))
-    if emb.shape != (V, D):
-        raise ValueError(f"embedding is {emb.shape}, expected {(V, D)}")
+    emb = take("model.embed_tokens.weight")
+    if tuple(emb.shape) != (V, D):
+        raise ValueError(f"embedding is {tuple(emb.shape)}, expected {(V, D)}")
+    emb = _deferred((V, D), np.ascontiguousarray, emb)
     if "lm_head.weight" in tensors:
-        w_head = np.ascontiguousarray(take("lm_head.weight").T)
+        w_head = cols("lm_head.weight")
         notes.append("untied lm_head")
     else:
-        w_head = np.ascontiguousarray(emb.T)
+        w_head = _deferred((D, V), lambda e: np.ascontiguousarray(e.T), emb)
         notes.append("tied lm_head (w_head = embedding^T; the merged head "
                      "adapter is not written back into the embedding)")
-    head = {"lnf_g": take("model.norm.weight"), "w_head": w_head}
+    head = {"lnf_g": small("model.norm.weight"), "w_head": w_head}
     return {"embedding": emb, "blocks": blocks, "head": head,
             "num_heads": H, "rope_base": theta, "seq_len": seq_len,
             "norm_eps": eps, "notes": notes, "vocab": V, "dim": D}
@@ -768,8 +894,10 @@ def hf_llama_to_seeml(config: dict, tensors: dict, seq_len: int,
 
 def export_hf_decoder(model_dir: str, out_path: str, seq_len: int,
                       allow_eps_drift: bool = False):
-    """--hf: import a Llama-class checkpoint and write the SMF."""
-    config, tensors = load_hf_checkpoint(model_dir)
+    """--hf: import a Llama-class checkpoint and write the SMF, mapping the
+    safetensors and building each converted weight only as it is written
+    (lazy), so the export holds about one weight at a time."""
+    config, tensors = load_hf_checkpoint(model_dir, lazy=True)
     conv = hf_llama_to_seeml(config, tensors, seq_len,
                              allow_eps_drift=allow_eps_drift)
     for note in conv["notes"]:
@@ -943,7 +1071,7 @@ def export_sds(inputs, labels, path: str, label_kind: int = 1):
     else:
         record = np.dtype([("x", "<f4", (d,)), ("y", "<f4", (label_dim,))])
 
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         f.write(formats.SDS_HEADER.pack(SDS_MAGIC, 1, n, d, label_kind, 0, label_dim))
         for start in range(0, n, SDS_CHUNK_ROWS):
             end = min(n, start + SDS_CHUNK_ROWS)
@@ -990,7 +1118,7 @@ def export_token_sds(records, path: str):
     if (a < 0).any():
         raise ValueError("export_token_sds: negative token id")
     n, s = a.shape[0], a.shape[1] - 1
-    with open(path, "wb") as f:
+    with _atomic_output(path) as f:
         f.write(formats.SDS_HEADER.pack(SDS_MAGIC, 2, n, s, 1, 1, 0))
         f.write(_flat_bytes(a))
     print(f"wrote {path} ({n} records, seq_len={s}, token-native)")

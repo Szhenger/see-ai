@@ -233,6 +233,9 @@ class UpdateEngine {
   /// it into the run report so a measured row says which kernels it
   /// measured (review F42).
   uint64_t relaxed_executions() const;
+  /// Instruction pairs the backend ran as one dispatch — the Metal
+  /// backend's low-rank epilogue fold (F7 #138 step 4); zero elsewhere.
+  uint64_t fused_dispatches() const;
   /// The CPU GEMM tile geometry the loaded plan's header selects (v11;
   /// the runtime defaults for zero fields or a pre-v11 plan). A
   /// throughput knob the compiler decided; no result bit depends on it.
@@ -419,10 +422,15 @@ class UpdateEngine {
   std::unique_ptr<ExecutorBackend> backend_;
   BackendKind backend_kind_ = BackendKind::kCpu;
   std::string backend_note_;
-  // The bound source model (v17): a read-only mmap of the file, and the
-  // byte extent the eval program's source refs need from it (0 = none).
+  // The bound source model (v17): a read-only mmap of the file, the byte
+  // extent the programs' source refs need from it (0 = none), and which
+  // programs besides the eval one read it — the train / step programs and
+  // the merge program of an adapter-only plan (v21) — so their entry
+  // points refuse to run unbound the way Evaluate does.
   Mapping source_;
   uint64_t source_required_ = 0;
+  bool train_reads_source_ = false;
+  bool merge_reads_source_ = false;
   uint64_t step_ = 0;                     // 1-indexed AdamW timestep
   uint64_t horizon_ = 0;                  // run LR horizon; 0 = plan default
 

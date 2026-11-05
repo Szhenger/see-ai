@@ -6,6 +6,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -61,6 +62,23 @@ struct StepParams {
   uint64_t step = 0;  // 1-indexed AdamW timestep
 };
 
+/// The one verdict both backends return for a gradient whose L2 norm is not
+/// finite at a clip — the fused optimizer steps' and the standalone
+/// kClipNorm's (CR1 #142 F09 / F11): the step is refused and nothing it
+/// would have written is written. The CPU refuses at Execute; the Metal
+/// backend's clip kernels raise a flag the parameter-writing kernels honor,
+/// and Flush reports it. One string, so a twin test can hold the two
+/// backends to the same words.
+inline constexpr const char* kNonFiniteNormRefusal =
+    "gradient norm is not finite — the step was refused with the parameters "
+    "and optimizer state untouched";
+/// kClipNorm's threshold is a finite positive float: the validator refuses
+/// any other, and a backend handed one anyway refuses the instruction
+/// rather than scale by it (CR1 #142 F13 / F18).
+inline constexpr const char* kClipThresholdRefusal =
+    "clip threshold is not a finite positive float — the instruction was "
+    "refused with the gradient untouched";
+
 class ExecutorBackend {
  public:
   virtual ~ExecutorBackend() = default;
@@ -105,6 +123,24 @@ class ExecutorBackend {
       const seeml::update::UpdateInstruction& ins,
       const StepParams& params) = 0;
 
+  /// The engine is about to execute `program[begin, end)`, one program's
+  /// instructions in order (ExecuteRange), and EndRange follows its Flush.
+  /// The whole program comes with the range because a backend that plans
+  /// across instructions must see what follows the range: the bench build
+  /// runs the train program as three ranges (forward, backward, optimizer),
+  /// and the Metal backend's low-rank fold (F7 #138 step 4) drops a store
+  /// only when nothing in the PROGRAM reads it again. A backend that keeps
+  /// the source model off its device (Metal, past the GPU's working set;
+  /// F5 #133) runs the whole range on its CPU sub-backend when any
+  /// instruction of it reads the source — draining the device around each
+  /// such instruction cost eight times the CPU's own evaluation. The
+  /// defaults do nothing: a backend that executes everything where it is
+  /// told needs neither.
+  virtual void BeginRange(
+      std::span<const seeml::update::UpdateInstruction> /*program*/,
+      size_t /*begin*/, size_t /*end*/) {}
+  virtual void EndRange() {}
+
   /// Completes all deferred work. After a successful Flush the arena's
   /// bytes are what the instruction sequence so far computed, readable by
   /// the CPU (loss slot, eval probabilities, checkpoints, merge deltas).
@@ -124,6 +160,9 @@ class ExecutorBackend {
   /// the instruction is dispatched or encoded, so it is current after
   /// Execute returns on a deferring backend too.
   virtual uint64_t relaxed_executions() const { return 0; }
+  /// F7 #138 step 4: instruction pairs this backend ran as one dispatch
+  /// (the Metal backend's low-rank epilogue fold); 0 elsewhere.
+  virtual uint64_t fused_dispatches() const { return 0; }
 };
 
 /// The reference backend: the portable kernel library, thread-count

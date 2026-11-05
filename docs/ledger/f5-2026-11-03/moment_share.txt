@@ -1,0 +1,4 @@
+smollm135    adapters 211  params    3,024,384  moments    23.1 MiB  persistent    34.6 MiB (expected 34.6)  arena   1.47 GiB  moments/arena 1.53 %  8-bit would save 17.3 MiB
+smollm2_360  adapters 225  params    5,070,336  moments    38.7 MiB  persistent    58.0 MiB (expected 58.0)  arena   3.05 GiB  moments/arena 1.24 %  8-bit would save 29.0 MiB
+qwen25_05b   adapters 169  params    5,916,672  moments    45.1 MiB  persistent    67.7 MiB (expected 67.7)  arena   4.20 GiB  moments/arena 1.05 %  8-bit would save 33.9 MiB
+qwen25_15b   adapters 197  params   11,033,600  moments    84.2 MiB  persistent   168.4 MiB (expected 168.4)  arena   7.18 GiB  moments/arena 1.15 %  8-bit would save 63.1 MiB

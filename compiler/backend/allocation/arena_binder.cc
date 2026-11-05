@@ -225,7 +225,8 @@ std::expected<ArenaBinding, std::string> BindArena(
     sir::Block& train_block, const GraphBuild& build,
     const std::unordered_set<const sir::Value*>& pinned,
     const std::unordered_map<const sir::Value*, float>& quant_scales,
-    const std::unordered_set<const sir::Value*>& bf16_weights) {
+    const std::unordered_set<const sir::Value*>& bf16_weights,
+    bool adapter_only) {
   ArenaBinding binding;
 
   // --- PERSISTENT segment: trainable adapters + optimizer state at offset 0.
@@ -257,13 +258,21 @@ std::expected<ArenaBinding, std::string> BindArena(
   // --- RODATA: lay out every frozen weight, dedup-free and sequential.
   // Weights selected for quantization take one int8 per element (4x
   // smaller), bf16 weights two bytes; everything else raw f32. Layout
-  // only — PackRodata writes the bytes, once, into the plan.
+  // only — PackRodata writes the bytes, once, into the plan. An
+  // adapter-only plan (F6 #134, v21) lays out nothing: every frozen weight
+  // is a source ref, its f32 payload's offset in the model file the plan
+  // is bound to, and the kernels read it there in every program.
   uint64_t rodata_cursor = 0;
   train_block.walk([&](sir::Operation* op) {
     if (op->mnemonic() != "sc_mem.weight") return;
     const sir::Value* v = op->result(0);
     auto src = build.weight_sources.find(v);
     if (src == build.weight_sources.end()) return;  // caught below
+    if (adapter_only) {
+      if (src->second->data_offset != 0)
+        binding.refs[v] = MakeSourceRef(src->second->data_offset);
+      return;  // an offset of zero is an in-memory tensor: caught below
+    }
     RodataPack pack{.source = src->second, .offset = AlignUp(rodata_cursor)};
     const uint64_t count = src->second->byte_size / sizeof(float);
     if (auto q = quant_scales.find(v); q != quant_scales.end()) {

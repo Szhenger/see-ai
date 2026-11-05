@@ -247,6 +247,40 @@ class ContainerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nbytes"):
             b.add_tensor("v", [2], lambda: np.zeros(2, "<f4"))
 
+    def test_a_non_finite_weight_is_refused_at_export(self):
+        # CR1 #142 (S1): NaN and Inf are refused at the ingest boundary,
+        # from an eager or a callable payload, by tensor and element.
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("w", [2, 2], np.array([1.0, np.nan, 2.0, 3.0], "<f4"))
+        with self.assertRaisesRegex(ValueError, r"'w'.*element 1"):
+            b.serialize()
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("v", [2], lambda: np.array([np.inf, 1.0], "<f4"),
+                     nbytes=8)
+        with self.assertRaisesRegex(ValueError, r"'v'.*element 0"):
+            b.serialize()
+
+    def test_outputs_are_staged_and_a_failure_leaves_the_old_file(self):
+        # CR4 #145 F55: every file the module writes goes through
+        # _atomic_output — staged, synced, renamed; a failure midway removes
+        # the stage and leaves the destination as it was.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "out.bin")
+            with open(path, "wb") as f:
+                f.write(b"old")
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                with em._atomic_output(path) as f:
+                    f.write(b"partial")
+                    raise RuntimeError("disk full")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"old")
+            self.assertEqual(os.listdir(d), ["out.bin"])
+            with em._atomic_output(path) as f:
+                f.write(b"new")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"new")
+            self.assertEqual(os.listdir(d), ["out.bin"])
+
     def test_arrays_are_written_without_a_copy(self):
         b = em._SmfBuilder("x", 4)
         a = np.arange(8, dtype="<f4").reshape(2, 4)
@@ -447,6 +481,41 @@ class HfImportTest(unittest.TestCase):
         np.testing.assert_array_equal(
             em.read_safetensors(os.path.join(d, "x.safetensors"))["c"],
             exact["c"])
+
+    def test_the_lazy_import_writes_the_eager_bytes(self):
+        # --hf maps the safetensors and builds each converted weight only
+        # while the SMF writer reaches it (so a 1.5B export holds about one
+        # weight at a time): the file must be the eager conversion's byte
+        # for byte — every dtype, the Qwen2 biases, both head layouts — and
+        # the parity forward must read the deferred weights as arrays.
+        for model_type, tied, dtype in (("llama", True, "BF16"),
+                                        ("qwen2", False, "F32"),
+                                        ("llama", False, "F16")):
+            d = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, d, True)
+            cfg = hf_tiny_config(model_type=model_type, tied=tied)
+            write_hf_dir(d, cfg, hf_tiny_tensors(cfg, 5), dtype)
+            lazy_path = os.path.join(d, "lazy.smf")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                conv = em.export_hf_decoder(d, lazy_path, seq_len=8)
+                config, tensors = em.load_hf_checkpoint(d)
+                eager = em.hf_llama_to_seeml(config, tensors, seq_len=8)
+                eager_path = os.path.join(d, "eager.smf")
+                em.export_token_decoder_smf(
+                    eager["embedding"], eager["blocks"], eager["head"],
+                    eager_path, seq_len=8, num_heads=eager["num_heads"],
+                    rope_base=eager["rope_base"], norm_eps=eager["norm_eps"])
+            with open(lazy_path, "rb") as a, open(eager_path, "rb") as b:
+                self.assertEqual(a.read(), b.read(), (model_type, tied, dtype))
+            self.assertIsInstance(conv["blocks"][0]["wq"], em._Deferred)
+            self.assertIsInstance(conv["head"]["w_head"], em._Deferred)
+            tokens = np.arange(16).reshape(2, 8) % cfg["vocab_size"]
+            logits = [em.reference_decoder_logits(
+                c["embedding"], c["blocks"], c["head"], c["num_heads"],
+                c["rope_base"], tokens, norm_eps=c["norm_eps"])
+                for c in (conv, eager)]
+            np.testing.assert_array_equal(logits[0], logits[1])
 
     def _check_mapping(self, cfg, seed):
         t = hf_tiny_tensors(cfg, seed)

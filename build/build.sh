@@ -5,14 +5,17 @@ set -e
 cd "$(dirname "$0")/.."
 CXX="${CXX:-c++}"
 FLAGS="-std=c++23 -O2 -Wall -Wextra -Werror -pthread -I. -DSEEML_SOURCE_DIR='\"$(pwd)\"'"
-# SEEML_BENCH=1 mirrors CMake's -DSEEML_BENCH=ON; empty, 0, off, false and
-# no (any case) are OFF, mirroring CMake's own falsy spellings.
-seeml_bench_enabled() {
-  case "$(printf '%s' "${SEEML_BENCH:-}" | tr '[:upper:]' '[:lower:]')" in
+# Every switch this script reads is tested the same way (CR3 #144 F23):
+# empty, 0, off, false, no and n (any case) are OFF, mirroring CMake's own
+# falsy spellings; anything else is ON.
+seeml_on() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
     ""|0|off|false|no|n) return 1 ;;
     *) return 0 ;;
   esac
 }
+# SEEML_BENCH=1 mirrors CMake's -DSEEML_BENCH=ON.
+seeml_bench_enabled() { seeml_on "${SEEML_BENCH:-}"; }
 # SEEML_BENCH=1 mirrors CMake's -DSEEML_BENCH=ON: compiles the runtime with
 # the per-phase step clock and links the seeml-bench harness at the end.
 if seeml_bench_enabled; then
@@ -23,7 +26,7 @@ fi
 # Accelerate's SGEMM. The tree's own build leaves it off; the emitted
 # package's build.sh turns it on for a relaxed plan.
 ACCEL_LDFLAGS=""
-if [ "$(uname)" = "Darwin" ] && [ -n "${SEEML_ACCELERATE:-}" ] && [ "${SEEML_ACCELERATE}" != "0" ]; then
+if [ "$(uname)" = "Darwin" ] && seeml_on "${SEEML_ACCELERATE:-}"; then
   FLAGS="$FLAGS -DSEEML_ACCELERATE"
   ACCEL_LDFLAGS="-framework Accelerate"
 fi
@@ -85,17 +88,22 @@ compile runtime/executor/cpu_backend.cc       rt_cpu_backend.o
 # ObjC++ front end rejects it) — the rest of the tree is standard C++23.
 METAL_OBJS=""
 METAL_LDFLAGS=""
+# The bench's energy meter (tool/energy_meter.h, F6 #134) reads IOReport
+# through CoreFoundation on Darwin; the library itself is opened at run time.
+BENCH_LDFLAGS=""
 if [ "$(uname)" = "Darwin" ]; then
   echo "  OBJCXX runtime/executor/metal_gemm.mm"
   eval "$CXX $FLAGS -x objective-c++ -fobjc-arc -c runtime/executor/metal_gemm.mm -o build/rt_metal_gemm.o"
   METAL_OBJS="build/rt_metal_gemm.o"
   METAL_LDFLAGS="-framework Metal -framework Foundation"
+  BENCH_LDFLAGS="-framework CoreFoundation"
 fi
-# The Metal executor backend (G1b) exists on Darwin unless SEEML_NO_METAL=1
+# The Metal executor backend (G1b) exists on Darwin unless SEEML_NO_METAL is
+# on (1; a falsy value — 0, off, no, false, empty — leaves it built)
 # (mirroring CMake's option); the stub takes its place everywhere else. The
 # G1a harness above stays on the platform gate alone: its hardware suite
 # links it on every Mac.
-if [ "$(uname)" = "Darwin" ] && [ -z "${SEEML_NO_METAL:-}" ]; then
+if [ "$(uname)" = "Darwin" ] && ! seeml_on "${SEEML_NO_METAL:-}"; then
   echo "  OBJCXX runtime/executor/metal_backend.mm"
   eval "$CXX $FLAGS -x objective-c++ -fobjc-arc -c runtime/executor/metal_backend.mm -o build/rt_metal_backend.o"
 else
@@ -167,7 +175,7 @@ if seeml_bench_enabled; then
   eval "$CXX $FLAGS -c tool/seeml_bench.cc -o build/seeml_bench.o"
   eval "$CXX -pthread build/seeml_bench.o build/fixtures_models.o \
         build/fixtures_corpora.o build/fixtures_probes.o \
-        $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o build/seeml-bench"
+        $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS $BENCH_LDFLAGS -o build/seeml-bench"
 fi
 
 for suite in \

@@ -48,13 +48,21 @@ bool ClipScale(const float* g, size_t n, float max_norm, float* scale) {
 
 }  // namespace
 
-void ClipNorm(float* g, size_t n, float max_norm) {
+bool ClipNorm(float* g, size_t n, float max_norm) {
+  // CR1 #142 F09: the standalone clip refuses what the fused steps refuse —
+  // a cap that is not a finite positive float, and a non-finite norm —
+  // leaving g as it was; the backend maps false to the shared verdict and
+  // the engine stops before the step. Before, a NaN norm scaled every
+  // element to NaN and a zero cap scaled them to zero.
+  if (!std::isfinite(max_norm) || !(max_norm > 0.0f)) return false;
   const double norm = L2Norm(g, n);
-  if (norm <= static_cast<double>(max_norm) || norm == 0.0) return;
+  if (!std::isfinite(norm)) return false;
+  if (norm <= static_cast<double>(max_norm) || norm == 0.0) return true;
   const float s = static_cast<float>(static_cast<double>(max_norm) / norm);
   up::ParallelFor(n, kGrainCheap, [&](size_t b, size_t e, size_t) {
     for (size_t i = b; i < e; ++i) g[i] *= s;
   });
+  return true;
 }
 
 // The fused-clip steps round g[i] * s to f32 in a statement of its own

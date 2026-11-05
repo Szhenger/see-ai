@@ -84,8 +84,12 @@ struct KArgs {
   uint32_t batch = 1, batch_h = 1;
   uint32_t pad2 = 0, pad3 = 0, pad4 = 0;
   uint64_t bs[6] = {0, 0, 0, 0, 0, 0};
+  // F7 #138 step 4: the low-rank epilogue's operands (PlanLowRank).
+  uint64_t lr_off[3] = {0, 0, 0};
+  uint32_t lr_k = 0;
+  float lr_alpha = 1.0f;
 };
-static_assert(sizeof(KArgs) == 216, "KArgs must match the MSL layout");
+static_assert(sizeof(KArgs) == 248, "KArgs must match the MSL layout");
 
 enum Pipe : int {
   kPGemmNN, kPGemmNT, kPGemmTN, kPGemmAcc, kPGemmNNQ8, kPGemmNTQ8,
@@ -110,7 +114,14 @@ enum Pipe : int {
   kPGemmNNColsGTg, kPGemmNTColsGTg, kPGemmTNColsGTg, kPGemmAccColsGTg,
   kPGemmNNQ8ColsGTg, kPGemmNTQ8ColsGTg, kPGemmNNBF16ColsGTg,
   kPGemmNTBF16ColsGTg,
+  // F7 #138, the nt_rows floor: _rows_tgb (N <= 16, B transposed: the
+  // [N x 32 k] block of B through threadgroup memory, read as float4s).
+  kPGemmNNRowsTgB, kPGemmNTRowsTgB, kPGemmTNRowsTgB, kPGemmAccRowsTgB,
+  kPGemmNNQ8RowsTgB, kPGemmNTQ8RowsTgB, kPGemmNNBF16RowsTgB,
+  kPGemmNTBF16RowsTgB,
   kPGemmSplitKFin,
+  // F7 #138 step 4: the tile kernel with the low-rank epilogue (NN forms).
+  kPGemmNNLR, kPGemmNNQ8LR,
   kPAddEW, kPMulEW, kPAddBias, kPReluFwd, kPReluBwd, kPGeluFwd, kPGeluBwd,
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
   kPReduceRows, kPLnFwd, kPLnBwd, kPRmsFwd, kPRmsBwd,
@@ -121,6 +132,7 @@ enum Pipe : int {
   kPAttnFwdTiled, kPAttnDQTiled, kPAttnDKTiled, kPAttnDVTiled,
   kPAttnFwdTiledBlk, kPAttnDQTiledBlk, kPAttnDKTiledBlk, kPAttnDVTiledBlk,
   kPAttnFwdTiledMma, kPAttnDQTiledMma, kPAttnDKTiledMma, kPAttnDVTiledMma,
+  kPSelfTest,
   kPipeCount
 };
 const char* const kPipeNames[kPipeCount] = {
@@ -144,7 +156,10 @@ const char* const kPipeNames[kPipeCount] = {
     "k_gemm_nn_colsg_tg", "k_gemm_nt_colsg_tg", "k_gemm_tn_colsg_tg",
     "k_gemm_acc_colsg_tg", "k_gemm_nn_q8_colsg_tg", "k_gemm_nt_q8_colsg_tg",
     "k_gemm_nn_bf16_colsg_tg", "k_gemm_nt_bf16_colsg_tg",
-    "k_gemm_splitk_fin", "k_add_ew", "k_mul_ew", "k_add_bias", "k_relu_fwd",
+    "k_gemm_nn_rows_tgb", "k_gemm_nt_rows_tgb", "k_gemm_tn_rows_tgb",
+    "k_gemm_acc_rows_tgb", "k_gemm_nn_q8_rows_tgb", "k_gemm_nt_q8_rows_tgb",
+    "k_gemm_nn_bf16_rows_tgb", "k_gemm_nt_bf16_rows_tgb",
+    "k_gemm_splitk_fin", "k_gemm_nn_lr", "k_gemm_nn_q8_lr", "k_add_ew", "k_mul_ew", "k_add_bias", "k_relu_fwd",
     "k_relu_bwd", "k_gelu_fwd", "k_gelu_bwd", "k_silu_fwd", "k_silu_bwd",
     "k_scale", "k_fused_map", "k_fill", "k_copy", "k_accumulate", "k_sgd", "k_adamw",
     "k_reduce_rows",
@@ -159,7 +174,7 @@ const char* const kPipeNames[kPipeCount] = {
     "k_attn_fwd_tiled_blk", "k_attn_dq_tiled_blk", "k_attn_dk_tiled_blk",
     "k_attn_dv_tiled_blk",
     "k_attn_fwd_tiled_mma", "k_attn_dq_tiled_mma", "k_attn_dk_tiled_mma",
-    "k_attn_dv_tiled_mma"};
+    "k_attn_dv_tiled_mma", "k_selftest"};
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -184,6 +199,7 @@ constexpr int kGemmCols = kPGemmNNCols - kPGemmNN;
 constexpr int kGemmColsG = kPGemmNNColsG - kPGemmNN;
 constexpr int kGemmRowsTg = kPGemmNNRowsTg - kPGemmNN;
 constexpr int kGemmColsGTg = kPGemmNNColsGTg - kPGemmNN;
+constexpr int kGemmRowsTgB = kPGemmNNRowsTgB - kPGemmNN;
 constexpr uint32_t kGemmStagedGroup = 256;  // 8 simdgroups: 8 rows or columns
 // M <= 16: below this N a simdgroup per column (lanes striding K) beats a
 // thread per column; above it the per-thread form's coalesced B reads win.
@@ -251,6 +267,11 @@ bool PagesWritable(const void* ptr, uint64_t len) {
 bool Overlaps(const Extent& a, const Extent& b) {
   return a.off < b.off + b.bytes && b.off < a.off + a.bytes;
 }
+// A diagnostic switch in the environment: set to anything but "" or "0".
+bool EnvFlag(const char* name) {
+  const char* v = std::getenv(name);
+  return v != nullptr && *v != '\0' && *v != '0';
+}
 
 class MetalBackend final : public ExecutorBackend {
  public:
@@ -270,6 +291,10 @@ class MetalBackend final : public ExecutorBackend {
     s += relaxed_ ? ", relaxed GEMMs on tensor ops"
                   : ", relaxed GEMMs on the exact kernels (" +
                         relaxed_reason_ + ")";
+    if (source_on_cpu_)
+      s += ", source model on the CPU (" + std::to_string(source_bytes_) +
+           " B; with the arena and the rodata it exceeds the GPU working "
+           "set of " + std::to_string(working_set_limit_) + " B)";
     return s;
   }
 
@@ -282,6 +307,39 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> Execute(const up::UpdateInstruction& ins,
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
+  std::expected<void, std::string> SelfTest();
+  void BeginRange(std::span<const up::UpdateInstruction> program, size_t begin,
+                  size_t end) override {
+    range_on_cpu_ = false;
+    end = std::min(end, program.size());
+    begin = std::min(begin, end);
+    program_ = program;
+    begin_ = begin;
+    end_ = end;
+    plan_ = nullptr;
+    if (source_on_cpu_)
+      for (const up::UpdateInstruction& ins :
+           program.subspan(begin, end - begin))
+        if (const InstructionExtents* ex = ExtentsOf(ins);
+            ex && ReadsSource(*ex)) {
+          range_on_cpu_ = true;
+          return;
+        }
+    // F7 #138 step 4: the instruction pairs this program runs as one
+    // dispatch — planned over the whole program, so a store dropped as
+    // dead is dead in every range that follows (ExecuteRange's phases).
+    if (fuse_lowrank_) plan_ = &PlanLowRank(program);
+  }
+  void EndRange() override {
+    range_on_cpu_ = false;
+    plan_ = nullptr;
+    program_ = {};
+    begin_ = end_ = 0;
+  }
+  static bool ReadsSource(const InstructionExtents& ex) {
+    return std::any_of(ex.ranges, ex.ranges + ex.count,
+                       [](const OperandExtent& r) { return r.source; });
+  }
   // Its own tensor-op GEMMs and matrix-tile tiled attention dispatches
   // (v20) plus the relaxed GEMMs it hands the CPU
   // backend (a GEMM whose dimensions overflow 32 bits, DimsFit32), which
@@ -289,9 +347,13 @@ class MetalBackend final : public ExecutorBackend {
   uint64_t relaxed_executions() const override {
     return relaxed_executions_ + (cpu_ ? cpu_->relaxed_executions() : 0);
   }
+  uint64_t fused_dispatches() const override { return lowrank_fused_; }
 
  private:
   const InstructionExtents* ExtentsOf(const up::UpdateInstruction& ins);
+  // The validator's reason when ExtentsOf refuses an instruction, for the
+  // dispatch-time message (CR1 #142: a refused threshold names itself).
+  std::string revalidation_error_;
   bool HazardWithPending(const InstructionExtents& ex) const;
   void RecordPending(const InstructionExtents& ex);
   std::expected<void, std::string> EnsureEncoder();
@@ -312,6 +374,11 @@ class MetalBackend final : public ExecutorBackend {
   id<MTLCommandQueue> queue_ = nil;
   id<MTLComputePipelineState> pipes_[kPipeCount];
   id<MTLBuffer> scratch_ = nil;
+  // The clip refusal flag (CR1 #142 F11): one float in its own buffer,
+  // bound at index 7 for every encoder, raised by k_clip_finish on a
+  // non-finite norm, honored by the kernels that would write parameters,
+  // read and cleared by Flush.
+  id<MTLBuffer> clip_flag_ = nil;
   id<MTLBuffer> splitk_ws_ = nil;  // split-K partials, grown on demand
   uint64_t splitk_ws_bytes_ = 0;
   // The relaxed family (v18): its pipelines when the Metal 4 library built,
@@ -338,6 +405,28 @@ class MetalBackend final : public ExecutorBackend {
   // zero-copy when the mapping is page-aligned (the engine mmaps it), else
   // copied once. Bound at buffer index 5 on every encoder.
   id<MTLBuffer> source_buf_ = nil;
+  // F5 #133, the 1.5B rung: beyond the device's working set the GPU
+  // completes command buffers without running them (arena 7.7 GB + rodata
+  // 2.6 GB + the 7.5 GB f32 source on a 16 GB M5: every loss read zero and
+  // every buffer reported Completed). So Bind refuses an arena or an arena
+  // plus rodata the GPU cannot hold, BindSource keeps the source model a
+  // CPU mapping when it would not fit beside them — its readers, the eval
+  // program's source-weight GEMMs, run on cpu_ — and a self-test at Bind
+  // proves one dispatch executes. SEEML_METAL_WORKING_SET (bytes) overrides
+  // the device's recommendedMaxWorkingSetSize, for tests.
+  bool source_on_cpu_ = false;
+  uint64_t source_bytes_ = 0;
+  uint64_t working_set_limit_ = 0;
+  // Set by BeginRange while source_on_cpu_: the range being executed reads
+  // the source model, so every instruction of it runs on cpu_ — one
+  // hand-off per range, not a drain around each source-weight GEMM (which
+  // made the 1.5B rung's evaluation eight times the CPU backend's).
+  bool range_on_cpu_ = false;
+  // Whether this GPU reports command-buffer execution times (learned from
+  // the self-test): where it does, a buffer that completes with none is
+  // one the device declined, and Flush refuses it.
+  bool gpu_timestamps_ = false;
+  double last_gpu_start_ = 0, last_gpu_end_ = 0;
   uint8_t* arena_ = nullptr;
   uint64_t arena_bytes_ = 0;
   const uint8_t* rodata_ = nullptr;
@@ -354,9 +443,7 @@ class MetalBackend final : public ExecutorBackend {
   // GPU time (GPUStartTime..GPUEndTime) accumulated per kernel and shape,
   // CPU-resident instructions by wall clock; a table on stderr at
   // destruction. Diagnostic only — it serializes the stream.
-  const bool profile_ = std::getenv("SEEML_METAL_PROFILE") != nullptr &&
-                        *std::getenv("SEEML_METAL_PROFILE") != '\0' &&
-                        *std::getenv("SEEML_METAL_PROFILE") != '0';
+  const bool profile_ = EnvFlag("SEEML_METAL_PROFILE");
   struct ProfRow { double seconds = 0; uint64_t count = 0; };
   std::map<std::string, ProfRow> prof_;
   std::string prof_pipes_;  // every kernel the current instruction dispatched
@@ -374,9 +461,41 @@ class MetalBackend final : public ExecutorBackend {
   // completion, and the dispatch count — the time outside kernels is the
   // difference, measured without serializing the stream the way the
   // profile does. A table on stderr at destruction. Diagnostic only.
-  const bool spans_ = std::getenv("SEEML_METAL_SPANS") != nullptr &&
-                      *std::getenv("SEEML_METAL_SPANS") != '\0' &&
-                      *std::getenv("SEEML_METAL_SPANS") != '0';
+  // SEEML_METAL_UNSTAGED_ROWS=1 keeps the transposed-B rows sites on the
+  // unstaged kernel: the same-session control for the staged form's bits
+  // and time (F7 #138), diagnostic only.
+  const bool rows_tgb_ = !EnvFlag("SEEML_METAL_UNSTAGED_ROWS");
+  // F7 #138 step 4: the low-rank epilogue fold (PlanLowRank) — a base
+  // GEMM whose output the next rank-r GEMM takes as its addend runs as
+  // one dispatch at the second instruction's place (k_gemm_*_lr), both
+  // outputs written, the bits of the two dispatches.
+  // SEEML_METAL_UNFUSED_LOWRANK=1 keeps them apart: the same-session
+  // control for the fold's bits and time.
+  const bool fuse_lowrank_ = !EnvFlag("SEEML_METAL_UNFUSED_LOWRANK");
+  struct FusionPlan {
+    std::vector<int32_t> role;  // kRoleNone, kRoleDeferred, or the base's index
+    std::vector<int32_t> partner;  // a deferred base: its rank-r GEMM's index
+    std::vector<uint8_t> drop_c;  // per fused j: the program never reads C again
+    uint64_t pairs = 0;
+  };
+  static constexpr int32_t kRoleNone = -1, kRoleDeferred = -2;
+  std::unordered_map<const void*, FusionPlan> fusion_plans_;
+  const FusionPlan* plan_ = nullptr;
+  // The program the current range belongs to and the range's bounds in it
+  // (BeginRange): a pair is fused only when both instructions fall inside
+  // the range the engine runs, since the engine reads the arena between
+  // ranges.
+  std::span<const up::UpdateInstruction> program_;
+  size_t begin_ = 0, end_ = 0;
+  // Fused dispatches, and those among them that dropped C's store (the
+  // profile and the spans print both, so a run shows what the store-drop
+  // rule decided on its program).
+  uint64_t lowrank_fused_ = 0, lowrank_dropped_ = 0;
+  const FusionPlan& PlanLowRank(std::span<const up::UpdateInstruction> program);
+  std::expected<void, std::string> EncodeLowRank(
+      const up::UpdateInstruction& base, const up::UpdateInstruction& lr,
+      bool drop_c);
+  const bool spans_ = EnvFlag("SEEML_METAL_SPANS");
   struct SpanRow { uint64_t dispatches; double gpu_seconds, wall_seconds; };
   std::vector<SpanRow> spans_rows_;
   std::chrono::steady_clock::time_point cb_t0_;
@@ -666,7 +785,21 @@ MetalBackend::Create() {
                                  options:MTLResourceStorageModeShared];
     if (!be->scratch_) return std::unexpected("scratch allocation failed");
     be->scratch_floats_ = kScratchFloats;
+    be->clip_flag_ =
+        [be->device_ newBufferWithLength:16
+                                 options:MTLResourceStorageModeShared];
+    if (!be->clip_flag_)
+      return std::unexpected("clip flag allocation failed");
+    static_cast<float*>(be->clip_flag_.contents)[0] = 0.0f;  // not zeroed
     be->cpu_ = CreateCpuBackend();
+    // Zero — a device that reports no working set, or an override that
+    // does not parse — means unknown: the Bind and BindSource checks stand
+    // down rather than refuse every arena and divert every source.
+    be->working_set_limit_ = be->device_.recommendedMaxWorkingSetSize;
+    if (const char* ws = std::getenv("SEEML_METAL_WORKING_SET");
+        ws && *ws != '\0')
+      if (const uint64_t v = std::strtoull(ws, nullptr, 10); v != 0)
+        be->working_set_limit_ = v;
     return std::unique_ptr<ExecutorBackend>(std::move(be));
   }
 }
@@ -677,11 +810,24 @@ std::expected<void, std::string> MetalBackend::Bind(
   @autoreleasepool {
     // Nothing may still be in flight against the previous binding.
     if (auto r = Flush(); !r) return r;
+    fusion_plans_.clear();  // the ranges of the previous plan
+    plan_ = nullptr;
     const uint64_t page = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
     if (page == 0 || reinterpret_cast<uintptr_t>(arena) % page != 0 ||
         arena_bytes % page != 0)
       return std::unexpected("arena is not page-aligned (" +
                              std::to_string(page) + "-byte pages)");
+    // The arena is one buffer, and the GPU holds it with the rodata for
+    // every step: both limits are refusals with the numbers, never a run
+    // that computes nothing (see source_on_cpu_).
+    const uint64_t largest = device_.maxBufferLength;
+    if (arena_bytes > largest)
+      return std::unexpected(
+          "the arena (" + std::to_string(arena_bytes) +
+          " bytes) exceeds this GPU's largest buffer (" +
+          std::to_string(largest) +
+          " bytes): run on the CPU, or compile a smaller plan (a smaller "
+          "micro-batch under --grad-accum, --remat on, --attention tiled)");
     id<MTLBuffer> arena_buf =
         [device_ newBufferWithBytesNoCopy:arena
                                    length:arena_bytes
@@ -711,6 +857,16 @@ std::expected<void, std::string> MetalBackend::Bind(
           return std::unexpected("cannot allocate the rodata buffer");
       }
     }
+    const uint64_t resident =
+        arena_bytes + (rodata_buf ? static_cast<uint64_t>(rodata_buf.length) : 0);
+    if (working_set_limit_ != 0 && resident > working_set_limit_)
+      return std::unexpected(
+          "the arena (" + std::to_string(arena_bytes) + " bytes) plus the "
+          "rodata (" + std::to_string(resident - arena_bytes) +
+          " bytes) exceed this GPU's working set (" +
+          std::to_string(working_set_limit_) +
+          " bytes): run on the CPU, or compile a smaller plan (a smaller "
+          "micro-batch under --grad-accum, --remat on, --attention tiled)");
     if (auto r = cpu_->Bind(arena, arena_bytes, rodata, rodata_bytes,
                             rodata_mapped_bytes);
         !r)
@@ -725,6 +881,28 @@ std::expected<void, std::string> MetalBackend::Bind(
     extents_.clear();
     pending_reads_.clear();
     pending_writes_.clear();
+    return SelfTest();
+  }
+}
+
+std::expected<void, std::string> MetalBackend::SelfTest() {
+  // One dispatch that writes the scratch buffer, read back: the device runs
+  // what it completes. It also learns whether this GPU reports execution
+  // times, which lets Flush refuse a later buffer that completes with none.
+  @autoreleasepool {
+    auto* s = static_cast<float*>(scratch_.contents);
+    s[0] = 0.0f;
+    gpu_timestamps_ = false;
+    if (auto r = EnsureEncoder(); !r) return r;
+    KArgs a;
+    a.f[0] = 1.0f;
+    Dispatch(kPSelfTest, a, 1, 1);
+    if (auto r = Flush(); !r) return r;
+    if (s[0] != 1.0f)
+      return std::unexpected(
+          "the GPU completed a command buffer without executing it (the "
+          "self-test kernel wrote nothing)");
+    gpu_timestamps_ = last_gpu_start_ > 0 && last_gpu_end_ > last_gpu_start_;
     return {};
   }
 }
@@ -734,12 +912,27 @@ std::expected<void, std::string> MetalBackend::BindSource(const uint8_t* data,
   @autoreleasepool {
     if (auto r = Flush(); !r) return r;  // nothing in flight reads the old one
     if (auto r = cpu_->BindSource(data, bytes); !r) return r;
+    source_on_cpu_ = false;
+    source_bytes_ = bytes;
     if (!data || bytes == 0) {
       source_buf_ = nil;
       return {};
     }
     const uint64_t page = static_cast<uint64_t>(getpagesize());
     const uint64_t wrapped = (bytes + page - 1) & ~(page - 1);
+    // The arena and the rodata are what every step touches; the source
+    // model is read by the eval program alone. Where the three together
+    // exceed the GPU's working set, the source stays a CPU mapping and the
+    // instructions that read it run on cpu_ (Execute) — a slower validation
+    // pass, and a correct one.
+    const uint64_t resident =
+        (arena_buf_ ? static_cast<uint64_t>(arena_buf_.length) : 0) +
+        (rodata_buf_ ? static_cast<uint64_t>(rodata_buf_.length) : 0) + wrapped;
+    if (working_set_limit_ != 0 && resident > working_set_limit_) {
+      source_buf_ = nil;
+      source_on_cpu_ = true;
+      return {};
+    }
     id<MTLBuffer> buf = nil;
     if (reinterpret_cast<uintptr_t>(data) % page == 0)
       buf = [device_ newBufferWithBytesNoCopy:const_cast<uint8_t*>(data)
@@ -765,7 +958,10 @@ const InstructionExtents* MetalBackend::ExtentsOf(
   // describing an instruction here only recovers the extents it proved.
   auto ex = DescribeInstruction(ins, arena_bytes_, rodata_bytes_,
                                 up::kSeeuVersion, /*allow_source=*/true);
-  if (!ex) return nullptr;
+  if (!ex) {
+    revalidation_error_ = ex.error();
+    return nullptr;
+  }
   return &extents_.emplace(std::move(key), *ex).first->second;
 }
 
@@ -806,6 +1002,7 @@ std::expected<void, std::string> MetalBackend::EnsureEncoder() {
   [enc_ setBuffer:(rodata_buf_ ? rodata_buf_ : arena_buf_) offset:0 atIndex:1];
   [enc_ setBuffer:(source_buf_ ? source_buf_ : arena_buf_) offset:0 atIndex:5];
   [enc_ setBuffer:scratch_ offset:0 atIndex:3];
+  [enc_ setBuffer:clip_flag_ offset:0 atIndex:7];
   // Every tiled GEMM kernel declares the split-K workspace at index 4 and
   // reads it only when it splits; the binding must still exist (an unbound
   // argument is a contract violation the debug layer aborts on), so the
@@ -859,6 +1056,9 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
     if (at)  // A[k, m] with the lanes striding k: stage it (F7 step 3)
       Dispatch(static_cast<Pipe>(pipe + kGemmRowsTg), a,
                a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
+    else if (bt && rows_tgb_)  // B[n, k]: N rows per k — stage the block
+      Dispatch(static_cast<Pipe>(pipe + kGemmRowsTgB), a,
+               a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
     else
       Dispatch(static_cast<Pipe>(pipe + kGemmRows), a, a.batch * a.m * 32u,
                kElementwiseGroup);
@@ -878,7 +1078,14 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
   }
   const uint32_t gx = (a.n + kGemmTile - 1) / kGemmTile;
   const uint32_t gy = (a.m + kGemmTile - 1) / kGemmTile;
-  const uint32_t splits = a.batch > 1 ? 1 : SplitsFor(gx * gy, a.k);
+  // The low-rank kernels (F7 #138 step 4) ignore p.pad0 and write both
+  // outputs whole, so they never split: a split would leave the finish
+  // kernel summing a workspace nobody wrote. PlanLowRank declines a base
+  // the split-K policy would take; this keeps the dispatch right if the
+  // two ever disagree.
+  const bool lowrank = pipe == kPGemmNNLR || pipe == kPGemmNNQ8LR;
+  const uint32_t splits =
+      a.batch > 1 || lowrank ? 1 : SplitsFor(gx * gy, a.k);
   a.pad0 = splits;
   if (splits > 1) {
     const uint64_t need = uint64_t{splits} * a.m * a.n * sizeof(float);
@@ -908,6 +1115,250 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
     if (pipe == kPGemmAcc) a.flags |= 64u;
     Dispatch(kPGemmSplitKFin, a, a.m * a.n, kElementwiseGroup);
   }
+}
+
+// Whether an opcode's write extents are stores alone. The validator
+// describes a read-modify-write operand — an accumulator, a parameter an
+// optimizer step updates, a norm clipped in place, dQ's delta column — as
+// one write extent (plan_validator.cc, "dst (read+write, one operand)"), so
+// a covering write by one of these still reads what it covers: for the
+// store-drop rule below it is a read.
+bool OverwritesWhatItWrites(up::OpCode op) {
+  switch (op) {
+    case up::OpCode::kGemmAccNN:
+    case up::OpCode::kAccumulate:
+    case up::OpCode::kClipNorm:
+    case up::OpCode::kSgdStep:
+    case up::OpCode::kAdamWStep:
+    case up::OpCode::kAttnDQTiled:
+      return false;
+    default:
+      return true;
+  }
+}
+
+// F7 #138 step 4 — the low-rank epilogue, fused at dispatch. At a LoRA site
+// the plan carries two instructions: the base product into C (kGemmNN /
+// kGemmNNQ8 on the tile kernel), then C' = alpha·T@B + C — the rank-r
+// product with C as its addend (kGemmNN, K <= 16, kFlagGemmAddend). Where
+// nothing between them touches C or writes a base operand, the pair runs
+// as ONE dispatch at the second instruction's place: the tile kernel with
+// the low-rank epilogue (k_gemm_*_lr) writes C as before and C' as
+// k_gemm_nn_small would have — serial k from zero, alpha on the finished
+// sum, the addend first — so the arena holds the bits of the two dispatches
+// with one pass over the activation fewer. Decided once per program from
+// the extents the validator proved (cached by the program's identity,
+// dropped at Bind), the whole program and not the range the engine runs,
+// so what it finds dead is dead in every range that follows; the plan and
+// the other backends are untouched, and SEEML_METAL_UNFUSED_LOWRANK=1 is
+// the same-session control.
+const MetalBackend::FusionPlan& MetalBackend::PlanLowRank(
+    std::span<const up::UpdateInstruction> program) {
+  FusionPlan& plan = fusion_plans_[program.data()];
+  if (plan.role.size() == program.size()) return plan;
+  plan.role.assign(program.size(), kRoleNone);
+  plan.partner.assign(program.size(), kRoleNone);
+  plan.drop_c.assign(program.size(), 0);
+  plan.pairs = 0;
+  auto arena_ref = [](uint64_t r) {
+    return r != up::kNullRef && !up::IsRodataRef(r) && !up::IsSourceRef(r);
+  };
+  // Two extents of one address space that share a byte.
+  auto overlap = [](const OperandExtent& a, const OperandExtent& b) {
+    return a.rodata == b.rodata && a.source == b.source &&
+           a.off < b.off + b.bytes && b.off < a.off + a.bytes;
+  };
+  auto covers = [](const OperandExtent& a, const OperandExtent& b) {
+    return a.off <= b.off && a.off + a.bytes >= b.off + b.bytes;
+  };
+  for (size_t j = 0; j < program.size(); ++j) {
+    const up::UpdateInstruction& lr = program[j];
+    if (static_cast<up::OpCode>(lr.opcode) != up::OpCode::kGemmNN ||
+        lr.flags != up::kFlagGemmAddend || lr.out[2] == 0 ||
+        lr.out[2] > kGemmSkinnyDim || !arena_ref(lr.in[0]) ||
+        !arena_ref(lr.in[1]) || !arena_ref(lr.in[2]) || !arena_ref(lr.in[3]) ||
+        !DimsFit32(up::OpCode::kGemmNN, lr))
+      continue;
+    const InstructionExtents* lex = ExtentsOf(lr);
+    if (!lex) continue;
+    OperandExtent c;
+    c.off = up::RefOffset(lr.in[3]);
+    c.bytes = lr.out[0] * lr.out[1] * sizeof(float);
+    // The base: scanning back, the first instruction that touches C must
+    // be the GEMM that wrote exactly it.
+    size_t i = program.size();
+    for (size_t k = j; k-- > 0;) {
+      const InstructionExtents* ex = ExtentsOf(program[k]);
+      if (!ex) break;
+      bool touches = false;
+      for (size_t t = 0; t < ex->count && !touches; ++t)
+        touches = overlap(ex->ranges[t], c);
+      if (!touches) continue;
+      i = k;
+      break;
+    }
+    if (i == program.size() || plan.role[i] != kRoleNone) continue;
+    const up::UpdateInstruction& base = program[i];
+    const auto bop = static_cast<up::OpCode>(base.opcode);
+    if ((bop != up::OpCode::kGemmNN && bop != up::OpCode::kGemmNNQ8) ||
+        base.in[2] != lr.in[3] || base.out[0] != lr.out[0] ||
+        base.out[1] != lr.out[1] || !DimsFit32(bop, base))
+      continue;
+    // The base must take the unsplit tile kernel, the one with the fused
+    // epilogue: no skinny dimension, no split-K, not the tensor-op path.
+    const auto bm = static_cast<uint32_t>(base.out[0]);
+    const auto bn = static_cast<uint32_t>(base.out[1]);
+    const auto bk = static_cast<uint32_t>(base.out[2]);
+    if (bm <= kGemmSkinnyDim || bn <= kGemmSkinnyDim || bk <= kGemmSkinnyDim)
+      continue;
+    if (SplitsFor(((bn + kGemmTile - 1) / kGemmTile) *
+                      ((bm + kGemmTile - 1) / kGemmTile),
+                  bk) != 1)
+      continue;
+    if ((base.flags & up::kFlagRelaxed) && relaxed_) {
+      // EncodeRelaxedGemm takes every non-skinny relaxed GEMM whose alpha
+      // (the q8 per-tensor scale included) is exactly 1.
+      const float f0 = bop == up::OpCode::kGemmNN
+                           ? up::GemmAlphaOf(base.imm)
+                           : (base.flags & up::kFlagQ8ColScale)
+                                 ? 1.0f
+                                 : BitsToF32(base.in[3]);
+      if (f0 == 1.0f) continue;
+    }
+    const InstructionExtents* bex = ExtentsOf(base);
+    if (!bex) continue;
+    bool legal = true;
+    // Across the two (the validator proves each alone): in the fused
+    // kernel every threadgroup reads the base's operands while others
+    // already write C and C', and stages T and B while others write C — so
+    // C' may alias no base operand, and nothing of the rank-r instruction
+    // may alias C but its addend, which is C exactly.
+    for (size_t t = 0; t < lex->count && legal; ++t) {
+      const OperandExtent& r = lex->ranges[t];
+      if (r.write) {
+        for (size_t u = 0; u < bex->count; ++u)
+          if (overlap(r, bex->ranges[u])) legal = false;
+      } else if (overlap(r, c) && !(r.off == c.off && r.bytes == c.bytes)) {
+        legal = false;
+      }
+    }
+    // Between the two: nothing writes a base operand (nothing touches C —
+    // the base is the nearest instruction that does).
+    for (size_t k = i + 1; k < j && legal; ++k) {
+      const InstructionExtents* ex = ExtentsOf(program[k]);
+      if (!ex) {
+        legal = false;
+        break;
+      }
+      for (size_t t = 0; t < ex->count && legal; ++t) {
+        const OperandExtent& r = ex->ranges[t];
+        if (!r.write) continue;
+        for (size_t u = 0; u < bex->count; ++u)
+          if (!bex->ranges[u].write && overlap(r, bex->ranges[u]))
+            legal = false;
+      }
+    }
+    if (!legal) continue;
+    plan.role[i] = kRoleDeferred;
+    plan.partner[i] = static_cast<int32_t>(j);
+    plan.role[j] = static_cast<int32_t>(i);
+    ++plan.pairs;
+    // The base value's store is dropped when the program never reads C
+    // again: the first instruction after j to touch its extent writes all
+    // of it, reads none of it and overwrites what it writes
+    // (OverwritesWhatItWrites), or there is none. A read, a write of part
+    // of it, or a read-modify-write keeps the store. (The compiler's
+    // addend fuser proves one reader for the rank-r product it folds, not
+    // for the addend; this scan is the proof, and the engine's own reads
+    // after a program — the loss slot, the probabilities, the deltas, the
+    // persistent segment — are of slots no base product occupies.)
+    bool dead = true;
+    for (size_t k = j + 1; k < program.size(); ++k) {
+      const InstructionExtents* ex = ExtentsOf(program[k]);
+      if (!ex) {
+        dead = false;
+        break;
+      }
+      bool touched = false, read = false, covered = false;
+      for (size_t t = 0; t < ex->count; ++t) {
+        const OperandExtent& r = ex->ranges[t];
+        if (!overlap(r, c)) continue;
+        touched = true;
+        if (!r.write)
+          read = true;
+        else if (covers(r, c))
+          covered = true;
+      }
+      if (!touched) continue;
+      dead = covered && !read &&
+             OverwritesWhatItWrites(
+                 static_cast<up::OpCode>(program[k].opcode));
+      break;
+    }
+    plan.drop_c[j] = dead ? 1 : 0;
+  }
+  return plan;
+}
+
+// The fused dispatch: the base GEMM's arguments exactly as Encode builds
+// them (the same tile, flags and geometry, so the base part computes the
+// same bits), plus the rank-r instruction's operands for the epilogue.
+std::expected<void, std::string> MetalBackend::EncodeLowRank(
+    const up::UpdateInstruction& base, const up::UpdateInstruction& lr,
+    bool drop_c) {
+  KArgs a;
+  auto ref = [&](int slot, uint64_t r) {
+    a.off[slot] = up::RefOffset(r);
+    if (up::IsRodataRef(r)) a.space |= 1u << slot;
+    if (up::IsSourceRef(r)) a.space |= 1u << (8 + slot);
+  };
+  auto u32 = [](uint64_t v) { return static_cast<uint32_t>(v); };
+  ref(0, base.in[0]);
+  ref(1, base.in[1]);
+  ref(2, base.in[2]);
+  a.m = u32(base.out[0]);
+  a.n = u32(base.out[1]);
+  a.k = u32(base.out[2]);
+  // DispatchGemm routes a skinny shape to pipe + offset, which from the
+  // low-rank pipes is some other kernel: PlanLowRank never plans one, and
+  // this refuses rather than dispatch it.
+  if (a.m <= kGemmSkinnyDim || a.n <= kGemmSkinnyDim || a.k <= kGemmSkinnyDim)
+    return std::unexpected("the low-rank fold planned a skinny base GEMM");
+  Pipe pipe;
+  uint32_t b_elem;
+  if (static_cast<up::OpCode>(base.opcode) == up::OpCode::kGemmNN) {
+    if (base.flags & up::kFlagEpilogueBias) ref(3, base.in[3]);
+    a.f[0] = up::GemmAlphaOf(base.imm);
+    a.flags = static_cast<uint32_t>(up::EpilogueActOf(base.flags)) |
+              ((base.flags & up::kFlagEpilogueBias) ? 8u : 0u);
+    if (base.flags & up::kFlagGemmAddend) {
+      ref(3, base.in[3]);
+      a.flags |= 2048u;
+    }
+    pipe = kPGemmNNLR;
+    b_elem = 4;
+  } else {
+    a.flags = static_cast<uint32_t>(up::EpilogueActOf(base.flags));
+    if (base.flags & up::kFlagQ8ColScale) {
+      ref(3, base.in[3]);
+      a.f[0] = 1.0f;
+      a.flags |= 128u;
+    } else {
+      a.f[0] = BitsToF32(base.in[3]);
+    }
+    pipe = kPGemmNNQ8LR;
+    b_elem = 1;
+  }
+  a.lr_off[0] = up::RefOffset(lr.in[0]);
+  a.lr_off[1] = up::RefOffset(lr.in[1]);
+  a.lr_off[2] = up::RefOffset(lr.in[2]);
+  a.lr_k = u32(lr.out[2]);
+  a.lr_alpha = up::GemmAlphaOf(lr.imm);
+  if (drop_c) a.flags |= 8192u;  // the base value is not stored
+  // C' moves as 16-byte vectors where its offset and N allow.
+  if (a.lr_off[2] % 16 == 0 && a.n % 4 == 0) a.flags |= 16384u;
+  DispatchGemm(pipe, a, false, false, b_elem);
+  return {};
 }
 
 // The relaxed family (plan v18): true when the instruction carries
@@ -1222,6 +1673,12 @@ std::expected<void, std::string> MetalBackend::Encode(
       Dispatch(kPRmsBwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     case up::OpCode::kClipNorm: {
+      // CR1 #142 F13 / F18: a threshold that is not a finite positive float
+      // is refused before anything is encoded — a zero word skipped the
+      // norm dispatches and k_clip_apply multiplied by stale scratch.
+      const float cap = BitsToF32(ins.in[1]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
       ref(0, ins.in[0]);
       a.n = u32(ins.out[0]);
       EncodeClipScale(a, ins.in[1], /*slot=*/0);
@@ -1440,8 +1897,35 @@ std::expected<void, std::string> MetalBackend::Execute(
     const InstructionExtents* ex = ExtentsOf(ins);
     if (!ex && op != up::OpCode::kNop)
       return std::unexpected("instruction " + std::to_string(ins.opcode) +
-                             " failed re-validation at dispatch");
-    if (!IsGpuOpcode(op) || !DimsFit32(op, ins)) {
+                             " failed re-validation at dispatch: " +
+                             revalidation_error_);
+    // A reader of the source model runs where the model is: on cpu_ when
+    // BindSource kept it off the GPU (source_on_cpu_) — and so does every
+    // instruction of a range that holds one (range_on_cpu_, BeginRange).
+    const bool reads_source =
+        source_on_cpu_ && (range_on_cpu_ || (ex && ReadsSource(*ex)));
+    // F7 #138 step 4: a base GEMM deferred into the rank-r GEMM that
+    // reads it (PlanLowRank) dispatches nothing here and runs there, fused.
+    int32_t role = kRoleNone;
+    size_t idx = 0;
+    if (plan_ && !program_.empty() && &ins >= program_.data() &&
+        &ins < program_.data() + program_.size()) {
+      idx = static_cast<size_t>(&ins - program_.data());
+      role = plan_->role[idx];
+      // A pair the range the engine runs does not hold whole runs apart —
+      // both halves decide it from the same bounds, so the base dispatches
+      // at its own place in the earlier range and the rank-r GEMM encodes
+      // alone in the later one.
+      if (role == kRoleDeferred &&
+          static_cast<size_t>(plan_->partner[idx]) >= end_)
+        role = kRoleNone;
+      else if (role >= 0 && static_cast<size_t>(role) < begin_)
+        role = kRoleNone;
+    }
+    if (role == kRoleDeferred) return {};
+    if (!IsGpuOpcode(op) || !DimsFit32(op, ins) || reads_source) {
+      if (role >= 0)
+        return std::unexpected("a fused low-rank pair fell to the CPU path");
       // CPU-resident: wait for any pending GPU work it depends on.
       if (ex && HazardWithPending(*ex))
         if (auto r = Flush(); !r) return r;
@@ -1457,7 +1941,16 @@ std::expected<void, std::string> MetalBackend::Execute(
     }
     if (auto r = EnsureEncoder(); !r) return r;
     prof_pipes_.clear();
-    if (auto r = Encode(ins, params); !r) return r;
+    if (role >= 0) {
+      const up::UpdateInstruction& base = program_[static_cast<size_t>(role)];
+      const bool drop_c = plan_->drop_c[idx] != 0;
+      if (auto r = EncodeLowRank(base, ins, drop_c); !r) return r;
+      if (const InstructionExtents* bex = ExtentsOf(base)) RecordPending(*bex);
+      ++lowrank_fused_;
+      if (drop_c) ++lowrank_dropped_;
+    } else if (auto r = Encode(ins, params); !r) {
+      return r;
+    }
     RecordPending(*ex);
     if (profile_) {
       if (auto r = Flush(); !r) return r;
@@ -1466,8 +1959,10 @@ std::expected<void, std::string> MetalBackend::Execute(
                              std::to_string(v & 0xFFFFFFFFu)
                        : std::to_string(v);
       };
-      ProfRow& row = prof_[prof_pipes_ + " " + dim(ins.out[0]) + "x" +
-                           dim(ins.out[1]) + "x" + dim(ins.out[2])];
+      const up::UpdateInstruction& keyed =
+          role >= 0 ? program_[static_cast<size_t>(role)] : ins;
+      ProfRow& row = prof_[prof_pipes_ + " " + dim(keyed.out[0]) + "x" +
+                           dim(keyed.out[1]) + "x" + dim(keyed.out[2])];
       row.seconds += last_gpu_seconds_;
       row.count++;
     }
@@ -1483,6 +1978,9 @@ std::expected<void, std::string> MetalBackend::Flush() {
     [cmd_ waitUntilCompleted];
     const MTLCommandBufferStatus status = cmd_.status;
     NSError* err = cmd_.error;
+    last_gpu_start_ = cmd_.GPUStartTime;
+    last_gpu_end_ = cmd_.GPUEndTime;
+    const uint64_t dispatches = cb_dispatches_;
     if (profile_) last_gpu_seconds_ = cmd_.GPUEndTime - cmd_.GPUStartTime;
     if (spans_)
       spans_rows_.push_back(
@@ -1498,6 +1996,29 @@ std::expected<void, std::string> MetalBackend::Flush() {
     // finished and unfinished work: refuse to continue on it.
     if (status != MTLCommandBufferStatusCompleted)
       return std::unexpected(NsError(err, "GPU command buffer did not complete"));
+    // Completed with no execution time, on a GPU that reports one for every
+    // buffer that ran: the device declined the work — the silent form of a
+    // working set it cannot hold (F5 #133). Refuse rather than read zeros.
+    if (gpu_timestamps_ && dispatches > 0 &&
+        !(last_gpu_start_ > 0 && last_gpu_end_ > last_gpu_start_))
+      return std::unexpected(
+          "GPU command buffer completed without executing its " +
+          std::to_string(dispatches) + " dispatch(es): the device declined "
+          "the work (resident: arena " + std::to_string(arena_bytes_) +
+          " B, rodata " + std::to_string(rodata_bytes_) + " B, source " +
+          std::to_string(source_buf_ ? source_bytes_ : 0) +
+          " B; this GPU's working set is " +
+          std::to_string(working_set_limit_) + " B)");
+    // A clip in this buffer saw a non-finite norm (CR1 #142 F11): the
+    // kernels after it wrote nothing, and the verdict is the CPU's, word
+    // for word. The flag is the buffer's; clear it for the next.
+    if (clip_flag_) {
+      float* flag = static_cast<float*>(clip_flag_.contents);
+      if (*flag != 0.0f) {
+        *flag = 0.0f;
+        return std::unexpected(kNonFiniteNormRefusal);
+      }
+    }
     return {};
   }
 }
@@ -1514,6 +2035,13 @@ void MetalBackend::PrintProfile() const {
                "%llu backward pass(es) (counted at the loss opcodes)\n",
                total, rows.size(), (unsigned long long)fwd_passes_,
                (unsigned long long)bwd_passes_);
+  if (lowrank_fused_)
+    std::fprintf(stderr,
+                 "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
+                 "store dropped (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 "
+                 "keeps the pairs apart)\n",
+                 (unsigned long long)lowrank_fused_,
+                 (unsigned long long)lowrank_dropped_);
   for (const auto& r : rows)
     std::fprintf(stderr, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
                  r.second.seconds,
@@ -1538,6 +2066,12 @@ void MetalBackend::PrintSpans() const {
                spans_rows_.size(), (unsigned long long)dispatches, gpu, wall,
                wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
                dispatches ? 1e6 * (wall - gpu) / (double)dispatches : 0.0);
+  if (lowrank_fused_)
+    std::fprintf(stderr,
+                 "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
+                 "store dropped\n",
+                 (unsigned long long)lowrank_fused_,
+                 (unsigned long long)lowrank_dropped_);
   // Per buffer size: the train, eval and merge programs are told apart by
   // their dispatch counts (one buffer per ExecuteRange).
   std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall

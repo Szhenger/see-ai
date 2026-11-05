@@ -1,0 +1,9 @@
+== fit: --remat auto --memory-budget-mib 16384: rc=0 6406176768  maximum resident set size
+   arena 7,704,605,824 + plan 2,768,388,096 = 10,472,993,920 B (9,987.8 MiB); estimate 8,991,587,840 (ratio 0.859); remat applied=False saved=0; persistent 176,537,600; adapters 197
+== forced: --remat on --memory-budget-mib 16384: rc=0 5532139520  maximum resident set size
+   arena 7,425,057,856 + plan 2,768,388,096 = 10,193,445,952 B (9,721.2 MiB); estimate 8,991,587,840 (ratio 0.882); remat applied=True saved=279,547,968; persistent 176,537,600; adapters 197
+== squeeze: --remat auto --memory-budget-mib 9986: rc=0 8174206976  maximum resident set size
+   arena 7,425,057,856 + plan 2,768,388,096 = 10,193,445,952 B (9,721.2 MiB); estimate 8,991,587,840 (ratio 0.882); remat applied=True saved=279,547,968; persistent 176,537,600; adapters 197
+   squeeze plan == forced plan: True (hashes 85213ffdaf33870e / 85213ffdaf33870e)
+== refuse: --remat on --memory-budget-mib 9720: rc=1 8040169472  maximum resident set size
+   seeml-update-compile: Ingressor: compiled update cannot run locally: arena 7082 MiB + plan 2641 MiB need 9722 MiB, but the local memory budget is 9720 MiB

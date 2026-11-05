@@ -56,6 +56,12 @@ struct KArgs {
   uint batch, batch_h;
   uint pad2, pad3, pad4;
   ulong bs[6];
+  // F7 #138 step 4, the low-rank epilogue — the Metal backend's own
+  // dispatch fusion, no plan field: the arena offsets of the next rank-r
+  // GEMM's T [M, r] and B [r, N] and of its output C', its r and alpha.
+  ulong lr_off[3];
+  uint lr_k;
+  float lr_alpha;
 };
 
 #define KSIG device uchar* ar [[buffer(0)]], device const uchar* ro [[buffer(1)]], \
@@ -174,7 +180,7 @@ static inline ulong batch_off(constant KArgs& p, uint z, uint which) {
 // the workspace (buffer 4) at z*M*N; k_gemm_splitk_fin then sums the
 // partials in split order and applies the epilogue — a fixed order, so
 // the result is bitwise-reproducible run-to-run like every kernel here.
-template <bool AT, bool BT, typename EB, bool ACC>
+template <bool AT, bool BT, typename EB, bool ACC, bool LR>
 static inline void gemm_tile(device const float* A, device const EB* B,
                              device float* C, device const float* bias,
                              device const float* cs, device const float* D,
@@ -182,7 +188,11 @@ static inline void gemm_tile(device const float* A, device const EB* B,
                              uint ldc, float alpha, uint act, bool vecA,
                              bool vecB, uint splits, device float* ws,
                              threadgroup float* smem, uint3 tg, uint tid,
-                             uint sgid) {
+                             uint sgid, device const float* T,
+                             device const float* BL, device float* C2,
+                             uint Kt, float alpha_t, bool skip_c,
+                             bool vec_c2, threadgroup float* lr_t,
+                             threadgroup float4* lr_b4) {
   const uint m0 = tg.y * 64u, n0 = tg.x * 64u;
   uint kbeg = 0, kend = K;
   if (splits > 1u) {
@@ -277,6 +287,26 @@ static inline void gemm_tile(device const float* A, device const EB* B,
           simdgroup_store(acc[i][j], smem + (i * 8u) * 64u + sg_c + j * 8u, 64u);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (LR) {
+      // F7 #138 step 4: this half tile's operands of the low-rank epilogue
+      // through threadgroup memory — B's [Kt x 64] block and T's [32 x Kt]
+      // block, read once with coalesced loads — so the element loop reads
+      // them at threadgroup speed instead of 2·Kt device loads per element
+      // (the device-load forms cost about what the dispatches they replaced
+      // cost: the ledger's _v1.._v4 rows).
+      for (uint q = tid; q < Kt * 16u; q += 128u) {
+        const uint k = q >> 4, gn = n0 + (q & 15u) * 4u;
+        float4 b = float4(0.0f);
+        for (uint t = 0; t < 4u; ++t)
+          if (gn + t < N) b[t] = BL[k * N + gn + t];
+        lr_b4[q] = b;
+      }
+      for (uint q = tid; q < 32u * Kt; q += 128u) {
+        const uint row = q / Kt, k = q - row * Kt, gm = m0 + hf * 32u + row;
+        lr_t[q] = gm < M ? T[gm * Kt + k] : 0.0f;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
     for (uint e = tid; e < 2048u; e += 128u) {
       const uint r = e >> 6, c = e & 63u;
       const uint gm = m0 + hf * 32u + r, gn = n0 + c;
@@ -290,7 +320,39 @@ static inline void gemm_tile(device const float* A, device const EB* B,
           v = (!BT && cs) ? cs[gn] * v : alpha * v;  // v17 column scale
           if (D) v = D[gm * N + gn] + v;  // the addend: d + the finished product
           if (bias) v += bias[gn];
-          C[gm * ldc + gn] = apply_act(v, act);
+          const float out = apply_act(v, act);
+          // F7 #138 step 4: under the low-rank epilogue the base value is
+          // stored only where the program reads it again (skip_c clear);
+          // at a LoRA site the rank-r instruction is its only reader.
+          if (!(LR && skip_c)) C[gm * ldc + gn] = out;
+          if (LR) smem[e] = out;  // for the vector pass below
+        }
+      }
+    }
+    if (LR) {
+      // F7 #138 step 4: the rank-r product the next instruction adds to
+      // each base value, four consecutive columns per thread as
+      // k_gemm_nn_small takes them — serial k from zero, alpha on the
+      // finished sum, the addend first, per component — so C' holds the
+      // bits of the two dispatches this replaces. (A scalar pass per
+      // element cost what the small dispatch cost: the ledger's _v1.._v5.)
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      for (uint q = tid; q < 512u; q += 128u) {
+        const uint r = q >> 4, qd = q & 15u, c4 = qd * 4u;
+        const uint gm = m0 + hf * 32u + r, gn = n0 + c4;
+        if (gm < M && gn < N) {
+          float4 acc = float4(0.0f);
+          for (uint k = 0; k < Kt; ++k)
+            acc += lr_t[r * Kt + k] * lr_b4[k * 16u + qd];
+          float4 x = alpha_t * acc;
+          const uint s = r * 64u + c4;
+          x = float4(smem[s], smem[s + 1u], smem[s + 2u], smem[s + 3u]) + x;
+          if (vec_c2 && gn + 3u < N) {
+            *(device float4*)(C2 + gm * N + gn) = x;
+          } else {
+            for (uint t = 0; t < 4u; ++t)
+              if (gn + t < N) C2[gm * N + gn + t] = x[t];
+          }
         }
       }
     }
@@ -537,6 +599,84 @@ static inline void gemm_rows_tg(device const float* A, device const EB* B,
                                             lda, ldb, ldc, alpha, act, m0,
                                             tid, sgid, lane, tile);
 }
+// The staged-B form (F7 #138, the nt_rows floor): for a transposed B — the
+// adapter's dt = dC @ Bᵀ, B [N x K] with N <= 16 — a threadgroup of 8
+// simdgroups owns 8 consecutive rows and, 32 k at a time, loads the
+// [N x 32 k] block of B cooperatively (simdgroup s loads row s, and s + 8
+// at NCAP 16, lane l column k0 + l: one coalesced line per row) into
+// threadgroup memory transposed, so each lane then reads its NCAP b
+// values as float4s instead of NCAP scalar loads from NCAP rows per k —
+// the loads that made the unstaged form latency-bound at 512 simdgroups.
+// Same lane-to-k assignment, the same products in the same order (the
+// per-column scale is applied to b as it is staged, where the unstaged
+// form applied it before the same multiply-add), the same shuffle tree:
+// every output is the same bits as gemm_rows. Rows past M load and store
+// nothing; every thread reaches every barrier.
+template <bool AT, bool BT, typename EB, bool ACC, uint NCAP>
+static inline void gemm_rows_tgb_impl(device const float* A,
+                                      device const EB* B, device float* C,
+                                      device const float* bias,
+                                      device const float* cs,
+                                      device const float* D, uint M, uint N,
+                                      uint K, uint lda, uint ldb, uint ldc,
+                                      float alpha, uint act, uint m0,
+                                      uint sgid, uint lane,
+                                      threadgroup float* tile) {
+  const uint m = m0 + sgid;
+  const bool live = m < M;
+  float acc[NCAP];
+#pragma clang loop unroll(full)
+  for (uint n = 0; n < NCAP; ++n) acc[n] = 0.0f;
+  for (uint k0 = 0; k0 < K; k0 += 32u) {
+    const uint k = k0 + lane;
+#pragma clang loop unroll(full)
+    for (uint r = 0; r < NCAP / 8u; ++r) {
+      const uint n = sgid + 8u * r;
+      const uint nc = min(n, N - 1u);  // past N: a duplicate, never stored
+      float b = 0.0f;
+      if (k < K) {
+        b = widen(BT ? B[nc * ldb + k] : B[k * ldb + nc]);
+        if (BT && cs) b *= cs[k];
+      }
+      tile[lane * NCAP + n] = b;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (live && k < K) {
+      const float a = AT ? A[k * lda + m] : A[m * lda + k];
+      const threadgroup float4* bv =
+          (const threadgroup float4*)(tile + lane * NCAP);
+#pragma clang loop unroll(full)
+      for (uint q = 0; q < NCAP / 4u; ++q) {
+        const float4 b4 = bv[q];
+        acc[4u * q] += a * b4[0];
+        acc[4u * q + 1u] += a * b4[1];
+        acc[4u * q + 2u] += a * b4[2];
+        acc[4u * q + 3u] += a * b4[3];
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (!live) return;
+  gemm_rows_finish<AT, BT, EB, ACC, NCAP>(C, bias, cs, D, N, ldc, alpha,
+                                          act, m, lane, acc);
+}
+template <bool AT, bool BT, typename EB, bool ACC>
+static inline void gemm_rows_tgb(device const float* A, device const EB* B,
+                                 device float* C, device const float* bias,
+                                 device const float* cs,
+                                 device const float* D, uint M, uint N,
+                                 uint K, uint lda, uint ldb, uint ldc,
+                                 float alpha, uint act, uint m0, uint sgid,
+                                 uint lane, threadgroup float* tile) {
+  if (N <= 8u)
+    gemm_rows_tgb_impl<AT, BT, EB, ACC, 8u>(A, B, C, bias, cs, D, M, N, K,
+                                            lda, ldb, ldc, alpha, act, m0,
+                                            sgid, lane, tile);
+  else
+    gemm_rows_tgb_impl<AT, BT, EB, ACC, 16u>(A, B, C, bias, cs, D, M, N, K,
+                                             lda, ldb, ldc, alpha, act, m0,
+                                             sgid, lane, tile);
+}
 // M <= 16: one thread per output column, serial K, all rows in registers
 // (row index clamped, as gemm_rows).
 template <bool AT, bool BT, typename EB, bool ACC>
@@ -721,9 +861,9 @@ static inline void gemm_colsg_tg(device const float* A, device const EB* B,
                    uint sgid [[simdgroup_index_in_threadgroup]]) {            \
     threadgroup float smem[GEMM_SMEM];                                        \
     const uint z = p.pad0 > 1u ? 0u : tg.z;                                   \
-    gemm_tile<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), (p.flags & 16u) != 0u,       \
+    gemm_tile<AT, BT, EB, ACC, false>(GEMM_OPERANDS(z, EB, BIAS_EXPR), (p.flags & 16u) != 0u,       \
                                (p.flags & 32u) != 0u, p.pad0, ws, smem, tg,   \
-                               tid, sgid);                                    \
+                               tid, sgid, (device const float*)0, (device const float*)0, (device float*)0, 0u, 0.0f, false, false, (threadgroup float*)0, (threadgroup float4*)0);                                    \
   }                                                                           \
   kernel void NAME##_small(KSIG, uint g [[thread_position_in_grid]]) {        \
     const uint per = p.m * ((p.n + 3u) / 4u), z = g / per;                    \
@@ -748,6 +888,16 @@ static inline void gemm_colsg_tg(device const float* A, device const EB* B,
     if (z >= p.batch) return;                                                 \
     gemm_rows_tg<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), m0, tid, sgid, lane,      \
                                   tile);                                                     \
+  }                                                                           \
+  kernel void NAME##_rows_tgb(KSIG, uint g [[thread_position_in_grid]],       \
+                              uint sgid [[simdgroup_index_in_threadgroup]],   \
+                              uint lane [[thread_index_in_simdgroup]]) {      \
+    threadgroup float4 tile4[128]; /* [32 lanes x 16 n] */                    \
+    const uint group = g >> 8, groups_m = (p.m + 7u) / 8u;                    \
+    const uint z = group / groups_m, m0 = (group % groups_m) * 8u;            \
+    if (z >= p.batch) return;                                                 \
+    gemm_rows_tgb<AT, BT, EB, ACC>(GEMM_OPERANDS(z, EB, BIAS_EXPR), m0, sgid, lane,          \
+                                   (threadgroup float*)tile4);                               \
   }                                                                           \
   kernel void NAME##_colsg_tg(KSIG, uint g [[thread_position_in_grid]],       \
                               uint tid [[thread_index_in_threadgroup]],       \
@@ -780,6 +930,29 @@ GEMM_KERNELS(k_gemm_nn_q8, false, false, char, false, (device const float*)0)
 GEMM_KERNELS(k_gemm_nt_q8, false, true, char, false, (device const float*)0)
 GEMM_KERNELS(k_gemm_nn_bf16, false, false, ushort, false, ((p.flags & 8u) ? RF(3) : (device const float*)0))
 GEMM_KERNELS(k_gemm_nt_bf16, false, true, ushort, false, (device const float*)0)
+// F7 #138 step 4: the tile kernel with the low-rank epilogue, the NN forms
+// a LoRA site's base product takes. The backend dispatches it for a base
+// GEMM whose output the next rank-r GEMM reads as its addend
+// (MetalBackend::PlanLowRank), with that instruction's operands in
+// p.lr_*: one dispatch, both outputs, the bits of two.
+#define GEMM_TILE_LR(NAME, EB, BIAS_EXPR)                                      \
+  kernel void NAME(KSIG, device float* ws [[buffer(4)]],                      \
+                   uint3 tg [[threadgroup_position_in_grid]],                 \
+                   uint tid [[thread_index_in_threadgroup]],                  \
+                   uint sgid [[simdgroup_index_in_threadgroup]]) {            \
+    threadgroup float smem[GEMM_SMEM];                                        \
+    threadgroup float lr_t[512];    /* [32 rows x 16 r] */                     \
+    threadgroup float4 lr_b4[256];  /* [16 r x 16 quads of columns] */         \
+    gemm_tile<false, false, EB, false, true>(                                 \
+        GEMM_OPERANDS(0u, EB, BIAS_EXPR), (p.flags & 16u) != 0u,              \
+        (p.flags & 32u) != 0u, 1u, ws, smem, tg, tid, sgid,                   \
+        (device const float*)(ar + p.lr_off[0]),                              \
+        (device const float*)(ar + p.lr_off[1]),                              \
+        (device float*)(ar + p.lr_off[2]), p.lr_k, p.lr_alpha,                \
+        (p.flags & 8192u) != 0u, (p.flags & 16384u) != 0u, lr_t, lr_b4);     \
+  }
+GEMM_TILE_LR(k_gemm_nn_lr, float, ((p.flags & 8u) ? RF(3) : (device const float*)0))
+GEMM_TILE_LR(k_gemm_nn_q8_lr, char, (device const float*)0)
 
 // --- Elementwise (one thread per element; p.n = count) ---------------------
 kernel void k_add_ew(KSIG, uint g [[thread_position_in_grid]]) {
@@ -863,21 +1036,32 @@ kernel void k_fused_map(KSIG, uint g [[thread_position_in_grid]]) {
 kernel void k_fill(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(0)[g] = p.f[0];
 }
+// The backend's self-test at Bind (F5 #133): one thread writes p.f[0] into
+// the scratch buffer, proving a dispatch executes on this device.
+kernel void k_selftest(KSIG, device float* scratch [[buffer(3)]]) {
+  scratch[0] = p.f[0];
+}
 kernel void k_copy(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(1)[g] = RF(0)[g];
 }
 kernel void k_accumulate(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(0)[g] += RF(1)[g];
 }
+// The optimizer kernels honor the clip refusal flag at buffer 7 (CR1 #142
+// F11): once a clip in this command buffer has seen a non-finite norm, no
+// parameter-writing kernel after it writes — the CPU's abort at the first
+// refused step, for a backend that executes the buffer whole.
 // p.f: lr, weight_decay
-kernel void k_sgd(KSIG, uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+kernel void k_sgd(KSIG, device const float* flag [[buffer(7)]],
+                  uint g [[thread_position_in_grid]]) {
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   pp[g] -= p.f[0] * (RF(1)[g] + p.f[1] * pp[g]);
 }
 // p.f: lr, beta1, beta2, eps, weight_decay, inv_bc1, inv_bc2
-kernel void k_adamw(KSIG, uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+kernel void k_adamw(KSIG, device const float* flag [[buffer(7)]],
+                    uint g [[thread_position_in_grid]]) {
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   device float* m = WF(2);
   device float* v = WF(3);
@@ -897,15 +1081,17 @@ kernel void k_adamw(KSIG, uint g [[thread_position_in_grid]]) {
 // left in scratch[256], never written back; g * s is a
 // product in a statement of its own, as the CPU kernels do.
 kernel void k_sgd_clip(KSIG, device float* scratch [[buffer(3)]],
+                       device const float* flag [[buffer(7)]],
                        uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   const float gi = RF(1)[g] * scratch[256];
   pp[g] -= p.f[0] * (gi + p.f[1] * pp[g]);
 }
 kernel void k_adamw_clip(KSIG, device float* scratch [[buffer(3)]],
+                         device const float* flag [[buffer(7)]],
                          uint g [[thread_position_in_grid]]) {
-  if (g >= p.n) return;
+  if (g >= p.n || flag[0] != 0.0f) return;
   device float* pp = WF(0);
   device float* m = WF(2);
   device float* v = WF(3);
@@ -1025,7 +1211,11 @@ kernel void k_rmsnorm_bwd(KSIG, uint g [[thread_position_in_grid]],
 
 // --- ClipNorm: the CPU's chunk geometry, partials combined in chunk order --
 // p.n = count, p.k = chunk grain, p.m = chunk count, p.f[0] = max_norm.
-// scratch[c] holds chunk c's partial; scratch[256] the resulting scale.
+// scratch[c] holds chunk c's partial; scratch[256] the resulting scale;
+// buffer 7 is the refusal flag (CR1 #142 F11): one float, its own buffer
+// so no kernel that grows or fills the scratch can touch it, raised by
+// k_clip_finish on a non-finite norm, honored by every kernel below and
+// by the optimizer steps, read and cleared by the host at Flush.
 kernel void k_clip_partials(KSIG, device float* scratch [[buffer(3)]],
                             uint c [[thread_position_in_grid]]) {
   if (c >= p.m) return;
@@ -1037,16 +1227,28 @@ kernel void k_clip_partials(KSIG, device float* scratch [[buffer(3)]],
   scratch[c] = sq;
 }
 kernel void k_clip_finish(KSIG, device float* scratch [[buffer(3)]],
+                          device float* flag [[buffer(7)]],
                           uint t [[thread_position_in_grid]]) {
   if (t != 0) return;
   float sq = 0.0f;
   for (uint c = 0; c < p.m; ++c) sq += scratch[c];
   const float norm = sqrt(sq);
+  // A non-finite norm raises the refusal flag (sticky for the command
+  // buffer; the host clears it) and leaves the scale at 1: the kernels
+  // that consume it skip their writes, and Flush reports the refusal in
+  // the CPU's words. The library is compiled with precise math, so
+  // isfinite is exact here.
+  if (!isfinite(norm)) {
+    flag[0] = 1.0f;
+    scratch[256] = 1.0f;
+    return;
+  }
   scratch[256] = (norm <= p.f[0] || norm == 0.0f) ? 1.0f : p.f[0] / norm;
 }
 kernel void k_clip_apply(KSIG, device float* scratch [[buffer(3)]],
+                         device const float* flag [[buffer(7)]],
                          uint g [[thread_position_in_grid]]) {
-  if (g < p.n) WF(0)[g] *= scratch[256];
+  if (g < p.n && flag[0] == 0.0f) WF(0)[g] *= scratch[256];
 }
 
 // --- Transformer family --------------------------------------------------

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
@@ -43,6 +44,39 @@ std::expected<CompiledUpdate, std::string> Attributed(
   return compiled;
 }
 
+// CR1 #142 F12 / F34: the models cross into the compiler finite. A NaN
+// weight passed the quantization review's max-abs scan (std::max skips a
+// NaN) at a finite scale and reached the int8 pack, where casting it is
+// undefined behavior — plans that differ by host. Every constant tensor of
+// the student and the teacher is swept, in the review's chunk geometry,
+// before any pass runs; the first offender is named by tensor and element.
+std::expected<void, std::string> SweepFinite(const SmfModel& model,
+                                             const char* role) {
+  for (const SmfTensor& t : model.tensors) {
+    if (!t.is_const) continue;
+    const size_t count = t.data.size() / sizeof(float);
+    const float* data = reinterpret_cast<const float*>(t.data.data());
+    size_t first[kMaxParallelChunks];
+    for (size_t& f : first) f = SIZE_MAX;
+    ParallelFor(count, kWeightSweepGrain, [&](size_t b, size_t e, size_t c) {
+      for (size_t i = b; i < e; ++i)
+        if (!std::isfinite(data[i])) {
+          first[c] = i;
+          return;
+        }
+    });
+    const size_t chunks = ParallelChunkCount(count, kWeightSweepGrain);
+    for (size_t c = 0; c < chunks; ++c)
+      if (first[c] != SIZE_MAX)
+        return generating::Error(
+            generating::kDriver,
+            std::string(role) + " tensor '" + t.name +
+                "' carries a non-finite value at element " +
+                std::to_string(first[c]) +
+                ": NaN and Inf are refused before any pass runs");
+  }
+  return {};
+}
 }  // namespace
 
 AttentionKind DecideAttention(const TrainingFootprint& footprint,
@@ -91,9 +125,96 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   };
   const bool wants_teacher = config_.loss == LossKind::kKLDistill ||
                              config_.loss == LossKind::kXEntPlusKL;
+  // CR1 #142: every float the config carries is finite and within the
+  // range the CLI accepts — the library path enforced nothing, so a NaN
+  // learning rate compiled into the plan header and a NaN temperature into
+  // the KL words, and passed every comparison downstream. The runtime's
+  // load contract and the validator apply the same bounds.
+  {
+    const OptimizerSpec& o = config_.optimizer;
+    struct Rule {
+      const char* name;
+      float value;
+      bool in_range;
+      bool applies;
+    };
+    const Rule rules[] = {
+        {"lr", o.lr, o.lr > 0.0f, true},
+        {"beta1", o.beta1, o.beta1 >= 0.0f && o.beta1 < 1.0f, true},
+        {"beta2", o.beta2, o.beta2 >= 0.0f && o.beta2 < 1.0f, true},
+        {"eps", o.eps, o.eps > 0.0f, true},
+        {"weight_decay", o.weight_decay, o.weight_decay >= 0.0f, true},
+        {"clip_norm", o.clip_norm, o.clip_norm >= 0.0f, true},
+        {"min_lr_factor", o.min_lr_factor,
+         o.min_lr_factor >= 0.0f && o.min_lr_factor <= 1.0f, true},
+        {"lora.alpha", config_.lora.alpha, config_.lora.alpha > 0.0f, true},
+        {"distill_weight", config_.distill_weight,
+         config_.distill_weight >= 0.0f, wants_teacher},
+        {"temperature", config_.temperature,
+         config_.temperature >= kKlTemperatureMin &&
+             config_.temperature <= kKlTemperatureMax,
+         wants_teacher},
+    };
+    for (const Rule& r : rules)
+      if (r.applies && (!std::isfinite(r.value) || !r.in_range))
+        return generating::Error(
+            generating::kDriver,
+            std::string("config ") + r.name +
+                " is not a finite value in its range (got " +
+                std::to_string(r.value) +
+                (std::string(r.name) == "temperature"
+                     ? std::string("; the range is ") +
+                           kKlTemperatureRangeText
+                     : std::string()) +
+                ")");
+  }
   if (wants_teacher && !teacher)
     return generating::Error(generating::kDriver,
                              "the selected loss requires a teacher model");
+  if (auto r = SweepFinite(source, "student"); !r) return std::unexpected(r.error());
+  if (teacher)
+    if (auto r = SweepFinite(*teacher, "teacher"); !r)
+      return std::unexpected(r.error());
+  phase("finite-sweep", 0);
+  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
+  // in the model file the device already holds, bound by hash at run time,
+  // so the plan ships at adapter scale. Its preconditions are the config
+  // and the file alone, so they are checked here, before any work: a model
+  // loaded from a file (the offsets and the hash), the f32 base the file
+  // holds, the exact kernels (the relaxed ones read rodata weights), an
+  // evaluation that reads the file (the plan has no weights of its own to
+  // score), and no teacher — its weights live in another file, and the one
+  // file BindSourceModel maps is the student's, so a teacher's source ref
+  // would read the student's bytes at the teacher's offsets.
+  if (config_.adapter_only) {
+    if (source.content_hash == 0)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only needs a model loaded from a file: the plan reads "
+          "the frozen weights from it at run time, bound by its hash");
+    if (config_.quantize_base || config_.bf16_base)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only keeps the frozen weights in the source model, which "
+          "is f32: --quantize-base / --bf16-base would store narrow copies "
+          "in the plan");
+    if (config_.precision != Precision::kF32)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only runs the exact kernels: the relaxed GEMMs read "
+          "rodata weights, and an adapter-only plan carries none");
+    if (config_.eval_on_plan)
+      return generating::Error(
+          generating::kDriver,
+          "--validation-scores plan: an adapter-only plan has no weights of "
+          "its own to score; every program reads the source model");
+    if (wants_teacher)
+      return generating::Error(
+          generating::kDriver,
+          "--adapter-only binds every frozen weight to the source model file, "
+          "and a teacher's weights live in another file the runtime does not "
+          "bind: distillation keeps its rodata");
+  }
 
   // The kernel policy is written into the header verbatim; the only
   // contract the kernels have is the K tile's 4-wide unroll alignment
@@ -174,10 +295,23 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the student's frozen weights as int8 rodata at 1/4 size (under-counting the
   // unselected remainder keeps the bound a lower bound). Both matter:
   // an over-count here refuses compiles the exact final gate would pass.
-  TrainingFootprint footprint = EstimateTrainingFootprint(source, batch);
-  // Only the student's weights take int8 storage: the teacher stays f32
+  TrainingFootprint footprint =
+      EstimateTrainingFootprint(source, batch, config_.lora.target_filters);
+  // Only the student's weights take narrow storage: the teacher stays f32
   // (E12 — it is the distillation target), so it is added after the cut.
-  if (config_.quantize_base) footprint.weight_bytes /= 4;
+  if (config_.quantize_base)
+    footprint.weight_bytes /= 4;
+  else if (config_.bf16_base)
+    footprint.weight_bytes /= 2;
+  // Rematerialization (step 8b) frees the recomputable activations in the
+  // forward wherever it may run — forced, or `auto` against a configured
+  // budget (with none, auto keeps the plan plain) — so there the bound is
+  // taken without them: a refusal must hold for the plan that would
+  // actually be built, and the final gate checks that plan exactly.
+  if (config_.remat == RematKind::kOn ||
+      (config_.remat == RematKind::kAuto && config_.memory_budget_bytes != 0))
+    footprint.activation_bytes -=
+        std::min(footprint.recomputable_bytes, footprint.activation_bytes);
   if (wants_teacher)
     footprint += EstimateFrozenForwardFootprint(*teacher, batch);
   // The merged deltas are full-size f32 whatever the base is stored as
@@ -581,7 +715,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   pinned.insert(loss);
   for (const auto& [p, g] : param_grads) pinned.insert(g);
 
-  auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights);
+  // An adapter-only plan (F6 #134, v21; its preconditions were checked at
+  // the top of this function) binds every frozen weight to a source ref
+  // and lays out no rodata.
+  auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights,
+                           config_.adapter_only);
   if (!binding) return std::unexpected(binding.error());
 
   // Bind the merge program into the same arena: A/B mirrors resolve through
@@ -795,7 +933,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
            !std::string_view(v->id()).starts_with("t::") &&
            src->second->data_offset != 0;
   };
-  if (from_file) {
+  if (from_file && !config_.eval_on_plan) {
     for (const auto& [w, s] : quant_scales)
       if (narrow_student(w)) shipped.insert(w);
     for (const sir::Value* w : bf16_weights)
@@ -806,6 +944,14 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                       "the model was not loaded from a file, so the eval "
                       "program scores the narrow in-plan weights — a proxy "
                       "for the committed f32 model");
+  if (from_file && config_.eval_on_plan &&
+      (!quant_scales.empty() || !bf16_weights.empty()))
+    seeml::diag::Note(generating::kDriver,
+                      "--validation-scores plan: the eval program scores the "
+                      "narrow in-plan weights — a proxy for the committed f32 "
+                      "model, for a device that cannot hold the source model "
+                      "beside the arena; the report says validation_scores "
+                      "\"plan\"");
   auto resolve_eval =
       [&](const sir::Value* v) -> std::expected<uint64_t, std::string> {
     if (shipped.contains(v))
@@ -1101,6 +1247,21 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   result.persistent_size = header.persistent_size;
   result.io_size = binding->io_end - binding->persistent_size;
   result.transient_size = header.arena_size - binding->io_end;
+  // The step-0 bound the early gate proved feasibility from, beside the
+  // exact footprint the final gate just checked: estimate <= arena + plan
+  // is the bound's contract, and their ratio is the accountant's honesty
+  // at this shape (F5 #133).
+  result.estimate_weight_bytes = footprint.weight_bytes;
+  result.estimate_activation_bytes = footprint.activation_bytes;
+  result.estimate_delta_bytes = footprint.delta_bytes;
+  result.estimate_cache_bytes = footprint.probs_cache_bytes;
+  result.estimate_bytes = footprint.total_bytes();
+  seeml::diag::Note(generating::kDriver,
+                    "memory: the step-0 bound is " +
+                        std::to_string(result.estimate_bytes) +
+                        " B against the exact arena + plan of " +
+                        std::to_string(header.arena_size + result.plan.size()) +
+                        " B");
   result.remat_policy = config_.remat;
   result.remat_applied = remat_on;
   result.remat_recomputed_values = remat.recomputed_values;
@@ -1112,7 +1273,16 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   result.merge_instruction_count = header.merge_instr_count;
   result.eval_instruction_count = header.eval_instr_count;
   result.rodata_size = header.rodata_size;
-  result.scores_shipped = !shipped.empty();
+  // The eval program scores the f32 file either way: the narrow students'
+  // source refs (E12), or every weight's (an adapter-only plan).
+  result.scores_shipped = !shipped.empty() || config_.adapter_only;
+  result.adapter_only = config_.adapter_only;
+  if (config_.adapter_only)
+    seeml::diag::Note(generating::kDriver,
+                      "adapter-only: the plan carries no rodata — " +
+                          std::to_string(build.weight_sources.size()) +
+                          " frozen weight(s) are read from the source model "
+                          "at run time, in every program");
   result.relaxed_gemms = relaxed_gemms;
   result.relaxed_attention = relaxed_attention;
   // What the plan carries, from the pass that decided on exact shapes.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string_view>
 
 #include "source/parallel/parallel_for.h"
@@ -66,15 +67,30 @@ std::unordered_map<const sir::Value*, float> SelectQuantizedWeights(
     const size_t count = src->second->byte_size / sizeof(float);
     // Chunked max reduction; max is order-insensitive, and the fixed chunk
     // geometry keeps even the combining order thread-count-independent.
+    // A non-finite element is never selected (CR1 #142 F12 / F34): std::max
+    // skips a NaN, so the scale came out finite and the pack cast NaN to
+    // int8 — undefined behavior. The driver refuses such a model before
+    // this review runs; the check here keeps the review sound for every
+    // caller, at one compare per element of a memory-bound sweep.
     float partials[kMaxParallelChunks] = {};
+    bool non_finite[kMaxParallelChunks] = {};
     ParallelFor(count, kWeightSweepGrain, [&](size_t b, size_t e, size_t c) {
       float m = 0.0f;
-      for (size_t i = b; i < e; ++i) m = std::max(m, std::fabs(data[i]));
+      bool bad = false;
+      for (size_t i = b; i < e; ++i) {
+        const float a = std::fabs(data[i]);
+        bad = bad || !(a <= std::numeric_limits<float>::max());
+        m = std::max(m, a);
+      }
       partials[c] = m;
+      non_finite[c] = bad;
     });
     float max_abs = 0.0f;
     const size_t chunks = ParallelChunkCount(count, kWeightSweepGrain);
-    for (size_t c = 0; c < chunks; ++c) max_abs = std::max(max_abs, partials[c]);
+    for (size_t c = 0; c < chunks; ++c) {
+      if (non_finite[c]) return;
+      max_abs = std::max(max_abs, partials[c]);
+    }
     // An all-zero weight quantizes to zeros under any scale; 1.0 keeps the
     // dequant multiply finite. A subnormal-range tensor is NOT selected at
     // all: its scale would be denormal (or underflow to exactly 0), so the

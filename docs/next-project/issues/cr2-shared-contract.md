@@ -33,6 +33,46 @@ extents, so an out-of-bounds kernel write still agrees (N33). Design: [`docs/nex
    review finding.
 3. The oracle's `diff` compares the whole arena, not declared extents.
 
+## Status 2026-11-05
+
+The C++ plane: F07 — the softmax width-agreement check and both width
+scans walk all four programs (the step program was outside all three: a
+step-program softmax of a narrower width passed every contract and its
+rows were indexed past by labels another program's width admitted);
+N03 — no program writes the staged input or label slot, refused by the
+executor contract from the validator's own extents; N05 — the rodata
+section's offset is proven 16-aligned (every rodata ref is relative to
+it); N04 already held (the header's slot refs refuse the rodata and
+source bits). The coverage table is
+`test/runtime/dispatcher/engine_test.cc` (`CoverageTable.*`): a compiled
+plan opened for surgery, instruction 0 of a chosen program replaced and
+the self-hash re-sealed, on two fixtures that accumulate gradients so the
+step program exists — class width, vocabulary, input- and label-slot
+writes and a write through a source ref, each × every program; the
+header's slot bits; the section alignment; the feeder's label kind,
+input kind and token bound. A check missing from a program is a failing
+row: with the old program sets the step rows fail.
+
+The Python plane and the probe followed. F58: `seeml-plan-probe` runs
+`VerifyPlanContract` and `VerifyExecutorContract` exactly as the engine
+does before it prices or traces a plan (the Python plane cannot re-seal a
+plan, so the refusal has no Python test; the engine's tests prove the
+contracts, and the differential suite runs the probe on every matrix
+plan). F47: the oracle's `Corpus.check` mirrors `VerifyFeederContract`
+rule for rule — the geometry, the label kind and width, and every staged
+value's bound (class labels below the narrowest softmax width, token ids
+below the narrowest table) — and its `label_classes` / `vocab` scan all
+four programs as the engine does since F07. N33: the diff compares the
+whole C++ arena image against the one it sent and names the first byte
+changed outside every declared write extent — a kernel writing where the
+bounds proof says it does not, which the per-extent comparison could never
+see. Tests: four refused corpora and two accepted ones against the matrix's
+plans; a crafted image with one stray byte. Still open: design item 1 —
+the contract as pure functions in `source/contract/`, shared by the
+compiler's topology, the probe and the oracle — and the Python plane's
+own plan checks (`pack_update.py check_plan`, `formats.py`) do not mirror
+CR1's immediate-float rules.
+
 ## Acceptance
 
 - F07, N03, N04, N05, F58, F47, N33 reproductions refused by both planes.

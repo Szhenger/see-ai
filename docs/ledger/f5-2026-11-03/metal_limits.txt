@@ -1,0 +1,1 @@
+Apple M5 maxBufferLength=9534832640 recommendedMaxWorkingSetSize=12713115648 unified=1

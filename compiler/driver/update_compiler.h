@@ -87,6 +87,16 @@ struct CompiledUpdate {
   // its high-water mark. persistent + io + transient = arena.
   uint64_t io_size = 0;
   uint64_t transient_size = 0;
+  // The step-0 estimate the early gate proved feasibility from (the
+  // accountant's lower bound with the base's storage, the attention
+  // decision and rematerialization's share applied; F5 #133), beside the
+  // exact footprint: estimate_bytes <= arena_size + plan.size() is the
+  // bound's contract, and the report states their ratio.
+  uint64_t estimate_weight_bytes = 0;
+  uint64_t estimate_activation_bytes = 0;
+  uint64_t estimate_delta_bytes = 0;
+  uint64_t estimate_cache_bytes = 0;
+  uint64_t estimate_bytes = 0;
   // Rematerialization (roadmap 2b, F5 #133): the policy asked for, whether
   // the pass ran, how many forward values the backward now recomputes, and
   // the arena bytes that freed — the plain binding's high-water mark less
@@ -110,6 +120,9 @@ struct CompiledUpdate {
   // E12: the eval program reads the student's frozen weights from the
   // source model file (the shipped f32), not the plan's narrow copies.
   bool scores_shipped = false;
+  // F6 #134 (plan v21): every program reads every frozen weight from the
+  // source model file; the plan carries no rodata.
+  bool adapter_only = false;
   // Instructions of the train and step programs carrying kFlagRelaxed: the
   // frozen-weight GEMMs (plan v18) and the tiled attention instructions
   // (plan v20). 0 under Precision::kF32.

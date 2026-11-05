@@ -258,14 +258,18 @@ class Plan:
                    if i.opcode in GEMM_OPCODES)
 
     def label_classes(self):
-        """The narrowest softmax width over the train and eval programs —
-        the bound the feeder contract holds class labels to."""
-        widths = [i.out[1] for name in ("train", "eval")
+        """The narrowest softmax width over every program — the bound the
+        feeder contract holds class labels to (CR2 #143 F07: the engine
+        scans all four programs; a softmax in the merge or step program
+        narrows the bound too)."""
+        widths = [i.out[1] for name in SECTIONS
                   for i in self.sections[name] if i.opcode == 11]
         return min(widths) if widths else 0
 
     def vocab(self):
-        sizes = [i.out[1] >> 32 for name in ("train", "eval")
+        """The narrowest embedding table over every program (F07, as
+        above)."""
+        sizes = [i.out[1] >> 32 for name in SECTIONS
                  for i in self.sections[name] if i.opcode == 41]
         return min(sizes) if sizes else 0
 
@@ -388,17 +392,63 @@ class Corpus:
         return self.inputs[ids].tobytes(), self.labels[ids].tobytes()
 
     def check(self, plan):
-        rows = plan.seq_len if plan.input_kind == 1 else 1
-        if self.input_kind != plan.input_kind:
-            raise PlanError("the corpus and the plan disagree on input kind")
-        if plan.input_kind == 1 and self.input_dim != plan.seq_len:
-            raise PlanError(f"the corpus holds {self.input_dim}-token "
-                            f"records; the plan wants {plan.seq_len}")
-        if plan.input_kind == 0 and (
-                self.input_dim * plan.batch != plan.input_floats):
+        """VerifyFeederContract (runtime/dispatcher/contract.cc), mirrored
+        rule for rule (CR2 #143 F47): the geometry, the label kind and
+        width, and every staged value's bound — class labels below the
+        narrowest softmax width, token ids below the narrowest table (and
+        that width, as next-token labels). The C++ feeder refuses before a
+        step; so does this side, before a diff that would blame a kernel
+        for what the corpus did."""
+        if plan.input_kind == 1:
+            if self.input_kind != 1:
+                raise PlanError("the compiled plan takes token ids, but the "
+                                "corpus carries feature rows")
+            if self.input_dim != plan.seq_len:
+                raise PlanError(f"the corpus holds {self.input_dim}-token "
+                                f"records; the plan wants {plan.seq_len}")
+            if plan.input_floats != plan.batch:
+                raise PlanError("token plan input slot does not hold one id "
+                                "per batch row")
+            if plan.label_kind == 1:
+                if plan.label_bytes != plan.batch * 4:
+                    raise PlanError("token plan label slot does not hold one "
+                                    "id per batch row")
+            elif plan.label_kind != 0:
+                raise PlanError("token plans take class labels or none, not "
+                                "dense labels")
+            if plan.batch % plan.seq_len:
+                raise PlanError("the plan batch is not a whole number of "
+                                "records")
+            bound, classes = plan.vocab(), plan.label_classes()
+            if classes and (bound == 0 or classes < bound):
+                bound = classes
+            self._bounded(self.tokens, bound, "token id")
+            return
+        if self.input_kind != 0:
+            raise PlanError("the compiled plan takes feature rows, but the "
+                            "corpus carries token ids")
+        if self.input_dim * plan.batch != plan.input_floats:
             raise PlanError("the corpus input width does not match the plan")
-        if plan.batch % rows:
-            raise PlanError("the plan batch is not a whole number of records")
+        if plan.label_kind != 0:
+            if self.label_kind != plan.label_kind:
+                raise PlanError("the corpus label kind does not match the "
+                                "plan")
+            if self.label_nbytes * plan.batch != plan.label_bytes:
+                raise PlanError("the corpus label width does not match the "
+                                "plan")
+        if plan.label_kind == 1:
+            self._bounded(self.labels.view("<i4"), plan.label_classes(),
+                          "class label")
+
+    def _bounded(self, values, bound, what):
+        """Dataset::ValidateClassLabels: every value lies in [0, bound)."""
+        if values.size == 0:
+            return
+        lo, hi = int(values.min()), int(values.max())
+        if lo < 0 or hi >= bound:
+            raise PlanError(f"a {what} of {lo if lo < 0 else hi} lies outside "
+                            f"[0, {bound}) — the C++ feeder refuses this "
+                            "corpus")
 
 
 class SyntheticCorpus:
@@ -761,10 +811,11 @@ class Memory:
             np, n = self.np, _count(shape)
             if is_source_ref(ref):
                 # v17: the eval program reads the shipped f32 weights from
-                # the source model file, at their absolute SMF offsets.
+                # the source model file, at their absolute SMF offsets; v21:
+                # every program of an adapter-only plan does.
                 if self.source is None:
-                    raise PlanError("the eval program reads the source "
-                                    "model: pass --source model.smf")
+                    raise PlanError("the plan reads the source model: pass "
+                                    "--source model.smf")
                 blob, off = self.source, ref & ~SOURCE_BIT
                 if off + n * _DTYPE_BYTES[kind] > len(blob):
                     raise PlanError("a source operand lies outside the "
@@ -1631,7 +1682,7 @@ class Probe:
         self.base = [path, "--plan", plan_path, "--backend", backend]
         if threads:
             self.base += ["--threads", str(threads)]
-        self.source = source  # v17: passed to eval sections
+        self.source = source  # v17: the eval program's; v21: any program's
         self.tmp = tempfile.TemporaryDirectory(prefix="seeml-frontier-")
 
     def close(self):
@@ -1646,7 +1697,10 @@ class Probe:
                            "--arena-out", a_out,
                            "--lr-bits", f"{f32_bits(scalars['lr']):08x}",
                            "--step", str(scalars["step"])] + extra
-        if section == "eval" and self.source:
+        # The probe reads --source only where the section's extents need
+        # it: the eval program's source-weight GEMMs (v17), every program's
+        # frozen weights in an adapter-only plan (v21).
+        if self.source:
             cmd += ["--source", self.source]
         done = subprocess.run(cmd, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
@@ -1694,6 +1748,28 @@ class Differ:
         (b, s), (h, _) = hi_lo(ins.out[0]), hi_lo(ins.out[1])
         return (values.reshape(b * h, s, s) *
                 self.np.tril(self.np.ones((s, s), "<f4"))).reshape(-1)
+
+    def outside(self, label, before, after, trace):
+        """N33 (CR2 #143): a byte the C++ backend changed outside every
+        extent its validator declared written is a kernel writing where
+        the bounds proof says it does not — a mismatch no tolerance
+        excuses, and one the per-extent comparison could never see."""
+        np = self.np
+        a = np.frombuffer(before, np.uint8)
+        b = np.frombuffer(after, np.uint8)
+        if a.shape != b.shape:
+            self._mismatch(f"{label}: the C++ arena came back {b.size} "
+                           f"bytes, not {a.size}")
+            return
+        allowed = np.zeros(a.size, dtype=bool)
+        for _, _, writes, _ in trace:
+            for off, values in writes:
+                allowed[off:off + values.nbytes] = True
+        stray = np.flatnonzero((a != b) & ~allowed)
+        if stray.size:
+            self._mismatch(f"{label}: the C++ backend changed {stray.size} "
+                           "byte(s) outside its declared write extents "
+                           f"(first at byte {int(stray[0])})")
 
     def section(self, label, plan, section, ours, theirs):
         np = self.np
@@ -1777,7 +1853,9 @@ def cmd_diff(args):
         """The C++ side runs `section` first; this side replays it one
         instruction at a time from the C++ bytes (see the module docstring),
         so both arrive at the C++ arena for whatever runs next."""
-        image, theirs = probe.trace(np, section, ex.mem.export(), scalars)
+        before = ex.mem.export()
+        image, theirs = probe.trace(np, section, before, scalars)
+        differ.outside(label, before, image, theirs)
         if len(theirs) != len(plan.sections[section]):
             differ._mismatch(f"{label}: the C++ trace holds "
                              f"{len(theirs)} instructions")
@@ -2112,7 +2190,8 @@ def build_parser():
         sp.add_argument("--report", metavar="JSON", default=None)
         sp.add_argument("--source", metavar="SMF", default=None,
                         help="the model the plan was compiled from — a v17 "
-                             "plan's eval program reads its f32 weights")
+                             "plan's eval program reads its f32 weights, every "
+                             "program of a v21 adapter-only plan")
 
         sp.add_argument("--relaxed", action="store_true",
                         help="model the relaxed GEMM family (v18): round each "

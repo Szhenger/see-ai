@@ -70,6 +70,8 @@ enum class OpCode : uint16_t {
                        // word — every pre-v8 plan — means scale 1.0)
   kKLDistillBwd = 16,  // in: p_s, p_t, seed, dlogits; out[0]=N<<32|C,
                        // out[1]=loss_scale bits<<32 | temperature f32 bits
+                       // (T: finite, within [kKlTemperatureMin,
+                       // kKlTemperatureMax] — CR1 #142)
   // Optimizers (in-place; hyperparameters live in the PlanHeader).
   // v12: out[1] may carry a per-tensor clip threshold as f32 bits (0 = no
   // clip, every pre-v12 plan): the step then consumes g * min(1,
@@ -94,10 +96,15 @@ enum class OpCode : uint16_t {
                        // out[1]=rstd ref, out[2]=N<<32|D
   // Training utilities (v2).
   kClipNorm = 28,  // g *= min(1, max/||g||)  in: g, max f32 bits; out[0]=count
+                   // (max: a finite positive float — CR1 #142; the kernel
+                   // refuses a non-finite norm and leaves g as it was)
   // Quantized frozen weights (v2): B is per-tensor symmetric int8 in rodata,
   // dequantized on the fly as scale * q. Layouts mirror the f32 GEMMs.
   kGemmNNQ8 = 29,  // C = A @ dq(B);    in: A, Bq8, C, scale bits; out=M,N,K
   kGemmNTQ8 = 30,  // C = A @ dq(B)^T;  in: A, Bq8, C, scale bits; out=M,N,K
+                   // (scale: a finite positive float, or — kFlagQ8ColScale —
+                   // the rodata ref of the per-column scales, each finite
+                   // and positive; CR1 #142)
   // --- Transformer family (plan v6). Sequence geometry rides packed dim
   // words: out words carry B<<32|S (sequences x positions) and H<<32|d
   // (heads x head width); activations are rank-2 [B*S, H*d] row-major with
@@ -275,6 +282,23 @@ inline constexpr uint16_t kFlagGemmAddend = 1u << 3;  // in[3] = addend ref [M,N
 // as [N = K, M]) it is the REDUCTION index's, applied as each int8 element
 // widens — C[m, n] = sum_k A[m, k] * (q[n, k] * s[k]).
 inline constexpr uint16_t kFlagQ8ColScale = 1u << 4;  // in[3] = scales ref
+// --- Immediate floats (CR1 #142). ---------------------------------------------
+// Every float an instruction carries as bits is proven finite and within a
+// stated range by the validator before any kernel multiplies by it: the
+// standalone clip threshold (kClipNorm's in[1]) and the fused one (the
+// optimizer steps' out[1]; 0 = absent) finite and positive; the per-tensor
+// int8 dequant scale (the q8 GEMMs' in[3] without kFlagQ8ColScale) finite
+// and positive, and each per-column scale likewise (read from rodata by
+// the load contract); the distillation temperature (the KL words' low
+// half) finite and within [kKlTemperatureMin, kKlTemperatureMax] — a
+// non-positive T inverts or dissolves both softmaxes, and the bounds keep
+// logits / T representable at either end. The compiler's config check and
+// the CLI apply the same bounds, so the three agree by construction.
+inline constexpr float kKlTemperatureMin = 1e-3f;
+inline constexpr float kKlTemperatureMax = 1e3f;
+inline constexpr const char* kKlTemperatureRangeText = "[1e-3, 1e3]";
+static_assert(kKlTemperatureMin == 1e-3f && kKlTemperatureMax == 1e3f,
+              "kKlTemperatureRangeText spells the bounds");
 // --- Relaxed arithmetic (plan v18, F2 #130 / F4 #132). ------------------------
 // The six frozen-weight GEMMs (kGemmNN / kGemmNT and their int8 and bf16
 // forms) may carry this bit: the backend MAY compute the product with a

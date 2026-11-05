@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <fstream>
 #include <utility>
@@ -45,7 +46,14 @@ std::string UniqueTmpPath(const std::string& path) {
          std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
+// The injected write fault (CR4 #145 F08): tests only, consumed once.
+std::atomic<int> g_write_fault{0};
+
 }  // namespace
+
+void FailNextDurableWriteForTesting(int errno_value) {
+  g_write_fault.store(errno_value, std::memory_order_relaxed);
+}
 
 std::expected<void, std::string> WriteFileDurable(
     const std::string& path, std::initializer_list<ByteSpan> parts) {
@@ -59,28 +67,39 @@ std::expected<void, std::string> WriteFileDurable(
   const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0)
     return diag::persisting::Error(diag::persisting::kDurableIo, "cannot write '" + tmp + "'");
+  // Every failure past this point removes the sidecar (CR4 #145 F08): a
+  // partial temp file beside the destination is a stray no later writer
+  // reuses and a reader can mistake for a checkpoint.
+  auto fail = [&](int open_fd, const std::string& what) {
+    if (open_fd >= 0) ::close(open_fd);
+    ::unlink(tmp.c_str());
+    return diag::persisting::Error(diag::persisting::kDurableIo, what);
+  };
   for (const ByteSpan& part : parts) {
     size_t written = 0;
     while (written < part.size) {
-      const ssize_t n = ::write(fd, part.data + written, part.size - written);
+      ssize_t n;
+      if (const int fault =
+              g_write_fault.exchange(0, std::memory_order_relaxed);
+          fault != 0) {
+        errno = fault;  // the injected full disk
+        n = -1;
+      } else {
+        n = ::write(fd, part.data + written, part.size - written);
+      }
       if (n < 0) {
         // A signal landing mid-write (checkpoints are large and SIGINT-era
         // stop flags are common) is a retry, not a failed update.
         if (errno == EINTR) continue;
-        ::close(fd);
-        return diag::persisting::Error(diag::persisting::kDurableIo, "short write to '" + tmp + "'");
+        return fail(fd, "short write to '" + tmp + "'");
       }
       written += static_cast<size_t>(n);
     }
   }
-  if (::fsync(fd) != 0) {
-    ::close(fd);
-    return diag::persisting::Error(diag::persisting::kDurableIo, "fsync of '" + tmp + "' failed");
-  }
-  ::close(fd);
+  if (::fsync(fd) != 0) return fail(fd, "fsync of '" + tmp + "' failed");
+  if (::close(fd) != 0) return fail(-1, "close of '" + tmp + "' failed");
   if (std::rename(tmp.c_str(), path.c_str()) != 0)
-    return diag::persisting::Error(diag::persisting::kDurableIo, "atomic rename to '" + path +
-                           "' failed");
+    return fail(-1, "atomic rename to '" + path + "' failed");
   // Persist the rename itself.
   const size_t slash = path.find_last_of('/');
   const std::string dir = slash == std::string::npos
@@ -104,31 +123,33 @@ std::expected<void, std::string> WriteFileDurable(
   if (h == INVALID_HANDLE_VALUE)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "cannot write '" + tmp + "'");
+  // As on POSIX: every failure past the open removes the sidecar.
+  auto fail = [&](bool open_handle, const std::string& what) {
+    if (open_handle) ::CloseHandle(h);
+    ::DeleteFileA(tmp.c_str());
+    return diag::persisting::Error(diag::persisting::kDurableIo, what);
+  };
   for (const ByteSpan& part : parts) {
     size_t written = 0;
     while (written < part.size) {
       const DWORD want = static_cast<DWORD>(
           std::min<size_t>(part.size - written, 1u << 30));
       DWORD got = 0;
-      if (!::WriteFile(h, part.data + written, want, &got, nullptr) ||
-          got == 0) {
-        ::CloseHandle(h);
-        return diag::persisting::Error(diag::persisting::kDurableIo,
-                                       "short write to '" + tmp + "'");
-      }
+      const bool injected =
+          g_write_fault.exchange(0, std::memory_order_relaxed) != 0;
+      if (injected ||
+          !::WriteFile(h, part.data + written, want, &got, nullptr) ||
+          got == 0)
+        return fail(true, "short write to '" + tmp + "'");
       written += got;
     }
   }
-  if (!::FlushFileBuffers(h)) {
-    ::CloseHandle(h);
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "fsync of '" + tmp + "' failed");
-  }
-  ::CloseHandle(h);
+  if (!::FlushFileBuffers(h))
+    return fail(true, "fsync of '" + tmp + "' failed");
+  if (!::CloseHandle(h)) return fail(false, "close of '" + tmp + "' failed");
   if (!::MoveFileExA(tmp.c_str(), path.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "atomic rename to '" + path + "' failed");
+    return fail(false, "atomic rename to '" + path + "' failed");
   return {};
 #endif
 }

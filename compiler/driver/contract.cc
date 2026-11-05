@@ -151,8 +151,12 @@ std::expected<void, std::string> VerifyGeneratedPlan(
   if (compiled.arena_size == 0 ||
       compiled.arena_size < compiled.persistent_size)
     return Broken("backend", "arena cannot contain its persistent segment");
-  if (compiled.rodata_size == 0)
+  // An adapter-only plan (F6 #134, v21) packs no rodata by construction:
+  // its frozen weights are source refs. Every other plan packs some.
+  if (compiled.rodata_size == 0 && !compiled.adapter_only)
     return Broken("backend", "no frozen weight was packed to rodata");
+  if (compiled.rodata_size != 0 && compiled.adapter_only)
+    return Broken("backend", "an adapter-only plan packed rodata");
   if (compiled.adapters.size() != num_adapters)
     return Broken("backend", "adapter debug hooks cover " +
                                  std::to_string(compiled.adapters.size()) +

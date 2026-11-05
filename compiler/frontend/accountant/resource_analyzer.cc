@@ -1,9 +1,12 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 
+#include "source/identity/host_memory.h"
 #include "source/plan/instruction.h"
 
+#include <algorithm>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
@@ -54,13 +57,48 @@ TrainingFootprint& TrainingFootprint::operator+=(const TrainingFootprint& o) {
 
 namespace {
 
+/// The LoRA grafter's eligibility rule, read off the SMF op list: a constant
+/// 2-D tensor consumed only as the weight (second) operand of two-input
+/// MatMuls whose operands differ, and named by one of `target_filters`
+/// (empty = all). Shared by the delta estimate and the activation bound,
+/// which both turn on which products the grafter will adapt.
+std::unordered_set<std::string_view> AdaptedWeights(
+    const SmfModel& model, std::span<const std::string> target_filters) {
+  std::unordered_map<std::string_view, bool> weight_only;  // name -> eligible
+  for (const SmfOp& op : model.ops) {
+    const bool matmul = op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
+    for (size_t i = 0; i < op.inputs.size(); ++i) {
+      const bool as_weight = matmul && i == 1 && op.inputs[0] != op.inputs[1];
+      auto [it, fresh] = weight_only.try_emplace(op.inputs[i], as_weight);
+      if (!fresh) it->second = it->second && as_weight;
+    }
+  }
+  std::unordered_set<std::string_view> adapted;
+  for (const SmfTensor& t : model.tensors) {
+    if (!t.is_const || t.dims.size() != 2) continue;
+    auto it = weight_only.find(t.name);
+    if (it == weight_only.end() || !it->second) continue;
+    if (!target_filters.empty()) {
+      bool matched = false;
+      for (const std::string& f : target_filters)
+        if (t.name.find(f) != std::string::npos) matched = true;
+      if (!matched) continue;
+    }
+    adapted.insert(t.name);
+  }
+  return adapted;
+}
+
 /// Shared walk behind both estimators. `sum_activations` selects the
-/// training model (every activation is cached for the backward pass — sum
-/// them) or the frozen-forward model (no backward consumes anything, so
-/// transients die at their single reader and the arena binder reuses their
-/// slots — the honest lower bound is the single widest live term).
-TrainingFootprint EstimateFootprintImpl(const SmfModel& model, int64_t batch,
-                                        bool sum_activations) {
+/// training model (the forward values the backward reads are all alive
+/// when it begins — sum them) or the frozen-forward model (no backward
+/// consumes anything, so transients die at their single reader and the
+/// arena binder reuses their slots — the honest lower bound is the single
+/// widest live term). `adapted` names the weights LoRA adapts (the
+/// training walk alone reads it).
+TrainingFootprint EstimateFootprintImpl(
+    const SmfModel& model, int64_t batch, bool sum_activations,
+    const std::unordered_set<std::string_view>& adapted) {
   TrainingFootprint fp;
   uint64_t peak_activation = 0;
   auto charge = [&](uint64_t term) {
@@ -95,16 +133,95 @@ TrainingFootprint EstimateFootprintImpl(const SmfModel& model, int64_t batch,
                    : rows;
   }
 
+  // The training walk charges a forward value only where the backward
+  // reads it, and the VJP rules (analysis/calculus/autodiff.cc) say where:
+  // an adapted MatMul's activation input (dA = Xᵀ·dt, emitted for every
+  // trainable adapter), each operand of an activation-by-activation
+  // product for the other's adjoint, attention's V where Q or K is
+  // differentiated and its Q or K for the other's adjoint, the input of a
+  // norm or activation function and each factor of an elementwise product
+  // where the other side is differentiated — and the model output the loss
+  // differentiates. A residual add, a bias add and a rotation read nothing
+  // of their forward (their adjoint is the incoming one, reduced or
+  // rotated), so their inputs die in the forward. Whether a rule is
+  // emitted at all follows needs_grad forward from the adapted products,
+  // as autodiff propagates it. Every value charged is alive when the
+  // backward begins, which is what makes the sum a lower bound on the
+  // arena. `recomputable` marks the charged values rematerialization
+  // rebuilds there instead of keeping — a norm's, an activation function's,
+  // a product's or the embedding gather's output whose operands the
+  // backward holds anyway (read, pinned IO, rodata, or recomputable
+  // themselves: the pass's own rule, that a recompute may keep nothing new).
+  std::unordered_set<std::string_view> needs_grad, read, recomputable;
+  auto is_const = [&](std::string_view name) {
+    auto it = tensors.find(name);
+    return it != tensors.end() && it->second->is_const;
+  };
+  auto grad = [&](std::string_view name) { return needs_grad.contains(name); };
+  if (sum_activations) {
+    for (const SmfOp& op : model.ops) {
+      bool out_grad = false;
+      for (const std::string& in : op.inputs) out_grad = out_grad || grad(in);
+      const bool matmul =
+          op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
+      const bool adapted_weight = matmul && adapted.contains(op.inputs[1]);
+      out_grad = out_grad || adapted_weight;
+      switch (op.kind) {
+        case SmfOpKind::kMatMul:
+          if (!matmul) break;
+          if (adapted_weight ||
+              (!is_const(op.inputs[1]) && grad(op.inputs[1])))
+            read.insert(op.inputs[0]);
+          if (!is_const(op.inputs[1]) && grad(op.inputs[0]))
+            read.insert(op.inputs[1]);
+          break;
+        case SmfOpKind::kAttention:
+          if (op.inputs.size() != 3) break;
+          if (grad(op.inputs[0]) || grad(op.inputs[1]))
+            read.insert(op.inputs[2]);
+          if (grad(op.inputs[0])) read.insert(op.inputs[1]);
+          if (grad(op.inputs[1])) read.insert(op.inputs[0]);
+          break;
+        case SmfOpKind::kLayerNorm:
+        case SmfOpKind::kRmsNorm:
+        case SmfOpKind::kRelu:
+        case SmfOpKind::kGelu:
+        case SmfOpKind::kSilu:
+          if (!op.inputs.empty() && grad(op.inputs[0]))
+            read.insert(op.inputs[0]);
+          break;
+        case SmfOpKind::kMul:
+          if (op.inputs.size() != 2) break;
+          if (grad(op.inputs[1])) read.insert(op.inputs[0]);
+          if (grad(op.inputs[0])) read.insert(op.inputs[1]);
+          break;
+        default:  // kAdd, kAddBias, kRope, kEmbedding: nothing of the forward
+          break;
+      }
+      if (out_grad) needs_grad.insert(op.output);
+    }
+    read.insert(model.output_name);
+  }
+  auto kept_anyway = [&](std::string_view name) {
+    return read.contains(name) || recomputable.contains(name) ||
+           is_const(name) || name == model.input_name;
+  };
+
   // Forward activations: propagate output widths and row counts with the
-  // parser's shape rules. Every activation is [rows, width] f32 and is
-  // cached for the backward pass. An unresolvable width contributes zero —
-  // the estimate must stay a lower bound.
+  // parser's shape rules. Every activation is [rows, width] f32. An
+  // unresolvable width contributes zero — the estimate must stay a lower
+  // bound.
   for (const SmfOp& op : model.ops) {
     uint64_t w = 0;
     uint64_t r = rows;
     if (!op.inputs.empty())
       if (auto it = row_count.find(op.inputs[0]); it != row_count.end())
         r = it->second;
+    // The training walk: whether this op's backward rule runs at all (its
+    // output needs a gradient), which decides whether its side caches —
+    // the norms' row statistics, attention's probabilities — live past
+    // the forward.
+    const bool backward_runs = !sum_activations || grad(op.output);
     switch (op.kind) {
       case SmfOpKind::kMatMul:
       case SmfOpKind::kEmbedding: {
@@ -132,9 +249,10 @@ TrainingFootprint EstimateFootprintImpl(const SmfModel& model, int64_t batch,
           w = it->second;
         // LayerNorm additionally caches per-row mean/rstd for the backward
         // kernel (two f32 per row); RMSNorm caches rstd (one).
-        if (op.kind == SmfOpKind::kLayerNorm)
+        if (op.kind == SmfOpKind::kLayerNorm && backward_runs)
           charge(SatMul(2 * sizeof(float), r));
-        if (op.kind == SmfOpKind::kRmsNorm) charge(SatMul(sizeof(float), r));
+        if (op.kind == SmfOpKind::kRmsNorm && backward_runs)
+          charge(SatMul(sizeof(float), r));
         // Attention caches the probability matrix P[B,H,S,S] — flattened
         // [rows * heads, seq_len] — for the backward primitives; usually
         // the dominant transformer activation. heads/seq_len of zero mean
@@ -145,7 +263,7 @@ TrainingFootprint EstimateFootprintImpl(const SmfModel& model, int64_t batch,
         // whether to keep it — and as an activation at the peak walk (a
         // frozen forward never holds it past the op).
         if (op.kind == SmfOpKind::kAttention && op.attr0 > 0 &&
-            model.seq_len > 0) {
+            model.seq_len > 0 && backward_runs) {
           const uint64_t rows_heads = SatMul(r, op.attr0);
           const uint64_t cache =
               SatMul(SatMul(rows_heads, model.seq_len), sizeof(float));
@@ -164,7 +282,31 @@ TrainingFootprint EstimateFootprintImpl(const SmfModel& model, int64_t batch,
     if (w == 0) continue;
     width[op.output] = w;
     row_count[op.output] = r;
-    charge(SatMul(SatMul(r, w), sizeof(float)));
+    if (sum_activations && !read.contains(op.output)) continue;
+    const uint64_t bytes = SatMul(SatMul(r, w), sizeof(float));
+    charge(bytes);
+    if (!sum_activations) continue;
+    bool cheap = false;
+    switch (op.kind) {
+      case SmfOpKind::kLayerNorm:
+      case SmfOpKind::kRmsNorm:
+      case SmfOpKind::kRelu:
+      case SmfOpKind::kGelu:
+      case SmfOpKind::kSilu:
+      case SmfOpKind::kMul:
+      case SmfOpKind::kEmbedding:
+        cheap = true;
+        break;
+      default:  // a GEMM, attention, a rotation, an add: never recomputed
+        break;
+    }
+    if (!cheap) continue;
+    bool free_to_recompute = true;
+    for (const std::string& in : op.inputs)
+      free_to_recompute = free_to_recompute && kept_anyway(in);
+    if (!free_to_recompute) continue;
+    recomputable.insert(op.output);
+    fp.recomputable_bytes = SatAdd(fp.recomputable_bytes, bytes);
   }
   if (!sum_activations) fp.activation_bytes = peak_activation;
   return fp;
@@ -172,56 +314,32 @@ TrainingFootprint EstimateFootprintImpl(const SmfModel& model, int64_t batch,
 
 }  // namespace
 
-TrainingFootprint EstimateTrainingFootprint(const SmfModel& model,
-                                            int64_t batch) {
-  return EstimateFootprintImpl(model, batch, /*sum_activations=*/true);
+TrainingFootprint EstimateTrainingFootprint(
+    const SmfModel& model, int64_t batch,
+    std::span<const std::string> target_filters) {
+  return EstimateFootprintImpl(model, batch, /*sum_activations=*/true,
+                               AdaptedWeights(model, target_filters));
 }
 
 TrainingFootprint EstimateFrozenForwardFootprint(const SmfModel& model,
                                                  int64_t batch) {
-  return EstimateFootprintImpl(model, batch, /*sum_activations=*/false);
+  return EstimateFootprintImpl(model, batch, /*sum_activations=*/false, {});
 }
 
 uint64_t EstimateLoraDeltaBytes(const SmfModel& model,
                                 std::span<const std::string> target_filters) {
-  // Classify every tensor name by how the op list consumes it.
-  std::unordered_map<std::string_view, bool> weight_only;  // name -> eligible
-  for (const SmfOp& op : model.ops) {
-    const bool matmul = op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
-    for (size_t i = 0; i < op.inputs.size(); ++i) {
-      const bool as_weight = matmul && i == 1 && op.inputs[0] != op.inputs[1];
-      auto [it, fresh] = weight_only.try_emplace(op.inputs[i], as_weight);
-      if (!fresh) it->second = it->second && as_weight;
-    }
-  }
+  const std::unordered_set<std::string_view> adapted =
+      AdaptedWeights(model, target_filters);
   uint64_t bytes = 0;
-  for (const SmfTensor& t : model.tensors) {
-    if (!t.is_const || t.dims.size() != 2) continue;
-    auto it = weight_only.find(t.name);
-    if (it == weight_only.end() || !it->second) continue;
-    if (!target_filters.empty()) {
-      bool matched = false;
-      for (const std::string& f : target_filters)
-        if (t.name.find(f) != std::string::npos) matched = true;
-      if (!matched) continue;
-    }
-    bytes = SatAdd(bytes, t.byte_size);  // the delta is f32, like the file
-  }
+  for (const SmfTensor& t : model.tensors)
+    if (adapted.contains(t.name))
+      bytes = SatAdd(bytes, t.byte_size);  // the delta is f32, like the file
   return bytes;
 }
 
 uint64_t DetectLocalMemoryBytes() {
-#if defined(__APPLE__)
-  uint64_t mem = 0;
-  size_t len = sizeof(mem);
-  if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) != 0) return 0;
-  return mem;
-#else
-  const long pages = sysconf(_SC_PHYS_PAGES);
-  const long page_size = sysconf(_SC_PAGE_SIZE);
-  if (pages <= 0 || page_size <= 0) return 0;
-  return SatMul(static_cast<uint64_t>(pages), static_cast<uint64_t>(page_size));
-#endif
+  // One query, shared with the runtime's load (source/identity/host_memory.h).
+  return DetectHostMemoryBytes();
 }
 
 std::expected<void, std::string> CheckTrainableLocally(

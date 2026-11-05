@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "tool": "pack_update",
+  "package_dir": "out/f2-2026-10-30/pkg_relaxed",
+  "plan_file": "out/f2-2026-10-30/pkg_relaxed/update_plan.seeu",
+  "plan_bytes": 298631168,
+  "mode": "embed",
+  "mode_forced": false,
+  "embed_limit": 1073741824,
+  "embedded_tu": "out/f2-2026-10-30/pkg_relaxed/update_plan_embedded.S",
+  "page_align": 16384,
+  "build_script_rewritten": false,
+  "decimal_tu_removed": false,
+  "stub_removed": false,
+  "built": true,
+  "build_seconds": 13.378,
+  "binary": "out/f2-2026-10-30/pkg_relaxed/model_update",
+  "numerics_certificate": {
+    "file": "out/f2-2026-10-30/pkg_relaxed/numerics_certificate.json",
+    "family": "relaxed-flagged-instructions",
+    "sites": [
+      "gemm.relaxed"
+    ],
+    "site_rel_tolerance": 1e-05,
+    "tolerances": {
+      "loss_rel": 0.001,
+      "relaxed_gemm_rel": 0.0078125,
+      "site_rel": 1e-05
+    },
+    "evidence_steps": 20,
+    "looser_than_defaults": []
+  },
+  "relaxed_gemms": 419,
+  "relaxed_instructions": 419
+}

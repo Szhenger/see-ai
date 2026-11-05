@@ -80,11 +80,13 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include "runtime/dispatcher/contract.h"
 #include "runtime/executor/backend.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
@@ -281,8 +283,9 @@ int ParseOptions(int argc, char** argv, Options* opts) {
   opts->arena_in = *in_arena;
   opts->arena_out = *out_arena;
   if (source) {
-    if (*section != "eval")
-      return Usage("--source applies to --section eval only");
+    // Any section may read the source model: the eval program's f32
+    // weights (v17), every program's in an adapter-only plan (v21). The
+    // file is read only where the section's extents need it.
     const auto in_source = InputFile(*source, &why);
     if (!in_source) return Fail(why);
     opts->source = *in_source;
@@ -370,6 +373,36 @@ std::string LoadProgram(const std::vector<uint8_t>& plan,
   if (up::PlanSelfHash(plan.data(), plan.size(),
                        offsetof(up::PlanHeader, plan_hash)) != h.plan_hash)
     return "plan integrity check failed (plan_hash)";
+  // The engine's contracts, as the engine runs them (CR2 #143 F58): the
+  // header's sections, arena relations, slots and hyperparameters, then
+  // every instruction of every program — the staged slots unwritten, the
+  // softmax and gather provenance, the column scales, the emit table. A
+  // plan the device would refuse must not price or diff here as if it
+  // ran. (The Python plane cannot re-seal a plan, so this refusal has no
+  // Python test; the engine's own tests prove the contracts.)
+  if (auto r = rt::VerifyPlanContract(h, plan.size()); !r) return r.error();
+  {
+    auto decode = [&](uint64_t off, uint64_t count, auto& out) {
+      out.resize(static_cast<size_t>(count));
+      if (count)
+        std::memcpy(out.data(), plan.data() + off,
+                    static_cast<size_t>(count) * sizeof(out[0]));
+    };
+    std::vector<up::UpdateInstruction> train, merge, eval, step;
+    std::vector<up::EmitEntry> emit;
+    decode(h.train_instr_offset, h.train_instr_count, train);
+    decode(h.merge_instr_offset, h.merge_instr_count, merge);
+    decode(h.eval_instr_offset, h.eval_instr_count, eval);
+    decode(h.step_instr_offset, h.step_instr_count, step);
+    decode(h.emit_table_offset, h.emit_count, emit);
+    if (auto r = rt::VerifyExecutorContract(
+            train, merge, eval, step, emit,
+            std::span<const uint8_t>(plan.data() + h.rodata_offset,
+                                     h.rodata_size),
+            h);
+        !r)
+      return r.error();
+  }
 
   uint64_t off = h.train_instr_offset, count = h.train_instr_count;
   if (section == "eval") off = h.eval_instr_offset, count = h.eval_instr_count;
@@ -596,14 +629,14 @@ int main(int argc, char** argv) {
             std::max(source_needed, ex.ranges[i].off + ex.ranges[i].bytes);
   if (source_needed > 0) {
     if (opts.source.empty())
-      return Fail("the eval program reads the source model: pass --source");
+      return Fail("the program reads the source model: pass --source");
     if (!ReadFile(opts.source, &source_bytes))
       return Fail("cannot read --source");
     if (up::ContentHash64(source_bytes.data(), source_bytes.size()) !=
         h.source_model_hash)
       return Fail("--source does not match the plan's source_model_hash");
     if (source_bytes.size() < source_needed)
-      return Fail("--source is shorter than the eval program reads");
+      return Fail("--source is shorter than the program reads");
     if (auto r = backend.BindSource(source_bytes.data(), source_bytes.size());
         !r)
       return Fail("bind source: " + r.error());

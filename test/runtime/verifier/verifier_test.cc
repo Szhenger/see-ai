@@ -306,15 +306,18 @@ TEST(PlanValidator, AttentionBackwardExtentsAreProven) {
   EXPECT_ERROR(ValidateInstruction(dp, kArena, kRodata, up::kSeeuVersion));
 }
 
-TEST(PlanValidator, SoftmaxRowsBackwardOverflowIsRejected) {
-  // rows and cols each fill their 32-bit half; their product must go
-  // through MulOk — 2^32 * 2^32 wraps u64 to zero-ish garbage.
+TEST(PlanValidator, SoftmaxRowsBackwardByteCountOverflowIsRejected) {
+  // rows = cols = 2^31: their product, 2^62 elements, fits u64, but the
+  // byte count 4 * 2^62 is 2^64 — without the MulOk on the element count
+  // it wraps to ZERO bytes and every range check passes (CR3 #144 F30:
+  // the old operands' product, (2^32 - 1)^2, never overflowed, and the
+  // range check alone carried the test).
   up::UpdateInstruction sm;
   sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxRowsBwd);
   sm.in[0] = up::MakeArenaRef(0);
   sm.in[1] = up::MakeArenaRef(256);
   sm.in[2] = up::MakeArenaRef(512);
-  sm.out[0] = (uint64_t{0xFFFFFFFFu} << 32) | 0xFFFFFFFFu;
+  sm.out[0] = (uint64_t{0x80000000u} << 32) | 0x80000000u;
   EXPECT_ERROR(ValidateInstruction(sm, kArena, kRodata, up::kSeeuVersion));
 }
 
@@ -334,6 +337,15 @@ TEST(PlanValidator, EmbedProvesBuffersAndDemandsRodataTable) {
   // the opcode, an out-of-bounds output, and an output aliasing the tokens.
   emb.in[1] = up::MakeArenaRef(256);
   EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata, up::kSeeuVersion));
+  // v21 (F6 #134): the source model's own f32 table, where source refs are
+  // admitted — an adapter-only plan — and never below v21 or where they
+  // are not.
+  emb.in[1] = up::MakeSourceRef(4096);
+  EXPECT_OK(ValidateInstruction(emb, kArena, kRodata, up::kSeeuVersion,
+                                /*allow_source=*/true));
+  EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata, up::kSeeuVersion));
+  EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata,
+                                   up::kSeeuSourceWeightsVersion - 1, true));
   emb.in[1] = up::MakeRodataRef(0);
   EXPECT_ERROR_CONTAINS(
       ValidateInstruction(emb, kArena, kRodata, up::kSeeuTokenVersion - 1),
@@ -424,6 +436,7 @@ TEST(PlanValidator, QuantizedWeightsMustLiveInRodata) {
   q8.in[0] = up::MakeArenaRef(0);
   q8.in[1] = up::MakeArenaRef(64);  // int8 B in the mutable arena: forbidden
   q8.in[2] = up::MakeArenaRef(512);
+  q8.in[3] = std::bit_cast<uint32_t>(1.0f);  // the dequant scale (CR1 #142)
   q8.out[0] = 2;
   q8.out[1] = 2;
   q8.out[2] = 2;
@@ -485,10 +498,14 @@ TEST(PlanValidator, BoundsMathIsOverflowSafe) {
   // off + bytes wraps u64 — must reject, not wrap.
   EXPECT_FALSE(RangeOk(UINT64_MAX - 8, 64, 1024));
 
-  // A count chosen so elems * 4 wraps to something tiny.
+  // A count whose byte size wraps SMALL and nonzero: 4 * (2^62 + 64) is
+  // 2^64 + 256, so without the MulOk on the element count the three
+  // operands read as 256 bytes each at disjoint offsets inside the arena
+  // and nothing else refuses them (CR3 #144 F31: UINT64_MAX / 2 wrapped
+  // to 2^64 - 4, which the range check rejected on its own).
   EXPECT_ERROR(ValidateInstruction(
-      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(0), up::MakeArenaRef(0),
-            UINT64_MAX / 2),
+      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256), up::MakeArenaRef(512),
+            (uint64_t{1} << 62) + 64),
       kArena, kRodata, up::kSeeuVersion));
 }
 
@@ -794,12 +811,18 @@ TEST(PlanValidator, TheGemmAddendSharesItsSlotWithNothing) {
     ASSERT_FALSE(r.has_value());
     EXPECT_STR_CONTAINS(r.error(), "addend");
   }
+  // The accumulate and the narrow-weight forms admit no addend: the flags
+  // guard refuses the bit by name. B in rodata, as the narrow forms require
+  // anyway, so no other rule can take the credit (CR3 #144 F32).
   gemm.flags = up::kFlagGemmAddend;
+  gemm.in[1] = up::MakeRodataRef(0);
   for (const up::OpCode op :
        {up::OpCode::kGemmAccNN, up::OpCode::kGemmNNQ8, up::OpCode::kGemmNTQ8,
         up::OpCode::kGemmNNBF16, up::OpCode::kGemmNTBF16}) {
     gemm.opcode = static_cast<uint16_t>(op);
-    EXPECT_ERROR(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+    const auto r = ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), "misplaced instruction flags");
   }
   up::UpdateInstruction add = AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256),
                                     up::MakeArenaRef(512), 16);
@@ -815,6 +838,7 @@ TEST(PlanValidator, RejectsFusedBiasOnQuantizedGemm) {
   q8.in[0] = up::MakeArenaRef(0);
   q8.in[1] = up::MakeRodataRef(0);
   q8.in[2] = up::MakeArenaRef(512);
+  q8.in[3] = std::bit_cast<uint32_t>(1.0f);  // the dequant scale (CR1 #142)
   q8.out[0] = 2;
   q8.out[1] = 2;
   q8.out[2] = 2;
@@ -862,6 +886,7 @@ TEST(PlanValidator, RejectsMisalignedRefs) {
   q8.in[0] = up::MakeArenaRef(0);
   q8.in[1] = up::MakeRodataRef(3);
   q8.in[2] = up::MakeArenaRef(512);
+  q8.in[3] = std::bit_cast<uint32_t>(1.0f);  // the dequant scale (CR1 #142)
   q8.out[0] = 2;
   q8.out[1] = 2;
   q8.out[2] = 2;
@@ -971,6 +996,83 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   up::UpdateInstruction ro_out = FusedMap(silu);
   ro_out.in[3] = up::MakeRodataRef(0);
   EXPECT_ERROR(check(ro_out));
+}
+
+TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
+  // CR1 #142: every float an instruction carries as bits is proven finite
+  // and within its range before a kernel multiplies by it.
+  const auto f32 = [](float f) {
+    return uint64_t{std::bit_cast<uint32_t>(f)};
+  };
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  const auto refused = [&](const up::UpdateInstruction& ins, uint32_t version,
+                           const char* needle) {
+    const auto r = ValidateInstruction(ins, kArena, kRodata, version);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), needle);
+  };
+  // The standalone clip threshold (F13 / F18): 0 scaled g by 0 on the CPU
+  // and by stale scratch on the GPU; -1 was gradient ascent.
+  up::UpdateInstruction clip;
+  clip.opcode = static_cast<uint16_t>(up::OpCode::kClipNorm);
+  clip.in[0] = up::MakeArenaRef(0);
+  clip.in[1] = f32(1.0f);
+  clip.out[0] = 16;
+  EXPECT_OK(ValidateInstruction(clip, kArena, kRodata, up::kSeeuVersion));
+  for (const uint64_t bad : {f32(0.0f), f32(-1.0f), f32(nan), f32(INFINITY),
+                             f32(1.0f) | (uint64_t{1} << 32)}) {
+    clip.in[1] = bad;
+    refused(clip, up::kSeeuVersion, "clip_norm threshold");
+  }
+  // The distillation temperature (F17 / F10): the KL words' low half, at
+  // every version — both softmaxes divide by it.
+  up::UpdateInstruction fwd;
+  fwd.opcode = static_cast<uint16_t>(up::OpCode::kKLDistillFwd);
+  fwd.in[0] = up::MakeArenaRef(0);
+  fwd.in[1] = up::MakeArenaRef(64);
+  fwd.in[2] = up::MakeArenaRef(128);
+  fwd.in[3] = up::MakeArenaRef(192);
+  fwd.out[0] = up::MakeArenaRef(256);
+  fwd.out[1] = (uint64_t{2} << 32) | 3;
+  up::UpdateInstruction bwd;
+  bwd.opcode = static_cast<uint16_t>(up::OpCode::kKLDistillBwd);
+  bwd.in[0] = up::MakeArenaRef(0);
+  bwd.in[1] = up::MakeArenaRef(64);
+  bwd.in[2] = up::MakeArenaRef(128);
+  bwd.in[3] = up::MakeArenaRef(192);
+  bwd.out[0] = (uint64_t{2} << 32) | 3;
+  for (const float t :
+       {up::kKlTemperatureMin, 1.0f, 2.0f, up::kKlTemperatureMax}) {
+    fwd.out[2] = f32(t);
+    bwd.out[1] = f32(t);
+    EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
+    EXPECT_OK(ValidateInstruction(bwd, kArena, kRodata,
+                                  up::kSeeuKlScaleVersion - 1));
+  }
+  for (const float t : {0.0f, -2.0f, nan, INFINITY, 1e-4f, 1e4f}) {
+    fwd.out[2] = f32(t);
+    bwd.out[1] = f32(t);
+    refused(fwd, up::kSeeuVersion, "temperature");
+    refused(bwd, up::kSeeuVersion, "temperature");
+    refused(fwd, up::kSeeuKlScaleVersion - 1, "temperature");
+  }
+  // The per-tensor dequant scale (F33): a zero or NaN scale dequantized the
+  // whole weight to nothing or to NaN, and the validator let it through.
+  up::UpdateInstruction q8 = GemmNN(up::MakeArenaRef(0), up::MakeRodataRef(0),
+                                    up::MakeArenaRef(512), 4, 4, 4);
+  q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
+  q8.in[3] = f32(0.5f);
+  EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
+  for (const uint64_t bad : {f32(0.0f), f32(-0.5f), f32(nan), f32(INFINITY),
+                             f32(1.0f) | (uint64_t{1} << 32), up::kNullRef}) {
+    q8.in[3] = bad;
+    refused(q8, up::kSeeuVersion, "dequant scale");
+  }
+  // Under the column-scale flag in[3] is the scales' rodata ref instead, and
+  // those floats are the load contract's to check (engine_test).
+  q8.flags = up::kFlagQ8ColScale;
+  q8.in[3] = up::MakeRodataRef(64);  // 4 floats, past B's 16 int8 bytes
+  EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
 }
 
 }  // namespace

@@ -1,0 +1,24 @@
+hf import: rms_norm_eps 1e-06 carried on every RmsNorm (SMF v6)
+hf import: GQA: 2 kv heads repeated to 12 query heads (the format carries no kv heads yet)
+hf import: tied lm_head (w_head = embedding^T; the merged head adapter is not written back into the embedding)
+text corpus: 91541 tokens -> 709 records of 129
+wrote out/f5-2026-11-03/qwen25_15b.smf (28 decoder blocks, seq_len=128, heads=12, vocab=151936, token-native, rope_base=1e+06)
+wrote out/f5-2026-11-03/qwen25_15b.sds (709 records, seq_len=128, token-native)
+       16.16 real         7.32 user         3.60 sys
+          4407164928  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              196723  page reclaims
+              196793  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 130  voluntary context switches
+               87456  involuntary context switches
+         28797809031  instructions retired
+         24237805591  cycles elapsed
+          2159939832  peak memory footprint

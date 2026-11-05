@@ -1,0 +1,263 @@
+{
+ "schema": 1,
+ "system": "SeeML",
+ "backend": "metal",
+ "precision": "f32 math, int8 base",
+ "host": {
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "package": "out/f5-2026-11-03/arm_fit",
+ "seeml_version": "1.2.4",
+ "plan_version": 20,
+ "plan_hash": "66d7ae5e8b901ebc",
+ "precision_flag": "f32",
+ "relaxed_gemms": 0,
+ "relaxed_attention": 0,
+ "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+ "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+ "threads": 10,
+ "config": {
+  "steps": 20,
+  "tokens_per_step": 512,
+  "lo": 5,
+  "hi": 15,
+  "repeats": 1
+ },
+ "records_digest": "9c9c409144e68379",
+ "adapters": 197,
+ "adapter_params": 11033600,
+ "arena_bytes": 7704605824,
+ "plan_bytes": 2768388096,
+ "step_ms": 8761.999999999989,
+ "step_ms_lohi": 483.9999999999975,
+ "step_ms_min": 483.9999999999975,
+ "step_ms_max": 483.9999999999975,
+ "tokens_per_s": 58.434147454919035,
+ "it_per_s": 0.11412919424788874,
+ "tokens_per_step": 512,
+ "intercept_s": 480.49,
+ "val_loss": [
+  4.3438034,
+  4.0025449
+ ],
+ "val_acc": [
+  0.2857143,
+  0.31305805
+ ],
+ "train_loss": [
+  4.253571,
+  3.8189831
+ ],
+ "verdict": "accepted",
+ "committed": true,
+ "lifecycle": {
+  "load_s": 6.8966,
+  "data_s": 0.0013,
+  "train_s": 499.9502,
+  "eval_s": 458.3835,
+  "evaluations": 2,
+  "merge_s": 1.7442,
+  "commit_s": 22.1966,
+  "wall_s": 530.8532
+ },
+ "relaxed_executions": 0,
+ "committed_sha256": "eecfde4b6a57f5a805def7e7cf7b4df5494d491e3c57203e5839f7ba6c22d009",
+ "suspect": false,
+ "wall_quality_s": 531.56,
+ "peak_rss_bytes": 11316396032,
+ "energy": {
+  "attribution": "whole-SoC",
+  "available": false,
+  "scope": [],
+  "joules": {},
+  "reason": "IOReport unavailable: libIOReport not found",
+  "j_per_step": null,
+  "j_per_token": null
+ },
+ "runs": [
+  {
+   "steps": 5,
+   "exit": 0,
+   "wall_s": 482.91,
+   "peak_rss_bytes": 10964942848,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops, source model on the CPU (7549079360 B beyond the GPU working set)",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "file",
+     "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu",
+     "bytes": 2768388096
+    },
+    "steps": 5,
+    "train_loss": [
+     4.91188,
+     3.9946864
+    ],
+    "validation_loss": [
+     4.3438034,
+     4.2470613
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.2857143,
+     0.29854912
+    ],
+    "lifecycle": {
+     "load_s": 5.8293,
+     "data_s": 0.0016,
+     "train_s": 445.3485,
+     "eval_s": 434.9447,
+     "evaluations": 2,
+     "merge_s": 1.7838,
+     "commit_s": 29.2815,
+     "wall_s": 482.2854
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "6ecb9d17634fdfbf19e34e520b959b59c7efc050e924d9b580d4731c35f55dd5",
+   "energy": {
+    "available": false,
+    "attribution": "whole-SoC",
+    "scope": [],
+    "joules": {},
+    "reason": "IOReport unavailable: libIOReport not found"
+   },
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  },
+  {
+   "steps": 15,
+   "exit": 0,
+   "wall_s": 487.75,
+   "peak_rss_bytes": 10967597056,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops, source model on the CPU (7549079360 B beyond the GPU working set)",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "file",
+     "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu",
+     "bytes": 2768388096
+    },
+    "steps": 15,
+    "train_loss": [
+     4.2593441,
+     3.9752634
+    ],
+    "validation_loss": [
+     4.3438034,
+     4.0678401
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.2857143,
+     0.30189732
+    ],
+    "lifecycle": {
+     "load_s": 5.451,
+     "data_s": 0.0012,
+     "train_s": 458.588,
+     "eval_s": 427.4967,
+     "evaluations": 2,
+     "merge_s": 1.7946,
+     "commit_s": 21.2618,
+     "wall_s": 487.1654
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "ba8d8231ccbc3898d670991afd4c33531c79417584cfe1a7662b45c40ac27b66",
+   "energy": {
+    "available": false,
+    "attribution": "whole-SoC",
+    "scope": [],
+    "joules": {},
+    "reason": "IOReport unavailable: libIOReport not found"
+   },
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  },
+  {
+   "steps": 20,
+   "exit": 0,
+   "wall_s": 531.56,
+   "peak_rss_bytes": 11316396032,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops, source model on the CPU (7549079360 B beyond the GPU working set)",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "file",
+     "path": "~/SeeAI/see-ai/.claude/worktrees/v100a-next/out/f5-2026-11-03/arm_fit/update_plan.seeu",
+     "bytes": 2768388096
+    },
+    "steps": 20,
+    "train_loss": [
+     4.253571,
+     3.8189831
+    ],
+    "validation_loss": [
+     4.3438034,
+     4.0025449
+    ],
+    "validation_scores": "shipped",
+    "validation_accuracy": [
+     0.2857143,
+     0.31305805
+    ],
+    "lifecycle": {
+     "load_s": 6.8966,
+     "data_s": 0.0013,
+     "train_s": 499.9502,
+     "eval_s": 458.3835,
+     "evaluations": 2,
+     "merge_s": 1.7442,
+     "commit_s": 22.1966,
+     "wall_s": 530.8532
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "eecfde4b6a57f5a805def7e7cf7b4df5494d491e3c57203e5839f7ba6c22d009",
+   "energy": {
+    "available": false,
+    "attribution": "whole-SoC",
+    "scope": [],
+    "joules": {},
+    "reason": "IOReport unavailable: libIOReport not found"
+   },
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  }
+ ]
+}

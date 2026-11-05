@@ -88,7 +88,8 @@ struct CheckpointRecord {
 /// Reads only the run binding of a checkpoint (no payload is touched or
 /// verified): what a driver needs to refuse a mismatched seed or split
 /// before anything else happens. A file that is not a checkpoint is an
-/// error; a v3/v4 file yields has_binding == false.
+/// error; a v3/v4 file, or a v5 file saved without a binding, yields
+/// has_binding == false.
 [[nodiscard]] std::expected<CheckpointRecord, std::string>
 PeekCheckpointRecord(const std::string& path);
 
