@@ -1213,4 +1213,88 @@ TEST(UpdateCompiler, AttentionAutoDecidesAgainstAConfiguredBudgetOnly) {
     EXPECT_STR_CONTAINS(tiled.error(), "cannot run locally");
 }
 
+TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {
+  // CR1 #142 F12 / F34: a NaN weight passed the quantization review (max
+  // skips NaN) and reached the int8 pack's cast — undefined behavior. The
+  // compile refuses the model by tensor name and element before any pass;
+  // under UBSan this is the acceptance (the cast is never reached).
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
+  SmfTensor* w = nullptr;
+  for (SmfTensor& t : model.tensors)
+    if (t.is_const && t.dims.size() == 2) {
+      w = &t;
+      break;
+    }
+  ASSERT_TRUE(w != nullptr);
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  std::memcpy(w->data.data() + 3 * sizeof(float), &nan, sizeof(nan));
+  const auto r = UpdateCompiler(BaseConfig(kBatch)).Compile(model);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_TRUE(r.error().find("'" + w->name + "'") != std::string::npos);
+  EXPECT_TRUE(r.error().find("element 3") != std::string::npos);
+  // The teacher is swept too: an infinity in it is refused by role.
+  SmfModel student = MakeMlp(kInDim, kHidden, kOutDim, 6);
+  SmfModel teacher = MakeMlp(kInDim, 14, kOutDim, 7);
+  SmfTensor* tw = nullptr;
+  for (SmfTensor& t : teacher.tensors)
+    if (t.is_const && t.dims.size() == 2) {
+      tw = &t;
+      break;
+    }
+  ASSERT_TRUE(tw != nullptr);
+  const float inf = INFINITY;
+  std::memcpy(tw->data.data(), &inf, sizeof(inf));
+  UpdateConfig config = BaseConfig(kBatch);
+  config.loss = LossKind::kKLDistill;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(student, &teacher),
+                        "teacher tensor");
+}
+
+TEST(UpdateCompiler, ConfigFloatsAreFiniteAndInRange) {
+  // CR1 #142 N26: the CLI bounded its flags; the library path bounded
+  // nothing, so a NaN learning rate or an unbounded temperature compiled.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  struct Case {
+    const char* name;
+    void (*set)(UpdateConfig&, float);
+    float bad;
+  };
+  const Case cases[] = {
+      {"lr", [](UpdateConfig& c, float v) { c.optimizer.lr = v; }, nan},
+      {"lr", [](UpdateConfig& c, float v) { c.optimizer.lr = v; }, 0.0f},
+      {"beta1", [](UpdateConfig& c, float v) { c.optimizer.beta1 = v; }, 1.0f},
+      {"beta2", [](UpdateConfig& c, float v) { c.optimizer.beta2 = v; }, nan},
+      {"eps", [](UpdateConfig& c, float v) { c.optimizer.eps = v; }, 0.0f},
+      {"weight_decay",
+       [](UpdateConfig& c, float v) { c.optimizer.weight_decay = v; }, -0.01f},
+      {"clip_norm", [](UpdateConfig& c, float v) { c.optimizer.clip_norm = v; },
+       nan},
+      {"clip_norm", [](UpdateConfig& c, float v) { c.optimizer.clip_norm = v; },
+       -1.0f},
+      {"min_lr_factor",
+       [](UpdateConfig& c, float v) { c.optimizer.min_lr_factor = v; }, 1.5f},
+      {"lora.alpha", [](UpdateConfig& c, float v) { c.lora.alpha = v; }, 0.0f},
+  };
+  for (const Case& c : cases) {
+    UpdateConfig config = BaseConfig(kBatch);
+    c.set(config, c.bad);
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model), c.name);
+  }
+  // The temperature and the distillation weight are checked where they
+  // apply — under a KL loss — with the bounds the validator and the CLI
+  // share; under cross-entropy a NaN temperature is unused, not a refusal.
+  SmfModel teacher = MakeMlp(kInDim, 14, kOutDim, 7);
+  for (const float t : {0.0f, -2.0f, nan, 1e-4f, 1e4f}) {
+    UpdateConfig config = BaseConfig(kBatch);
+    config.loss = LossKind::kKLDistill;
+    config.temperature = t;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model, &teacher),
+                          "temperature");
+  }
+  UpdateConfig xent = BaseConfig(kBatch);
+  xent.temperature = nan;
+  EXPECT_OK(UpdateCompiler(xent).Compile(model));
+}
+
 }  // namespace

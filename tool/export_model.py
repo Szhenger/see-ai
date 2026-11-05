@@ -121,6 +121,31 @@ def _flat_bytes(data) -> memoryview:
     return mv.cast("B")
 
 
+def _refuse_non_finite(name: str, view) -> None:
+    """Every constant tensor is an f32 blob, and a NaN or an Inf in it is
+    refused here, at the ingest boundary (CR1 #142, S1): the compiler
+    refuses the same model, and without either the quantization review's
+    max-abs scan would select a NaN weight for int8 (max skips NaN) and the
+    pack would cast it. One pass over the payload as it is written."""
+    if view.nbytes % 4:
+        return  # not an f32 blob; the container's own checks speak to it
+    try:
+        import numpy as np
+    except ImportError:  # tier 0: the standard library only
+        import math
+        for i, (x,) in enumerate(struct.iter_unpack("<f", view)):
+            if not math.isfinite(x):
+                raise ValueError(f"tensor {name!r} carries a non-finite value "
+                                 f"at element {i}: NaN and Inf are refused "
+                                 "at export")
+        return
+    finite = np.isfinite(np.frombuffer(view, dtype="<f4"))
+    if not finite.all():
+        i = int(np.flatnonzero(~finite)[0])
+        raise ValueError(f"tensor {name!r} carries a non-finite value at "
+                         f"element {i}: NaN and Inf are refused at export")
+
+
 class _SmfBuilder:
     def __init__(self, input_name: str, input_dim: int, seq_len: int = 0,
                  token_input: bool = False):
@@ -224,6 +249,7 @@ class _SmfBuilder:
             if view.nbytes != t["nbytes"]:
                 raise ValueError(f"tensor {t['name']!r}: payload is "
                                  f"{view.nbytes} bytes, declared {t['nbytes']}")
+            _refuse_non_finite(t["name"], view)
             f.write(view)
             pos = o + view.nbytes
         if total > pos:

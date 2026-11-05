@@ -436,6 +436,7 @@ TEST(PlanValidator, QuantizedWeightsMustLiveInRodata) {
   q8.in[0] = up::MakeArenaRef(0);
   q8.in[1] = up::MakeArenaRef(64);  // int8 B in the mutable arena: forbidden
   q8.in[2] = up::MakeArenaRef(512);
+  q8.in[3] = std::bit_cast<uint32_t>(1.0f);  // the dequant scale (CR1 #142)
   q8.out[0] = 2;
   q8.out[1] = 2;
   q8.out[2] = 2;
@@ -837,6 +838,7 @@ TEST(PlanValidator, RejectsFusedBiasOnQuantizedGemm) {
   q8.in[0] = up::MakeArenaRef(0);
   q8.in[1] = up::MakeRodataRef(0);
   q8.in[2] = up::MakeArenaRef(512);
+  q8.in[3] = std::bit_cast<uint32_t>(1.0f);  // the dequant scale (CR1 #142)
   q8.out[0] = 2;
   q8.out[1] = 2;
   q8.out[2] = 2;
@@ -884,6 +886,7 @@ TEST(PlanValidator, RejectsMisalignedRefs) {
   q8.in[0] = up::MakeArenaRef(0);
   q8.in[1] = up::MakeRodataRef(3);
   q8.in[2] = up::MakeArenaRef(512);
+  q8.in[3] = std::bit_cast<uint32_t>(1.0f);  // the dequant scale (CR1 #142)
   q8.out[0] = 2;
   q8.out[1] = 2;
   q8.out[2] = 2;
@@ -993,6 +996,83 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   up::UpdateInstruction ro_out = FusedMap(silu);
   ro_out.in[3] = up::MakeRodataRef(0);
   EXPECT_ERROR(check(ro_out));
+}
+
+TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
+  // CR1 #142: every float an instruction carries as bits is proven finite
+  // and within its range before a kernel multiplies by it.
+  const auto f32 = [](float f) {
+    return uint64_t{std::bit_cast<uint32_t>(f)};
+  };
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  const auto refused = [&](const up::UpdateInstruction& ins, uint32_t version,
+                           const char* needle) {
+    const auto r = ValidateInstruction(ins, kArena, kRodata, version);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), needle);
+  };
+  // The standalone clip threshold (F13 / F18): 0 scaled g by 0 on the CPU
+  // and by stale scratch on the GPU; -1 was gradient ascent.
+  up::UpdateInstruction clip;
+  clip.opcode = static_cast<uint16_t>(up::OpCode::kClipNorm);
+  clip.in[0] = up::MakeArenaRef(0);
+  clip.in[1] = f32(1.0f);
+  clip.out[0] = 16;
+  EXPECT_OK(ValidateInstruction(clip, kArena, kRodata, up::kSeeuVersion));
+  for (const uint64_t bad : {f32(0.0f), f32(-1.0f), f32(nan), f32(INFINITY),
+                             f32(1.0f) | (uint64_t{1} << 32)}) {
+    clip.in[1] = bad;
+    refused(clip, up::kSeeuVersion, "clip_norm threshold");
+  }
+  // The distillation temperature (F17 / F10): the KL words' low half, at
+  // every version — both softmaxes divide by it.
+  up::UpdateInstruction fwd;
+  fwd.opcode = static_cast<uint16_t>(up::OpCode::kKLDistillFwd);
+  fwd.in[0] = up::MakeArenaRef(0);
+  fwd.in[1] = up::MakeArenaRef(64);
+  fwd.in[2] = up::MakeArenaRef(128);
+  fwd.in[3] = up::MakeArenaRef(192);
+  fwd.out[0] = up::MakeArenaRef(256);
+  fwd.out[1] = (uint64_t{2} << 32) | 3;
+  up::UpdateInstruction bwd;
+  bwd.opcode = static_cast<uint16_t>(up::OpCode::kKLDistillBwd);
+  bwd.in[0] = up::MakeArenaRef(0);
+  bwd.in[1] = up::MakeArenaRef(64);
+  bwd.in[2] = up::MakeArenaRef(128);
+  bwd.in[3] = up::MakeArenaRef(192);
+  bwd.out[0] = (uint64_t{2} << 32) | 3;
+  for (const float t :
+       {up::kKlTemperatureMin, 1.0f, 2.0f, up::kKlTemperatureMax}) {
+    fwd.out[2] = f32(t);
+    bwd.out[1] = f32(t);
+    EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
+    EXPECT_OK(ValidateInstruction(bwd, kArena, kRodata,
+                                  up::kSeeuKlScaleVersion - 1));
+  }
+  for (const float t : {0.0f, -2.0f, nan, INFINITY, 1e-4f, 1e4f}) {
+    fwd.out[2] = f32(t);
+    bwd.out[1] = f32(t);
+    refused(fwd, up::kSeeuVersion, "temperature");
+    refused(bwd, up::kSeeuVersion, "temperature");
+    refused(fwd, up::kSeeuKlScaleVersion - 1, "temperature");
+  }
+  // The per-tensor dequant scale (F33): a zero or NaN scale dequantized the
+  // whole weight to nothing or to NaN, and the validator let it through.
+  up::UpdateInstruction q8 = GemmNN(up::MakeArenaRef(0), up::MakeRodataRef(0),
+                                    up::MakeArenaRef(512), 4, 4, 4);
+  q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
+  q8.in[3] = f32(0.5f);
+  EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
+  for (const uint64_t bad : {f32(0.0f), f32(-0.5f), f32(nan), f32(INFINITY),
+                             f32(1.0f) | (uint64_t{1} << 32), up::kNullRef}) {
+    q8.in[3] = bad;
+    refused(q8, up::kSeeuVersion, "dequant scale");
+  }
+  // Under the column-scale flag in[3] is the scales' rodata ref instead, and
+  // those floats are the load contract's to check (engine_test).
+  q8.flags = up::kFlagQ8ColScale;
+  q8.in[3] = up::MakeRodataRef(64);  // 4 floats, past B's 16 int8 bytes
+  EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
 }
 
 }  // namespace

@@ -1,5 +1,9 @@
 #include "runtime/dispatcher/contract.h"
 
+#include <cmath>
+#include <cstring>
+#include <string>
+
 #include "runtime/diagnostics/executing/error.h"
 #include "runtime/diagnostics/feeding/error.h"
 #include "runtime/diagnostics/persisting/error.h"
@@ -111,6 +115,35 @@ std::expected<void, std::string> VerifyPlanContract(
   if (header.batch == 0)
     return diag::executing::Error("plan batch must be nonzero");
 
+  // The optimizer hyperparameters (CR1 #142): the step kernels consume them
+  // blindly, so each is finite and within the range the compiler accepts
+  // and the CLI enforces — lr positive; weight decay and the clip norm
+  // non-negative (0 = off); the cosine floor in [0, 1]; the moment decays
+  // in [0, 1) and eps positive (a decay of 1 or an eps of 0 divides by
+  // zero in the first step). A NaN passes every comparison a kernel makes,
+  // so a NaN here trained on garbage without a word.
+  {
+    struct Rule {
+      const char* name;
+      float value;
+      bool in_range;
+    };
+    const Rule rules[] = {
+        {"lr", header.lr, header.lr > 0.0f},
+        {"beta1", header.beta1, header.beta1 >= 0.0f && header.beta1 < 1.0f},
+        {"beta2", header.beta2, header.beta2 >= 0.0f && header.beta2 < 1.0f},
+        {"eps", header.eps, header.eps > 0.0f},
+        {"weight_decay", header.weight_decay, header.weight_decay >= 0.0f},
+        {"clip_norm", header.clip_norm, header.clip_norm >= 0.0f},
+        {"min_lr_factor", header.min_lr_factor,
+         header.min_lr_factor >= 0.0f && header.min_lr_factor <= 1.0f},
+    };
+    for (const Rule& r : rules)
+      if (!std::isfinite(r.value) || !r.in_range)
+        return diag::executing::Error(std::string("plan header ") + r.name +
+                                      " is not a finite value in its range");
+  }
+
   // The header's I/O slots are written by the data feeder each step and
   // read through typed pointers, so they must be in bounds and element-
   // aligned (labels are i32 or f32 — 4 bytes either way).
@@ -143,7 +176,14 @@ std::expected<void, std::string> VerifyExecutorContract(
     std::span<const up::UpdateInstruction> merge,
     std::span<const up::UpdateInstruction> eval,
     std::span<const up::UpdateInstruction> step,
-    std::span<const up::EmitEntry> emit_table, const up::PlanHeader& header) {
+    std::span<const up::EmitEntry> emit_table, std::span<const uint8_t> rodata,
+    const up::PlanHeader& header) {
+  // The rodata handed in is the section the header describes: the column
+  // scales below are read from it at validator-proven offsets.
+  if (rodata.size() != header.rodata_size)
+    return diag::executing::Error(
+        "rodata section handed to the executor contract disagrees with the "
+        "header");
   for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program) {
       // The eval program may read the source model file from v17; every
@@ -238,6 +278,25 @@ std::expected<void, std::string> VerifyExecutorContract(
         if (ins.out[0] != header.batch)
           return diag::executing::Error(
               "embedding row count disagrees with the plan batch");
+      }
+      // The column scales of a quantized GEMM (v17, kFlagQ8ColScale) are a
+      // rodata vector the kernels multiply in blindly — N floats in the
+      // forward (NN), K in the dX GEMM (NT): each is a finite positive
+      // float (CR1 #142 F33). The validator proved the vector in bounds.
+      if ((op == up::OpCode::kGemmNNQ8 || op == up::OpCode::kGemmNTQ8) &&
+          (ins.flags & up::kFlagQ8ColScale)) {
+        const uint64_t count =
+            op == up::OpCode::kGemmNTQ8 ? ins.out[2] : ins.out[1];
+        const uint8_t* scales = rodata.data() + up::RefOffset(ins.in[3]);
+        for (uint64_t i = 0; i < count; ++i) {
+          float s;
+          std::memcpy(&s, scales + i * sizeof(float), sizeof(s));
+          if (!std::isfinite(s) || s <= 0.0f)
+            return diag::executing::Error(
+                "quantized GEMM column scale " + std::to_string(i) +
+                " is not a finite positive float (opcode " +
+                std::to_string(ins.opcode) + ")");
+        }
       }
     }
 

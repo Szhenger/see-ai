@@ -21,14 +21,18 @@
 //
 //   VerifyPlanContract      at load      — the header's section table, arena
 //                           relations, and I/O slots are self-consistent
-//                           with the plan blob, and the rodata section's
+//                           with the plan blob, the rodata section's
 //                           offset is aligned (every rodata ref is relative
-//                           to it; CR2 #143 N05)
+//                           to it; CR2 #143 N05), and the optimizer
+//                           hyperparameters are finite and in range (CR1
+//                           #142)
 //   VerifyExecutorContract  after decode — every instruction of every
 //                           program is bounds-proven (verifier/), no
 //                           program writes the staged input or label slot
-//                           (the feeder's; CR2 #143 N03), and every emit
-//                           entry targets the arena, so Execute() may
+//                           (the feeder's; CR2 #143 N03), every quantized
+//                           GEMM's column scales are finite positive floats
+//                           (read from rodata; CR1 #142 F33), and every
+//                           emit entry targets the arena, so Execute() may
 //                           dispatch blindly
 //   VerifyFeederContract    before train — the dataset's geometry matches
 //                           the compiled plan's batch, input, and label
@@ -62,6 +66,7 @@ namespace seeml::update_rt {
     std::span<const seeml::update::UpdateInstruction> eval,
     std::span<const seeml::update::UpdateInstruction> step,
     std::span<const seeml::update::EmitEntry> emit_table,
+    std::span<const uint8_t> rodata,
     const seeml::update::PlanHeader& header);
 
 /// The dataset can feed this plan: batch x input_dim matches the input

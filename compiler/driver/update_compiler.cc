@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
@@ -43,6 +44,39 @@ std::expected<CompiledUpdate, std::string> Attributed(
   return compiled;
 }
 
+// CR1 #142 F12 / F34: the models cross into the compiler finite. A NaN
+// weight passed the quantization review's max-abs scan (std::max skips a
+// NaN) at a finite scale and reached the int8 pack, where casting it is
+// undefined behavior — plans that differ by host. Every constant tensor of
+// the student and the teacher is swept, in the review's chunk geometry,
+// before any pass runs; the first offender is named by tensor and element.
+std::expected<void, std::string> SweepFinite(const SmfModel& model,
+                                             const char* role) {
+  for (const SmfTensor& t : model.tensors) {
+    if (!t.is_const) continue;
+    const size_t count = t.data.size() / sizeof(float);
+    const float* data = reinterpret_cast<const float*>(t.data.data());
+    size_t first[kMaxParallelChunks];
+    for (size_t& f : first) f = SIZE_MAX;
+    ParallelFor(count, kWeightSweepGrain, [&](size_t b, size_t e, size_t c) {
+      for (size_t i = b; i < e; ++i)
+        if (!std::isfinite(data[i])) {
+          first[c] = i;
+          return;
+        }
+    });
+    const size_t chunks = ParallelChunkCount(count, kWeightSweepGrain);
+    for (size_t c = 0; c < chunks; ++c)
+      if (first[c] != SIZE_MAX)
+        return generating::Error(
+            generating::kDriver,
+            std::string(role) + " tensor '" + t.name +
+                "' carries a non-finite value at element " +
+                std::to_string(first[c]) +
+                ": NaN and Inf are refused before any pass runs");
+  }
+  return {};
+}
 }  // namespace
 
 AttentionKind DecideAttention(const TrainingFootprint& footprint,
@@ -91,9 +125,57 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   };
   const bool wants_teacher = config_.loss == LossKind::kKLDistill ||
                              config_.loss == LossKind::kXEntPlusKL;
+  // CR1 #142: every float the config carries is finite and within the
+  // range the CLI accepts — the library path enforced nothing, so a NaN
+  // learning rate compiled into the plan header and a NaN temperature into
+  // the KL words, and passed every comparison downstream. The runtime's
+  // load contract and the validator apply the same bounds.
+  {
+    const OptimizerSpec& o = config_.optimizer;
+    struct Rule {
+      const char* name;
+      float value;
+      bool in_range;
+      bool applies;
+    };
+    const Rule rules[] = {
+        {"lr", o.lr, o.lr > 0.0f, true},
+        {"beta1", o.beta1, o.beta1 >= 0.0f && o.beta1 < 1.0f, true},
+        {"beta2", o.beta2, o.beta2 >= 0.0f && o.beta2 < 1.0f, true},
+        {"eps", o.eps, o.eps > 0.0f, true},
+        {"weight_decay", o.weight_decay, o.weight_decay >= 0.0f, true},
+        {"clip_norm", o.clip_norm, o.clip_norm >= 0.0f, true},
+        {"min_lr_factor", o.min_lr_factor,
+         o.min_lr_factor >= 0.0f && o.min_lr_factor <= 1.0f, true},
+        {"lora.alpha", config_.lora.alpha, config_.lora.alpha > 0.0f, true},
+        {"distill_weight", config_.distill_weight,
+         config_.distill_weight >= 0.0f, wants_teacher},
+        {"temperature", config_.temperature,
+         config_.temperature >= kKlTemperatureMin &&
+             config_.temperature <= kKlTemperatureMax,
+         wants_teacher},
+    };
+    for (const Rule& r : rules)
+      if (r.applies && (!std::isfinite(r.value) || !r.in_range))
+        return generating::Error(
+            generating::kDriver,
+            std::string("config ") + r.name +
+                " is not a finite value in its range (got " +
+                std::to_string(r.value) +
+                (std::string(r.name) == "temperature"
+                     ? std::string("; the range is ") +
+                           kKlTemperatureRangeText
+                     : std::string()) +
+                ")");
+  }
   if (wants_teacher && !teacher)
     return generating::Error(generating::kDriver,
                              "the selected loss requires a teacher model");
+  if (auto r = SweepFinite(source, "student"); !r) return std::unexpected(r.error());
+  if (teacher)
+    if (auto r = SweepFinite(*teacher, "teacher"); !r)
+      return std::unexpected(r.error());
+  phase("finite-sweep", 0);
   // The adapter-only package (F6 #134, plan v21): the frozen weights stay
   // in the model file the device already holds, bound by hash at run time,
   // so the plan ships at adapter scale. Its preconditions are the config

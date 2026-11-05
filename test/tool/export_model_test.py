@@ -247,6 +247,19 @@ class ContainerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nbytes"):
             b.add_tensor("v", [2], lambda: np.zeros(2, "<f4"))
 
+    def test_a_non_finite_weight_is_refused_at_export(self):
+        # CR1 #142 (S1): NaN and Inf are refused at the ingest boundary,
+        # from an eager or a callable payload, by tensor and element.
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("w", [2, 2], np.array([1.0, np.nan, 2.0, 3.0], "<f4"))
+        with self.assertRaisesRegex(ValueError, r"'w'.*element 1"):
+            b.serialize()
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("v", [2], lambda: np.array([np.inf, 1.0], "<f4"),
+                     nbytes=8)
+        with self.assertRaisesRegex(ValueError, r"'v'.*element 0"):
+            b.serialize()
+
     def test_arrays_are_written_without_a_copy(self):
         b = em._SmfBuilder("x", 4)
         a = np.arange(8, dtype="<f4").reshape(2, 4)

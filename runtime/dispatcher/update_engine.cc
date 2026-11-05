@@ -314,7 +314,11 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // Executor boundary: every operand ref of every instruction is
   // bounds-proven by the validator and every emit entry targets the arena —
   // after this, Execute() dispatches the programs blindly.
-  if (auto ok = VerifyExecutorContract(train, merge, eval, step, emit, header);
+  if (auto ok = VerifyExecutorContract(
+          train, merge, eval, step, emit,
+          std::span<const uint8_t>(plan + header.rodata_offset,
+                                   header.rodata_size),
+          header);
       !ok)
     return std::unexpected(ok.error());
 

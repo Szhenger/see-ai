@@ -257,8 +257,10 @@ extracts them from the dispatcher. Subsystems with code today:
   three straight-line instruction programs (train / eval / merge) and
   orchestrates gate → merge → commit.
 - **verifier/** — load-time proof: every instruction operand is
-  bounds-checked against arena/rodata geometry *before* execution; `Execute()`
-  then runs unchecked by contract.
+  bounds-checked against arena/rodata geometry, and every immediate float
+  (clip thresholds, the distillation temperature, int8 dequant scales) is
+  proven finite and in range, *before* execution; `Execute()` then runs
+  unchecked by contract.
 - **executor/** — the kernel library (`gemm`, `elementwise`, `activation`,
   `normalization`, `loss`, `optimizer`, `attention`), each parallelized over
   the shared `ParallelFor` substrate with shape-derived chunking; grain

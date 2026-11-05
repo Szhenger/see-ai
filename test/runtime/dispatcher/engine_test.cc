@@ -4,6 +4,8 @@
 // engine's Train boundary, and the runtime unit registry.
 // =============================================================================
 
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -83,6 +85,57 @@ TEST(EngineContract, PlanContractAcceptsACompiledPlanAndCatchesCorruption) {
       VerifyPlanContract(escaped, compiled.plan.size()).has_value());
 }
 
+TEST(EngineContract, HeaderHyperparametersAreFiniteAndInRange) {
+  // CR1 #142: the step kernels consume the header's floats blindly, so the
+  // load refuses any that is not finite and within the range the compiler
+  // accepts — by field name.
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.batch = 4;
+  header.input_floats = 16;
+  header.arena_size = 4096;
+  header.input_ref = up::MakeArenaRef(0);
+  header.loss_ref = up::MakeArenaRef(256);
+  constexpr uint64_t kPlanSize = 65536;
+  ASSERT_OK(VerifyPlanContract(header, kPlanSize));
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  struct Case {
+    const char* name;
+    void (*set)(up::PlanHeader&, float);
+    std::vector<float> bad;
+    std::vector<float> good;
+  };
+  const Case cases[] = {
+      {"lr", [](up::PlanHeader& h, float v) { h.lr = v; },
+       {0.0f, -1e-3f, nan, INFINITY}, {1e-3f, 1.0f}},
+      {"beta1", [](up::PlanHeader& h, float v) { h.beta1 = v; },
+       {1.0f, -0.1f, nan}, {0.0f, 0.9f}},
+      {"beta2", [](up::PlanHeader& h, float v) { h.beta2 = v; },
+       {1.0f, 1.5f, nan}, {0.999f}},
+      {"eps", [](up::PlanHeader& h, float v) { h.eps = v; },
+       {0.0f, -1e-8f, nan}, {1e-8f}},
+      {"weight_decay", [](up::PlanHeader& h, float v) { h.weight_decay = v; },
+       {-0.01f, nan, INFINITY}, {0.0f, 0.01f}},
+      {"clip_norm", [](up::PlanHeader& h, float v) { h.clip_norm = v; },
+       {-1.0f, nan, INFINITY}, {0.0f, 1.0f}},
+      {"min_lr_factor",
+       [](up::PlanHeader& h, float v) { h.min_lr_factor = v; },
+       {-0.1f, 1.5f, nan}, {0.0f, 1.0f}},
+  };
+  for (const Case& c : cases) {
+    for (const float v : c.bad) {
+      up::PlanHeader h = header;
+      c.set(h, v);
+      EXPECT_ERROR_CONTAINS(VerifyPlanContract(h, kPlanSize), c.name);
+    }
+    for (const float v : c.good) {
+      up::PlanHeader h = header;
+      c.set(h, v);
+      EXPECT_OK(VerifyPlanContract(h, kPlanSize));
+    }
+  }
+}
+
 // =============================================================================
 // The executor boundary
 // =============================================================================
@@ -93,7 +146,7 @@ TEST(EngineContract, ExecutorContractSpeaksAsThePlanValidator) {
   up::PlanHeader header{};
   header.arena_size = 1024;
 
-  const auto r = VerifyExecutorContract(std::span(&bogus, 1), {}, {}, {}, {},
+  const auto r = VerifyExecutorContract(std::span(&bogus, 1), {}, {}, {}, {}, {},
                                         header);
   ASSERT_FALSE(r.has_value());
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
@@ -180,6 +233,7 @@ TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
   header.arena_size = 4096;
   header.rodata_size = 1024;
   header.input_ref = up::MakeArenaRef(0);
+  const std::vector<uint8_t> rodata(header.rodata_size);  // the table's bytes
   up::UpdateInstruction emb{};
   emb.opcode = static_cast<uint16_t>(up::OpCode::kEmbedFwd);
   emb.in[0] = up::MakeArenaRef(0);   // the staged input slot
@@ -188,15 +242,15 @@ TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
   emb.out[0] = 4;
   emb.out[1] = (uint64_t{8} << 32) | 4;
   std::vector<up::UpdateInstruction> train = {emb};
-  EXPECT_OK(VerifyExecutorContract(train, {}, {}, {}, {}, header));
+  EXPECT_OK(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header));
   // Tokens read from anywhere but the staged slot: rejected.
   train[0].in[0] = up::MakeArenaRef(512);
-  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, header),
+  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
                         "staged input slot");
   // Embedding in a plan that does not declare token input: rejected.
   train[0].in[0] = up::MakeArenaRef(0);
   header.input_kind = 0;
-  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, header),
+  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
                         "without token input");
 }
 
@@ -488,6 +542,43 @@ TEST(CoverageTable, TheFeederRefusesTheWrongCorpus) {
   ASSERT_OK_AND_ASSIGN(Dataset wide,
                        seeml::testing::MakeTokenCorpus(10, kTokSeq, 2 * kTokVocab, 43));
   EXPECT_ERROR(token_engine.Train(wide, 1, QuietOptions()));  // token bound
+}
+
+TEST(CoverageTable, QuantizedColumnScalesAreFinitePositive) {
+  // F33: the column scales a q8 GEMM reads from rodata are multiplied in
+  // blindly; a NaN or a zero among them is refused at load, by index. A
+  // 2x2x2 q8 GEMM planted as train[0]: A and C in scratch, B (4 int8) at
+  // rodata 16, its two column scales at rodata 0.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_TRUE(!plan.empty());
+  OpenPlan open(plan);
+  ASSERT_TRUE(open.h.rodata_size >= 64);
+  const uint64_t a = open.Scratch(64, 0), c = open.Scratch(64, 1);
+  ASSERT_TRUE(a != UINT64_MAX && c != UINT64_MAX);
+  up::UpdateInstruction g{};
+  g.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
+  g.flags = up::kFlagQ8ColScale;
+  g.in[0] = up::MakeArenaRef(a);
+  g.in[1] = up::MakeRodataRef(16);
+  g.in[2] = up::MakeArenaRef(c);
+  g.in[3] = up::MakeRodataRef(0);
+  g.out[0] = 2;
+  g.out[1] = 2;
+  g.out[2] = 2;
+  open.Replace(0, 0, g);
+  auto load_with = [&](float s0, float s1) {
+    OpenPlan o = open;
+    const float scales[2] = {s0, s1};
+    std::memcpy(o.bytes.data() + o.h.rodata_offset, scales, sizeof(scales));
+    const std::vector<uint8_t> sealed = o.Sealed();
+    UpdateEngine engine;
+    return engine.LoadFromMemory(sealed.data(), sealed.size());
+  };
+  const float nan = std::bit_cast<float>(0x7FC00000u);
+  ASSERT_OK(load_with(1.0f, 0.5f));
+  EXPECT_ERROR_CONTAINS(load_with(1.0f, nan), "column scale 1");
+  EXPECT_ERROR_CONTAINS(load_with(0.0f, 1.0f), "column scale 0");
+  EXPECT_ERROR_CONTAINS(load_with(INFINITY, 1.0f), "column scale 0");
 }
 
 }  // namespace
