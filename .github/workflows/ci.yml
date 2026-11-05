@@ -440,11 +440,21 @@ jobs:
           python3 tool/pack_update.py out/pkg2 --build --report out/pack.json
           test -x out/pkg2/model_update
           test -f out/pkg2/update_plan_embedded.S
-          # Nothing Python ships in the package: no interpreter reference in
-          # any source the device builds, none in the binary.
-          if grep -rIl -i python out/pkg2 --include='*.cc' --include='*.h' \
-              --include='*.S' --include='*.sh'; then
-            echo "::error::a packaged source names Python"
+          # Nothing Python ships in the package: no interpreter invoked by a
+          # script the device runs, no embedding API in a source it builds,
+          # no reference in the binary. Prose naming Python (a comment on the
+          # exporter's rule in dataset.h) is not a dependency, so the sources
+          # are grepped for the shapes a dependency takes. (The word-level
+          # grep that stood here had never run: a `!`-inverted command does
+          # not trip `set -e`, and it was not the step's last line.)
+          if grep -rIlE '(^|[^[:alnum:]_])python[0-9.]*([[:space:]]|$)' out/pkg2 \
+              --include='*.sh'; then
+            echo "::error::a packaged script invokes Python"
+            exit 1
+          fi
+          if grep -rIlE 'Python\.h|PyObject|pybind|Py_[A-Z]' out/pkg2 \
+              --include='*.cc' --include='*.h' --include='*.S'; then
+            echo "::error::a packaged source embeds Python"
             exit 1
           fi
           if grep -q -i python out/pkg2/model_update; then
@@ -644,7 +654,13 @@ jobs:
         run: ./build/seeml_golden_fixture_test
       - name: Python holds the seam (nothing skipped — the tools are built)
         run: |
-          python -W error -m unittest test/tool/formats_test.py -v 2>&1 | tee seam.log
+          # By discovery, as every other job runs the suite: the path form
+          # (`-m unittest test/tool/x.py`) imports `test.tool.x`, and under the
+          # hosted Python the standard library's own `test` package shadows
+          # the repo's directory — this step had died on that import since it
+          # was written, and its `! grep skipped` turned the ImportError into a
+          # pass until F00 made the pipe's status count.
+          python -W error -m unittest discover -s test/tool -p formats_test.py -v 2>&1 | tee seam.log
           test "${PIPESTATUS[0]}" -eq 0
           if grep -q "skipped" seam.log; then
             echo "::error::a seam test skipped — the tools this job builds were not found"
