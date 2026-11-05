@@ -25,6 +25,7 @@
 #include "runtime/pipeline/batch_pipeline.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
+#include "source/identity/host_memory.h"
 #include "source/parallel/parallel_for.h"
 
 namespace seeml::update_rt {
@@ -457,6 +458,18 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
     return diag::executing::Error(
         "plan arena of " + std::to_string(header.arena_size) +
         " bytes exceeds this host's address space");
+  // An arena the host cannot hold is refused before the allocation is
+  // attempted: the executing fuzzer (CR3 #144 F22) reached aligned_alloc
+  // with a header asking for exabytes — an abort under the sanitizer, and
+  // on an overcommitting host a lazy success that dies at the first touch.
+  // A host that reports no memory (an unknown platform) is bounded by the
+  // allocation's own failure, as before.
+  if (const uint64_t host = up::DetectHostMemoryBytes();
+      host != 0 && header.arena_size > host)
+    return diag::executing::Error(
+        "plan arena of " + std::to_string(header.arena_size) +
+        " bytes exceeds this host's memory (" + std::to_string(host) +
+        " bytes)");
   const size_t arena_bytes =
       (static_cast<size_t>(header.arena_size) + (kArenaAlignment - 1)) &
       ~size_t{kArenaAlignment - 1};

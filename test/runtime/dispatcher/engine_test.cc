@@ -581,4 +581,19 @@ TEST(CoverageTable, QuantizedColumnScalesAreFinitePositive) {
   EXPECT_ERROR_CONTAINS(load_with(INFINITY, 1.0f), "column scale 0");
 }
 
+TEST(CoverageTable, AnArenaBeyondTheHostsMemoryIsRefusedBeforeAllocation) {
+  // The executing fuzzer's first catch (CR3 #144 F22): a header asking for
+  // an arena of exabytes passed every contract (the arena size is bounded
+  // against overflow alone) and reached aligned_alloc. Refused by name,
+  // against the host's memory, before the allocation.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_TRUE(!plan.empty());
+  OpenPlan open(plan);
+  open.h.arena_size = uint64_t{1} << 62;
+  const std::vector<uint8_t> sealed = open.Sealed();
+  UpdateEngine engine;
+  EXPECT_ERROR_CONTAINS(engine.LoadFromMemory(sealed.data(), sealed.size()),
+                        "exceeds this host's memory");
+}
+
 }  // namespace

@@ -49,7 +49,12 @@ presents a non-constant weight (the resolver tells a missing tensor from a
 non-constant one), F27 asserts both writers' results, F28 uses non-uniform
 labels. F36 was already fixed (the HF-import check builds first and fails
 on a skip). F22 / N41 followed: the fuzzer executes an accepted plan with
-the libraries instrumented and the job gates on coverage. N43 / N44 / N45
+the libraries instrumented and the job gates on coverage — and caught its
+first bug within the day: a header asking for an arena of exabytes passed
+every contract (the arena size was bounded against overflow alone) and
+reached `aligned_alloc`; the engine refuses an arena beyond the host's
+memory before the allocation now, by name, and the harness bounds the
+arena before the load as it bounds the step. N43 / N44 / N45
 are F9's (#140).
 
 The first run that could fail did, twice, on checks that had never run:

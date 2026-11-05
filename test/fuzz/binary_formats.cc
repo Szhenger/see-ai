@@ -173,6 +173,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             seeml::update::PlanSelfHash(plan.data(), plan.size(), kHashAt);
         std::memcpy(plan.data() + kHashAt, &h, sizeof(h));
       }
+      // Bounded before the load as well as before the step: the load
+      // allocates the header's arena, and a header asking for more than
+      // the harness's cap is not loaded — the engine refuses an arena
+      // beyond the host's memory on its own (a unit test holds it to
+      // that), and anything between the cap and that bound would only
+      // exhaust the fuzzing host.
+      if (plan.size() >= sizeof(seeml::update::PlanHeader)) {
+        seeml::update::PlanHeader h;
+        std::memcpy(&h, plan.data(), sizeof(h));
+        if (h.arena_size > kFuzzArenaCap) break;
+      }
       seeml::update_rt::UpdateEngine engine;
       if (!engine.LoadFromMemory(plan.data(), plan.size())) break;
       // An accepted plan is EXECUTED (CR3 #144 F22): one training step on a

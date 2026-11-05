@@ -802,7 +802,7 @@ constexpr const char* kVendoredSources[] = {
     "source/plan/update_types.h",         "source/plan/config.h",
     "source/plan/bf16.h",
     "source/plan/instruction.h",          "source/plan/schema.h",
-    "source/identity/hash.h",
+    "source/identity/hash.h",             "source/identity/host_memory.h",
     "source/parallel/parallel_for.h",     "source/parallel/parallel_for.cc",
 };
 
