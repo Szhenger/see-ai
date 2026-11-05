@@ -319,15 +319,18 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
     return std::unexpected(ok.error());
 
   // Softmax class-width discipline (the kernels index rows of this width
-  // with raw dataset labels). Both executable label-consuming programs —
-  // train and eval — must agree on the forward width, and a class-label
+  // with raw dataset labels). Every program must agree on the forward
+  // width — train and eval are the label-consuming ones, and a softmax in
+  // the merge or step program is a crafted plan's, whose narrower rows the
+  // labels bounded by another program's width would index past (CR2
+  // #143 F07: the check walked train and eval alone) — and a class-label
   // plan with no softmax at all would leave labels entirely unvalidated,
   // so it is rejected. Scanned on the freshly decoded local streams and
   // the local header — the members still describe whatever plan was loaded
   // before this call, and nothing may be committed until every contract
   // has passed.
   uint64_t fwd_classes = 0;
-  for (const auto* program : {&train, &eval})
+  for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program)
       if (static_cast<up::OpCode>(ins.opcode) ==
           up::OpCode::kSoftmaxXEntFwd) {
@@ -398,7 +401,9 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // program's last softmax, which would leave a narrower eval softmax
   // indexing past its validated rows.
   uint64_t num_classes = 0;
-  for (const auto* program : {&train, &merge, &eval})
+  // Every program, the step program included (CR2 #143 F07): a softmax
+  // anywhere narrows the bound the feeder enforces on every staged label.
+  for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program) {
       const auto op = static_cast<up::OpCode>(ins.opcode);
       if (op != up::OpCode::kSoftmaxXEntFwd &&
@@ -416,7 +421,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // entirely unvalidated (and meaningless), so it is rejected. Sequence
   // geometry must divide the batch: staging serves whole records.
   uint64_t vocab_bound = 0;
-  for (const auto* program : {&train, &merge, &eval})
+  for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program)
       if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kEmbedFwd) {
         const uint64_t vocab = ins.out[1] >> 32;

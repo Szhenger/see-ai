@@ -33,6 +33,31 @@ extents, so an out-of-bounds kernel write still agrees (N33). Design: [`docs/nex
    review finding.
 3. The oracle's `diff` compares the whole arena, not declared extents.
 
+## Status 2026-11-05
+
+The C++ plane: F07 — the softmax width-agreement check and both width
+scans walk all four programs (the step program was outside all three: a
+step-program softmax of a narrower width passed every contract and its
+rows were indexed past by labels another program's width admitted);
+N03 — no program writes the staged input or label slot, refused by the
+executor contract from the validator's own extents; N05 — the rodata
+section's offset is proven 16-aligned (every rodata ref is relative to
+it); N04 already held (the header's slot refs refuse the rodata and
+source bits). The coverage table is
+`test/runtime/dispatcher/engine_test.cc` (`CoverageTable.*`): a compiled
+plan opened for surgery, instruction 0 of a chosen program replaced and
+the self-hash re-sealed, on two fixtures that accumulate gradients so the
+step program exists — class width, vocabulary, input- and label-slot
+writes and a write through a source ref, each × every program; the
+header's slot bits; the section alignment; the feeder's label kind,
+input kind and token bound. A check missing from a program is a failing
+row: with the old program sets the step rows fail. Design item 1 — the
+contract as pure functions in `source/contract/`, shared with the
+compiler's topology, the probe and the Python oracle — and F58 / F47 /
+N33 (the probe calling no contract; the oracle's `Corpus.check` and its
+`diff` over declared extents only) stay open: the Python plane's
+remainder.
+
 ## Acceptance
 
 - F07, N03, N04, N05, F58, F47, N33 reproductions refused by both planes.

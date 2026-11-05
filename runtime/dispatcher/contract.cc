@@ -46,6 +46,13 @@ std::expected<void, std::string> VerifyPlanContract(
              &step_bytes) ||
       !MulOk(header.emit_count, sizeof(up::EmitEntry), &emit_bytes))
     return diag::executing::Error("plan section size overflows");
+  // The rodata section's offset is proven aligned (CR2 #143 N05): every
+  // rodata ref's offset is relative to it, so a 4-aligned ref lands
+  // misaligned in memory when the section does not — the compiler puts
+  // it on a page boundary; 16 bytes is what every kernel's vector path
+  // may assume at most.
+  if (header.rodata_size != 0 && header.rodata_offset % 16 != 0)
+    return diag::executing::Error("rodata section is not 16-byte aligned");
   if (!RangeOk(header.train_instr_offset, train_bytes, plan_size) ||
       !RangeOk(header.merge_instr_offset, merge_bytes, plan_size) ||
       !RangeOk(header.eval_instr_offset, eval_bytes, plan_size) ||
@@ -146,11 +153,41 @@ std::expected<void, std::string> VerifyExecutorContract(
       const bool allow_source =
           program == &eval ||
           header.version >= up::kSeeuSourceWeightsVersion;
-      if (auto r = ValidateInstruction(ins, header.arena_size,
-                                       header.rodata_size, header.version,
-                                       allow_source);
-          !r)
-        return r;
+      const auto extents = DescribeInstruction(
+          ins, header.arena_size, header.rodata_size, header.version,
+          allow_source);
+      if (!extents) return std::unexpected(extents.error());
+      // The staged input and label slots are the feeder's (CR2 #143 N03):
+      // the provenance proofs below hold only while no program writes
+      // them, so no instruction of any program may.
+      {
+        auto overlaps = [](uint64_t off, uint64_t bytes, uint64_t ref,
+                           uint64_t ref_bytes) {
+          const uint64_t slot = up::RefOffset(ref);
+          return ref != up::kNullRef && ref_bytes != 0 && bytes != 0 &&
+                 off < slot + ref_bytes && slot < off + bytes;
+        };
+        const char* const name = program == &train   ? "train"
+                                 : program == &merge ? "merge"
+                                 : program == &eval  ? "eval"
+                                                     : "step";
+        for (size_t t = 0; t < extents->count; ++t) {
+          const OperandExtent& r = extents->ranges[t];
+          if (!r.write || r.rodata || r.source) continue;
+          if (overlaps(r.off, r.bytes, header.input_ref,
+                       header.input_floats * sizeof(float)))
+            return diag::executing::Error(
+                std::string("an instruction of the ") + name +
+                " program writes the staged input slot (opcode " +
+                std::to_string(ins.opcode) + ")");
+          if (header.label_kind != 0 &&
+              overlaps(r.off, r.bytes, header.label_ref, header.label_bytes))
+            return diag::executing::Error(
+                std::string("an instruction of the ") + name +
+                " program writes the staged label slot (opcode " +
+                std::to_string(ins.opcode) + ")");
+        }
+      }
       // The relaxed bit (v18 GEMMs, v20 tiled attention) belongs to the
       // train and step programs: the eval program scores the model that
       // ships in exact arithmetic, and the merge program has no

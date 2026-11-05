@@ -32,6 +32,25 @@ step under ASan per accepted plan with the parsers instrumented; each named
 test rewritten so removing the guard it protects fails it; the falsy-value
 check shared by every build-script switch.
 
+## Status 2026-11-05
+
+F00 landed first, on its own (the seam job's pipe status checked behind the
+`tee`, the skipped-test check an explicit `if grep`). Then, in one commit:
+both workflows name their shell (`defaults: run: shell: bash`, which is
+`bash -eo pipefail` for every step), every `! grep` is an explicit if that
+exits 1, the one pipe into `grep -q` is a file and a grep (SIGPIPE under
+pipefail); `build.sh`'s three switches and the emitted build script's Metal
+switch share one falsy rule — `SEEML_NO_METAL=0` now leaves Metal built,
+the one semantic change (F23); the six named tests rewritten and proven by
+mutation — each fails with the guard it protects removed (the table is in
+the PR): F30 targets the byte count, F31 a count that wraps small and
+nonzero, F32 asserts the flags guard by message with a rodata B, F26
+presents a non-constant weight (the resolver tells a missing tensor from a
+non-constant one), F27 asserts both writers' results, F28 uses non-uniform
+labels. F36 was already fixed (the HF-import check builds first and fails
+on a skip). Remaining here: F22 / N41, the fuzzer executing an accepted
+plan with the libraries instrumented; N43 / N44 / N45 are F9's (#140).
+
 ## Acceptance
 
 - A deliberately failing Python test turns the seam job red.

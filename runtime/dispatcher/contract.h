@@ -21,10 +21,14 @@
 //
 //   VerifyPlanContract      at load      — the header's section table, arena
 //                           relations, and I/O slots are self-consistent
-//                           with the plan blob
+//                           with the plan blob, and the rodata section's
+//                           offset is aligned (every rodata ref is relative
+//                           to it; CR2 #143 N05)
 //   VerifyExecutorContract  after decode — every instruction of every
-//                           program is bounds-proven (verifier/) and every
-//                           emit entry targets the arena, so Execute() may
+//                           program is bounds-proven (verifier/), no
+//                           program writes the staged input or label slot
+//                           (the feeder's; CR2 #143 N03), and every emit
+//                           entry targets the arena, so Execute() may
 //                           dispatch blindly
 //   VerifyFeederContract    before train — the dataset's geometry matches
 //                           the compiled plan's batch, input, and label
