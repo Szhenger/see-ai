@@ -308,24 +308,33 @@ class MetalBackend final : public ExecutorBackend {
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
   std::expected<void, std::string> SelfTest();
-  void BeginRange(std::span<const up::UpdateInstruction> range) override {
+  void BeginRange(std::span<const up::UpdateInstruction> program, size_t begin,
+                  size_t end) override {
     range_on_cpu_ = false;
-    range_ = range;
+    end = std::min(end, program.size());
+    begin = std::min(begin, end);
+    program_ = program;
+    begin_ = begin;
+    end_ = end;
     plan_ = nullptr;
     if (source_on_cpu_)
-      for (const up::UpdateInstruction& ins : range)
+      for (const up::UpdateInstruction& ins :
+           program.subspan(begin, end - begin))
         if (const InstructionExtents* ex = ExtentsOf(ins);
             ex && ReadsSource(*ex)) {
           range_on_cpu_ = true;
           return;
         }
-    // F7 #138 step 4: the instruction pairs this range runs as one dispatch.
-    if (fuse_lowrank_) plan_ = &PlanLowRank(range);
+    // F7 #138 step 4: the instruction pairs this program runs as one
+    // dispatch — planned over the whole program, so a store dropped as
+    // dead is dead in every range that follows (ExecuteRange's phases).
+    if (fuse_lowrank_) plan_ = &PlanLowRank(program);
   }
   void EndRange() override {
     range_on_cpu_ = false;
     plan_ = nullptr;
-    range_ = {};
+    program_ = {};
+    begin_ = end_ = 0;
   }
   static bool ReadsSource(const InstructionExtents& ex) {
     return std::any_of(ex.ranges, ex.ranges + ex.count,
@@ -457,15 +466,24 @@ class MetalBackend final : public ExecutorBackend {
   const bool fuse_lowrank_ = !EnvFlag("SEEML_METAL_UNFUSED_LOWRANK");
   struct FusionPlan {
     std::vector<int32_t> role;  // kRoleNone, kRoleDeferred, or the base's index
-    std::vector<uint8_t> drop_c;  // per fused j: the range never reads C again
+    std::vector<int32_t> partner;  // a deferred base: its rank-r GEMM's index
+    std::vector<uint8_t> drop_c;  // per fused j: the program never reads C again
     uint64_t pairs = 0;
   };
   static constexpr int32_t kRoleNone = -1, kRoleDeferred = -2;
   std::unordered_map<const void*, FusionPlan> fusion_plans_;
   const FusionPlan* plan_ = nullptr;
-  std::span<const up::UpdateInstruction> range_;
-  uint64_t lowrank_fused_ = 0;
-  const FusionPlan& PlanLowRank(std::span<const up::UpdateInstruction> range);
+  // The program the current range belongs to and the range's bounds in it
+  // (BeginRange): a pair is fused only when both instructions fall inside
+  // the range the engine runs, since the engine reads the arena between
+  // ranges.
+  std::span<const up::UpdateInstruction> program_;
+  size_t begin_ = 0, end_ = 0;
+  // Fused dispatches, and those among them that dropped C's store (the
+  // profile and the spans print both, so a run shows what the store-drop
+  // rule decided on its program).
+  uint64_t lowrank_fused_ = 0, lowrank_dropped_ = 0;
+  const FusionPlan& PlanLowRank(std::span<const up::UpdateInstruction> program);
   std::expected<void, std::string> EncodeLowRank(
       const up::UpdateInstruction& base, const up::UpdateInstruction& lr,
       bool drop_c);
@@ -1042,7 +1060,14 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
   }
   const uint32_t gx = (a.n + kGemmTile - 1) / kGemmTile;
   const uint32_t gy = (a.m + kGemmTile - 1) / kGemmTile;
-  const uint32_t splits = a.batch > 1 ? 1 : SplitsFor(gx * gy, a.k);
+  // The low-rank kernels (F7 #138 step 4) ignore p.pad0 and write both
+  // outputs whole, so they never split: a split would leave the finish
+  // kernel summing a workspace nobody wrote. PlanLowRank declines a base
+  // the split-K policy would take; this keeps the dispatch right if the
+  // two ever disagree.
+  const bool lowrank = pipe == kPGemmNNLR || pipe == kPGemmNNQ8LR;
+  const uint32_t splits =
+      a.batch > 1 || lowrank ? 1 : SplitsFor(gx * gy, a.k);
   a.pad0 = splits;
   if (splits > 1) {
     const uint64_t need = uint64_t{splits} * a.m * a.n * sizeof(float);
@@ -1074,6 +1099,26 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
   }
 }
 
+// Whether an opcode's write extents are stores alone. The validator
+// describes a read-modify-write operand — an accumulator, a parameter an
+// optimizer step updates, a norm clipped in place, dQ's delta column — as
+// one write extent (plan_validator.cc, "dst (read+write, one operand)"), so
+// a covering write by one of these still reads what it covers: for the
+// store-drop rule below it is a read.
+bool OverwritesWhatItWrites(up::OpCode op) {
+  switch (op) {
+    case up::OpCode::kGemmAccNN:
+    case up::OpCode::kAccumulate:
+    case up::OpCode::kClipNorm:
+    case up::OpCode::kSgdStep:
+    case up::OpCode::kAdamWStep:
+    case up::OpCode::kAttnDQTiled:
+      return false;
+    default:
+      return true;
+  }
+}
+
 // F7 #138 step 4 — the low-rank epilogue, fused at dispatch. At a LoRA site
 // the plan carries two instructions: the base product into C (kGemmNN /
 // kGemmNNQ8 on the tile kernel), then C' = alpha·T@B + C — the rank-r
@@ -1084,15 +1129,18 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
 // k_gemm_nn_small would have — serial k from zero, alpha on the finished
 // sum, the addend first — so the arena holds the bits of the two dispatches
 // with one pass over the activation fewer. Decided once per program from
-// the extents the validator proved (cached by the range's identity, dropped
-// at Bind); the plan and the other backends are untouched, and
-// SEEML_METAL_UNFUSED_LOWRANK=1 is the same-session control.
+// the extents the validator proved (cached by the program's identity,
+// dropped at Bind), the whole program and not the range the engine runs,
+// so what it finds dead is dead in every range that follows; the plan and
+// the other backends are untouched, and SEEML_METAL_UNFUSED_LOWRANK=1 is
+// the same-session control.
 const MetalBackend::FusionPlan& MetalBackend::PlanLowRank(
-    std::span<const up::UpdateInstruction> range) {
-  FusionPlan& plan = fusion_plans_[range.data()];
-  if (plan.role.size() == range.size()) return plan;
-  plan.role.assign(range.size(), kRoleNone);
-  plan.drop_c.assign(range.size(), 0);
+    std::span<const up::UpdateInstruction> program) {
+  FusionPlan& plan = fusion_plans_[program.data()];
+  if (plan.role.size() == program.size()) return plan;
+  plan.role.assign(program.size(), kRoleNone);
+  plan.partner.assign(program.size(), kRoleNone);
+  plan.drop_c.assign(program.size(), 0);
   plan.pairs = 0;
   auto arena_ref = [](uint64_t r) {
     return r != up::kNullRef && !up::IsRodataRef(r) && !up::IsSourceRef(r);
@@ -1102,31 +1150,37 @@ const MetalBackend::FusionPlan& MetalBackend::PlanLowRank(
     return a.rodata == b.rodata && a.source == b.source &&
            a.off < b.off + b.bytes && b.off < a.off + a.bytes;
   };
-  for (size_t j = 0; j < range.size(); ++j) {
-    const up::UpdateInstruction& lr = range[j];
+  auto covers = [](const OperandExtent& a, const OperandExtent& b) {
+    return a.off <= b.off && a.off + a.bytes >= b.off + b.bytes;
+  };
+  for (size_t j = 0; j < program.size(); ++j) {
+    const up::UpdateInstruction& lr = program[j];
     if (static_cast<up::OpCode>(lr.opcode) != up::OpCode::kGemmNN ||
         lr.flags != up::kFlagGemmAddend || lr.out[2] == 0 ||
         lr.out[2] > kGemmSkinnyDim || !arena_ref(lr.in[0]) ||
-        !arena_ref(lr.in[1]) || !arena_ref(lr.in[2]) || !arena_ref(lr.in[3]))
+        !arena_ref(lr.in[1]) || !arena_ref(lr.in[2]) || !arena_ref(lr.in[3]) ||
+        !DimsFit32(up::OpCode::kGemmNN, lr))
       continue;
+    const InstructionExtents* lex = ExtentsOf(lr);
+    if (!lex) continue;
     OperandExtent c;
     c.off = up::RefOffset(lr.in[3]);
     c.bytes = lr.out[0] * lr.out[1] * sizeof(float);
     // The base: scanning back, the first instruction that touches C must
     // be the GEMM that wrote exactly it.
-    size_t i = range.size();
+    size_t i = program.size();
     for (size_t k = j; k-- > 0;) {
-      const InstructionExtents* ex = ExtentsOf(range[k]);
+      const InstructionExtents* ex = ExtentsOf(program[k]);
       if (!ex) break;
       bool touches = false;
-      for (size_t t = 0; t < ex->count; ++t)
-        touches = touches || overlap(ex->ranges[t], c);
+      for (size_t t = 0; t < ex->count && !touches; ++t)
+        touches = overlap(ex->ranges[t], c);
       if (!touches) continue;
       i = k;
       break;
     }
-    if (i == range.size() || plan.role[i] != kRoleNone) continue;
-    const up::UpdateInstruction& base = range[i];
+    if (i == program.size() || plan.role[i] != kRoleNone) continue;
+    const up::UpdateInstruction& base = program[i];
     const auto bop = static_cast<up::OpCode>(base.opcode);
     if ((bop != up::OpCode::kGemmNN && bop != up::OpCode::kGemmNNQ8) ||
         base.in[2] != lr.in[3] || base.out[0] != lr.out[0] ||
@@ -1153,19 +1207,33 @@ const MetalBackend::FusionPlan& MetalBackend::PlanLowRank(
                                  : BitsToF32(base.in[3]);
       if (f0 == 1.0f) continue;
     }
-    // Between the two: nothing touches C, nothing writes a base operand.
     const InstructionExtents* bex = ExtentsOf(base);
     if (!bex) continue;
     bool legal = true;
+    // Across the two (the validator proves each alone): in the fused
+    // kernel every threadgroup reads the base's operands while others
+    // already write C and C', and stages T and B while others write C — so
+    // C' may alias no base operand, and nothing of the rank-r instruction
+    // may alias C but its addend, which is C exactly.
+    for (size_t t = 0; t < lex->count && legal; ++t) {
+      const OperandExtent& r = lex->ranges[t];
+      if (r.write) {
+        for (size_t u = 0; u < bex->count; ++u)
+          if (overlap(r, bex->ranges[u])) legal = false;
+      } else if (overlap(r, c) && !(r.off == c.off && r.bytes == c.bytes)) {
+        legal = false;
+      }
+    }
+    // Between the two: nothing writes a base operand (nothing touches C —
+    // the base is the nearest instruction that does).
     for (size_t k = i + 1; k < j && legal; ++k) {
-      const InstructionExtents* ex = ExtentsOf(range[k]);
+      const InstructionExtents* ex = ExtentsOf(program[k]);
       if (!ex) {
         legal = false;
         break;
       }
       for (size_t t = 0; t < ex->count && legal; ++t) {
         const OperandExtent& r = ex->ranges[t];
-        if (overlap(r, c)) legal = false;
         if (!r.write) continue;
         for (size_t u = 0; u < bex->count; ++u)
           if (!bex->ranges[u].write && overlap(r, bex->ranges[u]))
@@ -1174,29 +1242,40 @@ const MetalBackend::FusionPlan& MetalBackend::PlanLowRank(
     }
     if (!legal) continue;
     plan.role[i] = kRoleDeferred;
+    plan.partner[i] = static_cast<int32_t>(j);
     plan.role[j] = static_cast<int32_t>(i);
     ++plan.pairs;
-    // The base value's store is dropped when the range never reads C
-    // again: the first touch of its extent after j is a write covering
-    // it, or there is none (a LoRA site's add is C's only reader; the
-    // compiler's use-lists said so when the addend fuser fired). A read,
-    // or a write of part of it, keeps the store.
+    // The base value's store is dropped when the program never reads C
+    // again: the first instruction after j to touch its extent writes all
+    // of it, reads none of it and overwrites what it writes
+    // (OverwritesWhatItWrites), or there is none. A read, a write of part
+    // of it, or a read-modify-write keeps the store. (The compiler's
+    // addend fuser proves one reader for the rank-r product it folds, not
+    // for the addend; this scan is the proof, and the engine's own reads
+    // after a program — the loss slot, the probabilities, the deltas, the
+    // persistent segment — are of slots no base product occupies.)
     bool dead = true;
-    for (size_t k = j + 1; k < range.size(); ++k) {
-      const InstructionExtents* ex = ExtentsOf(range[k]);
+    for (size_t k = j + 1; k < program.size(); ++k) {
+      const InstructionExtents* ex = ExtentsOf(program[k]);
       if (!ex) {
         dead = false;
         break;
       }
-      bool touched = false;
-      for (size_t t = 0; t < ex->count && !touched; ++t) {
+      bool touched = false, read = false, covered = false;
+      for (size_t t = 0; t < ex->count; ++t) {
         const OperandExtent& r = ex->ranges[t];
         if (!overlap(r, c)) continue;
         touched = true;
-        dead = r.write && r.off <= c.off &&
-               r.off + r.bytes >= c.off + c.bytes;
+        if (!r.write)
+          read = true;
+        else if (covers(r, c))
+          covered = true;
       }
-      if (touched) break;
+      if (!touched) continue;
+      dead = covered && !read &&
+             OverwritesWhatItWrites(
+                 static_cast<up::OpCode>(program[k].opcode));
+      break;
     }
     plan.drop_c[j] = dead ? 1 : 0;
   }
@@ -1222,6 +1301,11 @@ std::expected<void, std::string> MetalBackend::EncodeLowRank(
   a.m = u32(base.out[0]);
   a.n = u32(base.out[1]);
   a.k = u32(base.out[2]);
+  // DispatchGemm routes a skinny shape to pipe + offset, which from the
+  // low-rank pipes is some other kernel: PlanLowRank never plans one, and
+  // this refuses rather than dispatch it.
+  if (a.m <= kGemmSkinnyDim || a.n <= kGemmSkinnyDim || a.k <= kGemmSkinnyDim)
+    return std::unexpected("the low-rank fold planned a skinny base GEMM");
   Pipe pipe;
   uint32_t b_elem;
   if (static_cast<up::OpCode>(base.opcode) == up::OpCode::kGemmNN) {
@@ -1799,10 +1883,19 @@ std::expected<void, std::string> MetalBackend::Execute(
     // reads it (PlanLowRank) dispatches nothing here and runs there, fused.
     int32_t role = kRoleNone;
     size_t idx = 0;
-    if (plan_ && !range_.empty() && &ins >= range_.data() &&
-        &ins < range_.data() + range_.size()) {
-      idx = static_cast<size_t>(&ins - range_.data());
+    if (plan_ && !program_.empty() && &ins >= program_.data() &&
+        &ins < program_.data() + program_.size()) {
+      idx = static_cast<size_t>(&ins - program_.data());
       role = plan_->role[idx];
+      // A pair the range the engine runs does not hold whole runs apart —
+      // both halves decide it from the same bounds, so the base dispatches
+      // at its own place in the earlier range and the rank-r GEMM encodes
+      // alone in the later one.
+      if (role == kRoleDeferred &&
+          static_cast<size_t>(plan_->partner[idx]) >= end_)
+        role = kRoleNone;
+      else if (role >= 0 && static_cast<size_t>(role) < begin_)
+        role = kRoleNone;
     }
     if (role == kRoleDeferred) return {};
     if (!IsGpuOpcode(op) || !DimsFit32(op, ins) || reads_source) {
@@ -1824,11 +1917,12 @@ std::expected<void, std::string> MetalBackend::Execute(
     if (auto r = EnsureEncoder(); !r) return r;
     prof_pipes_.clear();
     if (role >= 0) {
-      const up::UpdateInstruction& base = range_[static_cast<size_t>(role)];
-      if (auto r = EncodeLowRank(base, ins, plan_->drop_c[idx] != 0); !r)
-        return r;
+      const up::UpdateInstruction& base = program_[static_cast<size_t>(role)];
+      const bool drop_c = plan_->drop_c[idx] != 0;
+      if (auto r = EncodeLowRank(base, ins, drop_c); !r) return r;
       if (const InstructionExtents* bex = ExtentsOf(base)) RecordPending(*bex);
       ++lowrank_fused_;
+      if (drop_c) ++lowrank_dropped_;
     } else if (auto r = Encode(ins, params); !r) {
       return r;
     }
@@ -1841,7 +1935,7 @@ std::expected<void, std::string> MetalBackend::Execute(
                        : std::to_string(v);
       };
       const up::UpdateInstruction& keyed =
-          role >= 0 ? range_[static_cast<size_t>(role)] : ins;
+          role >= 0 ? program_[static_cast<size_t>(role)] : ins;
       ProfRow& row = prof_[prof_pipes_ + " " + dim(keyed.out[0]) + "x" +
                            dim(keyed.out[1]) + "x" + dim(keyed.out[2])];
       row.seconds += last_gpu_seconds_;
@@ -1908,9 +2002,11 @@ void MetalBackend::PrintProfile() const {
                (unsigned long long)bwd_passes_);
   if (lowrank_fused_)
     std::fprintf(stderr,
-                 "  low-rank epilogue: %llu fused dispatch(es) (k_gemm_*_lr; "
-                 "SEEML_METAL_UNFUSED_LOWRANK=1 keeps the pairs apart)\n",
-                 (unsigned long long)lowrank_fused_);
+                 "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
+                 "store dropped (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 "
+                 "keeps the pairs apart)\n",
+                 (unsigned long long)lowrank_fused_,
+                 (unsigned long long)lowrank_dropped_);
   for (const auto& r : rows)
     std::fprintf(stderr, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
                  r.second.seconds,
@@ -1936,8 +2032,11 @@ void MetalBackend::PrintSpans() const {
                wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
                dispatches ? 1e6 * (wall - gpu) / (double)dispatches : 0.0);
   if (lowrank_fused_)
-    std::fprintf(stderr, "  low-rank epilogue: %llu fused dispatch(es)\n",
-                 (unsigned long long)lowrank_fused_);
+    std::fprintf(stderr,
+                 "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
+                 "store dropped\n",
+                 (unsigned long long)lowrank_fused_,
+                 (unsigned long long)lowrank_dropped_);
   // Per buffer size: the train, eval and merge programs are told apart by
   // their dispatch counts (one buffer per ExecuteRange).
   std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall

@@ -141,7 +141,10 @@ dispatch (`PlanLowRank`, `docs/runtime.md`) — the base product into C and
 the rank-r product with C as its addend — and where nothing between them
 touches C or writes a base operand, runs one kernel at the second
 instruction's place that writes C' as `k_gemm_nn_small` would, under the
-library's precise math, and C only where the range reads it again: the
+library's precise math, and C only where the program reads it again (the
+backend's own scan of the whole program, every range of the step split
+included — the addend fuser proves one reader for the product it folds,
+not for the addend): the
 bits of the two dispatches everywhere they are read, so the certificate item 4 reached for is not needed,
 and the fold applies to the exact package, the eval program and the
 adapter-only plans alike (`docs/benchmarks.md`, "The low-rank epilogue
@@ -186,7 +189,7 @@ emits them together — and stays open.
 - [x] Step 4, B(Ax) folded into the base GEMM — 2026-11-04, at dispatch and
   bit-identical, so uncertified: the Metal backend runs the base GEMM and
   the rank-r GEMM that reads it as one kernel writing C' — and C only
-  where the range reads it again — with the two dispatches' bits (the fused epilogue is `k_gemm_nn_small`'s
+  where the program reads it again — with the two dispatches' bits (the fused epilogue is `k_gemm_nn_small`'s
   arithmetic under precise math); the plan carries no new form. On the
   10-24 exact plan: 181 pairs per forward pass, the step
   237 → 237 ms, the 300-step wall 74.8 → 74.4 s,

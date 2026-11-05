@@ -106,16 +106,22 @@ class ExecutorBackend {
       const seeml::update::UpdateInstruction& ins,
       const StepParams& params) = 0;
 
-  /// The engine is about to execute `range`, one program's instructions in
-  /// order (ExecuteRange), and EndRange follows its Flush. A backend that
-  /// keeps the source model off its device (Metal, past the GPU's working
-  /// set; F5 #133) runs the whole range on its CPU sub-backend when any
+  /// The engine is about to execute `program[begin, end)`, one program's
+  /// instructions in order (ExecuteRange), and EndRange follows its Flush.
+  /// The whole program comes with the range because a backend that plans
+  /// across instructions must see what follows the range: the bench build
+  /// runs the train program as three ranges (forward, backward, optimizer),
+  /// and the Metal backend's low-rank fold (F7 #138 step 4) drops a store
+  /// only when nothing in the PROGRAM reads it again. A backend that keeps
+  /// the source model off its device (Metal, past the GPU's working set;
+  /// F5 #133) runs the whole range on its CPU sub-backend when any
   /// instruction of it reads the source — draining the device around each
   /// such instruction cost eight times the CPU's own evaluation. The
   /// defaults do nothing: a backend that executes everything where it is
   /// told needs neither.
   virtual void BeginRange(
-      std::span<const seeml::update::UpdateInstruction> /*range*/) {}
+      std::span<const seeml::update::UpdateInstruction> /*program*/,
+      size_t /*begin*/, size_t /*end*/) {}
   virtual void EndRange() {}
 
   /// Completes all deferred work. After a successful Flush the arena's
