@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <expected>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,97 @@ void WriteBytes(const std::string& path, const uint8_t* data, size_t size) {
   if (!f) return;
   if (size) std::fwrite(data, 1, size, f);
   std::fclose(f);
+}
+
+}  // namespace
+
+namespace {
+// The bounds an accepted plan must meet before the harness executes it.
+constexpr uint64_t kFuzzArenaCap = 64ull << 20;       // 64 MiB
+constexpr uint64_t kFuzzInstructionCap = 4096;
+constexpr uint64_t kFuzzGemmWorkCap = 100000000ull;  // M*N*K summed
+
+bool IsGemm(uint16_t opcode) {
+  switch (static_cast<seeml::update::OpCode>(opcode)) {
+    case seeml::update::OpCode::kGemmNN:
+    case seeml::update::OpCode::kGemmNT:
+    case seeml::update::OpCode::kGemmTN:
+    case seeml::update::OpCode::kGemmAccNN:
+    case seeml::update::OpCode::kGemmNNQ8:
+    case seeml::update::OpCode::kGemmNTQ8:
+    case seeml::update::OpCode::kGemmNNBF16:
+    case seeml::update::OpCode::kGemmNTBF16:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// One training step of an accepted plan on a synthesized corpus; false when
+// the plan is outside the harness's bounds or no corpus fits its header.
+bool ExecuteOnce(seeml::update_rt::UpdateEngine& engine,
+                 const std::vector<uint8_t>& plan) {
+  seeml::update::PlanHeader h;
+  std::memcpy(&h, plan.data(), sizeof(h));
+  if (h.arena_size > kFuzzArenaCap) return false;
+  const uint64_t instructions = h.train_instr_count + h.merge_instr_count +
+                                h.eval_instr_count + h.step_instr_count;
+  if (instructions > kFuzzInstructionCap) return false;
+  // The loader proved every section in bounds; the GEMM work is summed
+  // with saturation, so a fuzzed dimension cannot wrap the cap away.
+  uint64_t work = 0;
+  const struct { uint64_t off, count; } programs[] = {
+      {h.train_instr_offset, h.train_instr_count},
+      {h.merge_instr_offset, h.merge_instr_count},
+      {h.eval_instr_offset, h.eval_instr_count},
+      {h.step_instr_offset, h.step_instr_count}};
+  for (const auto& p : programs)
+    for (uint64_t i = 0; i < p.count; ++i) {
+      seeml::update::UpdateInstruction ins;
+      std::memcpy(&ins, plan.data() + p.off + i * sizeof(ins), sizeof(ins));
+      if (!IsGemm(ins.opcode)) continue;
+      const long double w = static_cast<long double>(ins.out[0]) *
+                            static_cast<long double>(ins.out[1]) *
+                            static_cast<long double>(ins.out[2]);
+      if (w > static_cast<long double>(kFuzzGemmWorkCap)) return false;
+      work += static_cast<uint64_t>(w);
+      if (work > kFuzzGemmWorkCap) return false;
+    }
+  if (h.batch == 0) return false;
+  std::expected<seeml::update_rt::Dataset, std::string> data =
+      std::unexpected(std::string("no corpus"));
+  if (h.input_kind == 1) {
+    if (h.seq_len == 0 || h.batch % h.seq_len != 0) return false;
+    const uint64_t records = h.batch / h.seq_len;
+    std::vector<int32_t> tokens(records * (h.seq_len + 1), 0);
+    data = seeml::update_rt::Dataset::FromTokens(std::move(tokens), records,
+                                                 h.seq_len);
+  } else {
+    if (h.input_floats % h.batch != 0) return false;
+    const uint64_t input_dim = h.input_floats / h.batch;
+    std::vector<float> inputs(h.input_floats, 0.0f);
+    std::vector<uint8_t> labels;
+    uint64_t label_dim = 0;
+    if (h.label_kind == 1) {
+      if (h.label_bytes != h.batch * sizeof(int32_t)) return false;
+      labels.assign(h.label_bytes, 0);
+    } else if (h.label_kind == 2) {
+      if (h.label_bytes % (h.batch * sizeof(float)) != 0) return false;
+      label_dim = h.label_bytes / (h.batch * sizeof(float));
+      labels.assign(h.label_bytes, 0);
+    } else if (h.label_kind != 0) {
+      return false;
+    }
+    data = seeml::update_rt::Dataset::FromMemory(
+        std::move(inputs), std::move(labels), h.batch, input_dim,
+        h.label_kind, label_dim);
+  }
+  if (!data) return false;
+  seeml::update_rt::TrainOptions options;
+  options.log_every = 0;
+  auto r = engine.Train(*data, 1, options);
+  (void)r;
+  return true;
 }
 
 }  // namespace
@@ -82,8 +174,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         std::memcpy(plan.data() + kHashAt, &h, sizeof(h));
       }
       seeml::update_rt::UpdateEngine engine;
-      auto r = engine.LoadFromMemory(plan.data(), plan.size());
-      (void)r;
+      if (!engine.LoadFromMemory(plan.data(), plan.size())) break;
+      // An accepted plan is EXECUTED (CR3 #144 F22): one training step on a
+      // corpus synthesized from the header's geometry — zero features or
+      // token ids, zero labels, every id below any vocabulary — so the
+      // kernels run over the fuzzed instruction stream under the
+      // sanitizer, not only the validators. Bounded first: the arena, the
+      // instruction count and the GEMM work, so no input turns into a
+      // minutes-long step that libFuzzer would report as a hang.
+      if (!ExecuteOnce(engine, plan)) break;
       break;
     }
     case 2: {

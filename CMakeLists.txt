@@ -33,8 +33,14 @@ if(SEEML_SANITIZE)
 endif()
 
 # libFuzzer harnesses over the binary-format parsers (clang only):
-# -DSEEML_FUZZ=ON builds seeml_fuzz_formats.
+# -DSEEML_FUZZ=ON builds seeml_fuzz_formats — and instruments EVERY target
+# for coverage and ASan (CR3 #144 N41): the harness alone instrumented
+# left the parsers and kernels it drives invisible to the fuzzer.
 option(SEEML_FUZZ "Build the libFuzzer format-parser harness" OFF)
+if(SEEML_FUZZ)
+    add_compile_options(-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address)
+endif()
 
 # Benchmark harness (docs/benchmarks.md): -DSEEML_BENCH=ON builds the
 # seeml-bench tool and compiles the runtime with SEEML_STEP_TIMING, the

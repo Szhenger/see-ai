@@ -277,7 +277,16 @@ jobs:
         run: |
           mkdir -p corpus
           ./build-fuzz/seeml_fuzz_formats -max_total_time=90 \
-            -print_final_stats=1 corpus
+            -print_final_stats=1 -print_coverage=1 corpus 2>&1 | tee fuzz.log
+          test "${PIPESTATUS[0]}" -eq 0
+          # The corpus must reach the code under test, not the harness alone
+          # (CR3 #144 N41): covered functions inside runtime/ and compiler/.
+          for dir in runtime/ compiler/; do
+            if ! grep -q "COVERED_FUNC.*$dir" fuzz.log; then
+              echo "::error::the fuzzer covered no function under $dir"
+              exit 1
+            fi
+          done
       - name: Upload crashes
         if: failure()
         uses: actions/upload-artifact@v4
