@@ -1,0 +1,38 @@
+seeml-update-compile: kernel policy default (the runtime's GEMM tiles; host "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4")
+seeml-update-compile: Ingressor: compiled update cannot run locally: arena 7082 MiB + plan 2641 MiB need 9722 MiB, but the local memory budget is 9720 MiB
+[32m[INFO]  17:02:47 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'conv-lowering' ok (875 ops, 0.228 ms)[0m
+[32m[INFO]  17:02:47 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (875 ops, 0.256 ms)[0m
+[32m[INFO]  17:02:47 compiler/analysis/algebra/lora_grafter.cc:222 — LoraGrafter: grafted 197 adapter(s), rank=8[0m
+[32m[INFO]  17:02:47 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (1860 ops, 1.036 ms)[0m
+[32m[INFO]  17:02:47 compiler/driver/update_compiler.cc:396 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  17:02:47 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (1861 ops, 0.493 ms)[0m
+[32m[INFO]  17:02:47 compiler/analysis/calculus/autodiff.cc:474 — TrainableAutodiff: built adjoints for 394 trainable parameter(s)[0m
+[32m[INFO]  17:02:47 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (3509 ops, 1.951 ms)[0m
+[32m[INFO]  17:02:47 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (5873 ops, 1.846 ms)[0m
+[32m[INFO]  17:02:49 compiler/driver/update_compiler.cc:476 — UpdateCompiler: quantized 197 frozen weight(s) to int8 rodata[0m
+[32m[INFO]  17:02:49 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (5873 ops, 1.782 ms)[0m
+[32m[INFO]  17:02:49 compiler/analysis/algebra/addend_fuser.cc:116 — GemmAddendFuser: folded 391 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  17:02:49 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (5873 ops, 2.059 ms)[0m
+[32m[INFO]  17:02:49 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (5873 ops, 1.500 ms)[0m
+[32m[INFO]  17:02:49 compiler/driver/update_compiler.cc:580 — UpdateCompiler: dce removed 391 dead op(s)[0m
+[32m[INFO]  17:02:49 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (5482 ops, 1.915 ms)[0m
+[32m[INFO]  17:02:52 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rematerialize' ok (5596 ops, 3.171 ms)[0m
+[32m[INFO]  17:02:52 compiler/driver/update_compiler.cc:697 — UpdateCompiler: rematerialization (forced): 170 forward value(s) of 114 op(s) recomputed in the backward, 140 declined (no net saving); arena 7704605824 -> 7425057856 B[0m
+       18.12 real         9.64 user        53.57 sys
+          8040169472  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             1823994  page reclaims
+              921638  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                3396  voluntary context switches
+             1093752  involuntary context switches
+        163989658512  instructions retired
+        159422801477  cycles elapsed
+          8840993464  peak memory footprint

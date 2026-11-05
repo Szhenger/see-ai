@@ -107,8 +107,10 @@ std::expected<void, std::string> VerifyPlanContract(
   // The header's I/O slots are written by the data feeder each step and
   // read through typed pointers, so they must be in bounds and element-
   // aligned (labels are i32 or f32 — 4 bytes either way).
+  // The slots live in the arena: a rodata or a source ref there would be
+  // read through the engine's arena pointer and written by the feeder.
   uint64_t input_bytes = 0;
-  if (up::IsRodataRef(header.input_ref) ||
+  if (up::IsRodataRef(header.input_ref) || up::IsSourceRef(header.input_ref) ||
       up::RefOffset(header.input_ref) % sizeof(float) != 0 ||
       !MulOk(header.input_floats, sizeof(float), &input_bytes) ||
       !RangeOk(up::RefOffset(header.input_ref), input_bytes,
@@ -116,11 +118,12 @@ std::expected<void, std::string> VerifyPlanContract(
     return diag::executing::Error("plan input slot out of bounds");
   if (header.label_kind != 0 &&
       (up::IsRodataRef(header.label_ref) ||
+       up::IsSourceRef(header.label_ref) ||
        up::RefOffset(header.label_ref) % sizeof(float) != 0 ||
        !RangeOk(up::RefOffset(header.label_ref), header.label_bytes,
                 header.arena_size)))
     return diag::executing::Error("plan label slot out of bounds");
-  if (up::IsRodataRef(header.loss_ref) ||
+  if (up::IsRodataRef(header.loss_ref) || up::IsSourceRef(header.loss_ref) ||
       up::RefOffset(header.loss_ref) % sizeof(float) != 0 ||
       !RangeOk(up::RefOffset(header.loss_ref), sizeof(float),
                header.arena_size))
@@ -136,10 +139,16 @@ std::expected<void, std::string> VerifyExecutorContract(
     std::span<const up::EmitEntry> emit_table, const up::PlanHeader& header) {
   for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program) {
-      // Only the eval program may read the source model file (v17).
+      // The eval program may read the source model file from v17; every
+      // program may from v21 (an adapter-only plan's frozen weights live
+      // there, F6 #134). Reads only: the validator refuses a source ref as
+      // a destination in any program.
+      const bool allow_source =
+          program == &eval ||
+          header.version >= up::kSeeuSourceWeightsVersion;
       if (auto r = ValidateInstruction(ins, header.arena_size,
                                        header.rodata_size, header.version,
-                                       /*allow_source=*/program == &eval);
+                                       allow_source);
           !r)
         return r;
       // The relaxed bit (v18 GEMMs, v20 tiled attention) belongs to the

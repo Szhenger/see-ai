@@ -1,0 +1,284 @@
+{
+ "schema": 1,
+ "system": "SeeML",
+ "backend": "cpu",
+ "precision": "f32",
+ "host": {
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "package": "out/f6-2026-11-03/pkg_rodata",
+ "seeml_version": "1.2.4",
+ "plan_version": 21,
+ "plan_hash": "73834a871d469570",
+ "precision_flag": "f32",
+ "relaxed_gemms": 0,
+ "relaxed_attention": 0,
+ "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+ "device": "host CPU, relaxed GEMMs on the exact kernels",
+ "threads": 10,
+ "config": {
+  "steps": 20,
+  "tokens_per_step": 512,
+  "lo": 5,
+  "hi": 15,
+  "repeats": 1
+ },
+ "records_digest": "9a2f2c1396502ce0",
+ "adapters": 211,
+ "adapter_params": 3024384,
+ "arena_bytes": 1576898688,
+ "plan_bytes": 740982784,
+ "step_ms": 1747.9999999999989,
+ "step_ms_lohi": 1668.0000000000005,
+ "step_ms_min": 1668.0000000000005,
+ "step_ms_max": 1668.0000000000005,
+ "tokens_per_s": 292.9061784897027,
+ "it_per_s": 0.5720823798627006,
+ "tokens_per_step": 512,
+ "intercept_s": 19.72,
+ "val_loss": [
+  4.574264,
+  4.4789066
+ ],
+ "val_acc": [
+  0.28125,
+  0.2853125
+ ],
+ "train_loss": [
+  4.391027,
+  4.4465442
+ ],
+ "verdict": "accepted",
+ "committed": true,
+ "lifecycle": {
+  "load_s": 0.7243,
+  "data_s": 0.0002,
+  "train_s": 51.8006,
+  "eval_s": 17.8345,
+  "evaluations": 2,
+  "merge_s": 0.1432,
+  "commit_s": 0.7568,
+  "wall_s": 53.4253
+ },
+ "relaxed_executions": 0,
+ "committed_sha256": "acedf11a59cbf81d1007c1d8bdbc4fe6429301bf5ca77ef2ec5e0ed23e35b8d7",
+ "suspect": false,
+ "wall_quality_s": 53.48,
+ "peak_rss_bytes": 2329378816,
+ "energy": {
+  "attribution": "whole-SoC",
+  "available": false,
+  "compute": "cpu",
+  "scope": [
+   "GPU Energy"
+  ],
+  "burst": [],
+  "joules": {
+   "GPU Energy": 1.1977396020000002
+  },
+  "reason": "this row computes on the CPU: the CPU domain is published in bursts to an unprivileged reader (not a per-interval measurement) and the GPU domain is not this row's compute",
+  "j_per_step": null,
+  "j_per_token": null
+ },
+ "runs": [
+  {
+   "steps": 5,
+   "exit": 0,
+   "wall_s": 28.06,
+   "peak_rss_bytes": 2329378816,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU, relaxed GEMMs on the exact kernels",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 740982784
+    },
+    "steps": 5,
+    "train_loss": [
+     4.6285086,
+     4.814199
+    ],
+    "validation_loss": [
+     4.574264,
+     4.5511084
+    ],
+    "validation_scores": "plan",
+    "validation_accuracy": [
+     0.28125,
+     0.28265625
+    ],
+    "lifecycle": {
+     "load_s": 0.7296,
+     "data_s": 0.0002,
+     "train_s": 26.4031,
+     "eval_s": 18.0002,
+     "evaluations": 2,
+     "merge_s": 0.1387,
+     "commit_s": 0.7417,
+     "wall_s": 28.0135
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "cace90f1d6215d2ba2c52fc4a357fa52b8d9437f2fda8b88bb6232ffa8e5450f",
+   "energy": {
+    "available": true,
+    "attribution": "whole-SoC",
+    "scope": [
+     "GPU Energy"
+    ],
+    "burst": [],
+    "joules": {
+     "GPU Energy": 0.5785738180000001
+    },
+    "reason": null
+   },
+   "device": "host CPU, relaxed GEMMs on the exact kernels"
+  },
+  {
+   "steps": 15,
+   "exit": 0,
+   "wall_s": 44.74,
+   "peak_rss_bytes": 2329346048,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU, relaxed GEMMs on the exact kernels",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 740982784
+    },
+    "steps": 15,
+    "train_loss": [
+     4.3540688,
+     4.6214247
+    ],
+    "validation_loss": [
+     4.574264,
+     4.502562
+    ],
+    "validation_scores": "plan",
+    "validation_accuracy": [
+     0.28125,
+     0.28453124
+    ],
+    "lifecycle": {
+     "load_s": 0.7266,
+     "data_s": 0.0003,
+     "train_s": 43.0933,
+     "eval_s": 17.6995,
+     "evaluations": 2,
+     "merge_s": 0.1415,
+     "commit_s": 0.7447,
+     "wall_s": 44.7064
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "20112394d5d1287238a78bd87f1c25c22cdb1d7c53dcbb41ed663783f52636ae",
+   "energy": {
+    "available": true,
+    "attribution": "whole-SoC",
+    "scope": [
+     "GPU Energy"
+    ],
+    "burst": [],
+    "joules": {
+     "GPU Energy": 0.989301285
+    },
+    "reason": null
+   },
+   "device": "host CPU, relaxed GEMMs on the exact kernels"
+  },
+  {
+   "steps": 20,
+   "exit": 0,
+   "wall_s": 53.48,
+   "peak_rss_bytes": 2329346048,
+   "report": {
+    "schema": 3,
+    "backend": "cpu",
+    "device": "host CPU, relaxed GEMMs on the exact kernels",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 740982784
+    },
+    "steps": 20,
+    "train_loss": [
+     4.391027,
+     4.4465442
+    ],
+    "validation_loss": [
+     4.574264,
+     4.4789066
+    ],
+    "validation_scores": "plan",
+    "validation_accuracy": [
+     0.28125,
+     0.2853125
+    ],
+    "lifecycle": {
+     "load_s": 0.7243,
+     "data_s": 0.0002,
+     "train_s": 51.8006,
+     "eval_s": 17.8345,
+     "evaluations": 2,
+     "merge_s": 0.1432,
+     "commit_s": 0.7568,
+     "wall_s": 53.4253
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "acedf11a59cbf81d1007c1d8bdbc4fe6429301bf5ca77ef2ec5e0ed23e35b8d7",
+   "energy": {
+    "available": true,
+    "attribution": "whole-SoC",
+    "scope": [
+     "GPU Energy"
+    ],
+    "burst": [],
+    "joules": {
+     "GPU Energy": 1.1977396020000002
+    },
+    "reason": null
+   },
+   "device": "host CPU, relaxed GEMMs on the exact kernels"
+  }
+ ]
+}

@@ -70,6 +70,7 @@ of an `mlx_lm.lora` log or a `llama-bench` table needs no unit translation.
 | `peak_rss_bytes`, `rss_over_planned` | MLX-LM **Peak mem**; Tier C "peak RSS vs arena" | OS-observed peak resident set (`getrusage`); ratio to `arena + plan` | process-cumulative, so it rises monotonically across fixtures; on the MB-scale fixtures the ~20 MB process floor dominates the ratio, so read it at model scale (where the field audits found 1.00–1.13×) |
 | `mfu` (only with `--peak-gflops F`) | PaLM / Megatron **model-FLOPs utilization** | achieved GEMM FLOP/s ÷ the host peak you pass | the harness never guesses a peak — a guessed denominator is not a standard. Published anchors (arXiv 2502.05317): Apple M4 GPU ≈ 2.9 TFLOP/s measured, M-series CPU AMX ≈ 1.49, NEON-only ≈ 0.84 |
 | `gemm_gflops` | (internal) | `gemm_flops_per_step / step_ms`, FLOPs summed as 2·M·N·K over the plan's own GEMM instructions | the numerator of `mfu`; kept because it needs no external input |
+| `energy_j_per_step`, `energy_j_per_token` (macOS; F6 #134) | `powermetrics` **Power** × time | the SoC energy counters (IOReport's "Energy Model" group, read without root) over the hi run less the lo run, divided by the extra steps — the step time's own regression, so the lifecycle's energy is excluded — and per loss-target row from there | **whole-SoC**: every process on the machine is in the counters, so the number means something on a quiet machine; and what an unprivileged reader sees is the OS's choice — on macOS 26 the GPU counter advances with every sample while the CPU, DRAM and ANE counters arrive in bursts (a backlog of hundreds of joules landing at once, nothing between), so an interval reading of them is not a measurement: a Metal row carries a GPU-scoped number, and a row that computes on the CPU says `unavailable` rather than borrow the GPU's idle draw. `energy.scope` names the domains counted, `energy.burst` the ones seen but not counted. The frontier rows (`frontier_run.py`) carry the same fields under `energy`. |
 | `host` | every standard's "report the machine" rule | `uname` sysname + machine | the JSON is self-describing; a number without its host string is not a benchmark |
 
 What is deliberately *not* reported: a validation perplexity. The fixtures
@@ -1285,6 +1286,281 @@ review fixes of d9c7bec; the branch tip's `certify_numerics.py verify`
 accepts the certificate, and `pack_update.py --build` builds the package
 with no tolerance NOTE. The run took about 3.5 h of one core (4 h 27 min
 of wall time, paused for the day's timing windows).
+
+### The scale ladder's 1.5B rung, the accountant's bound, and where the arena goes (F5 #133, 2026-11-03)
+
+Three of the ladder's lines closed in one day, and the measurements say
+where the memory is at every rung (`docs/ledger/f5-2026-11-03/`).
+
+**The checkpoint.** Qwen2.5-1.5B through `export_model.py --hf` — 28
+blocks, D 1,536, FFN 8,960, 12 query heads over 2 KV heads, V 151,936,
+the head tied, rope θ 10⁶ — over today's docs tree (709 records of 129
+ids). The importer repeats the 2 KV heads to 12 (the format carries no KV
+heads yet), so the stored model is 1.65 B effective parameters against the
+checkpoint's 1.54 B, a 7.55 GB f32 SMF; the import now builds each
+converted weight only as the writer reaches it (the safetensors mapped,
+not read), so the export took 16 s at a 4.4 GB peak.
+
+**The accountant's bound, made honest (N29).** The step-0 memory gate's
+"lower bound" summed every forward value, but the backward never reads
+the inputs of a residual add, a bias add or a rotation (their adjoint is
+the incoming one, reduced or rotated), so the sum over-counted the arena
+and a budget between the exact footprint and the over-count was refused
+up front — the 2026-09-24 review's N29, filed for S1. The bound now
+follows the VJP rules (an adapted product's input, attention's operands,
+a norm's or activation function's input, both factors of a product, the
+output the loss differentiates — each where its rule is emitted, the
+adapted targets deciding which products), counts the base at its stored
+width (F03) and, where `--remat` may run, drops the activations it
+recomputes; the compile report states it beside the exact footprint. At
+the ladder's int8 recipe, estimate ÷ (arena + plan):
+
+| rung | plain plan | with rematerialization |
+|---|---:|---:|
+| SmolLM-135M | 0.853 | 0.818 |
+| SmolLM2-360M | 0.899 | 0.874 |
+| Qwen2.5-0.5B | 0.834 | 0.810 |
+| Qwen2.5-1.5B | 0.859 | 0.882 |
+
+A lower bound within 10–19 % of the exact at every rung, never above it
+(`TheEstimateNeverExceedsTheExactFootprint` pins ≤ 1 under plain, remat,
+int8 and tiled attention, and a budget at the exact footprint compiles
+under either remat policy).
+
+**The 1.5B rung against a 16 GiB budget.** Int8 base, LoRA r8, the
+ladder's 512 tokens per step as four micro-batches of 128
+(`--grad-accum 4`), `--memory-budget-mib 16384`; each arm one compile of
+the same SMF (24–26 s, a 5.5–8.2 GB compile peak), 197 adapters:
+
+| arm | policy | budget (MiB) | arena | plan | arena + plan | outcome |
+|---|---|---:|---:|---:|---:|---|
+| fit | `--remat auto` | 16,384 | 7,704,605,824 | 2,768,388,096 | 9,987.8 MiB | the plain plan fits; packaged and trained below |
+| forced | `--remat on` | 16,384 | 7,425,057,856 | 2,768,388,096 | 9,721.2 MiB | rematerialization saves 279.5 MB (3.6 %) |
+| squeeze | `--remat auto` | 9,986 | 7,425,057,856 | 2,768,388,096 | 9,721.2 MiB | one MiB under the plain footprint: auto recomputes, the plan is the forced one byte for byte (hash `85213ffd…`) |
+| refuse | `--remat on` | 9,720 | — | — | — | refused at compile time: "arena 7082 MiB + plan 2641 MiB need 9722 MiB, but the local memory budget is 9720 MiB" |
+
+The compile is the gate: it fits or it refuses with the exact shortfall,
+and nothing is left for the run to discover. At 512-token micro-batches
+(`--data-batch 512 --grad-accum 4`, 2,048 tokens per step) the same plan
+compiles to a 10.31 GB arena — above this GPU's 9.53 GB largest buffer
+(`maxBufferLength`), so it would train on the CPU alone; gradient
+accumulation is what puts the 1.5B rung on the GPU.
+
+**Where the arena goes.** Of the fit arm's 7.70 GB, 176.5 MB is the
+persistent segment (adapters, moments, accumulators), 4 KB the IO slots,
+and 7.53 GB the transient segment — of which the merged LoRA deltas, one
+full-size f32 image per adapted weight pinned for the commit, are about
+6.6 GB (the 1.65 B effective parameters times four bytes), and the
+activations and adjoints of a 128-token micro-batch under 1 GB. That is
+why rematerialization buys 3.6 % here against 13–20 % at the smaller
+rungs, and why the moments are not the lever either:
+
+| rung | adapters | adapter params | AdamW moments | arena | moments / arena |
+|---|---:|---:|---:|---:|---:|
+| SmolLM-135M | 211 | 3.02 M | 23.1 MiB | 1.47 GiB | 1.53 % |
+| SmolLM2-360M | 225 | 5.07 M | 38.7 MiB | 3.05 GiB | 1.24 % |
+| Qwen2.5-0.5B | 169 | 5.92 M | 45.1 MiB | 4.20 GiB | 1.05 % |
+| Qwen2.5-1.5B | 197 | 11.03 M | 84.2 MiB | 7.18 GiB | 1.15 % |
+
+Design item 3, 8-bit optimizer states, would save 17–63 MiB — under 1 %
+of the arena at every rung — for a new opcode, an SEKP change and a
+loss-curve study; it is superseded by this table (the F5 body records the
+decision). The ladder's next lever is the merged deltas: a merge that
+materializes one delta at a time into a scratch the commit drains would
+take the 1.5B arena from 7.7 GB to about 2 GB (the activations plus the
+largest delta, the head's 0.93 GB) and is the design item the next
+milestone should carry.
+
+**Training it on 16 GB.** The fit arm, packaged in disk mode (the 2.6 GB
+plan beside the binary) and run through the harness with a 14-record
+validation split, every parity-style check the harness makes passing
+(`docs/ledger/f5-2026-11-03/row_15b_*.json`):
+
+| run | step (ms) | tok/s | validation 0 → end | peak RSS | what the evaluation read |
+|---|---:|---:|---|---:|---|
+| CPU, 5 quality steps | 13,210 | 39 | 4.3435 → 4.2467 (accuracy 28.6 → 29.8 %) | 11.8 GB | the shipped f32 file (the CPU's own mapping) |
+| Metal, 20 quality steps, `--validation-scores shipped` | 8,762 | 58 | 4.3438 → 4.0025 (28.6 → 31.3 %) | 11.3 GB | the shipped f32 file, through the CPU sub-backend |
+| Metal, 20 quality steps, `--validation-scores plan` | 1,946 | 263 | 4.3487 → 4.0050 (28.7 → 31.1 %) | 10.5 GB | the plan's own int8 weights, on the GPU |
+
+The gate accepted and committed on every run, and the two Metal runs commit
+the same model, `eecfde4b…`: `--validation-scores plan` changes what the
+evaluation reads, not what trains (the CPU's `c08a3b3b…` is its own kernels' bits, as every row of the ladder). The first two rows are
+honest about what they measure and it is not the arithmetic: the shipped
+evaluation at this size pages the arena. A 16 GB host cannot hold the 7.7
+GB arena, the 2.6 GB of int8 rodata and the 7.55 GB f32 source at once,
+so each evaluation pass — 14 records, their GEMMs on the CPU — streams the
+source through memory and evicts the arena, and the training steps that
+follow fault it back: the Metal run's three training phases took 445, 459
+and 500 s for 5, 15 and 20 steps, about 430 s of page-ins per run and the
+rest per step, against 2.3 s per step for the same train program on the
+probe (GPU work alone, nothing else resident) — the 8.8 s above is the
+harness's regression over that noise, and the CPU's 13.2 s the same story
+on the CPU's own kernels. The third row is the device recipe:
+`--validation-scores plan` keeps the evaluation on the plan's int8 copies
+and on the GPU, the working set is the arena and rodata (10.3 GB), and the
+step is the probe's. The three-step diagnosis runs in the ledger (`diag_step_*.json`, the Metal spans on) say the same from the other side: without a validation split the three steps take 7.7 s — 2.56 s per step, the GPU busy 73 % of the wall — and with the 14-record split the same three steps take 65 s, of which the command buffers' wall is 7.3 s (GPU busy 77 %, the arithmetic unchanged): the 58 s between them is a per-run constant, not a per-step cost — the two-step run of `eval_speed.json` pays the same 58 s — the arena faulting back after the evaluation pass streamed the 7.55 GB source through memory; the pass itself takes 29 s. Every row here was measured on battery with Low Power Mode on (`docs/ledger/f7-2026-11-03/host_state.txt`, read at the end of the session; the 10-24 SmolLM package's own binary runs 35 % slower in this state than it did on 10-24), so the absolute times are this host's in that state and the comparisons between the rows are the measurement.
+
+**What the GPU can hold, and what it silently cannot.** The first Metal
+run of the fit arm reported every loss as 0.000000, 20 steps in 4.3 s and
+a rejected gate, with every command buffer "completed". The arena (7.7
+GB) and the int8 rodata (2.6 GB) train fine on the GPU — the probe runs
+the train program in 578 ms per micro-batch — but the engine also binds
+the 7.55 GB f32 source model as a GPU buffer for the eval program (E12:
+validation scores the shipped model), and the backend bound it on every
+encoder: 17.8 GB of buffers on a 12.7 GB working set
+(`recommendedMaxWorkingSetSize`), which this GPU answers by completing
+command buffers without executing them, no error attached. The backend
+now (a) refuses at Bind an arena above the device's largest buffer or an
+arena plus rodata above its working set, with the numbers and the remedy;
+(b) keeps the source model a CPU mapping when it would not fit beside
+them — the device line says `source model on the CPU`, and the eval
+program's instructions that read it run on the CPU sub-backend, the rest
+on the GPU (`TheSourceModelStaysOnTheCpuBeyondTheWorkingSet`); and (c)
+runs a one-dispatch self-test at Bind and, on a GPU that reports
+execution times (this one does), refuses any later command buffer that
+completes with none. The Metal row above is the second run of that arm, after the fix; the first is `diag_metal_zero.json` in the ledger. The evaluation that reads the source now runs on the CPU sub-backend as a whole program (`BeginRange`): the first form diverted one instruction at a time and drained the GPU around each source-weight GEMM, at 217–229 s per 14-record pass in the rows above; as a whole program the pass takes 29 s (`eval_speed.json`: two passes in 58 s, the two training steps between them 64 s for the same page-ins), beside the CPU backend's 27.6 s for the same split on its own kernels.
+
+### The adapter-only package, and energy per token (F6 #134, 2026-11-03)
+
+Two of F6's lines need no device, and both landed; the third — the
+iPhone and iPad run — waits on a device and an Xcode this host does not
+have (`xcrun` finds no iOS SDK), and nothing in the tree pretends
+otherwise.
+
+**The adapter-only package** (`--adapter-only`, plan v21). The frozen
+weights stay where the device already has them: in the source model file
+the plan is bound to by hash. Every frozen weight — the embedding table
+included — becomes a source ref in every program (the address space the
+eval program has read since v17), the plan lays out no rodata, and what
+ships is the instructions, the adapters' initial image and the emit
+table. The commit path is unchanged: the device commits onto its own copy
+of the model. SmolLM-135M r8 on the f32 base, the same SMF compiled both
+ways and today's int8 package beside them:
+
+| package | plan bytes | rodata | binary (`.incbin`, what ships) |
+|---|---:|---:|---:|
+| today's int8 package (10-24 `pkg_exact`) | 298,631,168 | 262 MB int8 | 301,495,056 |
+| f32 base, rodata plan | 740,982,784 | 704,390,400 (f32) | 747,391,920 |
+| f32 base, adapter-only | 36,585,472 | 0 | 37,404,848 |
+
+The adapter-only binary is **8.1× smaller than today's int8 package and
+20× smaller than the f32 rodata one**: adapter scale. Of its 36.6 MB
+plan, 36.3 MB is the persistent image (the adapters' random init and
+their zeroed moments) and 212 KB the instructions; a seed-described init
+would take it lower still, and is not this change.
+The same f32 bits read from another address compute the same bits: the
+rodata and adapter-only plans commit the same model after 20 steps on
+Metal (`eb4f7b75…`) and on the CPU (`acedf11a…`) — 4.5744 → 4.4790
+validation loss on Metal, 4.5743 → 4.4789 on the CPU, in every run — at 2,207 tok/s on Metal against the rodata plan's
+2,286 (0.97×: the weights come through the source buffer instead of the
+plan's rodata) and 288 against 293 on the CPU. On Metal the
+540 MB source file is bound to the GPU beside the arena (it fits the
+working set; where it would not, its readers run on the CPU, see the F5
+section). The limits, each a named refusal: a model loaded from a file
+(the offsets and the hash), the f32 base the file holds (`--quantize-base`
+/ `--bf16-base` would store narrow copies in the plan) and exact
+arithmetic (the relaxed kernels read rodata weights). An int8 adapter-only
+package — the device quantizing the file's weights at load into a second
+allocation — is the follow-up the one-arena doctrine has to rule on first.
+
+**Energy per token.** `tool/seeml/energy.py` and `tool/energy_meter.h`
+read the SoC's energy counters through IOReport — the library behind
+`powermetrics`, opened at run time, no root — and the frontier rows and
+`seeml-bench` take the step time's own regression for them: the hi run's
+joules less the lo run's over the extra steps, so the lifecycle's energy
+(the load, the hash, the evaluations) cancels, and per token from there.
+Two limits, stated in every row. The counters are whole-SoC — every
+process on the machine is in them, so the number means something on a
+quiet machine, and `energy.attribution` says so. And what an unprivileged
+reader sees is the OS's choice: on this macOS 26 the `GPU Energy` counter
+advances with every sample, while the CPU, DRAM and ANE counters are
+published in bursts — nothing for seconds, then the backlog at once: 747
+J of CPU energy landed in one 8-second window and none in the next, 1,894
+J in a 56-second one (the one-second probe saw them as zero:
+`docs/ledger/f6-2026-11-03/ioreport_probe.txt`; `sudo powermetrics` reads
+them continuously). An interval reading of a burst domain is not a
+measurement, so the meter keeps the raw deltas, counts the GPU alone as
+`energy.scope`, lists the rest under `burst`, and attributes by the row's
+compute: a Metal row carries a GPU-scoped number, a row that computes on
+the CPU says `unavailable` rather than borrow the GPU's idle draw (the
+first two CPU rows of the day did exactly that, at 0.05 J per step, and
+were corrected). Measured on 2026-11-04 on the M5, SmolLM-135M r8, f32 base, 20
+quality steps, the lo/hi regression:
+
+| row | tok/s | energy (GPU domain, whole-SoC) |
+|---|---:|---:|
+| rodata plan, Metal | 2,286 | 1.52 J per step, **2.98 mJ per token** (6.8 W over the step) |
+| adapter-only plan, Metal | 2,207 | 1.55 J per step, 3.04 mJ per token (6.7 W) |
+| either plan, CPU | 293 / 288 | unavailable: the CPU domain arrives in bursts, the GPU is not this row's compute |
+
+The numbers are the SoC's, with everything else on an idle machine in
+them, and the host's power state's — this session on battery with Low
+Power Mode on (`docs/ledger/f7-2026-11-03/host_state.txt`), a lower clock
+and another energy point than mains power, so the absolute joules are that
+state's and the comparison across rows under one state the measurement; their use is the trend (a kernel that saves time at the same
+power saves energy) and the comparison across stacks under the same
+rule — the frontier rows carry the same fields for `torch.compile` on
+MPS and MLX-LM, and their CPU rows say `unavailable` for the same reason.
+A Joule-per-token row for the device itself waits with the device.
+
+### The `nt_rows` sites off their floor: the staged-B rows kernel (F7 #138, 2026-11-03)
+
+The adapter backward's `dt = dC @ Bᵀ` — B stored `[r × K]`, N = r = 8 —
+ran on `k_gemm_nt_rows`: one simdgroup per output row, the lanes striding
+K, and for every k each lane loading its eight b values as eight scalar
+loads from eight rows of B. Nine loads per eight multiply-adds, which is
+what left the family at 31–34 GB/s and "latency-bound at 512 simdgroups"
+on 2026-10-19 (`512x8x576` 37.7 µs, `512x8x1536` 91.9 µs, the head's
+`512x8x49152` 3,164 µs: 14.3 ms of a 245 ms step, 150 + 60 + 1 sites).
+`k_gemm_nt_rows_tgb` keeps everything that decides the bits — the
+lane-to-k assignment, the order of the products, the shuffle tree, the
+per-column scale applied to b before the same multiply-add — and changes
+only where b comes from: a threadgroup of 8 simdgroups owns 8 rows and,
+32 k at a time, loads the `[N × 32 k]` block of B cooperatively
+(simdgroup s loads row s, lane l column k₀ + l: one coalesced line per
+row) into threadgroup memory transposed, so each lane then reads its
+eight b values as two float4s. Four loads per eight multiply-adds instead
+of nine, and two barriers per 32 k, as the staged-A form of 10-19 pays.
+
+**Measured in one session, both kernels** (`SEEML_METAL_UNSTAGED_ROWS=1`
+keeps the unstaged one; the 2026-10-24 exact SmolLM-135M plan recompiled
+with its own header — lr 1e-3, 1,000 default steps — whose instruction
+streams are the 10-24 package's line for line; the 10-24 recipe: the
+40 → 160 and 160 → 300 slopes, 300 quality steps, 10 threads; the host on
+battery with Low Power Mode on, see below; `docs/ledger/f7-2026-11-03/`):
+
+| | unstaged `k_gemm_nt_rows` | staged `k_gemm_nt_rows_tgb` |
+|---|---:|---:|
+| `512x8x576` (q, k, v, o, down: 150 sites per step) | 36.0 µs | 18.5 µs |
+| `512x8x1536` (gate, up: 60 sites) | 89.1 µs | 44.5 µs |
+| `512x8x49152` (the head) | 2,831.6 µs | 1,286.6 µs |
+| the step, the 160 → 300 slope (ms) / tok/s | 248 / 2,065 | 233 / 2,193 |
+| the 40 → 160 slope (ms) | 240 | 180 |
+| energy, GPU domain (mJ per token) | 3.33 | 3.11 |
+| committed model after 300 steps | `ab2504dc…` | `ab2504dc…` |
+
+Both kernels commit the 10-24 package's model, `ab2504dc…`, after 300 steps: the staged form's bits are the unstaged form's, which are 10-24's. Per site, 36.0 → 18.5 µs (1.95×) on the 576-wide sites, 89.1 → 44.5 µs (2.00×) on the 1536-wide and 2,831.6 → 1,286.6 µs (2.20×) at the head; over the 211 sites of a step that is 6.8 ms, and the step reads 248 → 233 ms (2,065 → 2,193 tok/s), 3.33 → 3.11 mJ per token.
+
+The per-site times are GPU-timed per dispatch and are the measurement:
+1.95–2.2× at every site, 6.8 ms of the family's 13.6 ms in a step. The
+step's absolute level is this host's, not the kernel's, and the ledger
+shows it three ways. The staged arm's own two slopes disagree — 180 ms
+over steps 40 → 160, 10-24's 181 to the millisecond, and 233 over
+160 → 300 — the SoC slowing within one 300-step run. The 10-24 package's
+own binary, its runtime and its unstaged kernel, bracketing today's
+staged kernel back to back (`row_bin1024_a.json`, `row_staged2.json`,
+`row_bin1024_b.json`, `drift.log`) ran 300 steps in 78.5 and 77.4 s
+against 57.5 s on 10-24, the staged kernel's 75.3 s between them: 2.7–4.1 %
+less wall for the same work — what halving a family worth 5–6 % of the
+step buys — and a host 35 % slower than on 10-24 for an identical
+executable. The host was on battery with Low Power Mode on throughout
+(`host_state.txt`, read at the session's end; yesterday's rows read the
+same figures, so then too): every time and joule of this session is that
+state's, the per-site times, the ratios and the committed bytes are not.
+And an earlier run, at the nightly's lr 1e-4 header, read 19.1 / 46.2 /
+1,302 µs per site and committed `8d04da39…`, the 10-19 F7 package's model
+as the 10-24 table's control row has it: each header reproduces its own
+package's bits under the staged kernel.
 
 ## Tier C — Memory (the gate that refuses compiles)
 

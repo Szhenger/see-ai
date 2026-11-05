@@ -106,7 +106,7 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
     return diag::executing::Error(
         "source model '" + source_model_path + "' is shorter than the " +
         std::to_string(source_required_) +
-        " bytes the eval program reads from it");
+        " bytes its programs read from it");
   if (auto r = backend_->BindSource(candidate.data, bytes); !r)
     return diag::executing::Error("backend cannot bind the source model: " +
                                   r.error());
@@ -351,18 +351,28 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // they already are from accuracy. A composite loss (xent + KL, pure KL)
   // is not row-separable from what the program keeps; it is weighted.
   EvalTail eval_tail;
-  // The source model extent the eval program reads (v17): the file bound
-  // at BindSourceModel must cover it. The contract proved every source ref
-  // against kSourceSpaceLimit; this recovers the real requirement.
+  // The source model extent the programs read (v17: the eval program's
+  // f32 weights; v21: every program's, in an adapter-only plan): the file
+  // bound at BindSourceModel must cover it. The contract proved every
+  // source ref against kSourceSpaceLimit; this recovers the real
+  // requirement.
   uint64_t source_required = 0;
-  for (const up::UpdateInstruction& ins : eval)
-    if (auto ex = DescribeInstruction(ins, header.arena_size,
-                                      header.rodata_size, header.version,
-                                      /*allow_source=*/true))
-      for (size_t i = 0; i < ex->count; ++i)
-        if (ex->ranges[i].source)
-          source_required = std::max(source_required,
-                                     ex->ranges[i].off + ex->ranges[i].bytes);
+  bool train_reads_source = false, merge_reads_source = false;
+  for (const auto* program : {&train, &merge, &eval, &step})
+    for (const up::UpdateInstruction& ins : *program)
+      if (auto ex = DescribeInstruction(ins, header.arena_size,
+                                        header.rodata_size, header.version,
+                                        /*allow_source=*/true))
+        for (size_t i = 0; i < ex->count; ++i)
+          if (ex->ranges[i].source) {
+            source_required =
+                std::max(source_required,
+                         ex->ranges[i].off + ex->ranges[i].bytes);
+            if (program == &train || program == &step)
+              train_reads_source = true;
+            else if (program == &merge)
+              merge_reads_source = true;
+          }
   for (const up::UpdateInstruction& ins : eval) {
     const auto op = static_cast<up::OpCode>(ins.opcode);
     if (op == up::OpCode::kSoftmaxXEntFwd) {
@@ -522,6 +532,8 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   if (source_.data) (void)backend_->BindSource(nullptr, 0);
   source_.Release();
   source_required_ = source_required;
+  train_reads_source_ = train_reads_source;
+  merge_reads_source_ = merge_reads_source;
   plan_ = plan;
   plan_size_ = plan_size;
   rodata_ = plan + header.rodata_offset;
@@ -599,20 +611,29 @@ std::expected<void, std::string> UpdateEngine::ExecuteRange(
                           .eps = header_.eps,
                           .weight_decay = header_.weight_decay,
                           .step = step_};
+  // The backend sees the range before its first instruction: where the
+  // source model is off the device, a range that reads it runs on the CPU
+  // whole (BeginRange), and EndRange follows the Flush below.
+  backend_->BeginRange(std::span<const up::UpdateInstruction>(program)
+                           .subspan(begin, end - begin));
   for (size_t idx = begin; idx < end; ++idx)
-    if (auto r = backend_->Execute(program[idx], params); !r)
+    if (auto r = backend_->Execute(program[idx], params); !r) {
+      backend_->EndRange();
       return diag::executing::Error("backend '" +
                                     std::string(backend_->name()) +
                                     "' failed at instruction " +
                                     std::to_string(idx) + ": " + r.error());
+    }
   // Every range ends coherent: the engine reads the loss slot, the eval
   // probabilities, the merge deltas and the persistent segment straight off
   // the arena after Execute returns, and the step-timing split (below)
   // must charge deferred GPU work to the phase that issued it.
-  if (auto r = backend_->Flush(); !r)
+  auto flushed = backend_->Flush();
+  backend_->EndRange();
+  if (!flushed)
     return diag::executing::Error("backend '" +
                                   std::string(backend_->name()) +
-                                  "' failed to complete: " + r.error());
+                                  "' failed to complete: " + flushed.error());
   return {};
 }
 
@@ -836,6 +857,15 @@ std::expected<TrainReport, std::string> UpdateEngine::Train(
 std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
     Dataset& data, uint64_t steps, const TrainOptions& options) {
   if (!arena_) return diag::executing::Error("no plan loaded");
+  // An adapter-only plan (v21) reads its frozen weights from the source
+  // model file in the train program too: unbound, the backends would read
+  // through no mapping (the CPU) or the arena standing in for the source
+  // buffer (Metal). Refused the way Evaluate refuses, before anything runs.
+  if (train_reads_source_ && !source_.data)
+    return diag::executing::Error(
+        "this plan reads its frozen weights from the source model file in "
+        "the train program (an adapter-only plan) — bind it with "
+        "BindSourceModel before training");
   const bool explicit_steps = steps != 0;
   if (auto r = ValidateDataset(data); !r) return std::unexpected(r.error());
   if (options.validation)
@@ -1199,6 +1229,10 @@ void UpdateEngine::SnapshotBest(uint64_t step, float loss, float accuracy) {
 
 std::expected<void, std::string> UpdateEngine::RunMerge() {
   if (!arena_) return diag::executing::Error("no plan loaded");
+  if (merge_reads_source_ && !source_.data)
+    return diag::executing::Error(
+        "this plan's merge program reads the source model file — bind it "
+        "with BindSourceModel before merging");
   // Re-seal the plan before its frozen weights are merged and committed.
   // The blob is read-only by contract but lives in ordinary memory — in a
   // packed Apple package on writable pages, so the GPU can share them —

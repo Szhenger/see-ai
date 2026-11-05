@@ -127,7 +127,19 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // rejected below v20 and in the eval program; the CPU always runs the
 // exact family, and a package carries the bit only beside a numerics
 // certificate that priced the attn.*.tiled sites. No header change.
-inline constexpr uint32_t kSeeuVersion = 20;
+// v21: the adapter-only plan (F6 #134) — source refs (bit 62) are admitted
+// in every program, not the eval program alone: the compiler's
+// --adapter-only binds every frozen weight (the embedding table too) to its
+// f32 payload in the model file the plan is bound to by hash, and the plan
+// carries no rodata — instructions, the adapters' initial image and the
+// emit table, at adapter scale. Reads only, as before; the validator still
+// refuses a source ref as a destination, the header's I/O slots refuse
+// one, and BindSourceModel checks the file covers every program's extent.
+// No header change; rejected below v21 outside the eval program.
+inline constexpr uint32_t kSeeuVersion = 21;
+
+// The version that admitted source refs in every program (adapter-only).
+inline constexpr uint32_t kSeeuSourceWeightsVersion = 21;
 
 // The version that admitted kFlagRelaxed on the tiled attention opcodes.
 inline constexpr uint32_t kSeeuRelaxedAttentionVersion = 20;

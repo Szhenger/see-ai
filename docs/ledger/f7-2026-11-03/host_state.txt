@@ -1,0 +1,30 @@
+Wed Nov  4 15:02:16 UTC 2026
+--- pmset -g batt
+Now drawing from 'Battery Power'
+ -InternalBattery-0 (id=35520611)	92%; discharging; 8:21 remaining present: true
+--- pmset -g (the settings in force for the current power source)
+System-wide power settings:
+Currently in use:
+ standby              1
+ Sleep On Power Button 1
+ hibernatefile        /var/vm/sleepimage
+ powernap             1
+ networkoversleep     0
+ disksleep            10
+ sleep                1 (sleep prevented by powerd, caffeinate, runningboardd, runningboardd, runningboardd, sharingd, coreaudiod, Safari)
+ hibernatemode        3
+ ttyskeepawake        1
+ displaysleep         2
+ tcpkeepalive         1
+ lowpowermode         1
+ womp                 0
+--- pmset -g therm
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+--- uptime
+10:02  up 9 days, 14:20, 2 users, load averages: 1.69 1.48 1.86
+--- sw_vers
+ProductName:		macOS
+ProductVersion:		27.0.1
+BuildVersion:		26A434

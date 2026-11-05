@@ -121,6 +121,16 @@ step 272.6–274.1 → 238.1–242.8 ms, the step 278.8 → 245.5 ms, 1,837 →
 38 µs: latency-bound at 512 simdgroups), step 2, step 4, the relaxed
 row.
 
+## Status 2026-11-03
+
+The `nt_rows` floor landed: `k_gemm_nt_rows_tgb` (`docs/benchmarks.md`,
+"The `nt_rows` sites off their floor: the staged-B rows kernel"),
+dispatched for a transposed B at N ≤ 16 — the adapter backward's `dt`
+sites, where the unstaged form issued nine loads per eight multiply-adds
+and ran at 31–34 GB/s. Measured in one session against the unstaged kernel on the 10-24 exact plan: 36.0 → 18.5, 89.1 → 44.5 and 2,831.6 → 1,286.6 µs per site, 248 → 233 ms per step, the committed model the 10-24 package's (`ab2504dc…`) under both; the step's level is the host's — on battery with Low Power Mode on, the 10-24 package's own binary ran 35 % slower than on 10-24 — and against that binary, bracketing it back to back, the staged kernel's 300 steps take 2.7–4.1 % less wall. Steps 2 (the batched A-projections,
+which need strided operands in the ISA) and 4 (`B(Ax)` folded into the
+base GEMM under the certificate) stay open and are this issue's remainder.
+
 ## Acceptance
 
 - [x] Train-only Metal profile of SmolLM-135M with the LoRA family's share
@@ -133,8 +143,14 @@ row.
 - [x] Design item 3's target, ≥ 100 GB/s effective on `512x1536x8+add` —
   44 µs for the 6 MB of C and D the row moves (the doc's own figure: 92 µs
   was 65 GB/s), so about 137 GB/s.
-- [ ] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
-  simdgroups) — the family's next floor.
+- [x] The `nt_rows` sites (`dt = dC@Bᵀ`, 42 → 38 µs, latency-bound at 512
+  simdgroups) — 2026-11-03, `k_gemm_nt_rows_tgb`: the `[N × 32 k]` block
+  of the transposed B staged through threadgroup memory and read as
+  float4s (four loads per eight multiply-adds instead of nine), the
+  lane-to-k assignment, the product order, the per-column scale's place
+  and the shuffle tree unchanged. Same session, both kernels: `512x8x576` 36.0 → 18.5 µs, `512x8x1536` 89.1 → 44.5 µs, the head 2,831.6 → 1,286.6 µs; the step 248 → 233 ms. The 10-24 exact SmolLM-135M
+  plan recompiled on this tree commits `ab2504dc…` — the 10-24 package's own bytes — under both kernels after the 10-24 recipe
+  (`docs/benchmarks.md`, "The `nt_rows` sites off their floor").
 - [ ] Step 2, the batched A-projections — not started; needs strided
   operands in the ISA.
 - [ ] Step 4, B(Ax) folded into the base GEMM, certified — not started.

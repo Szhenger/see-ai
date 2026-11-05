@@ -419,10 +419,15 @@ class UpdateEngine {
   std::unique_ptr<ExecutorBackend> backend_;
   BackendKind backend_kind_ = BackendKind::kCpu;
   std::string backend_note_;
-  // The bound source model (v17): a read-only mmap of the file, and the
-  // byte extent the eval program's source refs need from it (0 = none).
+  // The bound source model (v17): a read-only mmap of the file, the byte
+  // extent the programs' source refs need from it (0 = none), and which
+  // programs besides the eval one read it — the train / step programs and
+  // the merge program of an adapter-only plan (v21) — so their entry
+  // points refuse to run unbound the way Evaluate does.
   Mapping source_;
   uint64_t source_required_ = 0;
+  bool train_reads_source_ = false;
+  bool merge_reads_source_ = false;
   uint64_t step_ = 0;                     // 1-indexed AdamW timestep
   uint64_t horizon_ = 0;                  // run LR horizon; 0 = plan default
 

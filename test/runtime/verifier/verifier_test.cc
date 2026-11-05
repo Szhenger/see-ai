@@ -334,6 +334,15 @@ TEST(PlanValidator, EmbedProvesBuffersAndDemandsRodataTable) {
   // the opcode, an out-of-bounds output, and an output aliasing the tokens.
   emb.in[1] = up::MakeArenaRef(256);
   EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata, up::kSeeuVersion));
+  // v21 (F6 #134): the source model's own f32 table, where source refs are
+  // admitted — an adapter-only plan — and never below v21 or where they
+  // are not.
+  emb.in[1] = up::MakeSourceRef(4096);
+  EXPECT_OK(ValidateInstruction(emb, kArena, kRodata, up::kSeeuVersion,
+                                /*allow_source=*/true));
+  EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata, up::kSeeuVersion));
+  EXPECT_ERROR(ValidateInstruction(emb, kArena, kRodata,
+                                   up::kSeeuSourceWeightsVersion - 1, true));
   emb.in[1] = up::MakeRodataRef(0);
   EXPECT_ERROR_CONTAINS(
       ValidateInstruction(emb, kArena, kRodata, up::kSeeuTokenVersion - 1),

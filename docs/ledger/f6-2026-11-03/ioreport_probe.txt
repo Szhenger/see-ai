@@ -1,0 +1,4 @@
+busy 30014.7
+uid=501 channels=169 (1 s delta)
+  Energy Model / GPU Energy = 8001443 nJ (format 1)
+  168 channel(s) read zero over the busy second (every CPU, DRAM and ANE channel among them)

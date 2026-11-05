@@ -448,6 +448,41 @@ class HfImportTest(unittest.TestCase):
             em.read_safetensors(os.path.join(d, "x.safetensors"))["c"],
             exact["c"])
 
+    def test_the_lazy_import_writes_the_eager_bytes(self):
+        # --hf maps the safetensors and builds each converted weight only
+        # while the SMF writer reaches it (so a 1.5B export holds about one
+        # weight at a time): the file must be the eager conversion's byte
+        # for byte — every dtype, the Qwen2 biases, both head layouts — and
+        # the parity forward must read the deferred weights as arrays.
+        for model_type, tied, dtype in (("llama", True, "BF16"),
+                                        ("qwen2", False, "F32"),
+                                        ("llama", False, "F16")):
+            d = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, d, True)
+            cfg = hf_tiny_config(model_type=model_type, tied=tied)
+            write_hf_dir(d, cfg, hf_tiny_tensors(cfg, 5), dtype)
+            lazy_path = os.path.join(d, "lazy.smf")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                conv = em.export_hf_decoder(d, lazy_path, seq_len=8)
+                config, tensors = em.load_hf_checkpoint(d)
+                eager = em.hf_llama_to_seeml(config, tensors, seq_len=8)
+                eager_path = os.path.join(d, "eager.smf")
+                em.export_token_decoder_smf(
+                    eager["embedding"], eager["blocks"], eager["head"],
+                    eager_path, seq_len=8, num_heads=eager["num_heads"],
+                    rope_base=eager["rope_base"], norm_eps=eager["norm_eps"])
+            with open(lazy_path, "rb") as a, open(eager_path, "rb") as b:
+                self.assertEqual(a.read(), b.read(), (model_type, tied, dtype))
+            self.assertIsInstance(conv["blocks"][0]["wq"], em._Deferred)
+            self.assertIsInstance(conv["head"]["w_head"], em._Deferred)
+            tokens = np.arange(16).reshape(2, 8) % cfg["vocab_size"]
+            logits = [em.reference_decoder_logits(
+                c["embedding"], c["blocks"], c["head"], c["num_heads"],
+                c["rope_base"], tokens, norm_eps=c["norm_eps"])
+                for c in (conv, eager)]
+            np.testing.assert_array_equal(logits[0], logits[1])
+
     def _check_mapping(self, cfg, seed):
         t = hf_tiny_tensors(cfg, seed)
         conv = em.hf_llama_to_seeml(cfg, t, seq_len=8)

@@ -1052,6 +1052,90 @@ TEST(MetalBackend, ActivationsStayFiniteAtLargeMagnitude) {
   std::free(arena);
 }
 
+TEST(MetalBackend, TheSourceModelStaysOnTheCpuBeyondTheWorkingSet) {
+  if (Skip()) return;
+  // F5 (#133), the 1.5B rung: a source model the GPU cannot hold beside the
+  // arena and rodata stays a CPU mapping — the instructions reading it (the
+  // eval program's source-weight GEMMs) run on the CPU sub-backend, the
+  // rest on the GPU — and the device line says so. Within the working set
+  // the source is wrapped for the GPU as before. Either way the product
+  // agrees with the CPU backend's: bit for bit when it ran there.
+  constexpr uint32_t M = 8, N = 16, K = 32;
+  constexpr size_t kPage = 16384;
+  std::vector<float> arena(M * K + M * N, 0.0f);
+  std::mt19937_64 rng(2026);
+  std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+  for (uint32_t i = 0; i < M * K; ++i) arena[i] = unit(rng);
+  // The source model: one page, page-aligned, as mmap hands the engine one.
+  float* source = static_cast<float*>(std::aligned_alloc(kPage, kPage));
+  ASSERT_TRUE(source != nullptr);
+  std::memset(source, 0, kPage);
+  for (uint32_t i = 0; i < K * N; ++i) source[i] = unit(rng);
+  UpdateInstruction gemm;
+  gemm.opcode = static_cast<uint16_t>(OpCode::kGemmNN);
+  gemm.in[0] = MakeArenaRef(0);
+  gemm.in[1] = MakeSourceRef(0);
+  gemm.in[2] = MakeArenaRef(M * K * sizeof(float));
+  gemm.out[0] = M;
+  gemm.out[1] = N;
+  gemm.out[2] = K;
+  struct Out {
+    std::vector<float> c;
+    std::string device;
+  };
+  auto run = [&](bool metal,
+                 const char* working_set) -> std::expected<Out, std::string> {
+    if (working_set)
+      setenv("SEEML_METAL_WORKING_SET", working_set, 1);
+    else
+      unsetenv("SEEML_METAL_WORKING_SET");
+    auto backend =
+        metal ? CreateMetalBackend()
+              : std::expected<std::unique_ptr<ExecutorBackend>, std::string>(
+                    CreateCpuBackend());
+    unsetenv("SEEML_METAL_WORKING_SET");
+    if (!backend) return std::unexpected(backend.error());
+    uint8_t* mem = static_cast<uint8_t*>(std::aligned_alloc(kPage, kPage));
+    if (!mem) return std::unexpected("aligned_alloc failed");
+    std::memset(mem, 0, kPage);
+    std::memcpy(mem, arena.data(), arena.size() * sizeof(float));
+    auto fail = [&](std::string why) {
+      std::free(mem);
+      return std::unexpected(std::move(why));
+    };
+    if (auto r = (*backend)->Bind(mem, kPage, nullptr, 0, 0); !r)
+      return fail(r.error());
+    if (auto r = (*backend)->BindSource(
+            reinterpret_cast<const uint8_t*>(source), K * N * sizeof(float));
+        !r)
+      return fail(r.error());
+    StepParams params;
+    if (auto r = (*backend)->Execute(gemm, params); !r) return fail(r.error());
+    if (auto r = (*backend)->Flush(); !r) return fail(r.error());
+    Out out;
+    out.c.resize(M * N);
+    std::memcpy(out.c.data(), mem + M * K * sizeof(float),
+                M * N * sizeof(float));
+    out.device = (*backend)->device();
+    backend->reset();
+    std::free(mem);
+    return out;
+  };
+  ASSERT_OK_AND_ASSIGN(Out cpu, run(false, nullptr));
+  // A working set of 20,000 bytes holds the one-page arena (16,384) but not
+  // the source page beside it: the source stays on the CPU.
+  ASSERT_OK_AND_ASSIGN(Out diverted, run(true, "20000"));
+  EXPECT_TRUE(diverted.device.find("source model on the CPU") !=
+              std::string::npos);
+  EXPECT_EQ(std::memcmp(diverted.c.data(), cpu.c.data(), M * N * sizeof(float)),
+            0);
+  ASSERT_OK_AND_ASSIGN(Out resident, run(true, nullptr));
+  EXPECT_TRUE(resident.device.find("source model on the CPU") ==
+              std::string::npos);
+  ExpectClose("source gemm", resident.c, cpu.c, 1e-5, 1e-6);
+  std::free(source);
+}
+
 TEST(MetalBackend, MergeDeltasMatchCpuAtTolerance) {
   if (Skip()) return;
   SmfModel m = MakeMlp(16, 32, 4, 43);

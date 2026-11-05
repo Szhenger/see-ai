@@ -21,6 +21,14 @@ on a token model compiles and every dataset is rejected (N19); the "lower
 bound" footprint over-estimates and refuses compiles that fit (N29) and
 ignores `--bf16-base` (F03); a NaN weight passes ingest and is later cast to
 int8 (F12/F34). Design: [`docs/next-project/seeai.md`](https://github.com/Szhenger/see-ml/blob/main/docs/next-project/seeai.md) §3.
+N29 and F03 landed ahead of the restructure, on 2026-11-03 under F5
+(#133): the accountant's bound counts the forward values the backward
+reads (the VJP rules decide which, the adapted targets decide which
+products) and the base at its stored width, drops rematerialization's
+share where `--remat` may run, and the compile report states the
+estimate, the exact footprint and their ratio (`docs/compiler.md`, "The
+step-0 bound counts what the backward reads"). What stays for S1 is the
+home: the accountant's screen and the ratio printed on it.
 
 ## Design
 

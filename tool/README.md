@@ -116,7 +116,10 @@ LoRA (mlx_lm's own trainer, bf16 or true f32) runs on the same host, model,
 records, split, adapted set and tokens per step as an emitted SeeAI package,
 each row a JSON in `seeml-bench`'s units (`step_ms`, `tokens_per_s`,
 `it_per_s`, validation loss and accuracy before and after, peak memory,
-warm-up), and `matrix` runs a plan of rows strictly serially and then
+warm-up, and since 2026-11-03 an `energy` object — joules per step and
+per token from the SoC's counters, `tool/seeml/energy.py`, whole-SoC and
+GPU-scoped on an unprivileged macOS 26, `unavailable` with the reason
+elsewhere; F6 #134), and `matrix` runs a plan of rows strictly serially and then
 applies the parity checks — the same records by hash, the same tokens per
 step, the adapter parameter count every row must show (a wrong rank is
 refused by name), and the step-0 validation loss the f32 / bf16 rows must
@@ -165,8 +168,9 @@ exact) against its own tolerance (`--max-relaxed-gemm-error`, 2⁻⁷) — and
 that never saw that site; the compiler refuses `--build` for a relaxed
 plan, and the package's own `build.sh` refuses, before its first
 compile line, without a granted certificate over its exact plan bytes;
-`--source model.smf` binds a v17 plan's eval program to the model file
-it scores. The relaxed GEMMs are the first member of the relaxed opcode
+`--source model.smf` binds the model file to the programs that read it
+(a v17 plan's eval program; every program of a v21 adapter-only plan).
+The relaxed GEMMs are the first member of the relaxed opcode
 family and the tiled attention instructions (plan v20, F3 #131) the
 second, keyed under their own `attn.*.tiled` sites. Which sites a
 certificate enforces is its plan's (F2 #130, 2026-10-30): a plan that

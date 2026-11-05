@@ -128,6 +128,24 @@ struct UpdateConfig {
   // the memory gate applies (memory_budget_bytes, or the host's memory);
   // kOff never does. Reported in the compile report as `remat`.
   RematKind remat = RematKind::kAuto;
+  // The adapter-only package (F6 #134, plan v21): every frozen weight is a
+  // source ref — read at run time from the model file the plan is bound to
+  // by hash, in every program — and the plan carries no rodata: it ships
+  // the instructions, the adapters' initial image and the emit table, at
+  // adapter scale rather than model scale. The device commits onto its own
+  // copy of the model. An f32 base only (the narrow bases are copies the
+  // plan would have to carry), exact arithmetic (the relaxed kernels read
+  // rodata weights), and a model loaded from a file (the offsets and the
+  // hash that binds them).
+  bool adapter_only = false;
+  // Where the eval program reads the frozen weights of a narrow-base plan
+  // compiled from a file (E12, plan v17): the source model's f32 — the
+  // function that ships, scored exactly — unless this asks for the plan's
+  // own narrow copies, a proxy for a device that cannot hold the f32 file
+  // beside the arena (the 1.5B rung on 16 GB, F5 #133; a phone). The
+  // report says which (`validation_scores`); an adapter-only plan has no
+  // weights of its own and refuses the request.
+  bool eval_on_plan = false;
   // The bitwise-safe kernel batch (E3, plan v12), each exposed for the same
   // reason: so a compilation with and without it can be compared
   // bit-for-bit. rope_table hoists the RoPE angles into one device-built

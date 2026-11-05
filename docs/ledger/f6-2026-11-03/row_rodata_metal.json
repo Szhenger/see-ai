@@ -1,0 +1,284 @@
+{
+ "schema": 1,
+ "system": "SeeML",
+ "backend": "metal",
+ "precision": "f32",
+ "host": {
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python": "3.14.7",
+  "seeml_threads": null,
+  "cpu": "Apple M5"
+ },
+ "package": "out/f6-2026-11-03/pkg_rodata",
+ "seeml_version": "1.2.4",
+ "plan_version": 21,
+ "plan_hash": "73834a871d469570",
+ "precision_flag": "f32",
+ "relaxed_gemms": 0,
+ "relaxed_attention": 0,
+ "host_key": "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4",
+ "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+ "threads": 10,
+ "config": {
+  "steps": 20,
+  "tokens_per_step": 512,
+  "lo": 5,
+  "hi": 15,
+  "repeats": 1
+ },
+ "records_digest": "9a2f2c1396502ce0",
+ "adapters": 211,
+ "adapter_params": 3024384,
+ "arena_bytes": 1576898688,
+ "plan_bytes": 740982784,
+ "step_ms": 223.99999999999983,
+ "step_ms_lohi": -476.0,
+ "step_ms_min": -476.0,
+ "step_ms_max": -476.0,
+ "tokens_per_s": 2285.714285714287,
+ "it_per_s": 4.464285714285717,
+ "tokens_per_step": 512,
+ "intercept_s": 15.129999999999999,
+ "val_loss": [
+  4.574419,
+  4.4790378
+ ],
+ "val_acc": [
+  0.28109375,
+  0.2853125
+ ],
+ "train_loss": [
+  4.3911738,
+  4.4467278
+ ],
+ "verdict": "accepted",
+ "committed": true,
+ "lifecycle": {
+  "load_s": 0.7294,
+  "data_s": 0.0003,
+  "train_s": 7.3887,
+  "eval_s": 2.9101,
+  "evaluations": 2,
+  "merge_s": 0.1311,
+  "commit_s": 0.7662,
+  "wall_s": 9.0491
+ },
+ "relaxed_executions": 0,
+ "committed_sha256": "eb4f7b752d8f27f8f9ad64a66799f6d24285d4e6d06f29df9ad06253f99039c5",
+ "suspect": true,
+ "wall_quality_s": 9.11,
+ "peak_rss_bytes": 2349301760,
+ "energy": {
+  "attribution": "whole-SoC",
+  "available": true,
+  "compute": "gpu",
+  "scope": [
+   "GPU Energy"
+  ],
+  "burst": [],
+  "joules": {
+   "GPU Energy": 50.02040641
+  },
+  "reason": null,
+  "j_per_step": 1.5244240975,
+  "j_per_token": 0.0029773908154296876
+ },
+ "runs": [
+  {
+   "steps": 5,
+   "exit": 0,
+   "wall_s": 12.75,
+   "peak_rss_bytes": 2349285376,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 740982784
+    },
+    "steps": 5,
+    "train_loss": [
+     4.6286626,
+     4.8143625
+    ],
+    "validation_loss": [
+     4.574419,
+     4.5512619
+    ],
+    "validation_scores": "plan",
+    "validation_accuracy": [
+     0.28109375,
+     0.28265625
+    ],
+    "lifecycle": {
+     "load_s": 1.206,
+     "data_s": 0.0053,
+     "train_s": 4.1342,
+     "eval_s": 3.0119,
+     "evaluations": 2,
+     "merge_s": 0.1545,
+     "commit_s": 0.9955,
+     "wall_s": 6.5366
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "9eb79fdaa2c447c609ff6ec4556c5e14a327b80f536932d97ab1d59ed47e296a",
+   "energy": {
+    "available": true,
+    "attribution": "whole-SoC",
+    "scope": [
+     "GPU Energy"
+    ],
+    "burst": [],
+    "joules": {
+     "GPU Energy": 26.934154389000003
+    },
+    "reason": null
+   },
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  },
+  {
+   "steps": 15,
+   "exit": 0,
+   "wall_s": 7.99,
+   "peak_rss_bytes": 2349301760,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 740982784
+    },
+    "steps": 15,
+    "train_loss": [
+     4.3542151,
+     4.6215954
+    ],
+    "validation_loss": [
+     4.574419,
+     4.5027027
+    ],
+    "validation_scores": "plan",
+    "validation_accuracy": [
+     0.28109375,
+     0.28453124
+    ],
+    "lifecycle": {
+     "load_s": 0.7182,
+     "data_s": 0.0002,
+     "train_s": 6.2228,
+     "eval_s": 2.8716,
+     "evaluations": 2,
+     "merge_s": 0.1305,
+     "commit_s": 0.8189,
+     "wall_s": 7.925
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "ec600bfdc60de2c988d7b6c3f4f81e72a563af68df53f03274640cab55d48841",
+   "energy": {
+    "available": true,
+    "attribution": "whole-SoC",
+    "scope": [
+     "GPU Energy"
+    ],
+    "burst": [],
+    "joules": {
+     "GPU Energy": 42.178395364000004
+    },
+    "reason": null
+   },
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  },
+  {
+   "steps": 20,
+   "exit": 0,
+   "wall_s": 9.11,
+   "peak_rss_bytes": 2349285376,
+   "report": {
+    "schema": 3,
+    "backend": "metal",
+    "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops",
+    "relaxed_executions": 0,
+    "plan": {
+     "source": "embedded",
+     "path": null,
+     "bytes": 740982784
+    },
+    "steps": 20,
+    "train_loss": [
+     4.3911738,
+     4.4467278
+    ],
+    "validation_loss": [
+     4.574419,
+     4.4790378
+    ],
+    "validation_scores": "plan",
+    "validation_accuracy": [
+     0.28109375,
+     0.2853125
+    ],
+    "lifecycle": {
+     "load_s": 0.7294,
+     "data_s": 0.0003,
+     "train_s": 7.3887,
+     "eval_s": 2.9101,
+     "evaluations": 2,
+     "merge_s": 0.1311,
+     "commit_s": 0.7662,
+     "wall_s": 9.0491
+    },
+    "gate": {
+     "min_improvement": 0,
+     "require_accuracy": false,
+     "loss_ok": true,
+     "accuracy_measured": true,
+     "accuracy_ok": true,
+     "forced": false
+    },
+    "verdict": "accepted",
+    "committed": true
+   },
+   "committed_sha256": "eb4f7b752d8f27f8f9ad64a66799f6d24285d4e6d06f29df9ad06253f99039c5",
+   "energy": {
+    "available": true,
+    "attribution": "whole-SoC",
+    "scope": [
+     "GPU Energy"
+    ],
+    "burst": [],
+    "joules": {
+     "GPU Energy": 50.02040641
+    },
+    "reason": null
+   },
+   "device": "Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops"
+  }
+ ]
+}

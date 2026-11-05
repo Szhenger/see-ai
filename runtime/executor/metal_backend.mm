@@ -110,6 +110,11 @@ enum Pipe : int {
   kPGemmNNColsGTg, kPGemmNTColsGTg, kPGemmTNColsGTg, kPGemmAccColsGTg,
   kPGemmNNQ8ColsGTg, kPGemmNTQ8ColsGTg, kPGemmNNBF16ColsGTg,
   kPGemmNTBF16ColsGTg,
+  // F7 #138, the nt_rows floor: _rows_tgb (N <= 16, B transposed: the
+  // [N x 32 k] block of B through threadgroup memory, read as float4s).
+  kPGemmNNRowsTgB, kPGemmNTRowsTgB, kPGemmTNRowsTgB, kPGemmAccRowsTgB,
+  kPGemmNNQ8RowsTgB, kPGemmNTQ8RowsTgB, kPGemmNNBF16RowsTgB,
+  kPGemmNTBF16RowsTgB,
   kPGemmSplitKFin,
   kPAddEW, kPMulEW, kPAddBias, kPReluFwd, kPReluBwd, kPGeluFwd, kPGeluBwd,
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
@@ -121,6 +126,7 @@ enum Pipe : int {
   kPAttnFwdTiled, kPAttnDQTiled, kPAttnDKTiled, kPAttnDVTiled,
   kPAttnFwdTiledBlk, kPAttnDQTiledBlk, kPAttnDKTiledBlk, kPAttnDVTiledBlk,
   kPAttnFwdTiledMma, kPAttnDQTiledMma, kPAttnDKTiledMma, kPAttnDVTiledMma,
+  kPSelfTest,
   kPipeCount
 };
 const char* const kPipeNames[kPipeCount] = {
@@ -144,6 +150,9 @@ const char* const kPipeNames[kPipeCount] = {
     "k_gemm_nn_colsg_tg", "k_gemm_nt_colsg_tg", "k_gemm_tn_colsg_tg",
     "k_gemm_acc_colsg_tg", "k_gemm_nn_q8_colsg_tg", "k_gemm_nt_q8_colsg_tg",
     "k_gemm_nn_bf16_colsg_tg", "k_gemm_nt_bf16_colsg_tg",
+    "k_gemm_nn_rows_tgb", "k_gemm_nt_rows_tgb", "k_gemm_tn_rows_tgb",
+    "k_gemm_acc_rows_tgb", "k_gemm_nn_q8_rows_tgb", "k_gemm_nt_q8_rows_tgb",
+    "k_gemm_nn_bf16_rows_tgb", "k_gemm_nt_bf16_rows_tgb",
     "k_gemm_splitk_fin", "k_add_ew", "k_mul_ew", "k_add_bias", "k_relu_fwd",
     "k_relu_bwd", "k_gelu_fwd", "k_gelu_bwd", "k_silu_fwd", "k_silu_bwd",
     "k_scale", "k_fused_map", "k_fill", "k_copy", "k_accumulate", "k_sgd", "k_adamw",
@@ -159,7 +168,7 @@ const char* const kPipeNames[kPipeCount] = {
     "k_attn_fwd_tiled_blk", "k_attn_dq_tiled_blk", "k_attn_dk_tiled_blk",
     "k_attn_dv_tiled_blk",
     "k_attn_fwd_tiled_mma", "k_attn_dq_tiled_mma", "k_attn_dk_tiled_mma",
-    "k_attn_dv_tiled_mma"};
+    "k_attn_dv_tiled_mma", "k_selftest"};
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -184,6 +193,7 @@ constexpr int kGemmCols = kPGemmNNCols - kPGemmNN;
 constexpr int kGemmColsG = kPGemmNNColsG - kPGemmNN;
 constexpr int kGemmRowsTg = kPGemmNNRowsTg - kPGemmNN;
 constexpr int kGemmColsGTg = kPGemmNNColsGTg - kPGemmNN;
+constexpr int kGemmRowsTgB = kPGemmNNRowsTgB - kPGemmNN;
 constexpr uint32_t kGemmStagedGroup = 256;  // 8 simdgroups: 8 rows or columns
 // M <= 16: below this N a simdgroup per column (lanes striding K) beats a
 // thread per column; above it the per-thread form's coalesced B reads win.
@@ -251,6 +261,11 @@ bool PagesWritable(const void* ptr, uint64_t len) {
 bool Overlaps(const Extent& a, const Extent& b) {
   return a.off < b.off + b.bytes && b.off < a.off + a.bytes;
 }
+// A diagnostic switch in the environment: set to anything but "" or "0".
+bool EnvFlag(const char* name) {
+  const char* v = std::getenv(name);
+  return v != nullptr && *v != '\0' && *v != '0';
+}
 
 class MetalBackend final : public ExecutorBackend {
  public:
@@ -270,6 +285,10 @@ class MetalBackend final : public ExecutorBackend {
     s += relaxed_ ? ", relaxed GEMMs on tensor ops"
                   : ", relaxed GEMMs on the exact kernels (" +
                         relaxed_reason_ + ")";
+    if (source_on_cpu_)
+      s += ", source model on the CPU (" + std::to_string(source_bytes_) +
+           " B; with the arena and the rodata it exceeds the GPU working "
+           "set of " + std::to_string(working_set_limit_) + " B)";
     return s;
   }
 
@@ -282,6 +301,21 @@ class MetalBackend final : public ExecutorBackend {
   std::expected<void, std::string> Execute(const up::UpdateInstruction& ins,
                                            const StepParams& params) override;
   std::expected<void, std::string> Flush() override;
+  std::expected<void, std::string> SelfTest();
+  void BeginRange(std::span<const up::UpdateInstruction> range) override {
+    range_on_cpu_ = false;
+    if (!source_on_cpu_) return;
+    for (const up::UpdateInstruction& ins : range)
+      if (const InstructionExtents* ex = ExtentsOf(ins); ex && ReadsSource(*ex)) {
+        range_on_cpu_ = true;
+        return;
+      }
+  }
+  void EndRange() override { range_on_cpu_ = false; }
+  static bool ReadsSource(const InstructionExtents& ex) {
+    return std::any_of(ex.ranges, ex.ranges + ex.count,
+                       [](const OperandExtent& r) { return r.source; });
+  }
   // Its own tensor-op GEMMs and matrix-tile tiled attention dispatches
   // (v20) plus the relaxed GEMMs it hands the CPU
   // backend (a GEMM whose dimensions overflow 32 bits, DimsFit32), which
@@ -338,6 +372,28 @@ class MetalBackend final : public ExecutorBackend {
   // zero-copy when the mapping is page-aligned (the engine mmaps it), else
   // copied once. Bound at buffer index 5 on every encoder.
   id<MTLBuffer> source_buf_ = nil;
+  // F5 #133, the 1.5B rung: beyond the device's working set the GPU
+  // completes command buffers without running them (arena 7.7 GB + rodata
+  // 2.6 GB + the 7.5 GB f32 source on a 16 GB M5: every loss read zero and
+  // every buffer reported Completed). So Bind refuses an arena or an arena
+  // plus rodata the GPU cannot hold, BindSource keeps the source model a
+  // CPU mapping when it would not fit beside them — its readers, the eval
+  // program's source-weight GEMMs, run on cpu_ — and a self-test at Bind
+  // proves one dispatch executes. SEEML_METAL_WORKING_SET (bytes) overrides
+  // the device's recommendedMaxWorkingSetSize, for tests.
+  bool source_on_cpu_ = false;
+  uint64_t source_bytes_ = 0;
+  uint64_t working_set_limit_ = 0;
+  // Set by BeginRange while source_on_cpu_: the range being executed reads
+  // the source model, so every instruction of it runs on cpu_ — one
+  // hand-off per range, not a drain around each source-weight GEMM (which
+  // made the 1.5B rung's evaluation eight times the CPU backend's).
+  bool range_on_cpu_ = false;
+  // Whether this GPU reports command-buffer execution times (learned from
+  // the self-test): where it does, a buffer that completes with none is
+  // one the device declined, and Flush refuses it.
+  bool gpu_timestamps_ = false;
+  double last_gpu_start_ = 0, last_gpu_end_ = 0;
   uint8_t* arena_ = nullptr;
   uint64_t arena_bytes_ = 0;
   const uint8_t* rodata_ = nullptr;
@@ -354,9 +410,7 @@ class MetalBackend final : public ExecutorBackend {
   // GPU time (GPUStartTime..GPUEndTime) accumulated per kernel and shape,
   // CPU-resident instructions by wall clock; a table on stderr at
   // destruction. Diagnostic only — it serializes the stream.
-  const bool profile_ = std::getenv("SEEML_METAL_PROFILE") != nullptr &&
-                        *std::getenv("SEEML_METAL_PROFILE") != '\0' &&
-                        *std::getenv("SEEML_METAL_PROFILE") != '0';
+  const bool profile_ = EnvFlag("SEEML_METAL_PROFILE");
   struct ProfRow { double seconds = 0; uint64_t count = 0; };
   std::map<std::string, ProfRow> prof_;
   std::string prof_pipes_;  // every kernel the current instruction dispatched
@@ -374,9 +428,11 @@ class MetalBackend final : public ExecutorBackend {
   // completion, and the dispatch count — the time outside kernels is the
   // difference, measured without serializing the stream the way the
   // profile does. A table on stderr at destruction. Diagnostic only.
-  const bool spans_ = std::getenv("SEEML_METAL_SPANS") != nullptr &&
-                      *std::getenv("SEEML_METAL_SPANS") != '\0' &&
-                      *std::getenv("SEEML_METAL_SPANS") != '0';
+  // SEEML_METAL_UNSTAGED_ROWS=1 keeps the transposed-B rows sites on the
+  // unstaged kernel: the same-session control for the staged form's bits
+  // and time (F7 #138), diagnostic only.
+  const bool rows_tgb_ = !EnvFlag("SEEML_METAL_UNSTAGED_ROWS");
+  const bool spans_ = EnvFlag("SEEML_METAL_SPANS");
   struct SpanRow { uint64_t dispatches; double gpu_seconds, wall_seconds; };
   std::vector<SpanRow> spans_rows_;
   std::chrono::steady_clock::time_point cb_t0_;
@@ -667,6 +723,14 @@ MetalBackend::Create() {
     if (!be->scratch_) return std::unexpected("scratch allocation failed");
     be->scratch_floats_ = kScratchFloats;
     be->cpu_ = CreateCpuBackend();
+    // Zero — a device that reports no working set, or an override that
+    // does not parse — means unknown: the Bind and BindSource checks stand
+    // down rather than refuse every arena and divert every source.
+    be->working_set_limit_ = be->device_.recommendedMaxWorkingSetSize;
+    if (const char* ws = std::getenv("SEEML_METAL_WORKING_SET");
+        ws && *ws != '\0')
+      if (const uint64_t v = std::strtoull(ws, nullptr, 10); v != 0)
+        be->working_set_limit_ = v;
     return std::unique_ptr<ExecutorBackend>(std::move(be));
   }
 }
@@ -682,6 +746,17 @@ std::expected<void, std::string> MetalBackend::Bind(
         arena_bytes % page != 0)
       return std::unexpected("arena is not page-aligned (" +
                              std::to_string(page) + "-byte pages)");
+    // The arena is one buffer, and the GPU holds it with the rodata for
+    // every step: both limits are refusals with the numbers, never a run
+    // that computes nothing (see source_on_cpu_).
+    const uint64_t largest = device_.maxBufferLength;
+    if (arena_bytes > largest)
+      return std::unexpected(
+          "the arena (" + std::to_string(arena_bytes) +
+          " bytes) exceeds this GPU's largest buffer (" +
+          std::to_string(largest) +
+          " bytes): run on the CPU, or compile a smaller plan (a smaller "
+          "micro-batch under --grad-accum, --remat on, --attention tiled)");
     id<MTLBuffer> arena_buf =
         [device_ newBufferWithBytesNoCopy:arena
                                    length:arena_bytes
@@ -711,6 +786,16 @@ std::expected<void, std::string> MetalBackend::Bind(
           return std::unexpected("cannot allocate the rodata buffer");
       }
     }
+    const uint64_t resident =
+        arena_bytes + (rodata_buf ? static_cast<uint64_t>(rodata_buf.length) : 0);
+    if (working_set_limit_ != 0 && resident > working_set_limit_)
+      return std::unexpected(
+          "the arena (" + std::to_string(arena_bytes) + " bytes) plus the "
+          "rodata (" + std::to_string(resident - arena_bytes) +
+          " bytes) exceed this GPU's working set (" +
+          std::to_string(working_set_limit_) +
+          " bytes): run on the CPU, or compile a smaller plan (a smaller "
+          "micro-batch under --grad-accum, --remat on, --attention tiled)");
     if (auto r = cpu_->Bind(arena, arena_bytes, rodata, rodata_bytes,
                             rodata_mapped_bytes);
         !r)
@@ -725,6 +810,28 @@ std::expected<void, std::string> MetalBackend::Bind(
     extents_.clear();
     pending_reads_.clear();
     pending_writes_.clear();
+    return SelfTest();
+  }
+}
+
+std::expected<void, std::string> MetalBackend::SelfTest() {
+  // One dispatch that writes the scratch buffer, read back: the device runs
+  // what it completes. It also learns whether this GPU reports execution
+  // times, which lets Flush refuse a later buffer that completes with none.
+  @autoreleasepool {
+    auto* s = static_cast<float*>(scratch_.contents);
+    s[0] = 0.0f;
+    gpu_timestamps_ = false;
+    if (auto r = EnsureEncoder(); !r) return r;
+    KArgs a;
+    a.f[0] = 1.0f;
+    Dispatch(kPSelfTest, a, 1, 1);
+    if (auto r = Flush(); !r) return r;
+    if (s[0] != 1.0f)
+      return std::unexpected(
+          "the GPU completed a command buffer without executing it (the "
+          "self-test kernel wrote nothing)");
+    gpu_timestamps_ = last_gpu_start_ > 0 && last_gpu_end_ > last_gpu_start_;
     return {};
   }
 }
@@ -734,12 +841,27 @@ std::expected<void, std::string> MetalBackend::BindSource(const uint8_t* data,
   @autoreleasepool {
     if (auto r = Flush(); !r) return r;  // nothing in flight reads the old one
     if (auto r = cpu_->BindSource(data, bytes); !r) return r;
+    source_on_cpu_ = false;
+    source_bytes_ = bytes;
     if (!data || bytes == 0) {
       source_buf_ = nil;
       return {};
     }
     const uint64_t page = static_cast<uint64_t>(getpagesize());
     const uint64_t wrapped = (bytes + page - 1) & ~(page - 1);
+    // The arena and the rodata are what every step touches; the source
+    // model is read by the eval program alone. Where the three together
+    // exceed the GPU's working set, the source stays a CPU mapping and the
+    // instructions that read it run on cpu_ (Execute) — a slower validation
+    // pass, and a correct one.
+    const uint64_t resident =
+        (arena_buf_ ? static_cast<uint64_t>(arena_buf_.length) : 0) +
+        (rodata_buf_ ? static_cast<uint64_t>(rodata_buf_.length) : 0) + wrapped;
+    if (working_set_limit_ != 0 && resident > working_set_limit_) {
+      source_buf_ = nil;
+      source_on_cpu_ = true;
+      return {};
+    }
     id<MTLBuffer> buf = nil;
     if (reinterpret_cast<uintptr_t>(data) % page == 0)
       buf = [device_ newBufferWithBytesNoCopy:const_cast<uint8_t*>(data)
@@ -858,6 +980,9 @@ void MetalBackend::DispatchGemm(Pipe pipe, KArgs a, bool at, bool bt,
   if (a.n <= kGemmSkinnyDim) {
     if (at)  // A[k, m] with the lanes striding k: stage it (F7 step 3)
       Dispatch(static_cast<Pipe>(pipe + kGemmRowsTg), a,
+               a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
+    else if (bt && rows_tgb_)  // B[n, k]: N rows per k — stage the block
+      Dispatch(static_cast<Pipe>(pipe + kGemmRowsTgB), a,
                a.batch * ((a.m + 7) / 8) * kGemmStagedGroup, kGemmStagedGroup);
     else
       Dispatch(static_cast<Pipe>(pipe + kGemmRows), a, a.batch * a.m * 32u,
@@ -1441,7 +1566,12 @@ std::expected<void, std::string> MetalBackend::Execute(
     if (!ex && op != up::OpCode::kNop)
       return std::unexpected("instruction " + std::to_string(ins.opcode) +
                              " failed re-validation at dispatch");
-    if (!IsGpuOpcode(op) || !DimsFit32(op, ins)) {
+    // A reader of the source model runs where the model is: on cpu_ when
+    // BindSource kept it off the GPU (source_on_cpu_) — and so does every
+    // instruction of a range that holds one (range_on_cpu_, BeginRange).
+    const bool reads_source =
+        source_on_cpu_ && (range_on_cpu_ || (ex && ReadsSource(*ex)));
+    if (!IsGpuOpcode(op) || !DimsFit32(op, ins) || reads_source) {
       // CPU-resident: wait for any pending GPU work it depends on.
       if (ex && HazardWithPending(*ex))
         if (auto r = Flush(); !r) return r;
@@ -1483,6 +1613,9 @@ std::expected<void, std::string> MetalBackend::Flush() {
     [cmd_ waitUntilCompleted];
     const MTLCommandBufferStatus status = cmd_.status;
     NSError* err = cmd_.error;
+    last_gpu_start_ = cmd_.GPUStartTime;
+    last_gpu_end_ = cmd_.GPUEndTime;
+    const uint64_t dispatches = cb_dispatches_;
     if (profile_) last_gpu_seconds_ = cmd_.GPUEndTime - cmd_.GPUStartTime;
     if (spans_)
       spans_rows_.push_back(
@@ -1498,6 +1631,19 @@ std::expected<void, std::string> MetalBackend::Flush() {
     // finished and unfinished work: refuse to continue on it.
     if (status != MTLCommandBufferStatusCompleted)
       return std::unexpected(NsError(err, "GPU command buffer did not complete"));
+    // Completed with no execution time, on a GPU that reports one for every
+    // buffer that ran: the device declined the work — the silent form of a
+    // working set it cannot hold (F5 #133). Refuse rather than read zeros.
+    if (gpu_timestamps_ && dispatches > 0 &&
+        !(last_gpu_start_ > 0 && last_gpu_end_ > last_gpu_start_))
+      return std::unexpected(
+          "GPU command buffer completed without executing its " +
+          std::to_string(dispatches) + " dispatch(es): the device declined "
+          "the work (resident: arena " + std::to_string(arena_bytes_) +
+          " B, rodata " + std::to_string(rodata_bytes_) + " B, source " +
+          std::to_string(source_buf_ ? source_bytes_ : 0) +
+          " B; this GPU's working set is " +
+          std::to_string(working_set_limit_) + " B)");
     return {};
   }
 }

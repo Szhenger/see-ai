@@ -15,6 +15,9 @@
 
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
+#include "compiler/frontend/egressor/model_writer.h"
+#include "compiler/frontend/ingressor/model_reader.h"
+#include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
 #include "source/parallel/parallel_for.h"
 #include "source/language/model_format.h"
@@ -1015,6 +1018,121 @@ TEST(UpdateCompiler, RematerializationShrinksTheArenaAndLeavesEvalAlone) {
                        UpdateCompiler(automatic).Compile(model));
   EXPECT_FALSE(unconfigured.remat_applied);
   EXPECT_TRUE(unconfigured.plan == off.plan);
+}
+
+TEST(UpdateCompiler, AnAdapterOnlyPlanCarriesNoRodataAndReadsTheSourceModel) {
+  // F6 (#134), plan v21: --adapter-only binds every frozen weight to its
+  // f32 payload in the model file — a source ref, in the train program too
+  // — and lays out no rodata, so the plan is the instructions, the
+  // adapters' initial image and the emit table. Only for a model loaded
+  // from a file, the f32 base and exact arithmetic; the driver names each
+  // refusal.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  UpdateConfig config = BaseConfig(batch);
+  config.adapter_only = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                        "needs a model loaded from a file");
+  seeml::testing::ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel saved, LoadSmf(path));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
+                       UpdateCompiler(BaseConfig(batch)).Compile(saved));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate adapter,
+                       UpdateCompiler(config).Compile(saved));
+  const PlanHeader h = HeaderOf(adapter);
+  EXPECT_EQ(h.version, kSeeuVersion);
+  EXPECT_EQ(h.rodata_size, 0u);
+  EXPECT_EQ(adapter.rodata_size, 0u);
+  EXPECT_GT(HeaderOf(plain).rodata_size, 0u);
+  // No larger (both toy plans pad to a 16 KiB multiple); the bytes an
+  // adapter-only package saves are the SmolLM measurement's claim.
+  EXPECT_LE(adapter.plan.size(), plain.plan.size());
+  EXPECT_TRUE(adapter.scores_shipped);
+  // Every weight read in the train program is a source ref and nothing in
+  // it is a rodata ref (an unused slot is kNullRef, whose top bit is not a
+  // rodata ref); the validator, which admitted the plan, refuses a write
+  // through a source ref in any program.
+  size_t source_reads = 0;
+  for (const UpdateInstruction& ins : TrainProgramOf(adapter))
+    for (uint64_t ref : ins.in) {
+      if (ref == kNullRef) continue;
+      EXPECT_FALSE(IsRodataRef(ref));
+      if (IsSourceRef(ref)) ++source_reads;
+    }
+  EXPECT_GT(source_reads, 0u);
+  // The persistent segment is the plain plan's: the adapters are the same
+  // values, initialized the same way.
+  EXPECT_EQ(adapter.persistent_size, plain.persistent_size);
+  // The narrow bases and the relaxed kernels are refused by name.
+  config.quantize_base = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved), "narrow copies");
+  config.quantize_base = false;
+  config.bf16_base = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved), "narrow copies");
+  config.bf16_base = false;
+  config.precision = Precision::kCertifiedBf16;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved),
+                        "exact kernels");
+  // A teacher's weights live in another file than the one the runtime
+  // binds: refused by name, never bound to the student's bytes at the
+  // teacher's offsets.
+  config.precision = Precision::kF32;
+  config.loss = LossKind::kKLDistill;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved, &saved),
+                        "teacher");
+}
+
+TEST(UpdateCompiler, TheEvalProgramScoresThePlanByRequest) {
+  // E12 scores the shipped f32 file for a narrow-base plan compiled from a
+  // file; --validation-scores plan keeps the eval program on the plan's own
+  // narrow copies — a proxy, for a device that cannot hold the file beside
+  // the arena (F5 #133's 1.5B rung on 16 GB) — and the report says so. An
+  // adapter-only plan has no weights of its own and refuses it.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  seeml::testing::ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel saved, LoadSmf(path));
+  UpdateConfig config = BaseConfig(batch);
+  config.quantize_base = true;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate shipped,
+                       UpdateCompiler(config).Compile(saved));
+  EXPECT_TRUE(shipped.scores_shipped);
+  config.eval_on_plan = true;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate proxy, UpdateCompiler(config).Compile(saved));
+  EXPECT_FALSE(proxy.scores_shipped);
+  // The eval program of the proxy plan reads no source ref; the shipped
+  // plan's does.
+  auto source_reads = [](const CompiledUpdate& c) {
+    const PlanHeader h = HeaderOf(c);
+    size_t n = 0;
+    for (uint64_t i = 0; i < h.eval_instr_count; ++i) {
+      UpdateInstruction ins;
+      std::memcpy(&ins, c.plan.data() + h.eval_instr_offset + i * sizeof(ins),
+                  sizeof(ins));
+      for (uint64_t ref : ins.in)
+        if (ref != kNullRef && IsSourceRef(ref)) ++n;
+    }
+    return n;
+  };
+  EXPECT_GT(source_reads(shipped), 0u);
+  EXPECT_EQ(source_reads(proxy), 0u);
+  // The train programs are the same bytes: the request touches eval alone.
+  const std::vector<UpdateInstruction> train_proxy = TrainProgramOf(proxy);
+  const std::vector<UpdateInstruction> train_shipped = TrainProgramOf(shipped);
+  ASSERT_EQ(train_proxy.size(), train_shipped.size());
+  EXPECT_EQ(std::memcmp(train_proxy.data(), train_shipped.data(),
+                        train_proxy.size() * sizeof(UpdateInstruction)),
+            0);
+  config.quantize_base = false;
+  config.adapter_only = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved),
+                        "no weights of its own");
 }
 
 TEST(UpdateCompiler, AttentionAutoDecidesAgainstAConfiguredBudgetOnly) {

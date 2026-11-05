@@ -615,14 +615,18 @@ std::expected<void, std::string> ValidateInstructionImpl(
     }
     case up::OpCode::kEmbedFwd: {
       // out[t, :] = table[tokens[t], :] with T = d0 rows and a [V, D]
-      // table packed as d1 = V<<32|D. The table must be rodata: only the
-      // compiler's own packing produces it, and the gather's row bound
-      // (tokens[t] < V) is the FEEDER contract's runtime obligation — the
-      // extents proven here are the buffers, not the indices.
+      // table packed as d1 = V<<32|D. The table must be rodata — only the
+      // compiler's own packing produces it — or, from v21, the source
+      // model's f32 table where source refs are admitted (an adapter-only
+      // plan); never the arena. The gather's row bound (tokens[t] < V) is
+      // the FEEDER contract's runtime obligation — the extents proven here
+      // are the buffers, not the indices.
       const uint64_t vocab = d1 >> 32, dim = d1 & 0xFFFFFFFFu;
       uint64_t vd = 0, td = 0;
       if (!MulOk(vocab, dim, &vd) || !MulOk(d0, dim, &td)) return fail();
-      if (!up::IsRodataRef(ins.in[1])) return fail();
+      const bool source_table = up::IsSourceRef(ins.in[1]) && allow_source &&
+                                plan_version >= up::kSeeuSourceWeightsVersion;
+      if (!up::IsRodataRef(ins.in[1]) && !source_table) return fail();
       if (!ref_ok(ins.in[0], d0, false) ||  // i32 tokens: 4-byte elements
           !ref_ok(ins.in[1], vd, false) || !ref_ok(ins.in[2], td, true))
         return fail();
