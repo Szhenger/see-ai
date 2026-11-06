@@ -243,6 +243,7 @@ endfunction()
 
 seeml_add_test(seeml_hash_test              test/source/identity/hash_test.cc)
 seeml_add_test(seeml_parallel_for_test      test/source/parallel/parallel_for_test.cc)
+seeml_add_test(seeml_screen_test            test/source/statistics/screen_test.cc)
 seeml_add_test(seeml_model_io_test          test/compiler/frontend/model_io_test.cc)
 seeml_add_test(seeml_golden_fixture_test    test/compiler/frontend/golden_fixture_test.cc)
 seeml_add_test(seeml_resource_analyzer_test test/compiler/frontend/resource_analyzer_test.cc)

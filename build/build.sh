@@ -180,6 +180,7 @@ fi
 
 for suite in \
     source/identity/hash_test source/parallel/parallel_for_test \
+    source/statistics/screen_test \
     compiler/frontend/model_io_test compiler/frontend/golden_fixture_test \
     compiler/frontend/resource_analyzer_test \
     compiler/frontend/sir_test compiler/frontend/operator_test \
