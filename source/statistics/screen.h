@@ -116,7 +116,15 @@ inline std::string Bytes(uint64_t b) {
 inline std::string Real(double v, int precision) {
   if (!std::isfinite(v)) return "n/a";
   char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.*f", precision, v);
+  // A value that would print as zero at the row's precision (a tiny
+  // plan's predicted step) keeps three significant digits instead:
+  // "0.000" would say nothing. An exact zero stays fixed.
+  double half_unit = 0.5;
+  for (int i = 0; i < precision; ++i) half_unit /= 10.0;
+  if (v != 0.0 && std::fabs(v) < half_unit)
+    std::snprintf(buf, sizeof(buf), "%.3g", v);
+  else
+    std::snprintf(buf, sizeof(buf), "%.*f", precision, v);
   return buf;
 }
 

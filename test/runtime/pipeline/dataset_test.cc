@@ -3,9 +3,11 @@
 // class-label validation, file round-trips, and rejection of malformed files.
 // =============================================================================
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -391,6 +393,31 @@ TEST(DatasetSplit, RejectsDegenerateRequests) {
   // set (the permutation has already mixed the tail): refused.
   data.EnableShuffle(1);
   EXPECT_ERROR_CONTAINS(data.SplitValidation(0.25), "before enabling shuffle");
+}
+
+TEST(Dataset, TheLabelEntropyIsAnInputBlindPredictorsLoss) {
+  // S0 #146: the runtime screen's "input-blind loss" — the entropy, in nats,
+  // of the labels the corpus serves; nothing without class labels.
+  ASSERT_OK_AND_ASSIGN(
+      Dataset two, Dataset::FromMemory({0, 0, 0, 0}, ClassLabels({0, 0, 1, 1}),
+                                       4, 1, 1, 0));
+  const std::optional<double> h_two = two.LabelEntropyNats();
+  ASSERT_TRUE(h_two.has_value());
+  EXPECT_NEAR(*h_two, std::log(2.0), 1e-12);
+  ASSERT_OK_AND_ASSIGN(
+      Dataset one, Dataset::FromMemory({0, 0}, ClassLabels({3, 3}), 2, 1, 1, 0));
+  const double h_one = one.LabelEntropyNats().value_or(-1.0);
+  EXPECT_EQ(h_one, 0.0);
+  // A token corpus's labels are each record's next tokens: positions 1..seq
+  // of every (seq + 1)-id record. Here the first ids (7, 7) are inputs only,
+  // and the labels {1, 2, 1, 2} carry ln 2.
+  ASSERT_OK_AND_ASSIGN(Dataset tokens,
+                       Dataset::FromTokens({7, 1, 2, 7, 1, 2}, 2, 2));
+  const double h_tokens = tokens.LabelEntropyNats().value_or(-1.0);
+  EXPECT_NEAR(h_tokens, std::log(2.0), 1e-12);
+  ASSERT_OK_AND_ASSIGN(Dataset dense,
+                       Dataset::FromMemory({1, 2}, {}, 2, 1, 0, 0));
+  EXPECT_FALSE(dense.LabelEntropyNats().has_value());
 }
 
 }  // namespace

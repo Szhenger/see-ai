@@ -157,6 +157,14 @@ TEST(Screen, CountsAndBytesReadTheSameOnEveryHost) {
   EXPECT_EQ(Bytes(1048575), std::string("1,048,575 B (1024.0 KiB)"));
   EXPECT_EQ(Bytes(1576898688), std::string("1,576,898,688 B (1.5 GiB)"));
   EXPECT_EQ(Bytes(UINT64_MAX).substr(0, 5), std::string("18,44"));
+  // A real that would round to zero at its precision keeps three
+  // significant digits; zero itself, and every larger value, is fixed.
+  using screen_detail::Real;
+  EXPECT_EQ(Real(0.00017, 3), std::string("0.00017"));
+  EXPECT_EQ(Real(1.5e-7, 3), std::string("1.5e-07"));
+  EXPECT_EQ(Real(0.0, 3), std::string("0.000"));
+  EXPECT_EQ(Real(0.0005, 3), std::string("0.001"));
+  EXPECT_EQ(Real(8.6, 3), std::string("8.600"));
 }
 
 // --- The plan's work ------------------------------------------------------------

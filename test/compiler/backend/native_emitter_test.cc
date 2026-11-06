@@ -356,4 +356,39 @@ TEST(NativeEmitter, TheRunnerStagesItsReportAndExitsFourOnAFailedOutput) {
   EXPECT_STR_CONTAINS(main_tu, "return 4;");
 }
 
+TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
+  // S0 #146: the runner fills the runtime screen from the plan itself and
+  // what it measures, so the screen's headers are vendored with it; the
+  // compile's --peak-gflops is written into it (0 when unstated), and a
+  // run's --peak-gflops overrides it.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(6, 10, 3, 4);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  for (const double peak : {0.0, 3500.0}) {
+    const std::string out_dir =
+        (dir.path() / (peak > 0.0 ? "peak" : "nopeak")).string();
+    std::filesystem::create_directories(out_dir);
+    EmitOptions options;
+    options.peak_gflops = peak;
+    ASSERT_OK_AND_ASSIGN(EmitPaths paths, EmitNativePackage(compiled.plan, out_dir,
+                                                            RepoRoot(), options));
+    const std::string main_tu = ReadText(paths.main_tu);
+    EXPECT_STR_CONTAINS(main_tu, peak > 0.0
+                                     ? "kSeemlPeakGflops = 3500 /*seeml:peak_gflops*/;"
+                                     : "kSeemlPeakGflops = 0 /*seeml:peak_gflops*/;");
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);");
+    EXPECT_STR_CONTAINS(main_tu, "\"--peak-gflops\"");
+    EXPECT_STR_CONTAINS(main_tu, "runtime_screen.Json(2)");
+    for (const char* header :
+         {"source/statistics/screen.h", "source/statistics/screens.h",
+          "source/statistics/plan_work.h", "source/statistics/process.h"}) {
+      bool vendored = false;
+      for (const std::string& v : paths.vendored_sources) vendored |= v == header;
+      if (!vendored) ADD_FAILURE(std::string(header) + " is not vendored");
+      EXPECT_TRUE(std::filesystem::exists(out_dir + "/" + header));
+    }
+  }
+}
+
 }  // namespace

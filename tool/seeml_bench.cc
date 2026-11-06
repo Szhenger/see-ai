@@ -695,6 +695,7 @@ int main(int argc, char** argv) {
                  PRIu64 ",\n"
                  "      \"train_instructions\": %" PRIu64
                  ", \"gemm_flops_per_step\": %" PRIu64
+                 ", \"attention_flops_per_step\": %" PRIu64
                  ", \"trainable_params\": %" PRIu64 ",\n"
                  "      \"compile_ms\": %.2f, \"load_ms\": %.3f,\n"
                  "      \"threads\": {",
@@ -702,7 +703,9 @@ int main(int argc, char** argv) {
                  f->seq, compiled->plan.size(), compiled->arena_size,
                  compiled->persistent_size, compiled->rodata_size,
                  compiled->train_instruction_count,
-                 GemmFlopsPerStep(compiled->plan) * GradAccumOf(compiled->plan), trainable_params,
+                 GemmFlopsPerStep(compiled->plan) * GradAccumOf(compiled->plan),
+                 up::MeasurePlanWork(compiled->plan).AttentionFlopsPerStep(),
+                 trainable_params,
                  compile_ms, load_ms);
     first_fixture = false;
 
@@ -809,6 +812,14 @@ int main(int argc, char** argv) {
                    it_per_s, *lo_it, *hi_it);
       if (peak_gflops > 0.0)
         std::fprintf(out, ", \"mfu\": %.4f", gflops / peak_gflops);
+      // The step the plan's whole work (GEMM + attention) predicts at the
+      // stated peak — the runtime screen's number, beside the measured
+      // step_ms (S0 #146); mfu above stays the GEMM-only utilization.
+      if (peak_gflops > 0.0)
+        std::fprintf(out, ", \"predicted_step_ms\": %.3f",
+                     static_cast<double>(
+                         up::MeasurePlanWork(compiled->plan).FlopsPerStep()) /
+                         (peak_gflops * 1e6));
       if (!energy_j_per_step.empty()) {
         const double j_step = Median(energy_j_per_step);
         std::fprintf(out,

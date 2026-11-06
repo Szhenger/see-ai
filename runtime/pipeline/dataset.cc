@@ -3,7 +3,9 @@
 #include "runtime/diagnostics/feeding/error.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <unordered_map>
 #include <fstream>
 
 namespace seeml::update_rt {
@@ -475,6 +477,40 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
   cursor_ = 0;
   labels_scanned_ = false;  // the extent was the whole corpus's
   return val;
+}
+
+std::optional<double> Dataset::LabelEntropyNats() const {
+  if (label_kind_ != 1) return std::nullopt;
+  std::unordered_map<int32_t, uint64_t> counts;
+  uint64_t n = 0;
+  if (input_kind_ == 1) {
+    // Record r is tokens_[r·(seq+1), ...]: the inputs are its first seq
+    // ids, the labels positions 1..seq (the shifted view).
+    const uint64_t stride = input_dim_ + 1;
+    for (uint64_t r = 0; r < num_samples_; ++r)
+      for (uint64_t j = 1; j <= input_dim_; ++j, ++n)
+        ++counts[tokens_[r * stride + j]];
+  } else {
+    for (uint64_t i = 0; i < num_samples_; ++i, ++n) {
+      int32_t label;
+      std::memcpy(&label, labels_.data() + i * sizeof(label), sizeof(label));
+      ++counts[label];
+    }
+  }
+  if (n == 0) return std::nullopt;
+  // Summed over the sorted counts: one order on every host, so the same
+  // bits wherever the screen is printed.
+  std::vector<uint64_t> sorted;
+  sorted.reserve(counts.size());
+  for (const auto& [label, count] : counts) sorted.push_back(count);
+  std::sort(sorted.begin(), sorted.end());
+  double entropy = 0.0;
+  const double total = static_cast<double>(n);
+  for (const uint64_t c : sorted) {
+    const double p = static_cast<double>(c) / total;
+    entropy -= p * std::log(p);
+  }
+  return entropy;
 }
 
 }  // namespace seeml::update_rt

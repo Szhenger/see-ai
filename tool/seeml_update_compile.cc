@@ -573,6 +573,7 @@ int main(int argc, char** argv) {
   emit_options.relaxed_plan =
       compiled->relaxed_gemms + compiled->relaxed_attention > 0;
   emit_options.embed_plan_tu = !no_embed;
+  emit_options.peak_gflops = config.peak_gflops;
   auto paths = EmitNativePackage(
       compiled->plan, *out_dir,
       repo_root.empty() || !std::filesystem::exists(repo_root + "/source")
