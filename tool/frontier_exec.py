@@ -202,6 +202,7 @@ class Plan:
         if self.persistent_size > self.arena_size:
             raise PlanError(f"{path}: persistent segment exceeds the arena")
         self.grad_accum = max(1, self.grad_accum_steps)
+        self._check_immediates()
         # v18 / v20: the instructions a certified relaxed kernel may run —
         # all of them, and the frozen-weight GEMMs among them.
         relaxed = [i for name in ("train", "step") for i in self.sections[name]
@@ -209,6 +210,84 @@ class Plan:
         self.relaxed_instructions = len(relaxed)
         self.relaxed_gemms = sum(1 for i in relaxed
                                  if i.opcode in RELAXED_GEMM_OPCODES)
+
+    def _check_immediates(self):
+        """The device validator's immediate-float rules and the load
+        contract's hyperparameter rules (CR1 #142), held here too: a plan
+        the device refuses must not train, diff or price in this tool as if
+        it ran. Every float an instruction carries as bits is finite and in
+        its range; so is every optimizer float of the header."""
+        p = self.path
+        for name, in_range in (
+                ("lr", self.lr > 0.0),
+                ("beta1", 0.0 <= self.beta1 < 1.0),
+                ("beta2", 0.0 <= self.beta2 < 1.0),
+                ("eps", self.eps > 0.0),
+                ("weight_decay", self.weight_decay >= 0.0),
+                ("clip_norm", self.clip_norm >= 0.0),
+                ("min_lr_factor", 0.0 <= self.min_lr_factor <= 1.0)):
+            if not (math.isfinite(getattr(self, name)) and in_range):
+                raise PlanError(f"{p}: plan header {name} is not a finite "
+                                "value in its range")
+
+        def positive(word):
+            """A finite positive f32 in the low half, the high half zero."""
+            value = bits_f32(word)
+            return word >> 32 == 0 and math.isfinite(value) and value > 0.0
+        t_min = f32(formats.KL_TEMPERATURE_MIN)
+        t_max = f32(formats.KL_TEMPERATURE_MAX)
+        for section in SECTIONS:
+            for index, ins in enumerate(self.sections[section]):
+                op, where = ins.opcode, f"{p}: {section} #{index}"
+                if op == 28 and not positive(ins.src[1]):
+                    raise PlanError(f"{where}: the clip_norm threshold must "
+                                    "be a finite positive float")
+                if op in (17, 18) and ins.out[1] != 0:
+                    if self.version < 12:
+                        raise PlanError(f"{where}: an optimizer step carries "
+                                        "a clip threshold in a pre-v12 plan")
+                    if not positive(ins.out[1]):
+                        raise PlanError(f"{where}: the optimizer step's clip "
+                                        "threshold must be a finite positive "
+                                        "float")
+                if op in (15, 16):
+                    hi, lo = hi_lo(ins.out[2] if op == 15 else ins.out[1])
+                    t = bits_f32(lo)
+                    if not (math.isfinite(t) and t_min <= t <= t_max):
+                        raise PlanError(f"{where}: the kl_distill temperature "
+                                        "must be a finite float in [1e-3, "
+                                        "1e3]")
+                    if hi and self.version < 8:
+                        raise PlanError(f"{where}: kl_distill carries a loss "
+                                        "scale in a pre-v8 plan")
+                    if hi and not positive(hi):
+                        raise PlanError(f"{where}: the kl_distill loss scale "
+                                        "must be a finite positive float")
+                if op in (29, 30):
+                    self._check_q8_scales(ins, where, positive)
+
+    def _check_q8_scales(self, ins, where, positive):
+        """A quantized GEMM's dequant scale: the per-tensor f32 in in[3],
+        or — under the column-scale flag — the rodata vector in[3] names, N
+        floats in the forward (NN), K in the dX GEMM (NT), each finite and
+        positive."""
+        if not ins.flags & formats.FLAG_Q8_COL_SCALE:
+            if not positive(ins.src[3]):
+                raise PlanError(f"{where}: the quantized GEMM's dequant "
+                                "scale must be a finite positive float")
+            return
+        count = ins.out[2] if ins.opcode == 30 else ins.out[1]
+        ref = ins.src[3]
+        off = ref & (RODATA_BIT - 1)
+        if not ref & RODATA_BIT or off + 4 * count > self.rodata_size:
+            raise PlanError(f"{where}: the column scales lie outside the "
+                            "rodata section")
+        start = self.rodata_offset + off
+        for i, (scale,) in enumerate(struct.iter_unpack(
+                "<f", bytes(self.blob[start:start + 4 * count]))):
+            if not (math.isfinite(scale) and scale > 0.0):
+                raise PlanError(f"{where}: column scale {i} is not a finite "
+                                "positive float")
 
     def _bounds(self, what, off, size):
         if off > len(self.blob) or size > len(self.blob) - off:
