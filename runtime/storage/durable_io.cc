@@ -61,8 +61,10 @@ std::expected<void, std::string> WriteFileDurable(
 }
 
 std::expected<void, std::string> WriteFileDurable(
-    const std::string& path, std::span<const ByteSpan> parts) {
+    const std::string& path, std::span<const ByteSpan> parts,
+    DurableWriteStats* stats) {
   const std::string tmp = UniqueTmpPath(path);
+  DurableWriteStats cost;
 #ifndef _WIN32
   const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0)
@@ -95,8 +97,10 @@ std::expected<void, std::string> WriteFileDurable(
       }
       written += static_cast<size_t>(n);
     }
+    cost.bytes += written;
   }
   if (::fsync(fd) != 0) return fail(fd, "fsync of '" + tmp + "' failed");
+  ++cost.fsyncs;
   if (::close(fd) != 0) return fail(-1, "close of '" + tmp + "' failed");
   if (std::rename(tmp.c_str(), path.c_str()) != 0)
     return fail(-1, "atomic rename to '" + path + "' failed");
@@ -107,9 +111,11 @@ std::expected<void, std::string> WriteFileDurable(
                               : path.substr(0, slash == 0 ? 1 : slash);
   const int dfd = ::open(dir.c_str(), O_RDONLY);
   if (dfd >= 0) {
-    ::fsync(dfd);  // best effort: some filesystems reject directory fsync
+    // Best effort: some filesystems reject directory fsync.
+    if (::fsync(dfd) == 0) ++cost.fsyncs;
     ::close(dfd);
   }
+  if (stats) *stats = cost;
   return {};
 #else
   // Raw Win32, mirroring the POSIX branch's guarantees: every byte's write
@@ -143,13 +149,16 @@ std::expected<void, std::string> WriteFileDurable(
         return fail(true, "short write to '" + tmp + "'");
       written += got;
     }
+    cost.bytes += written;
   }
   if (!::FlushFileBuffers(h))
     return fail(true, "fsync of '" + tmp + "' failed");
+  ++cost.fsyncs;
   if (!::CloseHandle(h)) return fail(false, "close of '" + tmp + "' failed");
   if (!::MoveFileExA(tmp.c_str(), path.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
     return fail(false, "atomic rename to '" + path + "' failed");
+  if (stats) *stats = cost;
   return {};
 #endif
 }

@@ -1700,6 +1700,39 @@ TEST(UpdateEngineBest, AResumedStartIsScoredAsItselfNotAsTheSource) {
   EXPECT_TRUE(Persistent(resumed) == Persistent(fresh));
 }
 
+TEST(UpdateEngineBest, TheReportCountsWhatItsCheckpointsCost) {
+  // CR4 #145: the storage role's screen line — the run's periodic
+  // checkpoints, and the bytes and fsyncs they cost. Without a validation
+  // set no best-state copy rides along, so every checkpoint is the same
+  // file and the total is the count times the file the last one left.
+  using namespace best_state;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("cost.ckpt");
+  UpdateEngine e;
+  ASSERT_OK(e.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d = TrainSet();
+  TrainOptions o = Quiet();
+  o.checkpoint_path = ckpt;
+  o.checkpoint_every = 4;
+  ASSERT_OK_AND_ASSIGN(seeml::update_rt::TrainReport report, e.Train(d, 8, o));
+  EXPECT_EQ(report.checkpoints, uint64_t{2});
+  ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> file,
+                       seeml::update_rt::ReadFileBytes(ckpt));
+  EXPECT_EQ(report.checkpoint_bytes, 2 * uint64_t{file.size()});
+  EXPECT_GE(report.checkpoint_fsyncs, uint64_t{2});
+  EXPECT_LE(report.checkpoint_fsyncs, uint64_t{4});
+  // A run that saves none reports none.
+  UpdateEngine quiet;
+  ASSERT_OK(quiet.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d2 = TrainSet();
+  ASSERT_OK_AND_ASSIGN(seeml::update_rt::TrainReport none,
+                       quiet.Train(d2, 8, Quiet()));
+  EXPECT_EQ(none.checkpoints, uint64_t{0});
+  EXPECT_EQ(none.checkpoint_bytes, uint64_t{0});
+}
+
 TEST(UpdateEngineBest, ResumeRefusesADifferentSeedOrSplit) {
   using namespace best_state;
   const std::vector<uint8_t> plan = OverfitPlan();

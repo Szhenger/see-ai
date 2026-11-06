@@ -52,6 +52,29 @@ failed (the table is in the PR). Not here: the storage role's screen line
 through `SaveSmf` has no injection seam on the compiler plane (the open
 failure is what its test exercises).
 
+## Status 2026-11-06 — the screen line and the failure injection
+
+The storage role's screen line: the durable writer reports what a write cost
+(`DurableWriteStats` — the bytes, and the fsyncs that succeeded: the file's,
+then its directory's, which is best effort), a checkpoint save passes it
+through, the engine totals the run's periodic checkpoints into the train
+report, and the device's runtime screen gains three rows when the run saved
+any: the checkpoints, the bytes per checkpoint and the fsyncs per checkpoint
+(both means — a checkpoint carries the best state's copy while it differs
+from the segment). The failure injection the first round could not reach: a
+test body run in a forked child under a file-size limit
+(`test/support/child_process.h`), where the kernel fails the write that
+crosses it (EFBIG — the disk that fills partway) or kills the writer there
+(SIGXFSZ — the process that dies mid-save), with no fault seam in the code
+under test. The durable writer failing midway leaves no sidecar and the old
+file; a checkpoint killed mid-save leaves the last checkpoint, which loads
+whole, and the next save goes through (the dead writer's pid-unique sidecar
+is the inert leftover the writer documents). SaveSmf failing midway leaves
+the model's offsets, sizes and hash unmoved and no stage; killed mid-save,
+it leaves the old file, which loads, and the next save clears the stage.
+Each rule was removed in turn and its test failed (the table is in the PR);
+writing in place instead of staging fails both kill tests.
+
 ## Acceptance
 
 - Each reproduction fixed with a test that injects the failure (full disk,

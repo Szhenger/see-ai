@@ -1162,8 +1162,12 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       }
       if (options.checkpoint_every && !options.checkpoint_path.empty() &&
           step_ % options.checkpoint_every == 0) {
-        if (auto r = SaveCheckpoint(options.checkpoint_path); !r)
+        DurableWriteStats written;
+        if (auto r = SaveCheckpoint(options.checkpoint_path, &written); !r)
           return std::unexpected(r.error());
+        ++report.checkpoints;
+        report.checkpoint_bytes += written.bytes;
+        report.checkpoint_fsyncs += written.fsyncs;
       }
       if (out_of_patience) {
         report.stopped_by_patience = true;
@@ -1388,7 +1392,7 @@ std::expected<void, std::string> UpdateEngine::CommitToModel(
 }
 
 std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
-    const std::string& path) const {
+    const std::string& path, DurableWriteStats* stats) const {
   // The run horizon rides along (v4): a resume trains the remainder to it;
   // and (v5) the run binding, the source model's score and the best state.
   CheckpointRecord record;
@@ -1414,7 +1418,7 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
   // and a resume rebuilds the copy from the main payload.
   if (has_best_ && best_step_ != step_) record.best_payload = best_state_;
   return SaveCheckpointRecord(path, header_.plan_hash, record, arena_,
-                              header_.persistent_size);
+                              header_.persistent_size, stats);
 }
 
 std::expected<void, std::string> UpdateEngine::LoadCheckpoint(

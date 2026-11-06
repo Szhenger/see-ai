@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "source/parallel/parallel_for.h"
 #include "test/framework/seetest.h"
 #include "test/support/builders.h"
+#include "test/support/child_process.h"
 #include "test/support/scoped_temp_dir.h"
 
 namespace {
@@ -468,6 +470,88 @@ TEST(ModelIo, ByteBalancedParallelLoadIsExactAtAnyWidth) {
   }
   seeml::update::SetParallelThreadCount(0);
 }
+
+#ifndef _WIN32
+// The whole file at `path`, or empty when it cannot be read.
+std::vector<char> Contents(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+}
+
+TEST(Smf, AWriteThatFailsMidwayLeavesTheModelAndTheDiskUntouched) {
+  // CR4 #145 F05, the failure the open-failure test below cannot reach: the
+  // disk fills partway through the file. The child's files may not grow
+  // past half the model's, and the kernel fails the write that crosses
+  // (EFBIG) — no fault seam in SaveSmf. The destination keeps its old
+  // bytes, the stage is gone, and the model's offsets, sizes and hash have
+  // not moved.
+  using seeml::testing::PastTheLimit;
+  ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  SmfModel old_model = MakeMlp(4, 8, 2, 2);
+  ASSERT_OK(SaveSmf(path, old_model));
+  const std::vector<char> old_bytes = Contents(path);
+  SmfModel probe = MakeMlp(64, 256, 16, 3);
+  ASSERT_OK(SaveSmf(dir.File("probe.smf"), probe));
+  const uint64_t full = Contents(dir.File("probe.smf")).size();
+  SmfModel model = MakeMlp(64, 256, 16, 3);
+  for (SmfTensor& t : model.tensors)
+    if (t.is_const) {
+      t.data_offset = 7777;
+      t.byte_size = 1;
+    }
+  model.content_hash = 42;
+  const int status = seeml::testing::RunUnderFileSizeLimit(
+      full / 2, PastTheLimit::kFail, [&] {
+        auto r = SaveSmf(path, model);
+        if (r) return 1;
+        if (r.error().find("short write") == std::string::npos) return 2;
+        if (Contents(path) != old_bytes) return 3;
+        if (std::ifstream(path + ".tmp").good()) return 4;
+        for (const SmfTensor& t : model.tensors)
+          if (t.is_const && (t.data_offset != 7777 || t.byte_size != 1))
+            return 5;
+        if (model.content_hash != 42) return 6;
+        return 0;
+      });
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(Smf, AWriterKilledMidSaveLeavesTheOldFile) {
+  // CR4 #145, kill mid-save: killed partway through the file (SIGXFSZ's
+  // default action at the child's file-size limit), the writer leaves the
+  // destination as it was — the rename never ran — and a stage short of
+  // the whole file, the proof it died mid-write. The old model still loads,
+  // and the next save replaces the destination and clears the stage.
+  using seeml::testing::PastTheLimit;
+  ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  SmfModel old_model = MakeMlp(4, 8, 2, 2);
+  ASSERT_OK(SaveSmf(path, old_model));
+  const std::vector<char> old_bytes = Contents(path);
+  SmfModel model = MakeMlp(64, 256, 16, 3);
+  SmfModel probe = model;
+  ASSERT_OK(SaveSmf(dir.File("probe.smf"), probe));
+  const uint64_t full = Contents(dir.File("probe.smf")).size();
+  const int status = seeml::testing::RunUnderFileSizeLimit(
+      full / 2, PastTheLimit::kKill, [&] {
+        (void)SaveSmf(path, model);
+        return 0;  // reached only if the writer survived
+      });
+  ASSERT_TRUE(WIFSIGNALED(status));
+  EXPECT_EQ(WTERMSIG(status), SIGXFSZ);
+  EXPECT_TRUE(Contents(path) == old_bytes);
+  const std::vector<char> stage = Contents(path + ".tmp");
+  ASSERT_TRUE(std::ifstream(path + ".tmp").good());
+  EXPECT_LE(uint64_t{stage.size()}, full / 2);
+  ASSERT_OK_AND_ASSIGN(SmfModel loaded, LoadSmf(path));
+  EXPECT_EQ(loaded.tensors.size(), old_model.tensors.size());
+  ASSERT_OK(SaveSmf(path, model));
+  EXPECT_FALSE(std::ifstream(path + ".tmp").good());
+  EXPECT_EQ(uint64_t{Contents(path).size()}, full);
+}
+#endif  // _WIN32
 
 TEST(Smf, AFailedSaveLeavesTheModelAndTheDiskUntouched) {
   // CR4 #145 F05: SaveSmf computed the new offsets into the model before a

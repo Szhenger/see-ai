@@ -245,6 +245,16 @@ runtime — planned by the compiler, measured by the device
 
 The measured step is the steps alone — staging the batch, the train program, the optimizer — with evaluations and checkpoints excluded; achieved is the work ÷ that step, and utilization is achieved ÷ the peak (here a toy plan on a 500 GFLOP/s statement: the gap is the point of the row). Peak RSS is the whole process, so a 54 KiB plan sits under 6.5 MiB of runtime. The input-blind loss is the entropy of the training labels — what a model that ignored its input would score, a reference level rather than a bound: this run ends at 0.0988 nats on held-out data against 1.3261, so it learned from its inputs. `--report` carries the same rows under `"runtime"`.
 
+With `--checkpoint` and `--checkpoint-every`, the storage role adds three rows after the resident peak. The same package, checkpointing every 100 of its 300 steps:
+
+```
+  checkpoints              3                             the durable checkpoints the run saved
+  per checkpoint           16,240 B (15.9 KiB)           bytes written per checkpoint, the mean
+  fsyncs per checkpoint    2.0                           the file's and its directory's, the mean
+```
+
+Each checkpoint is the plan's persistent segment behind a header, staged beside the destination, synced, renamed into place, and its directory synced: two fsyncs, or one on a filesystem that refuses a directory fsync. The bytes are a mean because a checkpoint also carries the best state while it differs from the segment.
+
 Exit codes are the API for your update orchestrator: `0` committed, `1` runtime error, `2` bad arguments, `3` regression-gate rejection, `4` committed but `--report` or `--loss-log` could not be written. `--loss-log` writes the full per-step CSV loss curve once training completes (it is not appended live, so tail it after the run, not during).
 
 ## Threading and Determinism
