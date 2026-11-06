@@ -53,6 +53,8 @@
 
 namespace seeml::update_rt {
 
+struct DurableWriteStats;  // runtime/storage/durable_io.h
+
 struct TrainOptions {
   std::string checkpoint_path;   // empty = no checkpointing
   uint64_t checkpoint_every = 0; // steps between checkpoints (0 = off)
@@ -169,6 +171,12 @@ struct TrainReport {
   double eval_seconds = 0.0;       // wall seconds inside every evaluation of
                                    // the run, bracketing ones included (F9
                                    // #140: the gate's share of the update)
+  // The storage role (CR4 #145): the periodic checkpoints the run saved,
+  // and what they cost on disk in total — the bytes written and the fsyncs
+  // that succeeded (each file's and its directory's).
+  uint64_t checkpoints = 0;
+  uint64_t checkpoint_bytes = 0;
+  uint64_t checkpoint_fsyncs = 0;
   bool stopped_by_patience = false;
   uint64_t eval_every = 0;
   uint64_t patience = 0;
@@ -313,8 +321,9 @@ class UpdateEngine {
   [[nodiscard]] std::expected<void, std::string> VerifySourceModel(
       const std::string& source_model_path) const;
 
+  /// `stats`, when given, receives what the checkpoint cost on disk.
   [[nodiscard]] std::expected<void, std::string> SaveCheckpoint(
-      const std::string& path) const;
+      const std::string& path, DurableWriteStats* stats = nullptr) const;
   [[nodiscard]] std::expected<void, std::string> LoadCheckpoint(
       const std::string& path);
 

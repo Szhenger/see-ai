@@ -658,6 +658,15 @@ int main(int argc, char** argv) {
         runtime_screen.Set("rss_over_planned", static_cast<double>(rss) /
                                                      static_cast<double>(planned));
     }
+    // The storage role (CR4 #145): what a checkpoint cost on disk.
+    if (report->checkpoints > 0) {
+      runtime_screen.Set("checkpoints", report->checkpoints);
+      runtime_screen.Set("checkpoint_bytes",
+                         report->checkpoint_bytes / report->checkpoints);
+      runtime_screen.Set("checkpoint_fsyncs",
+                         static_cast<double>(report->checkpoint_fsyncs) /
+                             static_cast<double>(report->checkpoints));
+    }
     // A run that trained no step (a resume with nothing left) measured no
     // training loss: its zero placeholders are not losses.
     if (report->steps > 0) {

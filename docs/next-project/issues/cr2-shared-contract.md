@@ -88,6 +88,32 @@ as the device does, and `seeml-abi` publishes the temperature bounds as
 f32 bits. (The packer's `check_plan` stays a magic sniff on purpose: it
 never interprets instructions, and the packaged device validates in full.)
 
+## Status 2026-11-06 — the Python plane's N03, N04, N05
+
+The oracle's reader runs the device's header contract rule for rule
+(`header_violation` in `tool/frontier_exec.py`, in `PlanHeaderViolation`'s
+order and words): the section table, the version gates, the arena relations,
+the hyperparameters, the I/O slots (N04: an arena ref, 4-aligned and in
+bounds — a rodata or source bit refused) and the rodata alignment (N05: the
+16 bytes the contract proves, now `kSeeuRodataOffsetAlignment`, which the ABI
+manifest publishes beside the emitter's 16 KiB page). N03 is held where the
+oracle acts: every write an executed instruction makes is checked against
+the staged input and label slots — as the oracle checks every memory access
+— rather than from a second copy of the validator's per-opcode extents (§7:
+never a second copy of a contract), in the device's words, naming the
+program and the opcode. Its boundary: the executor runs the train, step and
+eval programs, and a diff runs the merge program too, where the probe's
+executor contract refuses an N03 plan first; a plan only priced or
+histogrammed runs nothing. The reader's own persist rule, stricter than the
+device's (the image the segment's size), is gone: the oracle's initial arena
+copies the image over zeros, as the engine does. Tests: every header rule
+broken once against a plan the device accepts, refused in the device's
+words; a write into the staged input slot refused in each of the four
+programs on both memory models, and into the label slot, with the bytes
+beside them and the loss slot left writable; the certifier's two executors,
+which run loops of their own, name the program as the oracle does. The test
+assembler now builds plans the device's contract accepts.
+
 ## Acceptance
 
 - F07, N03, N04, N05, F58, F47, N33 reproductions refused by both planes.

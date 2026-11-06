@@ -104,7 +104,10 @@ RODATA_BIT = 1 << 63
 # program (an adapter-only plan's frozen weights, F6 #134).
 SOURCE_BIT = 1 << 62
 NULL_REF = (1 << 64) - 1
-RODATA_ALIGNMENT = 16384
+RODATA_ALIGNMENT = 16384  # where the compiler puts rodata (a 16 KiB page)
+# What the load contract proves of the rodata offset (CR2 #143 N05): any
+# plan the device accepts, laid out by the compiler or not.
+RODATA_OFFSET_ALIGNMENT = 16
 GEMM_PANEL_FLOATS = 8192
 
 PLAN_HEADER = Layout("PlanHeader", [
@@ -324,6 +327,8 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
     same("seeu.rodata_bit", RODATA_BIT, 1 << seeu["rodata_bit"])
     same("seeu.source_bit", SOURCE_BIT, 1 << seeu["source_bit"])
     same("seeu.rodata_alignment", RODATA_ALIGNMENT, seeu["rodata_alignment"])
+    same("seeu.rodata_offset_alignment", RODATA_OFFSET_ALIGNMENT,
+         seeu["rodata_offset_alignment"])
     same("seeu.gemm_panel_floats", GEMM_PANEL_FLOATS,
          seeu["gemm_panel_floats"])
     same("seeu.opcodes", {n: k for k, n in OPCODES.items()}, seeu["opcodes"])

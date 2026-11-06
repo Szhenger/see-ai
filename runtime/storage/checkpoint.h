@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "runtime/storage/durable_io.h"
+
 // =============================================================================
 // SEKP — the SeeAI checkpoint container.
 //
@@ -73,9 +75,11 @@ struct CheckpointRecord {
 
 /// Durably writes a checkpoint: header + `persistent` payload, gather-written
 /// straight from the arena, plus `record`'s best payload when it has one.
+/// `stats`, when given, receives what the write cost on disk.
 [[nodiscard]] std::expected<void, std::string> SaveCheckpointRecord(
     const std::string& path, uint64_t plan_hash, const CheckpointRecord& record,
-    const uint8_t* persistent, uint64_t persistent_size);
+    const uint8_t* persistent, uint64_t persistent_size,
+    DurableWriteStats* stats = nullptr);
 
 /// Loads and fully verifies a checkpoint bound to `plan_hash`, copying its
 /// main payload (which must be exactly `persistent_size` bytes) into `dst`

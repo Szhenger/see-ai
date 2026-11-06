@@ -380,6 +380,15 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);");
     EXPECT_STR_CONTAINS(main_tu, "\"--peak-gflops\"");
     EXPECT_STR_CONTAINS(main_tu, "runtime_screen.Json(2)");
+    // CR4 #145, the storage role's rows: only for a run that saved a
+    // checkpoint, the bytes and the fsyncs as means over its checkpoints.
+    EXPECT_STR_CONTAINS(main_tu, "if (report->checkpoints > 0) {");
+    EXPECT_STR_CONTAINS(main_tu,
+                        "runtime_screen.Set(\"checkpoints\", report->checkpoints);");
+    EXPECT_STR_CONTAINS(main_tu,
+                        "report->checkpoint_bytes / report->checkpoints");
+    EXPECT_STR_CONTAINS(main_tu,
+                        "static_cast<double>(report->checkpoint_fsyncs) /");
     for (const char* header :
          {"source/statistics/screen.h", "source/statistics/screens.h",
           "source/statistics/plan_work.h", "source/statistics/process.h"}) {

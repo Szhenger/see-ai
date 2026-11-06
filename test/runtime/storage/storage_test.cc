@@ -19,6 +19,7 @@
 #include "source/identity/hash.h"
 #include "runtime/dispatcher/contract.h"
 #include "test/framework/seetest.h"
+#include "test/support/child_process.h"
 #include "test/support/scoped_temp_dir.h"
 
 namespace {
@@ -336,6 +337,36 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
   EXPECT_TRUE(dst == seg);
 }
 
+TEST(DurableIo, AWriteReportsWhatItCostOnDisk) {
+  // CR4 #145: the storage role's screen line reads these — the bytes a
+  // durable write put on disk, and the fsyncs that succeeded: the file's,
+  // then its directory's, which a filesystem may refuse.
+  ScopedTempDir dir;
+  const std::vector<uint8_t> head{1, 2, 3};
+  const std::vector<uint8_t> body(1000, 7);
+  const ByteSpan parts[] = {{head.data(), head.size()},
+                            {body.data(), body.size()}};
+  DurableWriteStats stats;
+  ASSERT_OK(WriteFileDurable(dir.File("x.bin"),
+                             std::span<const ByteSpan>(parts), &stats));
+  EXPECT_EQ(stats.bytes, uint64_t{1003});
+  EXPECT_EQ(stats.bytes,
+            static_cast<uint64_t>(std::filesystem::file_size(dir.File("x.bin"))));
+  EXPECT_GE(stats.fsyncs, uint64_t{1});
+  EXPECT_LE(stats.fsyncs, uint64_t{2});
+  // A checkpoint's cost is the file it wrote, header and payload.
+  const std::vector<uint8_t> segment(256, 3);
+  CheckpointRecord record;
+  record.step = 5;
+  DurableWriteStats saved;
+  ASSERT_OK(SaveCheckpointRecord(dir.File("c.ckpt"), 77, record,
+                                 segment.data(), segment.size(), &saved));
+  EXPECT_EQ(saved.bytes, static_cast<uint64_t>(
+                             std::filesystem::file_size(dir.File("c.ckpt"))));
+  EXPECT_GT(saved.bytes, uint64_t{segment.size()});
+  EXPECT_GE(saved.fsyncs, uint64_t{1});
+}
+
 TEST(DurableIo, AFailedWriteLeavesNoSidecarAndTheOldFile) {
   // CR4 #145 F08: every failure path removes the partial temp file and the
   // destination keeps its previous bytes. The write fault is injected (a
@@ -361,6 +392,84 @@ TEST(DurableIo, AFailedWriteLeavesNoSidecarAndTheOldFile) {
   ASSERT_OK_AND_ASSIGN(auto replaced, ReadFileBytes(path));
   EXPECT_TRUE(replaced == next);
 }
+
+#ifndef _WIN32
+// The entries of `dir` whose names begin with `prefix`, and their sizes.
+std::vector<uint64_t> SizesOf(const std::filesystem::path& dir,
+                              const std::string& prefix) {
+  std::vector<uint64_t> out;
+  for (const auto& e : std::filesystem::directory_iterator(dir))
+    if (e.path().filename().string().rfind(prefix, 0) == 0)
+      out.push_back(static_cast<uint64_t>(e.file_size()));
+  return out;
+}
+
+TEST(DurableIo, AWriteThatFailsMidwayLeavesNoSidecarAndTheOldFile) {
+  // CR4 #145: F08's injection fails the first write; here the disk fills
+  // partway through the file. The child's files may not grow past 16 KiB
+  // of the 64 KiB being written, and the kernel fails the write that
+  // crosses (EFBIG). The same holds: the old file, and nothing beside it.
+  using seeml::testing::PastTheLimit;
+  ScopedTempDir dir;
+  const std::string path = dir.File("state.bin");
+  const std::vector<uint8_t> old = {1, 2, 3, 4};
+  ASSERT_OK(WriteFileDurable(path, old.data(), old.size()));
+  const std::vector<uint8_t> next(64 << 10, 0xCD);
+  const int status = seeml::testing::RunUnderFileSizeLimit(
+      16 << 10, PastTheLimit::kFail, [&] {
+        auto r = WriteFileDurable(path, next.data(), next.size());
+        if (r) return 1;
+        if (r.error().find("short write") == std::string::npos) return 2;
+        auto bytes = ReadFileBytes(path);
+        if (!bytes || *bytes != old) return 3;
+        if (SizesOf(dir.path(), "") != std::vector<uint64_t>{old.size()})
+          return 4;
+        return 0;
+      });
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(Checkpoint, AWriterKilledMidSaveLeavesTheLastCheckpointWhole) {
+  // CR4 #145, kill mid-save: the process dies partway through a checkpoint
+  // (SIGXFSZ's default action at the child's 64 KiB file-size limit). The
+  // rename never ran, so the destination is the last checkpoint, whole —
+  // it loads, with its step and its bytes — and the next save goes
+  // through. The dead writer's sidecar stays behind, short of the full
+  // file: the inert leftover the durable writer documents (a pid-unique
+  // name nothing reads), and the proof the writer died mid-file.
+  using seeml::testing::PastTheLimit;
+  ScopedTempDir dir;
+  const std::string path = dir.File("run.ckpt");
+  const uint64_t hash = 0x5EEC;
+  const std::vector<uint8_t> last(4096, 1);
+  ASSERT_OK(SaveCheckpointFile(path, hash, 3, last.data(), last.size()));
+  const std::vector<uint8_t> next(1 << 20, 2);
+  const int status = seeml::testing::RunUnderFileSizeLimit(
+      64 << 10, PastTheLimit::kKill, [&] {
+        (void)SaveCheckpointFile(path, hash, 9, next.data(), next.size());
+        return 0;  // reached only if the writer survived
+      });
+  ASSERT_TRUE(WIFSIGNALED(status));
+  EXPECT_EQ(WTERMSIG(status), SIGXFSZ);
+  std::vector<uint8_t> back(last.size());
+  ASSERT_OK_AND_ASSIGN(uint64_t step, LoadCheckpointFile(path, hash,
+                                                         last.size(),
+                                                         back.data()));
+  EXPECT_EQ(step, uint64_t{3});
+  EXPECT_TRUE(back == last);
+  const std::vector<uint64_t> sidecars = SizesOf(dir.path(), "run.ckpt.tmp.");
+  ASSERT_EQ(sidecars.size(), size_t{1});
+  EXPECT_LE(sidecars[0], uint64_t{64 << 10});
+  ASSERT_OK(SaveCheckpointFile(path, hash, 9, next.data(), next.size()));
+  std::vector<uint8_t> now(next.size());
+  ASSERT_OK_AND_ASSIGN(uint64_t step2, LoadCheckpointFile(path, hash,
+                                                          next.size(),
+                                                          now.data()));
+  EXPECT_EQ(step2, uint64_t{9});
+  EXPECT_TRUE(now == next);
+}
+#endif  // _WIN32
 
 TEST(Checkpoint, TheBindingTravelsOnlyWhenSaidTo) {
   // CR4 #145 F71: has_binding was never written, and every v5 file read as
