@@ -6,6 +6,11 @@
 // default console inside the 60-line budget.
 // =============================================================================
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -193,6 +198,96 @@ TEST(CompileScreens, TheDefaultConsoleFitsTheSixtyLineBudget) {
   if (Lines(text) > 60)
     ADD_FAILURE("the default screens take " + std::to_string(Lines(text)) +
                 " lines:\n" + text);
+}
+
+// --- Golden statistic blocks (S0 #146 acceptance) ------------------------------
+// The four screens' rows that are neither timings, hashes nor host facts,
+// for the MLP fixtures and the dec_wide shape (tool/frontier_run.py SHAPES:
+// vocab 4096, width 512, 8 heads, ffn 1024, 4 blocks, 256 tokens; compiled
+// with the nightly's flags), committed under test/fixtures/golden/screens/.
+// A pass that changes what it does changes a line here. Integer-derived
+// throughout, so the same text on every toolchain. To accept a deliberate
+// change: SEEML_UPDATE_GOLDEN=1 ./build/seeml_screens_test, then review the
+// diff of test/fixtures/golden/screens/ like any other change.
+
+std::string GoldenOf(const CompileScreens& s) {
+  return s.frontend.Golden() + s.analysis.Golden() + s.backend.Golden() +
+         s.runtime.Golden();
+}
+
+void ExpectGolden(const std::string& fixture, const std::string& actual) {
+  const std::string path = seeml::testing::RepoRoot() +
+                           "/test/fixtures/golden/screens/" + fixture + ".txt";
+  const char* update = std::getenv("SEEML_UPDATE_GOLDEN");
+  if (update && *update && std::string(update) != "0") {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << actual;
+    out.close();
+    if (out.fail()) ADD_FAILURE("cannot write " + path);
+    std::printf("  [ note ] wrote %s\n", path.c_str());
+    return;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    ADD_FAILURE("no golden block at " + path +
+                " (SEEML_UPDATE_GOLDEN=1 writes it)");
+    return;
+  }
+  const std::string expected((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+  if (expected == actual) return;
+  // Name the first line that differs: the row a pass changed.
+  size_t e = 0, a = 0, line = 1;
+  while (true) {
+    const size_t en = expected.find('\n', e), an = actual.find('\n', a);
+    const std::string el = expected.substr(e, en == std::string::npos ? std::string::npos : en - e);
+    const std::string al = actual.substr(a, an == std::string::npos ? std::string::npos : an - a);
+    if (el != al || en == std::string::npos || an == std::string::npos) {
+      ADD_FAILURE(fixture + ": golden block differs at line " +
+                  std::to_string(line) + ":\n    golden: " + el +
+                  "\n    now:    " + al +
+                  "\n  (a deliberate change: SEEML_UPDATE_GOLDEN=1, then review "
+                  "the diff)");
+      return;
+    }
+    e = en + 1;
+    a = an + 1;
+    ++line;
+  }
+}
+
+TEST(GoldenScreens, TheMlpFixtures) {
+  UpdateConfig plain = BaseConfig(4);
+  plain.peak_gflops = 100.0;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
+                       UpdateCompiler(plain).Compile(MakeMlp(6, 10, 3, 1)));
+  ExpectGolden("mlp", GoldenOf(c.screens));
+  UpdateConfig narrow = plain;
+  narrow.quantize_base = true;
+  narrow.grad_accum_steps = 2;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate n,
+                       UpdateCompiler(narrow).Compile(MakeMlp(6, 10, 3, 1)));
+  ExpectGolden("mlp_int8_accumulating", GoldenOf(n.screens));
+}
+
+TEST(GoldenScreens, TheDecWideShape) {
+  UpdateConfig config = BaseConfig(512);  // the nightly's dec_wide flags
+  config.lora.rank = 16;
+  config.lora.alpha = 32.0f;
+  config.optimizer.kind = OptimizerKind::kAdamW;
+  config.optimizer.lr = 1e-4f;
+  config.optimizer.lr_schedule = LrSchedule::kConstant;
+  config.default_steps = 300;
+  config.peak_gflops = 3500.0;
+  SmfModel model = seeml::testing::MakeTokenDecoderStack(4096, 512, 8, 256,
+                                                         1024, 4, 7);
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+  std::printf("  [ note ] dec_wide compiled in %.0f ms\n",
+              std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - t0)
+                  .count());
+  ExpectGolden("dec_wide", GoldenOf(c.screens));
 }
 
 }  // namespace
