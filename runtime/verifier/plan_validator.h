@@ -5,6 +5,7 @@
 #include <expected>
 #include <string>
 
+#include "source/contract/bounds.h"
 #include "source/plan/update_types.h"
 
 // =============================================================================
@@ -19,17 +20,11 @@
 
 namespace seeml::update_rt {
 
-/// Overflow-checked u64 multiply for file-supplied offsets and sizes.
-inline bool MulOk(uint64_t a, uint64_t b, uint64_t* out) {
-  if (b != 0 && a > UINT64_MAX / b) return false;
-  *out = a * b;
-  return true;
-}
-
-/// True iff [off, off + bytes) lies inside [0, size) without wrapping.
-inline bool RangeOk(uint64_t off, uint64_t bytes, uint64_t size) {
-  return off <= size && bytes <= size - off;
-}
+// The overflow-safe bounds helpers live in source/contract/bounds.h,
+// shared with the compiler (CR2 #143 design item 1); re-exported here
+// so the runtime's call sites name them as they always have.
+using seeml::update::MulOk;
+using seeml::update::RangeOk;
 
 /// Checks that every ref operand of `ins` lies fully inside its address space
 /// (arena or rodata), with byte extents derived from the instruction's dims

@@ -5,6 +5,8 @@
 // pipeline crosses every gate silently.
 // =============================================================================
 
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -163,6 +165,41 @@ TEST(Driver, ErrorsCrossingTheBoundaryAreWellFormed) {
   const auto r = UpdateCompiler(config).Compile(model);
   ASSERT_FALSE(r.has_value());
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
+}
+
+TEST(DriverContract, TheEmittedHeaderMeetsTheDevicesLoadContract) {
+  // CR2 #143 design item 1: the compiler runs the device's load contract —
+  // the same function the device runs — on the plan it has just emitted,
+  // so a header the loader would refuse is refused at compile time, as a
+  // backend contract violation, by name.
+  SmfModel model = MakeMlp(6, 10, 3, 1);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  const size_t n = compiled.adapters.size();
+  ASSERT_OK(VerifyGeneratedPlan(compiled, n));
+  auto with_header = [&](void (*edit)(PlanHeader&)) {
+    CompiledUpdate c = compiled;
+    PlanHeader h;
+    std::memcpy(&h, c.plan.data(), sizeof(h));
+    edit(h);
+    std::memcpy(c.plan.data(), &h, sizeof(h));
+    return VerifyGeneratedPlan(c, n);
+  };
+  EXPECT_ERROR_CONTAINS(
+      with_header([](PlanHeader& h) { h.rodata_offset += 4; }),
+      "load contract: rodata section is not 16-byte aligned");
+  EXPECT_ERROR_CONTAINS(
+      with_header([](PlanHeader& h) { h.lr = std::nanf(""); }),
+      "plan header lr");
+  EXPECT_ERROR_CONTAINS(
+      with_header([](PlanHeader& h) { h.train_instr_offset = UINT64_MAX; }),
+      "plan section out of bounds");
+  const auto r = with_header([](PlanHeader& h) { h.batch = 0; });
+  ASSERT_FALSE(r.has_value());
+  EXPECT_TRUE(WellFormedDiagnostic(r.error()));
+  CompiledUpdate stub = compiled;
+  stub.plan.resize(8);
+  EXPECT_ERROR_CONTAINS(VerifyGeneratedPlan(stub, n), "shorter than its header");
 }
 
 }  // namespace

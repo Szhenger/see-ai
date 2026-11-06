@@ -61,9 +61,10 @@ untouched arena on both; `ExpectClose` records a NaN as the worst error
 (F29). Each rule was removed in turn and its test failed (the table is in
 the PR). Known boundary: the GPU's clip norm sums in f32 and the CPU's in
 f64, so a finite gradient whose squares overflow f32 (|g| beyond ~1.8e19)
-is refused on Metal and clipped on the CPU. Not here: the Python plane's
-plan checks (`pack_update.py check_plan`, `formats.py`) do not mirror the
-new validator rules — CR2's open Python remainder; and the runtime binds a
+is refused on Metal and clipped on the CPU. The Python plane followed on
+2026-11-06: the oracle's plan reader refuses the same immediates and header
+floats, and the ABI manifest carries the temperature bounds as f32 bits.
+Not here: the runtime binds a
 source model (the adapter-only package) without sweeping it, so a
 hand-written SMF with a NaN base trains to a NaN loss and the finite-loss
 guard stops it, as before.

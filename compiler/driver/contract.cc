@@ -1,11 +1,14 @@
 #include "compiler/driver/contract.h"
 
+#include <cstring>
+
 #include "compiler/diagnostics/architecting/error.h"
 #include "compiler/diagnostics/generating/error.h"
 #include "compiler/diagnostics/parsing/error.h"
 #include "compiler/diagnostics/passing/error.h"
 #include "compiler/diagnostics/tokenizing/error.h"
 #include "compiler/diagnostics/updating/error.h"
+#include "source/contract/plan_contract.h"
 
 namespace seeml::update {
 
@@ -120,6 +123,20 @@ std::expected<void, std::string> VerifyGeneratedPlan(
     const CompiledUpdate& compiled, size_t num_adapters) {
   if (compiled.plan.empty())
     return Broken("backend", "assembled plan is empty");
+  // The device's load contract, run on the plan this compile has just
+  // emitted — the same function the device runs (CR2 #143 design item
+  // 1): a header the loader would refuse is a compiler bug, caught here
+  // by the rule that would refuse it there.
+  if (compiled.plan.size() < sizeof(PlanHeader))
+    return Broken("backend", "assembled plan is shorter than its header");
+  {
+    PlanHeader header;
+    std::memcpy(&header, compiled.plan.data(), sizeof(header));
+    if (auto why = PlanHeaderViolation(header, compiled.plan.size()))
+      return Broken("backend",
+                    "the emitted plan's header fails the device's load "
+                    "contract: " + *why);
+  }
   if (compiled.train_instruction_count == 0 ||
       compiled.eval_instruction_count == 0 ||
       compiled.merge_instruction_count == 0)

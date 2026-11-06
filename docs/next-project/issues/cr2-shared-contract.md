@@ -67,11 +67,26 @@ whole C++ arena image against the one it sent and names the first byte
 changed outside every declared write extent — a kernel writing where the
 bounds proof says it does not, which the per-extent comparison could never
 see. Tests: four refused corpora and two accepted ones against the matrix's
-plans; a crafted image with one stray byte. Still open: design item 1 —
-the contract as pure functions in `source/contract/`, shared by the
-compiler's topology, the probe and the oracle — and the Python plane's
-own plan checks (`pack_update.py check_plan`, `formats.py`) do not mirror
-CR1's immediate-float rules.
+plans; a crafted image with one stray byte.
+
+## Status 2026-11-06 — design item 1
+
+The geometry contract is one pure statement in `source/contract/`:
+`PlanHeaderViolation(header, plan_size)` — the section table, the version
+gates, the arena relations, the I/O slots, the hyperparameters — and
+`CorpusGeometryViolation(header, CorpusShape)` — the feeder's geometry
+half — each returning the violated rule's reason, with the bounds helpers
+beside them (`source/contract/bounds.h`). The runtime's loader and feeder
+wrap them under the engine's unit (the feeder keeps the value half, which
+reads the records); the compiler runs the same header function on the plan
+it has just emitted, so a header the device would refuse is a backend
+contract violation at compile time; the probe reaches it through the
+runtime's wrapper. The Python oracle cannot call it, so it is held to the
+same rules by its own tests and, for the constants, by the ABI manifest:
+the reader refuses CR1's immediate floats and the header's hyperparameters
+as the device does, and `seeml-abi` publishes the temperature bounds as
+f32 bits. (The packer's `check_plan` stays a magic sniff on purpose: it
+never interprets instructions, and the packaged device validates in full.)
 
 ## Acceptance
 

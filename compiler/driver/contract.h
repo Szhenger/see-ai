@@ -58,7 +58,9 @@ namespace seeml::update {
         param_grads,
     const MergeProgram& merge);
 
-/// The backend was used correctly: the plan is non-empty, all three programs
+/// The backend was used correctly: the plan's header passes the device's
+/// load contract (source/contract/plan_contract.h, the same function the
+/// device runs), the plan is non-empty, all three programs
 /// were lowered (with the eval program a prefix of training, and at least
 /// one merge instruction per adapter), the arena contains its persistent
 /// segment, frozen weights were packed to rodata, and the debug hooks cover
