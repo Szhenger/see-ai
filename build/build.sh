@@ -71,6 +71,7 @@ compile compiler/backend/selection/instruction_lowering.cc instruction_lowering.
 compile compiler/backend/architecture/kernel_emitter.cc kernel_emitter.o
 compile compiler/driver/contract.cc           driver_contract.o
 compile compiler/driver/update_compiler.cc    update_compiler.o
+compile compiler/driver/statistics.cc         driver_statistics.o
 compile compiler/backend/packaging/native_emitter.cc native_emitter.o
 compile runtime/executor/gemm.cc              rt_gemm.o
 compile runtime/executor/elementwise.cc       rt_elementwise.o
@@ -139,7 +140,8 @@ LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
       build/arena_binder.o build/instruction_lowering.o \
       build/host_arch.o build/kernel_policy_table.o \
       build/kernel_emitter.o \
-      build/driver_contract.o build/update_compiler.o build/native_emitter.o \
+      build/driver_contract.o build/update_compiler.o build/driver_statistics.o \
+      build/native_emitter.o \
       build/sir_type.o build/sir_value.o build/sir_operation.o \
       build/sir_block.o \
       build/op_convolution.o build/op_linear.o build/op_normalization.o \
@@ -180,6 +182,7 @@ fi
 
 for suite in \
     source/identity/hash_test source/parallel/parallel_for_test \
+    source/statistics/screen_test \
     compiler/frontend/model_io_test compiler/frontend/golden_fixture_test \
     compiler/frontend/resource_analyzer_test \
     compiler/frontend/sir_test compiler/frontend/operator_test \
@@ -189,6 +192,7 @@ for suite in \
     compiler/backend/architecture_test compiler/backend/lowering_test \
     compiler/backend/native_emitter_test \
     compiler/driver/update_compiler_test compiler/driver/driver_test \
+    compiler/driver/screens_test \
     compiler/diagnostics/diagnostics_test \
     runtime/pipeline/dataset_test runtime/pipeline/batch_pipeline_test \
     runtime/executor/kernels_test runtime/executor/metal_gemm_test \

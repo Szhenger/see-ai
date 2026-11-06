@@ -263,5 +263,55 @@ class TwoDecodersOnePlan(unittest.TestCase):
             self.assertEqual(dumped.stdout, "")
 
 
+@unittest.skipUnless(os.path.exists(COMPILER),
+                     f"no built seeml tools under {BUILD}")
+class ScreensOnTheSeam(unittest.TestCase):
+    """S0 #146: the compile report's screens are the rows the manifest
+    publishes — every key a published one, every required row present, every
+    value of its published kind — and the console shows the four screens,
+    inside the 60-line budget, with no pass notes unless asked."""
+
+    def test_the_compile_report_renders_the_published_screens(self):
+        manifest = formats.load_abi()["screens"]
+        with tempfile.TemporaryDirectory(prefix="seeml-screens-") as tmp:
+            report = os.path.join(tmp, "report.json")
+            done = subprocess.run(
+                [COMPILER, "--source", os.path.join(GOLDEN, "mlp.smf"),
+                 "--out", tmp, "--data-batch", "4", "--no-embed",
+                 "--peak-gflops", "100", "--report", report],
+                capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            with open(report) as f:
+                document = json.load(f)
+        self.assertEqual(document["schema"], 1)  # the screens are additive
+        screens = document["screens"]
+        self.assertEqual(sorted(screens), sorted(manifest))
+        kinds = {"count": int, "bytes": int, "real": (int, float), "text": str}
+        for name, spec in manifest.items():
+            rows = {row["key"]: row for row in spec["rows"]}
+            tables = {table["key"]: table for table in spec["tables"]}
+            for key, value in screens[name].items():
+                if key in tables:
+                    columns = [c["key"] for c in tables[key]["columns"]]
+                    for item in value:
+                        self.assertEqual(list(item), columns, f"{name}.{key}")
+                    continue
+                self.assertIn(key, rows, f"{name}.{key} is not published")
+                self.assertIsInstance(value, kinds[rows[key]["kind"]],
+                                      f"{name}.{key}")
+                self.assertNotIsInstance(value, bool, f"{name}.{key}")
+            for key, row in rows.items():
+                if not row["optional"]:
+                    self.assertIn(key, screens[name], f"{name}.{key} missing")
+        self.assertEqual(screens["backend"]["peak_gflops"], 100)
+        self.assertGreater(screens["backend"]["predicted_step_ms"], 0)
+        # The console: four screens, no pass notes by default, 60 lines at most.
+        for heading in ("frontend — ", "analysis — ", "backend — ",
+                        "runtime — "):
+            self.assertIn(heading, done.stderr)
+        self.assertNotIn("[INFO]", done.stdout)
+        self.assertLessEqual(len(done.stderr.splitlines()), 60, done.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

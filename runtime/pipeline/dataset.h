@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,14 @@ class Dataset {
   uint32_t label_kind() const { return label_kind_; }
   uint32_t input_kind() const { return input_kind_; }
   uint64_t label_bytes_per_sample() const;
+
+  /// The entropy, in nats, of the class labels this dataset serves: the
+  /// cross-entropy of a predictor that ignores its input and answers the
+  /// labels' own frequencies — the loss an input-blind model reaches, the
+  /// level a trained model's loss is read against (S0 #146). For a token
+  /// corpus the labels are each record's next tokens (positions 1..seq).
+  /// Nothing for a corpus without class labels.
+  std::optional<double> LabelEntropyNats() const;
 
   /// Checks every class-index label lies in [0, num_classes) — the training
   /// kernels index rows of size num_classes with these values. No-op for

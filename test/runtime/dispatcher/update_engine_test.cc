@@ -4,6 +4,7 @@
 // round-trips, and the merge-before-commit protocol.
 // =============================================================================
 
+#include <chrono>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -1800,6 +1801,29 @@ TEST(UpdateEngineBest, AutoEvaluatesEveryTenthOfTheRun) {
   ASSERT_OK_AND_ASSIGN(auto none, bare.Train(d2, 25, o));
   EXPECT_FALSE(none.best_tracked);
   EXPECT_EQ(none.eval_every, 0u);
+}
+
+TEST(UpdateEngineTrain, StepSecondsTimeTheStepsAlone) {
+  // S0 #146: the runtime screen's measured step is step_seconds ÷ steps —
+  // the steps themselves, not the evaluations around and between them.
+  auto plan = CompilePlan(BaseConfig(kBatch));
+  ASSERT_TRUE(!plan.empty());
+  UpdateEngine engine;
+  ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
+  ASSERT_OK_AND_ASSIGN(Dataset data, MakeClassificationData(64, kInDim, 7));
+  ASSERT_OK_AND_ASSIGN(Dataset val, MakeClassificationData(32, kInDim, 8));
+  TrainOptions options = Quiet();
+  options.validation = &val;
+  options.eval_every = 2;
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 10, options));
+  const double wall =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+          .count();
+  EXPECT_EQ(report.steps, 10u);
+  EXPECT_TRUE(report.step_seconds > 0.0);
+  EXPECT_TRUE(report.eval_seconds > 0.0);
+  EXPECT_TRUE(report.step_seconds + report.eval_seconds <= wall);
 }
 
 }  // namespace

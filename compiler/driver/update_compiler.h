@@ -9,6 +9,7 @@
 #include "compiler/analysis/pass_manager.h"  // PassTiming
 #include "source/language/model_format.h"
 #include "source/plan/update_types.h"
+#include "source/statistics/screens.h"
 
 // =============================================================================
 // UpdateCompiler — the AOT driver that turns
@@ -71,6 +72,16 @@ struct AdapterDebugInfo {
   bool bf16 = false;
 };
 
+/// The four statistics screens of a compile (S0 #146): frontend, analysis
+/// and backend in full, and the runtime screen's planned rows, which the
+/// device's runner completes with what it measures.
+struct CompileScreens {
+  Screen frontend{kFrontendScreen};
+  Screen analysis{kAnalysisScreen};
+  Screen backend{kBackendScreen};
+  Screen runtime{kRuntimeScreen};
+};
+
 struct CompiledUpdate {
   std::vector<uint8_t> plan;  // the .seeu blob
   std::string sir_dump;       // human-readable training program; empty
@@ -128,6 +139,9 @@ struct CompiledUpdate {
   // (plan v20). 0 under Precision::kF32.
   uint64_t relaxed_gemms = 0;
   uint64_t relaxed_attention = 0;
+  // What the compile did, as numbers with units and derivations: the
+  // console screens and the report's "screens" are renderings of these.
+  CompileScreens screens;
 };
 
 struct TrainingFootprint;

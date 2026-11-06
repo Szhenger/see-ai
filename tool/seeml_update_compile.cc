@@ -91,6 +91,8 @@
 #include "compiler/backend/architecture/host_arch.h"
 #include "compiler/backend/packaging/native_emitter.h"
 #include "compiler/backend/architecture/kernel_policy_table.h"
+#include "compiler/diagnostics/logger.h"
+#include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "source/identity/version.h"
@@ -126,7 +128,11 @@ void PrintUsage() {
                "  [--report out.json] [--dump-sir out.txt]\n"
                "  [--kernel-policy table.json] [--target-host KEY]\n"
                "  [--gemm-tiles K,N]\n"
-               "  [--no-embed] [--build] [--version]\n");
+               "  [--no-embed] [--build] [--version]\n"
+               "  [--peak-gflops G]   the target's peak; the backend screen then\n"
+               "                      predicts a step's time from the plan's work\n"
+               "  [--verbose]         every screen row, the per-pass and per-adapter\n"
+               "                      tables, and each pass's note\n");
 }
 
 /// Strict argument cursor: every flag must be known, every value must parse
@@ -469,6 +475,16 @@ int main(int argc, char** argv) {
   const auto teacher_path = args.TakeValue("--teacher");
   const auto report_path = args.TakeValue("--report");
   const bool no_embed = args.Take("--no-embed");
+  // The statistics screens (S0 #146) are the default output; --verbose
+  // adds their verbose rows and detail tables, and the passes' notes.
+  const bool verbose = args.Take("--verbose");
+  if (auto v = args.TakeValue("--peak-gflops")) {
+    float peak = 0.0f;
+    if (!ParseF32(*v, &peak) || !(peak > 0.0f))
+      return Fail("--peak-gflops must be a positive number, got '" + *v +
+                  "'");
+    config.peak_gflops = peak;
+  }
   const bool want_build = args.Take("--build");
 
   if (const auto& m = args.MissingValue())
@@ -501,17 +517,23 @@ int main(int argc, char** argv) {
   if (!policy) return Fail(policy.error());
   config.gemm_tile_k = policy->tiles.gemm_tile_k;
   config.gemm_tile_n = policy->tiles.gemm_tile_n;
-  if (policy->source == "default")
-    std::fprintf(stderr,
-                 "seeml-update-compile: kernel policy default (the runtime's "
-                 "GEMM tiles; host \"%s\")\n",
-                 policy->host_key.c_str());
-  else
-    std::fprintf(stderr,
-                 "seeml-update-compile: kernel policy from %s: GEMM tiles K %u "
-                 "N %u (host \"%s\")\n",
-                 policy->source.c_str(), policy->tiles.gemm_tile_k,
-                 policy->tiles.gemm_tile_n, policy->host_key.c_str());
+  seeml::diag::Logger::SetLevel(verbose ? seeml::diag::LogLevel::kInfo
+                                        : seeml::diag::LogLevel::kWarn);
+  // The backend screen's kernel_policy row states the tiles; where they came
+  // from — the host key, the table — is --verbose detail.
+  if (verbose) {
+    if (policy->source == "default")
+      std::fprintf(stderr,
+                   "seeml-update-compile: kernel policy default (the runtime's "
+                   "GEMM tiles; host \"%s\")\n",
+                   policy->host_key.c_str());
+    else
+      std::fprintf(stderr,
+                   "seeml-update-compile: kernel policy from %s: GEMM tiles K "
+                   "%u N %u (host \"%s\")\n",
+                   policy->source.c_str(), policy->tiles.gemm_tile_k,
+                   policy->tiles.gemm_tile_n, policy->host_key.c_str());
+  }
 
   // --- Ingest ---------------------------------------------------------------
   // Student and teacher load concurrently: one file's read overlaps the
@@ -537,14 +559,10 @@ int main(int argc, char** argv) {
   auto compiled = compiler.Compile(std::move(source_model), teacher);
   if (!compiled) return Fail(compiled.error());
 
-  std::fprintf(stderr,
-               "seeml-update-compile: %zu adapter(s) | %" PRIu64 " train + %"
-               PRIu64 " eval + %" PRIu64 " merge instrs | arena %" PRIu64
-               " B (%" PRIu64 " B persistent) | rodata %" PRIu64 " B\n",
-               compiled->adapters.size(), compiled->train_instruction_count,
-               compiled->eval_instruction_count,
-               compiled->merge_instruction_count, compiled->arena_size,
-               compiled->persistent_size, compiled->rodata_size);
+  // The four screens (S0 #146): frontend, analysis, backend, and the
+  // runtime as planned. stdout first: --verbose's notes go there.
+  std::fflush(stdout);
+  std::fputs(RenderCompileScreens(compiled->screens, verbose).c_str(), stderr);
 
   // --- Emit ------------------------------------------------------------------
   const std::string repo_root =
@@ -555,6 +573,7 @@ int main(int argc, char** argv) {
   emit_options.relaxed_plan =
       compiled->relaxed_gemms + compiled->relaxed_attention > 0;
   emit_options.embed_plan_tu = !no_embed;
+  emit_options.peak_gflops = config.peak_gflops;
   auto paths = EmitNativePackage(
       compiled->plan, *out_dir,
       repo_root.empty() || !std::filesystem::exists(repo_root + "/source")
@@ -714,7 +733,19 @@ int main(int argc, char** argv) {
                    i ? "," : "", JsonEscape(t.name).c_str(), t.ops_after,
                    t.ms);
     }
-    std::fprintf(f, "\n  ]\n}\n");
+    // The statistics screens (S0 #146): the same rows the console printed,
+    // every one of them, by key — the schema seeml-abi publishes. Additive,
+    // so the report stays schema 1, as every key added since has been
+    // (footprint_estimate, adapter_only, relaxed_attention, ...).
+    std::fprintf(f, "\n  ],\n  \"screens\": {");
+    const Screen* screens[] = {&compiled->screens.frontend,
+                               &compiled->screens.analysis,
+                               &compiled->screens.backend,
+                               &compiled->screens.runtime};
+    for (size_t i = 0; i < 4; ++i)
+      std::fprintf(f, "%s\n    \"%s\": %s", i ? "," : "",
+                   screens[i]->spec().name, screens[i]->Json(4).c_str());
+    std::fprintf(f, "\n  }\n}\n");
     // ferror catches any failed fprintf above; fclose catches the final
     // flush. A truncated report that exits 0 hands downstream automation
     // invalid JSON with a success status — the silent default this tool's

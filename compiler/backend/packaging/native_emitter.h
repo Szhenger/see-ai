@@ -61,6 +61,10 @@ struct EmitOptions {
   /// SEEML_NO_ACCELERATE=1 keeps the portable kernels. An exact plan's
   /// script never links Accelerate.
   bool relaxed_plan = false;
+  /// The target's peak in GFLOP/s (--peak-gflops; 0 = unstated), written
+  /// into the runner so its runtime screen predicts the step and states the
+  /// utilization the compile's backend screen predicted (S0 #146).
+  double peak_gflops = 0.0;
 };
 
 [[nodiscard]] std::expected<EmitPaths, std::string> EmitNativePackage(

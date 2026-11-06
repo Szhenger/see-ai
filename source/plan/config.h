@@ -173,6 +173,11 @@ struct UpdateConfig {
   // kernel's unroll width), which the driver checks before assembly.
   uint32_t gemm_tile_k = 0;
   uint32_t gemm_tile_n = 0;
+  // The target's peak arithmetic rate in GFLOP/s, as the user states it
+  // (seeml-bench's --peak-gflops convention). Never written into the plan:
+  // it only turns the backend screen's work per step into a predicted step
+  // time (S0 #146). 0 = unstated, no prediction.
+  double peak_gflops = 0.0;
   // Test hook: when false, the plan contains forward+backward only (no
   // parameter mutation), enabling finite-difference gradient verification.
   bool emit_optimizer = true;

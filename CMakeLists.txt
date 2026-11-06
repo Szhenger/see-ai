@@ -116,6 +116,7 @@ add_library(seeml_update STATIC
     compiler/backend/architecture/kernel_emitter.cc
     compiler/driver/contract.cc
     compiler/driver/update_compiler.cc
+    compiler/driver/statistics.cc
     compiler/backend/packaging/native_emitter.cc
 )
 target_link_libraries(seeml_update PUBLIC seeml_sir seeml_parallel)
@@ -243,6 +244,8 @@ endfunction()
 
 seeml_add_test(seeml_hash_test              test/source/identity/hash_test.cc)
 seeml_add_test(seeml_parallel_for_test      test/source/parallel/parallel_for_test.cc)
+seeml_add_test(seeml_screen_test            test/source/statistics/screen_test.cc)
+seeml_add_test(seeml_screens_test           test/compiler/driver/screens_test.cc)
 seeml_add_test(seeml_model_io_test          test/compiler/frontend/model_io_test.cc)
 seeml_add_test(seeml_golden_fixture_test    test/compiler/frontend/golden_fixture_test.cc)
 seeml_add_test(seeml_resource_analyzer_test test/compiler/frontend/resource_analyzer_test.cc)

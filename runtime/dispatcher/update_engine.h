@@ -161,6 +161,11 @@ struct TrainReport {
   float val_last_accuracy = 0.0f;
   uint64_t evaluations = 0;        // periodic evaluations run (not the two
                                    // bracketing ones)
+  // Wall seconds of the optimizer steps themselves (S0 #146): staging each
+  // batch, the train program G times, the step program — evaluations and
+  // checkpoint saves excluded. The runtime screen's measured step is this
+  // over `steps`.
+  double step_seconds = 0.0;
   double eval_seconds = 0.0;       // wall seconds inside every evaluation of
                                    // the run, bracketing ones included (F9
                                    // #140: the gate's share of the update)

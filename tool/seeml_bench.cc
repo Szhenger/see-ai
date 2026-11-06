@@ -81,6 +81,8 @@
 #include "source/identity/version.h"
 #include "source/parallel/parallel_for.h"
 #include "source/plan/update_types.h"
+#include "source/statistics/plan_work.h"
+#include "source/statistics/process.h"
 #include "test/support/builders.h"
 #include "tool/energy_meter.h"
 
@@ -95,17 +97,10 @@ double MsSince(Clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
-/// OS-observed peak resident set of this process, in bytes. Linux reports
-/// ru_maxrss in kilobytes, macOS in bytes.
-uint64_t PeakRssBytes() {
-  rusage ru{};
-  if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
-#if defined(__APPLE__)
-  return static_cast<uint64_t>(ru.ru_maxrss);
-#else
-  return static_cast<uint64_t>(ru.ru_maxrss) * 1024u;
-#endif
-}
+/// OS-observed peak resident set of this process, in bytes — the shared
+/// reading (source/statistics/process.h), so the device's runtime screen
+/// and these rows agree (S0 #146).
+uint64_t PeakRssBytes() { return up::PeakRssBytes(); }
 
 /// "sysname machine" — a number without its host string is not a benchmark.
 std::string HostString() {
@@ -258,29 +253,11 @@ uint64_t GradAccumOf(const std::vector<uint8_t>& plan) {
   return h.grad_accum_steps > 1 ? h.grad_accum_steps : 1;
 }
 
+// The shared definition (source/statistics/plan_work.h): the same sum
+// over the same eight opcodes, now also what the compiler's backend
+// screen and the device's runtime screen report (S0 #146).
 uint64_t GemmFlopsPerStep(const std::vector<uint8_t>& plan) {
-  up::PlanHeader h;
-  std::memcpy(&h, plan.data(), sizeof h);
-  const auto* ins = reinterpret_cast<const up::UpdateInstruction*>(
-      plan.data() + h.train_instr_offset);
-  uint64_t flops = 0;
-  for (uint64_t i = 0; i < h.train_instr_count; ++i) {
-    switch (static_cast<up::OpCode>(ins[i].opcode)) {
-      case up::OpCode::kGemmNN:
-      case up::OpCode::kGemmNT:
-      case up::OpCode::kGemmTN:
-      case up::OpCode::kGemmAccNN:
-      case up::OpCode::kGemmNNQ8:
-      case up::OpCode::kGemmNTQ8:
-      case up::OpCode::kGemmNNBF16:
-      case up::OpCode::kGemmNTBF16:
-        flops += 2 * ins[i].out[0] * ins[i].out[1] * ins[i].out[2];
-        break;
-      default:
-        break;
-    }
-  }
-  return flops;
+  return up::MeasurePlanWork(plan).train_gemm_flops;
 }
 
 // --- The attention sweep (docs/benchmarks.md, Tier B/C; E11 #94) -------------
@@ -718,6 +695,7 @@ int main(int argc, char** argv) {
                  PRIu64 ",\n"
                  "      \"train_instructions\": %" PRIu64
                  ", \"gemm_flops_per_step\": %" PRIu64
+                 ", \"attention_flops_per_step\": %" PRIu64
                  ", \"trainable_params\": %" PRIu64 ",\n"
                  "      \"compile_ms\": %.2f, \"load_ms\": %.3f,\n"
                  "      \"threads\": {",
@@ -725,7 +703,9 @@ int main(int argc, char** argv) {
                  f->seq, compiled->plan.size(), compiled->arena_size,
                  compiled->persistent_size, compiled->rodata_size,
                  compiled->train_instruction_count,
-                 GemmFlopsPerStep(compiled->plan) * GradAccumOf(compiled->plan), trainable_params,
+                 GemmFlopsPerStep(compiled->plan) * GradAccumOf(compiled->plan),
+                 up::MeasurePlanWork(compiled->plan).AttentionFlopsPerStep(),
+                 trainable_params,
                  compile_ms, load_ms);
     first_fixture = false;
 
@@ -832,6 +812,14 @@ int main(int argc, char** argv) {
                    it_per_s, *lo_it, *hi_it);
       if (peak_gflops > 0.0)
         std::fprintf(out, ", \"mfu\": %.4f", gflops / peak_gflops);
+      // The step the plan's whole work (GEMM + attention) predicts at the
+      // stated peak — the runtime screen's number, beside the measured
+      // step_ms (S0 #146); mfu above stays the GEMM-only utilization.
+      if (peak_gflops > 0.0)
+        std::fprintf(out, ", \"predicted_step_ms\": %.3f",
+                     static_cast<double>(
+                         up::MeasurePlanWork(compiled->plan).FlopsPerStep()) /
+                         (peak_gflops * 1e6));
       if (!energy_j_per_step.empty()) {
         const double j_step = Median(energy_j_per_step);
         std::fprintf(out,

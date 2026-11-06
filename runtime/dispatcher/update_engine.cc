@@ -1056,6 +1056,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
 
   const uint64_t start = step_;
   uint64_t executed = 0;
+  double step_seconds = 0.0;  // the steps alone (S0 #146)
   // Training is about to move the adapter parameters, so any previously
   // materialized merge deltas are stale: commit must be preceded by a fresh
   // RunMerge. Cleared before the first step, not after the loop — the error
@@ -1086,6 +1087,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       // partially folded; a failed Train() ends the engine's usable state
       // (checkpoints are written only after the step program), so no
       // resume ever starts from them.
+      const auto step_t0 = std::chrono::steady_clock::now();
       double loss_sum = 0.0;
       for (uint64_t g = 0; g < grad_accum_; ++g) {
         feeder.NextBatch(input_slot, label_slot);
@@ -1097,6 +1099,9 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         if (auto r = ExecuteStepProgram(); !r)
           return std::unexpected(r.error());
       }
+      step_seconds += std::chrono::duration<double>(
+                          std::chrono::steady_clock::now() - step_t0)
+                          .count();
       ++executed;
 #ifdef SEEML_STEP_TIMING
       ++timings_.steps;  // one optimizer step: G grad executions + the step
@@ -1200,6 +1205,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
     }
   }
   report.eval_seconds = eval_seconds_;
+  report.step_seconds = step_seconds;
   return report;
 }
 
