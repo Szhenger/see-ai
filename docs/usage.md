@@ -226,7 +226,7 @@ After the gate, the device prints the runtime screen: the plan's own rows — re
 runtime — planned by the compiler, measured by the device
   planned memory           55,680 B (54.4 KiB)           arena + plan: the resource contract the device checks
   work per step            84,992 FLOP                   GEMM + attention work of one optimizer step
-  predicted step           0.000 ms                      the work ÷ the target peak
+  predicted step           0.00017 ms                    the work ÷ the target peak
   backend                  cpu                           the executor that ran the plan
   steps                    300                           optimizer steps trained
   measured step            0.011 ms                      training wall time ÷ steps, evaluations excluded
@@ -234,8 +234,8 @@ runtime — planned by the compiler, measured by the device
   utilization              1.5 %                         achieved ÷ the target peak
   peak RSS                 6,799,360 B (6.5 MiB)         the process's resident peak, as the OS reports it
   RSS ÷ planned            122.115                       the resident peak ÷ the planned memory
-  train loss, start        1.3096 nats                   the mean loss of the first logged window
-  train loss, end          0.1664 nats                   the mean loss of the last logged window
+  train loss, start        1.3096 nats                   the mean loss over the run's first window of steps
+  train loss, end          0.1664 nats                   the mean loss over the run's last window of steps
   validation loss, start   1.4304 nats                   the held-out loss before training
   validation loss, end     0.0988 nats                   the held-out loss of the state the gate weighed
   input-blind loss         1.3261 nats                   the training labels' entropy: an input-blind predictor's loss

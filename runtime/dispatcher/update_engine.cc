@@ -1048,10 +1048,16 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
           ? nullptr
           : reinterpret_cast<uint8_t*>(WritePtr(header_.label_ref));
 
+  constexpr uint64_t kMaxWindow = 20;
   const uint64_t window =
-      std::max<uint64_t>(1, std::min<uint64_t>(20, steps / 5));
-  double first_sum = 0.0, last_sum = 0.0;
-  uint64_t first_n = 0, last_n = 0;
+      std::max<uint64_t>(1, std::min<uint64_t>(kMaxWindow, steps / 5));
+  double first_sum = 0.0;
+  uint64_t first_n = 0;
+  // The last window is over the steps actually run, kept as a ring: a run
+  // stopped early (patience, should_stop) ends at its own last steps, not
+  // at the requested run's — which it never reached. A run of all its
+  // steps sums the same losses in the same order as before.
+  float last_losses[kMaxWindow] = {};
   if (options.record_loss_curve) report.loss_curve.reserve(steps);
 
   const uint64_t start = step_;
@@ -1121,10 +1127,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         first_sum += loss;
         ++first_n;
       }
-      if (s - start >= steps - window) {
-        last_sum += loss;
-        ++last_n;
-      }
+      last_losses[(s - start) % window] = loss;
       if (options.log_every && (s - start) % options.log_every == 0)
         std::fprintf(stderr, "seeml-update: step %llu  loss %.6f\n",
                      static_cast<unsigned long long>(step_), loss);
@@ -1172,6 +1175,10 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   report.steps = executed;
   report.initial_avg_loss =
       first_n ? static_cast<float>(first_sum / first_n) : 0.0f;
+  const uint64_t last_n = std::min(executed, window);
+  double last_sum = 0.0;
+  for (uint64_t i = executed - last_n; i < executed; ++i)  // oldest first
+    last_sum += last_losses[i % window];
   report.final_avg_loss =
       last_n ? static_cast<float>(last_sum / last_n) : report.initial_avg_loss;
 

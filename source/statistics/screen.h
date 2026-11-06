@@ -108,7 +108,14 @@ inline std::string Bytes(uint64_t b) {
   }
   const uint64_t whole = b / scale;
   const uint64_t tenths = ((b % scale) * 10 + scale / 2) / scale;
-  const uint64_t w = whole + tenths / 10, t = tenths % 10;
+  uint64_t w = whole + tenths / 10, t = tenths % 10;
+  // Rounding up to 1024.0 of a unit is 1.0 of the next (1,048,575 B is
+  // 1.0 MiB, not 1024.0 KiB).
+  if (w == 1024 && unit < 4) {
+    w = 1;
+    t = 0;
+    ++unit;
+  }
   return s + " (" + std::to_string(w) + "." + std::to_string(t) + " " +
          kUnits[unit] + ")";
 }

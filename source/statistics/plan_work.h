@@ -21,13 +21,6 @@
 namespace seeml::update {
 
 namespace plan_work_detail {
-inline uint64_t SatMul(uint64_t a, uint64_t b) {
-  uint64_t out = 0;
-  return MulOk(a, b, &out) ? out : UINT64_MAX;
-}
-inline uint64_t SatAdd(uint64_t a, uint64_t b) {
-  return a > UINT64_MAX - b ? UINT64_MAX : a + b;
-}
 /// B·H·S·S·d — one dense [S, d] × [d, S] (or [S, S] × [S, d]) product per
 /// (batch, head), in multiply-adds.
 inline uint64_t AttnMacs(uint64_t B, uint64_t S, uint64_t H, uint64_t d) {
@@ -38,8 +31,6 @@ inline uint64_t AttnMacs(uint64_t B, uint64_t S, uint64_t H, uint64_t d) {
 /// 2·M·N·K over the eight GEMM opcodes of `program` (out[0..2] = M, N, K)
 /// — seeml-bench's gemm_flops_per_step, the unit its baselines carry.
 inline uint64_t GemmFlops(std::span<const UpdateInstruction> program) {
-  using plan_work_detail::SatAdd;
-  using plan_work_detail::SatMul;
   uint64_t flops = 0;
   for (const UpdateInstruction& ins : program) {
     switch (static_cast<OpCode>(ins.opcode)) {
@@ -70,8 +61,6 @@ inline uint64_t GemmFlops(std::span<const UpdateInstruction> program) {
 /// needs, not the work a kernel happens to do.
 inline uint64_t AttentionFlops(std::span<const UpdateInstruction> program) {
   using plan_work_detail::AttnMacs;
-  using plan_work_detail::SatAdd;
-  using plan_work_detail::SatMul;
   auto hi = [](uint64_t w) { return w >> 32; };
   auto lo = [](uint64_t w) { return w & 0xFFFFFFFFu; };
   uint64_t flops = 0;
@@ -118,15 +107,15 @@ struct PlanWork {
 
   /// GEMM FLOPs per optimizer step: G train passes plus the step program.
   uint64_t GemmFlopsPerStep() const {
-    return plan_work_detail::SatAdd(
-        plan_work_detail::SatMul(train_gemm_flops, micro_batches),
+    return SatAdd(
+        SatMul(train_gemm_flops, micro_batches),
         step_gemm_flops);
   }
   uint64_t AttentionFlopsPerStep() const {
-    return plan_work_detail::SatMul(train_attention_flops, micro_batches);
+    return SatMul(train_attention_flops, micro_batches);
   }
   uint64_t FlopsPerStep() const {
-    return plan_work_detail::SatAdd(GemmFlopsPerStep(),
+    return SatAdd(GemmFlopsPerStep(),
                                     AttentionFlopsPerStep());
   }
 };

@@ -154,7 +154,8 @@ TEST(Screen, CountsAndBytesReadTheSameOnEveryHost) {
   EXPECT_EQ(Bytes(1023), std::string("1,023 B"));
   EXPECT_EQ(Bytes(1024), std::string("1,024 B (1.0 KiB)"));
   EXPECT_EQ(Bytes(1536), std::string("1,536 B (1.5 KiB)"));
-  EXPECT_EQ(Bytes(1048575), std::string("1,048,575 B (1024.0 KiB)"));
+  EXPECT_EQ(Bytes(1048575), std::string("1,048,575 B (1.0 MiB)"));  // the carry
+  EXPECT_EQ(Bytes(1048524), std::string("1,048,524 B (1023.9 KiB)"));
   EXPECT_EQ(Bytes(1576898688), std::string("1,576,898,688 B (1.5 GiB)"));
   EXPECT_EQ(Bytes(UINT64_MAX).substr(0, 5), std::string("18,44"));
   // A real that would round to zero at its precision keeps three

@@ -408,6 +408,12 @@ TEST(Dataset, TheLabelEntropyIsAnInputBlindPredictorsLoss) {
       Dataset one, Dataset::FromMemory({0, 0}, ClassLabels({3, 3}), 2, 1, 1, 0));
   const double h_one = one.LabelEntropyNats().value_or(-1.0);
   EXPECT_EQ(h_one, 0.0);
+  // A label range too wide for the dense table counts the same way.
+  ASSERT_OK_AND_ASSIGN(
+      Dataset wide, Dataset::FromMemory({0, 0, 0, 0},
+                                        ClassLabels({-7, 1 << 30, -7, 1 << 30}),
+                                        4, 1, 1, 0));
+  EXPECT_NEAR(wide.LabelEntropyNats().value_or(-1.0), std::log(2.0), 1e-12);
   // A token corpus's labels are each record's next tokens: positions 1..seq
   // of every (seq + 1)-id record. Here the first ids (7, 7) are inputs only,
   // and the labels {1, 2, 1, 2} carry ln 2.

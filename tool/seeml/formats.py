@@ -174,6 +174,8 @@ FLAG_Q8_COL_SCALE = 16
 # against the exact stored weight; the attention blocks' products on matrix
 # tiles in another f32 summation order).
 FLAG_RELAXED = 32
+RELAXED_GEMM_OPCODES = (1, 2, 29, 30, 43, 44)
+RELAXED_ATTENTION_OPCODES = (47, 48, 49, 50)
 
 # CR1 #142: the distillation temperature (the KL words' low half) is a
 # finite f32 within these bounds — the validator's, the compiler's and the
@@ -187,8 +189,6 @@ def f32_bits(value: float) -> int:
     """The IEEE-754 single-precision bits of `value` (rounded to f32)."""
     bits: int = struct.unpack("<I", struct.pack("<f", value))[0]
     return bits
-RELAXED_GEMM_OPCODES = (1, 2, 29, 30, 43, 44)
-RELAXED_ATTENTION_OPCODES = (47, 48, 49, 50)
 
 
 def relaxed_gemm_count(source: Any) -> int:

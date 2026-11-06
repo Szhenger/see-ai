@@ -479,8 +479,14 @@ int main(int argc, char** argv) {
   // adds their verbose rows and detail tables, and the passes' notes.
   const bool verbose = args.Take("--verbose");
   if (auto v = args.TakeValue("--peak-gflops")) {
-    float peak = 0.0f;
-    if (!ParseF32(*v, &peak) || !(peak > 0.0f))
+    // Parsed as the double it is stored as (and as the runner parses its
+    // own --peak-gflops): through an f32, 1000.1 would reach the report
+    // and the baked runner constant as 1000.0999755859375.
+    errno = 0;
+    char* end = nullptr;
+    const double peak = std::strtod(v->c_str(), &end);
+    if (errno != 0 || end == v->c_str() || *end != '\0' ||
+        !std::isfinite(peak) || !(peak > 0.0))
       return Fail("--peak-gflops must be a positive number, got '" + *v +
                   "'");
     config.peak_gflops = peak;
@@ -563,6 +569,18 @@ int main(int argc, char** argv) {
   // runtime as planned. stdout first: --verbose's notes go there.
   std::fflush(stdout);
   std::fputs(RenderCompileScreens(compiled->screens, verbose).c_str(), stderr);
+  // A relaxed plan's obligation, which no screen row carries and the
+  // driver's note says only under --verbose: say it on every compile.
+  if (const uint64_t relaxed =
+          compiled->relaxed_gemms + compiled->relaxed_attention;
+      relaxed > 0)
+    std::fprintf(stderr,
+                 "seeml-update-compile: %" PRIu64
+                 " relaxed instruction(s) (--precision certified-bf16): the "
+                 "package needs a numerics certificate — `python3 "
+                 "tool/certify_numerics.py certify <out> --corpus "
+                 "<corpus.sds>`\n",
+                 relaxed);
 
   // --- Emit ------------------------------------------------------------------
   const std::string repo_root =

@@ -89,7 +89,9 @@ inline std::optional<std::string> PlanHeaderViolation(
 
   // The engine chunks Evaluate passes by dividing sample counts by the
   // batch, and the feeder stages batch x input width every step — zero for
-  // either is a malformed plan, not a degenerate-but-runnable one.
+  // either is a malformed plan, not a degenerate-but-runnable one (a zero
+  // batch reaches an integer division no later guard checks: batch = 0
+  // with input_floats = 0 would pass every slot check below).
   if (header.batch == 0)
     return contract_detail::Violation("plan batch size is zero");
   if (header.input_floats == 0)
@@ -102,13 +104,6 @@ inline std::optional<std::string> PlanHeaderViolation(
   if (header.persist_init_size > header.arena_size ||
       header.persistent_size > header.arena_size)
     return contract_detail::Violation("persistent segment exceeds arena");
-
-  // Execution ceil-divides by the batch (Evaluate's pass count) and the
-  // feeder stages batch-sized copies; zero would reach an integer division
-  // by zero that no later guard checks — batch = 0 with input_floats = 0
-  // passes every slot check below.
-  if (header.batch == 0)
-    return contract_detail::Violation("plan batch must be nonzero");
 
   // The optimizer hyperparameters (CR1 #142): the step kernels consume them
   // blindly, so each is finite and within the range the compiler accepts

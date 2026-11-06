@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <unordered_map>
 #include <fstream>
@@ -481,28 +482,53 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
 
 std::optional<double> Dataset::LabelEntropyNats() const {
   if (label_kind_ != 1) return std::nullopt;
-  std::unordered_map<int32_t, uint64_t> counts;
-  uint64_t n = 0;
-  if (input_kind_ == 1) {
-    // Record r is tokens_[r·(seq+1), ...]: the inputs are its first seq
-    // ids, the labels positions 1..seq (the shifted view).
-    const uint64_t stride = input_dim_ + 1;
-    for (uint64_t r = 0; r < num_samples_; ++r)
-      for (uint64_t j = 1; j <= input_dim_; ++j, ++n)
-        ++counts[tokens_[r * stride + j]];
-  } else {
-    for (uint64_t i = 0; i < num_samples_; ++i, ++n) {
-      int32_t label;
-      std::memcpy(&label, labels_.data() + i * sizeof(label), sizeof(label));
-      ++counts[label];
+  // Every class label the corpus serves, in record order. Token record r
+  // is tokens_[r·(seq+1), ...]: the inputs are its first seq ids, the
+  // labels positions 1..seq (the shifted view).
+  auto each_label = [&](auto&& visit) {
+    if (input_kind_ == 1) {
+      const uint64_t stride = input_dim_ + 1;
+      for (uint64_t r = 0; r < num_samples_; ++r)
+        for (uint64_t j = 1; j <= input_dim_; ++j)
+          visit(tokens_[r * stride + j]);
+    } else {
+      for (uint64_t i = 0; i < num_samples_; ++i) {
+        int32_t label;
+        std::memcpy(&label, labels_.data() + i * sizeof(label),
+                    sizeof(label));
+        visit(label);
+      }
     }
-  }
+  };
+  uint64_t n = 0;
+  int32_t lo = INT32_MAX, hi = INT32_MIN;
+  each_label([&](int32_t v) {
+    lo = std::min(lo, v);
+    hi = std::max(hi, v);
+    ++n;
+  });
   if (n == 0) return std::nullopt;
+  // Counted in a dense table over [lo, hi] — class and token ids are a
+  // vocabulary-sized range, which the feeder contract bounds before
+  // training — and in a hash map only for a range too wide to tabulate.
   // Summed over the sorted counts: one order on every host, so the same
   // bits wherever the screen is printed.
   std::vector<uint64_t> sorted;
-  sorted.reserve(counts.size());
-  for (const auto& [label, count] : counts) sorted.push_back(count);
+  const auto span =
+      static_cast<uint64_t>(static_cast<int64_t>(hi) - lo) + 1;
+  if (span <= (uint64_t{1} << 20)) {
+    std::vector<uint64_t> counts(span, 0);
+    each_label([&](int32_t v) {
+      ++counts[static_cast<uint64_t>(static_cast<int64_t>(v) - lo)];
+    });
+    for (const uint64_t c : counts)
+      if (c != 0) sorted.push_back(c);
+  } else {
+    std::unordered_map<int32_t, uint64_t> counts;
+    each_label([&](int32_t v) { ++counts[v]; });
+    sorted.reserve(counts.size());
+    for (const auto& [label, count] : counts) sorted.push_back(count);
+  }
   std::sort(sorted.begin(), sorted.end());
   double entropy = 0.0;
   const double total = static_cast<double>(n);
