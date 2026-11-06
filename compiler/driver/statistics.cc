@@ -1,6 +1,7 @@
 #include "compiler/driver/statistics.h"
 
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string_view>
@@ -138,7 +139,9 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
   const PlanWork work = MeasurePlanWork(r.plan);
   be.Set("gemm_flops", work.GemmFlopsPerStep());
   be.Set("attention_flops", work.AttentionFlopsPerStep());
-  const bool peak = config.peak_gflops > 0.0;
+  // A finite positive peak only: an infinite one would predict a 0 ms step.
+  const bool peak =
+      std::isfinite(config.peak_gflops) && config.peak_gflops > 0.0;
   // ms = FLOP ÷ (GFLOP/s · 1e9) · 1e3.
   const double predicted_ms =
       peak ? static_cast<double>(work.FlopsPerStep()) /

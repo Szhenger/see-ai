@@ -1,5 +1,6 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 
+#include "source/contract/bounds.h"
 #include "source/identity/host_memory.h"
 #include "source/plan/instruction.h"
 
@@ -21,14 +22,7 @@ namespace seeml::update {
 
 namespace {
 
-uint64_t SatAdd(uint64_t a, uint64_t b) {
-  return a > UINT64_MAX - b ? UINT64_MAX : a + b;
-}
-
-uint64_t SatMul(uint64_t a, uint64_t b) {
-  if (b != 0 && a > UINT64_MAX / b) return UINT64_MAX;
-  return a * b;
-}
+// SatAdd / SatMul: the shared saturating helpers (source/contract/bounds.h).
 
 std::string FormatMiB(uint64_t bytes) {
   // Round up without the additive form: bytes near UINT64_MAX (exactly what

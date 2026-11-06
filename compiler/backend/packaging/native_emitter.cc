@@ -1,5 +1,7 @@
 #include "compiler/backend/packaging/native_emitter.h"
 
+#include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 
@@ -656,18 +658,26 @@ int main(int argc, char** argv) {
         runtime_screen.Set("rss_over_planned", static_cast<double>(rss) /
                                                      static_cast<double>(planned));
     }
-    runtime_screen.Set("train_loss_first",
-                       static_cast<double>(report->initial_avg_loss));
-    runtime_screen.Set("train_loss_last",
-                       static_cast<double>(report->final_avg_loss));
+    // A run that trained no step (a resume with nothing left) measured no
+    // training loss: its zero placeholders are not losses.
+    if (report->steps > 0) {
+      runtime_screen.Set("train_loss_first",
+                         static_cast<double>(report->initial_avg_loss));
+      runtime_screen.Set("train_loss_last",
+                         static_cast<double>(report->final_avg_loss));
+    }
     if (report->has_validation) {
       runtime_screen.Set("validation_loss_first",
                          static_cast<double>(report->val_initial_loss));
       runtime_screen.Set("validation_loss_last",
                          static_cast<double>(report->val_final_loss));
     }
-    if (const auto entropy = dataset->LabelEntropyNats())
-      runtime_screen.Set("label_entropy", *entropy);
+    // The input-blind reference is a cross-entropy over the labels the
+    // plan trains on: a plan that stages none (distillation, whose loss is
+    // a KL) has no such level, whatever labels the corpus carries.
+    if (engine.header().label_kind == 1)
+      if (const auto entropy = dataset->LabelEntropyNats())
+        runtime_screen.Set("label_entropy", *entropy);
     if (report->has_val_accuracy)
       runtime_screen.Set("validation_accuracy",
                          static_cast<double>(report->val_final_accuracy));
@@ -1081,9 +1091,14 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
     if (at == std::string::npos)
       return generating::Error(generating::kNativeEmitter,
                                "the runner template lost its peak marker");
+    // Only a finite positive peak is a C++ literal: %.17g of an infinity
+    // or a NaN ("inf", "nan") would not compile.
+    const double stated = std::isfinite(options.peak_gflops) &&
+                                  options.peak_gflops > 0.0
+                              ? options.peak_gflops
+                              : 0.0;
     char peak[64];
-    std::snprintf(peak, sizeof(peak), "%.17g /*seeml:peak_gflops*/",
-                  options.peak_gflops > 0.0 ? options.peak_gflops : 0.0);
+    std::snprintf(peak, sizeof(peak), "%.17g /*seeml:peak_gflops*/", stated);
     main_tu.replace(at, marker.size(), peak);
   }
   if (auto r = WriteFile(paths.main_tu, main_tu); !r)

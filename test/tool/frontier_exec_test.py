@@ -57,8 +57,9 @@ def assemble(arena_size, train=(), persistent=b"", rodata=b"", **header):
                   label_ref=fx.NULL_REF, loss_ref=fx.NULL_REF, lr=1e-3,
                   beta1=0.9, beta2=0.999, eps=1e-8, batch=1)
     fields.update(header)
-    body = b"".join(fx._INSTRUCTION.pack(op, flags, 0, *src, *out)
-                    for op, flags, src, out in train)
+    body = b"".join(fx._INSTRUCTION.pack(op, flags, imm[0] if imm else 0,
+                                         *src, *out)
+                    for op, flags, src, out, *imm in train)
     fields["train_instr_offset"] = fx._HEADER.size
     fields["train_instr_count"] = len(train)
     fields["persist_init_offset"] = fx._HEADER.size + len(body)
@@ -153,6 +154,38 @@ class ReaderTest(unittest.TestCase):
                             ("min_lr_factor", 1.5)):
             with self.assertRaisesRegex(fx.PlanError, f"header {name}"):
                 plan(**{name: value})
+
+        # The imm word: a norm forward's epsilon, an f32 GEMM's alpha, and
+        # nothing anywhere else.
+        def rms(eps):
+            return (31, 0, (0, 16, 32, 48), (1 << 32 | 4, 0, 0), eps)
+        plan(rms(bits(1e-6)))
+        for eps in (bits(0.0) | 1 << 31, bits(-1e-6), bits(nan)):
+            with self.assertRaisesRegex(fx.PlanError, "epsilon"):
+                plan(rms(eps))
+
+        def gemm(alpha, flags=0):
+            return (1, flags, (0, 16, 32, N), (1, 1, 1), alpha)
+        plan(gemm(bits(0.5)))
+        for alpha in (bits(0.0) | 1 << 31, bits(nan)):
+            with self.assertRaisesRegex(fx.PlanError, "GEMM alpha"):
+                plan(gemm(alpha))
+        with self.assertRaisesRegex(fx.PlanError, "relaxed"):
+            plan(gemm(bits(0.5), fx.formats.FLAG_RELAXED))
+        with self.assertRaisesRegex(fx.PlanError, "does not define"):
+            plan(gemm(bits(0.5)), version=18)
+        with self.assertRaisesRegex(fx.PlanError, "does not define"):
+            plan((19, 0, (0, bits(2.5), N, N), (4, 0, 0), 1))
+
+        # A fused map's immediates: finite where a scale stage reads one,
+        # zero where none does.
+        def fused(imm):
+            return (46, 0, (0, N, N, 16), (4, 0x03, imm))
+        plan(fused(bits(2.0)))
+        with self.assertRaisesRegex(fx.PlanError, "fused immediate 0"):
+            plan(fused(bits(nan)))
+        with self.assertRaisesRegex(fx.PlanError, "fused immediate 1"):
+            plan(fused(bits(2.0) << 32 | bits(2.0)))
 
     def test_every_opcode_of_the_abi_is_interpreted(self):
         # source/plan/instruction.h is the ABI; a new opcode there must fail

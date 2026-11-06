@@ -241,24 +241,11 @@ const Fixture kFixtures[] = {
      /*quantize_base=*/true, /*frontier=*/true},
 };
 
-/// Sums 2·M·N·K over every GEMM-family instruction in the plan's training
-/// stream — the plan itself is the ground truth for per-step matmul work.
-uint64_t GemmFlopsPerStep(const std::vector<uint8_t>& plan);
-
-/// Micro-batches per optimizer step recorded in the plan (1 = none).
-uint64_t GradAccumOf(const std::vector<uint8_t>& plan) {
-  up::PlanHeader h{};
-  if (plan.size() < sizeof(h)) return 1;
-  std::memcpy(&h, plan.data(), sizeof(h));
-  return h.grad_accum_steps > 1 ? h.grad_accum_steps : 1;
-}
-
-// The shared definition (source/statistics/plan_work.h): the same sum
-// over the same eight opcodes, now also what the compiler's backend
-// screen and the device's runtime screen report (S0 #146).
-uint64_t GemmFlopsPerStep(const std::vector<uint8_t>& plan) {
-  return up::MeasurePlanWork(plan).train_gemm_flops;
-}
+// GEMM work per step is 2·M·N·K over every GEMM-family instruction of the
+// plan's training stream, times G — the plan itself is the ground truth for
+// per-step matmul work, read by the shared definition
+// (source/statistics/plan_work.h) that the compiler's backend screen and
+// the device's runtime screen report too (S0 #146).
 
 // --- The attention sweep (docs/benchmarks.md, Tier B/C; E11 #94) -------------
 // `--attention-sweep` times the two attention families on the kernels
@@ -666,6 +653,12 @@ int main(int argc, char** argv) {
     auto compiled = up::UpdateCompiler(config).Compile(model);
     if (!compiled) return Fail(f->name + (": " + compiled.error()));
     const double compile_ms = MsSince(t_compile);
+    // The plan's work, read once from its own instructions (S0 #146).
+    // gemm_flops_per_step keeps the historical unit: the train program's
+    // GEMMs, times G — no step program, whose GEMMs it never counted.
+    const up::PlanWork work = up::MeasurePlanWork(compiled->plan);
+    const uint64_t gemm_flops_per_step =
+        work.train_gemm_flops * work.micro_batches;
 
     rt::UpdateEngine engine;
     if (auto ok = engine.SelectBackend(*backend_kind); !ok)
@@ -703,8 +696,7 @@ int main(int argc, char** argv) {
                  f->seq, compiled->plan.size(), compiled->arena_size,
                  compiled->persistent_size, compiled->rodata_size,
                  compiled->train_instruction_count,
-                 GemmFlopsPerStep(compiled->plan) * GradAccumOf(compiled->plan),
-                 up::MeasurePlanWork(compiled->plan).AttentionFlopsPerStep(),
+                 gemm_flops_per_step, work.AttentionFlopsPerStep(),
                  trainable_params,
                  compile_ms, load_ms);
     first_fixture = false;
@@ -782,8 +774,7 @@ int main(int argc, char** argv) {
                         : 0.0;
       const double gflops =
           step_ms > 0.0
-              ? static_cast<double>(GemmFlopsPerStep(compiled->plan) * GradAccumOf(compiled->plan)) /
-                    (step_ms * 1e6)
+              ? static_cast<double>(gemm_flops_per_step) / (step_ms * 1e6)
               : 0.0;
       const rt::StepTimings st = engine.step_timings();
       const double denom = st.steps ? static_cast<double>(st.steps) : 1.0;
@@ -817,8 +808,7 @@ int main(int argc, char** argv) {
       // step_ms (S0 #146); mfu above stays the GEMM-only utilization.
       if (peak_gflops > 0.0)
         std::fprintf(out, ", \"predicted_step_ms\": %.3f",
-                     static_cast<double>(
-                         up::MeasurePlanWork(compiled->plan).FlopsPerStep()) /
+                     static_cast<double>(work.FlopsPerStep()) /
                          (peak_gflops * 1e6));
       if (!energy_j_per_step.empty()) {
         const double j_step = Median(energy_j_per_step);

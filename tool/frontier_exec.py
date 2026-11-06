@@ -154,8 +154,7 @@ def round_bf16(np, t):
     return r.astype(t.dtype) if t.dtype != np.float32 else r
 
 
-def f32_bits(value):
-    return struct.unpack("<I", struct.pack("<f", value))[0]
+f32_bits = formats.f32_bits
 
 
 def f32(value):
@@ -265,6 +264,53 @@ class Plan:
                                         "must be a finite positive float")
                 if op in (29, 30):
                     self._check_q8_scales(ins, where, positive)
+                if ins.imm:
+                    self._check_imm_word(ins, where)
+                if op == 46:
+                    self._check_fused_immediates(ins, where)
+
+    def _check_imm_word(self, ins, where):
+        """The imm word, as the device validator holds it: a normalization
+        forward's epsilon (v16), finite and positive; an f32 GEMM's alpha
+        (v19), finite, nonzero and never on a relaxed instruction; and zero
+        on every other opcode or version, where Execute() would ignore it."""
+        norm = ins.opcode in (26, 31) and self.version >= 16
+        gemm = ins.opcode in (1, 2, 3) and self.version >= 19
+        if not (norm or gemm):
+            raise PlanError(f"{where}: the instruction carries an imm word "
+                            "its opcode does not define")
+        value = bits_f32(ins.imm)
+        if norm and not (math.isfinite(value) and value > 0.0):
+            raise PlanError(f"{where}: the normalization epsilon must be a "
+                            "finite positive float")
+        if gemm and not (math.isfinite(value) and value != 0.0):
+            raise PlanError(f"{where}: the GEMM alpha must be a finite "
+                            "nonzero float")
+        if gemm and ins.flags & FLAG_RELAXED:
+            raise PlanError(f"{where}: a GEMM alpha on a relaxed instruction")
+
+    def _check_fused_immediates(self, ins, where):
+        """A fused map's immediates (v13): every one a scale stage names is
+        a finite f32, every one none names is zero — the device's rule."""
+        used = [False, False]
+        for s in range(4):
+            stage = (ins.out[1] >> (8 * s)) & 0xFF
+            if stage & 0x0F == 0:
+                break
+            if stage & 0x0F == 3:  # scale: the stage's arg is the immediate
+                arg = (stage >> 4) & 0x3
+                if arg > 1:
+                    raise PlanError(f"{where}: a fused scale stage names "
+                                    f"immediate {arg}")
+                used[arg] = True
+        for i in range(2):
+            word = (ins.out[2] >> (32 * i)) & 0xFFFFFFFF
+            if used[i] and not math.isfinite(bits_f32(word)):
+                raise PlanError(f"{where}: fused immediate {i} is not a "
+                                "finite float")
+            if not used[i] and word != 0:
+                raise PlanError(f"{where}: fused immediate {i} is set but "
+                                "no stage reads it")
 
     def _check_q8_scales(self, ins, where, positive):
         """A quantized GEMM's dequant scale: the per-tensor f32 in in[3],

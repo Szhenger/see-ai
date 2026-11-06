@@ -893,6 +893,13 @@ TEST(UpdateEngineTrain, ShouldStopInterruptsAndLossCurveRecords) {
   EXPECT_TRUE(report.stopped_early);
   EXPECT_EQ(report.steps, 25u);
   EXPECT_EQ(report.loss_curve.size(), 25u);
+  // The end loss is the run's own last window (20 of the 400 requested
+  // steps' fifth), over the 25 it ran: never the start loss copied over
+  // because the requested run's last window was not reached.
+  double last = 0.0;
+  for (size_t i = 5; i < 25; ++i) last += report.loss_curve[i];
+  EXPECT_EQ(report.final_avg_loss, static_cast<float>(last / 20.0));
+  EXPECT_TRUE(report.final_avg_loss != report.initial_avg_loss);
 }
 
 TEST(UpdateEngineAccumulation, StepsCountOptimizerStepsAndConsumeGBatches) {
