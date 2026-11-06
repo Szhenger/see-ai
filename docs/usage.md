@@ -101,6 +101,8 @@ The packer is standard-library Python on the build host only; the package it lea
 
 **Very big plans: the plan stays beside the binary.** An embedded plan is the binary's size, and on macOS arm64 that stops working near 1.8 GB: the default linker segfaults on a 1.85 GB plan (f32 SmolLM2-360M), and a 2.72 GB plan (f32 Qwen2.5-0.5B) links only with `-ld_classic` and then cannot be loaded — the image runs past the address where dyld maps the shared cache, and arm64 executables are position-independent, so no base address fixes it (#158). So the packer has a second mode, chosen by size: from **1 GiB** (`pack_update.EMBED_LIMIT`, a margin under the first failure) it writes no stub at all and says so; `build.sh` compiles a two-line translation unit that defines an *empty* plan; and `model_update` maps `update_plan.seeu` **beside itself** at start-up (located through the OS relative to the executable, never the working directory) — a private, page-aligned, copy-on-write mapping the page cache serves, which is byte-for-byte the memory the stub provides, so the Metal backend's zero-copy residency and the one-arena-allocation doctrine are unchanged. The disk plan is validated exactly as an embedded one — magic, version gate, the seal (`plan_hash`), the source-model hash, both contracts — so a swapped or corrupt file is refused before anything runs; a missing file is exit 1 with the mode and both remedies named. `--plan FILE` on `model_update` names the plan elsewhere (and overrides an embedded one). Ship the two files together; `pack_update.py --no-embed` forces this mode at any size (what CI does on the demo package), `--embed` forces the stub at any size with a warning above the limit, and the pack report (schema 2) records `mode`, `mode_forced` and `embed_limit`. Measured on the f32 Qwen2.5-0.5B plan (2,724,184,064 bytes, Apple M5): the disk-mode package builds in 11 s, loads, validates and source-binds the plan in 5.1 s (`lifecycle.load_s`), and trains and commits on the CPU (two steps: 4.22 GB maximum resident, against a 4.51 GB arena and the 2.72 GB plan) — the row the Real Analysis Delta study could not run. On Metal the mapped plan is page-aligned and writable like the `.incbin` embedding, so the backend wraps its frozen weights zero-copy as before (verified: a disk-loaded SmolLM-135M package reports `rodata zero-copy` and commits the same bytes as the embedded one after 20 steps on Metal and on the CPU).
 
+**What it prints.** Four statistics screens, described in [What the Compiler Tells You](#what-the-compiler-tells-you) below; `--verbose` adds the detail, `--peak-gflops G` a predicted step time.
+
 Compilation is also your first line of defense: infeasible memory footprints, shape mismatches, a loss that can't see any trainable parameter — all fail *here*, on the build host, with a one-line `"<unit>: <message>"` diagnostic.
 
 Curious what was actually generated? Disassemble any plan:
@@ -111,6 +113,68 @@ seeml-seeu-dump pkg/update_plan.seeu --instrs   # all three instruction streams
 ```
 
 Reading a training loop as thirty-ish opcodes of straight-line code is a genuinely instructive way to see what the compiler did — and a good sanity check that, say, your clip instructions exist.
+
+## What the Compiler Tells You
+
+Every compile prints four screens — what the frontend read, what the analysis passes did, the plan the backend emitted, and the runtime as planned — and nothing else unless you ask. Each line is a number, its unit, and the clause it comes from. `--report report.json` carries the same rows by key under `"screens"`, and `build/seeml-abi` publishes their schema (each row's key, kind, unit and flags), so a tool reading a report can check what it reads. `--verbose` adds the verbose rows (the step-0 footprint's four parts, alpha, gradients, the arena's segments, each phase's time), a table of every pass with the ops after it, a table of every adapter site, and each pass's own note. `--peak-gflops G` states the target's peak and turns the work per step into a predicted step time; the compiler never guesses a peak.
+
+SmolLM-135M, compiled with the nightly's flags (`--data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 300`) and a stated target of `--peak-gflops 1000`:
+
+```
+frontend — the model the compiler read
+  operators                483 ops                       operators in the SMF model file
+  tensors                  274                           tensors the file declares, the input included
+  frozen weights           273                           the file's constant tensors
+  weight payload           704,390,400 B (671.8 MiB)     those tensors' bytes in the file
+  parameters               176,097,600                   weight elements: the payload ÷ 4 B (f32)
+  input                    token ids, 128 per sequence   token ids per sequence, or features per row
+  vocabulary               49,152 tokens                 rows of the embedding table
+  step-0 bound             1,600,448,832 B (1.5 GiB)     the accountant's lower bound the early gate proved fits
+  memory budget            17,179,869,184 B (16.0 GiB)   the configured budget, else this host's memory
+analysis — what the passes did
+  passes                   18                            passes and driver phases run, each timed
+  ops in                   757 ops                       the forward SIR the frontend built
+  ops out                  4,426 ops                     the training SIR after every pass, as lowered
+  adapters                 211                           LoRA adapters grafted, one per targeted matmul weight
+  rank                     8                             r, each adapter's inner width
+  trainable                3,024,384                     the sum of r·(k + m) over the adapters
+  trainable share          1.717 %                       trainable ÷ the model's parameters
+  epilogue fusions         0                             bias and activation chains folded into a GEMM
+  addend fusions           419                           GEMMs folded into the add that reads them
+  chain fusions            0                             elementwise chains folded into one kernel
+  dead ops removed         419 ops                       ops nothing reads, swept before lowering
+  attention                cached, 30 op(s)              cached probabilities, or the tiled family's stats rows
+  rematerialization        off: auto, no memory budget   forward values the backward recomputes instead of keeping
+  narrow weights           211 int8                      frozen weights stored int8 or bf16 in rodata
+backend — the plan it emitted
+  train program            2,887 instructions            one micro-batch: forward, backward, optimizer
+  eval program             907 instructions              the forward and the loss, for validation
+  merge program            422 instructions              each adapter's delta, (alpha ÷ r)·A·B
+  arena                    1,576,898,688 B (1.5 GiB)     the one allocation the device makes
+  rodata                   262,048,512 B (249.9 MiB)     frozen weights packed into the plan
+  plan file                298,631,168 B (284.8 MiB)     the sealed .seeu
+  arena + plan             1,875,529,856 B (1.7 GiB)     what the device holds: the arena and the mapped plan
+  bound ÷ exact            0.8533                        the step-0 bound ÷ arena + plan
+  GEMM work                310,851,403,776 FLOP          per step: 2·M·N·K over the train GEMMs, times G
+  attention work           13,589,544,960 FLOP           per step: 4·B·H·S²·d forward + 8·B·H·S²·d backward
+  target peak              1000.0 GFLOP/s                the target's peak, as passed with --peak-gflops
+  predicted step           324.441 ms                    (GEMM + attention work) ÷ the target peak
+  kernel policy            runtime default               the CPU GEMM tiles the header carries
+  plan hash                1063fab4621f7f4a              the plan's self-hash, which checkpoints bind to
+runtime — planned by the compiler, measured by the device
+  planned memory           1,875,529,856 B (1.7 GiB)     arena + plan: the resource contract the device checks
+  work per step            324,440,948,736 FLOP          GEMM + attention work of one optimizer step
+  predicted step           324.441 ms                    the work ÷ the target peak
+```
+
+Reading it top to bottom:
+
+- **frontend.** The file holds 483 operators and 273 frozen weights — 672 MiB of f32, 176 million parameters — and its input is token ids, 128 per sequence, over a 49,152-token vocabulary. The step-0 bound (1.5 GiB) is the accountant's lower bound on the training footprint, proven to fit before any pass runs; with no `--memory-budget-mib` it is judged against this host's memory, which is what the budget row says.
+- **analysis.** LoRA grafted 211 adapters at rank 8: 3.0 million trainable parameters, 1.7% of the model. The 419 addend fusions are every LoRA site's activation-sized sums folded into the GEMM that produces them, and the 419 dead ops are the GEMMs they orphaned. Attention keeps its probabilities (the 30 layers' caches fit the cache budget at this shape); rematerialization stays off because no memory budget was given; `--quantize-base` stored the 211 matmul weights as int8, which is why rodata is 250 MiB rather than the file's 672.
+- **backend.** One micro-batch is 2,887 instructions; validation runs 907, the merge 422. The arena is the one allocation the device makes; arena + plan, 1.7 GiB, is what the device holds, and the step-0 bound was 85% of it (bound ÷ exact — the accountant's honesty at this shape). A step is 311 GFLOP of GEMMs and 14 GFLOP of attention (model FLOPs: causal masking not discounted, recomputation not counted); at the stated 1000 GFLOP/s that predicts 324 ms. The plan hash is what checkpoints bind to.
+- **runtime.** What the device must hold and do, as planned. The device prints the same screen with what it measured beside it (Step 3).
+
+The default output stays near 46 lines whatever the model's size: the rows are aggregates, and the per-item detail is `--verbose`'s. The suite pins the four screens as golden blocks (`test/fixtures/golden/screens/`: two MLPs and the `dec_wide` decoder), so a pass that silently changes what it does changes a number the suite sees; after a deliberate change, `SEEML_UPDATE_GOLDEN=1 ./build/seeml_screens_test` rewrites them for review.
 
 ## Step 3: Run the Update (device)
 
@@ -145,6 +209,7 @@ model_update --model model.smf --data corpus.sds --out updated.smf \
 | `--eval-every N` | with a validation split, evaluate every N steps and commit the **best** evaluated state rather than the last; default a tenth of the run (at least 1); `0` evaluates only before and after and commits the last state, bit for bit as before |
 | `--patience K` | stop after K consecutive evaluations without a new best (0 = never); needs `--eval-every > 0` and a split |
 | `--report report.json` | write the backend, the gate parameters, the loss and accuracy pairs (`validation_loss[1]` is the committed state's; `best_state` carries its step, the endpoint's loss and the evaluation settings; `validation_scores` says what they score; `relaxed_executions` counts the instructions the backend ran on a relaxed kernel, 0 on the exact kernels — schema 3), the verdict and whether the commit landed as JSON (written last; an unwritable path is a warning, the exit code still carries the verdict) |
+| `--peak-gflops G` | the target's peak in GFLOP/s, for the runtime screen's predicted step and utilization (default: the compile's `--peak-gflops`, baked into the runner; unstated means no prediction) |
 | `--force` | commit even if the gate shows no improvement |
 
 What happens, in order:
@@ -155,7 +220,32 @@ What happens, in order:
 4. **Gate** — validation loss is evaluated before training, every `--eval-every` steps, and after, with the plan's eval program; the state that scored best is the one gated and committed (the log line names its step and the endpoint's loss; the report's `best_state` records both). A resume keeps the *source model's* "before" from the checkpoint rather than re-scoring the resumed adapter, and refuses a `--seed` or `--val-frac` other than the first run's (exit 2). No improvement — or less than `--min-improvement`, or a dropped accuracy under `--require-accuracy` — → exit code 3 and the device is left *untouched* (`--force` overrides, if you must). The gate line names the failing gate and the backend that produced the numbers.
 5. **Merge + commit** — deltas `Δ = (α/r)·A@B` are materialized and added to the pristine f32 weights of the source file (which must hash-match the plan), written durably, renamed atomically. A power cut at any moment leaves the old model or the new one — never a torn file.
 
-Exit codes are the API for your update orchestrator: `0` committed, `1` runtime error, `2` bad arguments, `3` regression-gate rejection. `--loss-log` writes the full per-step CSV loss curve once training completes (it is not appended live, so tail it after the run, not during).
+After the gate, the device prints the runtime screen: the plan's own rows — recomputed from the plan it loaded, with the compile's `--peak-gflops` baked in (a run's `--peak-gflops` overrides it) — beside what this run measured. The demo package (`tool/export_model.py --demo`, compiled with `--peak-gflops 500`), on an M5 on battery:
+
+```
+runtime — planned by the compiler, measured by the device
+  planned memory           55,680 B (54.4 KiB)           arena + plan: the resource contract the device checks
+  work per step            84,992 FLOP                   GEMM + attention work of one optimizer step
+  predicted step           0.000 ms                      the work ÷ the target peak
+  backend                  cpu                           the executor that ran the plan
+  steps                    300                           optimizer steps trained
+  measured step            0.011 ms                      training wall time ÷ steps, evaluations excluded
+  achieved                 7.4 GFLOP/s                   the work per step ÷ the measured step
+  utilization              1.5 %                         achieved ÷ the target peak
+  peak RSS                 6,799,360 B (6.5 MiB)         the process's resident peak, as the OS reports it
+  RSS ÷ planned            122.115                       the resident peak ÷ the planned memory
+  train loss, start        1.3096 nats                   the mean loss of the first logged window
+  train loss, end          0.1664 nats                   the mean loss of the last logged window
+  validation loss, start   1.4304 nats                   the held-out loss before training
+  validation loss, end     0.0988 nats                   the held-out loss of the state the gate weighed
+  input-blind loss         1.3261 nats                   the training labels' entropy: an input-blind predictor's loss
+  validation accuracy      0.9559                        the held-out accuracy of the state the gate weighed
+  verdict                  accepted                      the gate's decision on the update
+```
+
+The measured step is the steps alone — staging the batch, the train program, the optimizer — with evaluations and checkpoints excluded; achieved is the work ÷ that step, and utilization is achieved ÷ the peak (here a toy plan on a 500 GFLOP/s statement: the gap is the point of the row). Peak RSS is the whole process, so a 54 KiB plan sits under 6.5 MiB of runtime. The input-blind loss is the entropy of the training labels — what a model that ignored its input would score, a reference level rather than a bound: this run ends at 0.0988 nats on held-out data against 1.3261, so it learned from its inputs. `--report` carries the same rows under `"runtime"`.
+
+Exit codes are the API for your update orchestrator: `0` committed, `1` runtime error, `2` bad arguments, `3` regression-gate rejection, `4` committed but `--report` or `--loss-log` could not be written. `--loss-log` writes the full per-step CSV loss curve once training completes (it is not appended live, so tail it after the run, not during).
 
 ## Threading and Determinism
 
