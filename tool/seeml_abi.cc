@@ -26,6 +26,7 @@
 #include "source/language/model_format.h"
 #include "source/plan/opcode_names.h"
 #include "source/plan/update_types.h"
+#include "source/statistics/screens.h"
 #include "tool/probe_trace.h"
 
 namespace {
@@ -208,7 +209,47 @@ int main(int argc, char**) {
 #undef X
   std::printf("    }\n  },\n");
 
-  std::printf("  \"probe_trace\": {\"magic\": %u, \"version\": %u}\n}\n",
+  std::printf("  \"probe_trace\": {\"magic\": %u, \"version\": %u},\n",
               seeml::tool::kProbeTraceMagic, seeml::tool::kProbeTraceVersion);
+
+  // The statistics screens (S0 #146): each screen's rows and detail tables
+  // — key, kind, unit and flags — printed from the very tables the console,
+  // the compile report and the device's run report render, so a report key
+  // and its published name and unit cannot drift apart. Labels and
+  // derivations are prose and stay out of the manifest.
+  std::printf("  \"screens\": {");
+  bool first_screen = true;
+  for (const seeml::update::ScreenSpec* screen : seeml::update::kScreens) {
+    std::printf("%s\n    \"%s\": {\"rows\": [", first_screen ? "" : ",",
+                screen->name);
+    first_screen = false;
+    for (size_t i = 0; i < screen->rows.size(); ++i) {
+      const seeml::update::StatRow& row = screen->rows[i];
+      std::printf("%s\n      {\"key\": \"%s\", \"kind\": \"%s\", "
+                  "\"unit\": \"%s\", \"verbose\": %s, \"volatile\": %s, "
+                  "\"optional\": %s}",
+                  i ? "," : "", row.key, seeml::update::StatKindName(row.kind),
+                  row.unit, row.flags & seeml::update::kStatVerbose ? "true" : "false",
+                  row.flags & seeml::update::kStatVolatile ? "true" : "false",
+                  row.flags & seeml::update::kStatOptional ? "true" : "false");
+    }
+    std::printf("],\n      \"tables\": [");
+    for (size_t i = 0; i < screen->tables.size(); ++i) {
+      const seeml::update::StatTable& table = screen->tables[i];
+      std::printf("%s{\"key\": \"%s\", \"columns\": [", i ? ", " : "",
+                  table.key);
+      for (size_t c = 0; c < table.columns.size(); ++c)
+        std::printf("%s{\"key\": \"%s\", \"kind\": \"%s\", \"unit\": \"%s\", "
+                    "\"volatile\": %s}",
+                    c ? ", " : "", table.columns[c].key,
+                    seeml::update::StatKindName(table.columns[c].kind),
+                    table.columns[c].unit,
+                    table.columns[c].flags & seeml::update::kStatVolatile ? "true"
+                                                                         : "false");
+      std::printf("]}");
+    }
+    std::printf("]}");
+  }
+  std::printf("\n  }\n}\n");
   return std::ferror(stdout) ? 1 : 0;
 }

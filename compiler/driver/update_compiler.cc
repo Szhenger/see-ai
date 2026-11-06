@@ -15,6 +15,7 @@
 #include "compiler/backend/selection/instruction_lowering.h"
 #include "compiler/diagnostics/generating/error.h"
 #include "compiler/driver/contract.h"
+#include "compiler/driver/statistics.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/computation/parser.h"
 #include "compiler/frontend/representation/sir.h"
@@ -289,6 +290,28 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           "the compiled batch must be a whole number of sequences");
   }
 
+  // The model as read, for the frontend screen (S0 #146). Captured before
+  // any pass: the consuming compile releases the weight payloads as plan
+  // assembly packs them, so the byte counts come from the tensors' sizes.
+  CompileFacts facts;
+  facts.model_ops = source.ops.size();
+  facts.model_tensors = source.tensors.size();
+  for (const SmfTensor& t : source.tensors) {
+    if (!t.is_const) continue;
+    ++facts.weight_tensors;
+    facts.weight_bytes += t.byte_size != 0 ? t.byte_size : t.data.size();
+  }
+  facts.token_input = token_input;
+  facts.input_width = token_input ? 0 : static_cast<uint64_t>(in_dim);
+  facts.seq_len = source.seq_len;
+  for (const SmfOp& op : source.ops)
+    if (op.kind == SmfOpKind::kEmbedding && op.inputs.size() >= 2)
+      if (const SmfTensor* table = source.FindTensor(op.inputs[1]);
+          table && !table->dims.empty())
+        facts.vocabulary = static_cast<uint64_t>(table->dims[0]);
+  facts.has_teacher = teacher != nullptr;
+  if (teacher) facts.teacher_ops = teacher->ops.size();
+
   // --- 0. Fail fast: prove the training footprint fits local memory. -------
   // The teacher is a frozen forward — no backward caches its activations —
   // so it is estimated at its peak, not its sum; and --quantize-base stores
@@ -333,6 +356,15 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                             " B of stats rows");
     footprint.probs_cache_bytes = footprint.attention_stats_bytes;
   }
+  facts.footprint_weights = footprint.weight_bytes;
+  facts.footprint_activations = footprint.activation_bytes;
+  facts.footprint_deltas = footprint.delta_bytes;
+  facts.footprint_caches = footprint.probs_cache_bytes;
+  facts.footprint_total = footprint.total_bytes();
+  facts.memory_budget = config_.memory_budget_bytes != 0
+                            ? config_.memory_budget_bytes
+                            : DetectLocalMemoryBytes();
+  facts.remat_budget_configured = config_.memory_budget_bytes != 0;
   if (auto fits = CheckTrainableLocally(footprint, config_.memory_budget_bytes);
       !fits) {
     // The caches were kept — by force, or by `auto` with no memory budget
@@ -473,6 +505,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the pre-adapter (or freed) value and silently miss every rewrite.
   build.output = nullptr;
 
+  facts.ops_in = block.numOps();
   phase("frontend", block.numOps());
   AttilingDecision attention_decision;
   // --- 3. Structural passes (phase A): convolution lowering, then LoRA
@@ -510,9 +543,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     // hands the same table to every backward rotation.
     if (config_.rope_table)
       pm.Add("rope-table",
-             [](sir::Block& b) -> std::expected<void, std::string> {
+             [&facts](sir::Block& b) -> std::expected<void, std::string> {
                auto tables = RopeTableHoister().Run(b);
                if (!tables) return std::unexpected(tables.error());
+               facts.rope_tables = *tables;
                if (*tables != 0)
                  seeml::diag::Note(generating::kDriver,
                                    "hoisted the RoPE angles into " +
@@ -572,6 +606,8 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     phase_start = PhaseClock::now();  // passes are timed by their manager
   }
 
+  facts.gradients = param_grads.size();
+
   // --- 6. Merge program: Δ = (α/r)·A@B (commit adds Δ to the model file). ---
   MergeBuilder merger;
   auto merge = merger.Run(adapters);
@@ -605,6 +641,8 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                           " frozen weight(s) as bf16 rodata");
   }
 
+  facts.int8_weights = quant_scales.size();
+  facts.bf16_weights = bf16_weights.size();
   phase("merge-and-review", block.numOps());
   // --- 7b. Optimization passes (phase C): epilogue fusion, then the DCE
   // sweep — after autodiff, so fusion legality is read off the use-lists
@@ -624,6 +662,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                auto fused =
                    GemmEpilogueFuser().Run(b, quantized, protected_values);
                if (!fused) return std::unexpected(fused.error());
+               facts.epilogue_fusions = fused->fused_chains;
                // Fuse-then-rebind: the primal snapshot is the eval program
                // and the DCE root set; the orphaned ops leave it here, so
                // eval lowers the fused GEMMs and the sweep may free them.
@@ -651,6 +690,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                  protected_values.insert(g);
                auto fused = GemmAddendFuser().Run(b, narrow, protected_values);
                if (!fused) return std::unexpected(fused.error());
+               facts.addend_fusions = fused->fused;
                // Fuse-then-rebind, as above: a folded forward GEMM leaves
                // the eval snapshot; the add that absorbed it stays.
                if (!fused->fused_away.empty()) {
@@ -671,6 +711,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                  protected_values.insert(g);
                auto fused = ElementwiseChainFuser().Run(b, protected_values);
                if (!fused) return std::unexpected(fused.error());
+               facts.chain_fusions = fused->fused_chains;
                // Fuse-then-rebind, as above: the folded ops leave the eval
                // snapshot (their tail stays in it, now carrying the chain).
                if (!fused->fused_away.empty()) {
@@ -697,6 +738,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
         for (const auto& r : op->results()) roots.insert(r.get());
       auto removed = DeadCodeElimination().Run(b, roots);
       if (!removed) return std::unexpected(removed.error());
+      facts.dce_removed = *removed;
       if (*removed != 0)
         seeml::diag::Note(generating::kDriver,
                           "dce removed " + std::to_string(*removed) +
@@ -983,6 +1025,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                                bf16_weights, binding->quant_column_scales);
   if (!merge_instrs) return std::unexpected(merge_instrs.error());
 
+  facts.ops_out = block.numOps();
   phase("lower", block.numOps());
   // --- 10. Persistent-segment initial image (deterministic, seeded). --------
   // Every randn element is a pure function of (seed, element index):
@@ -1309,6 +1352,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                                          recorded_accum)
                     : std::string()) +
                "), rodata " + std::to_string(header.rodata_size) + " B");
+
+  // The screens (S0 #146): what the compile did, as numbers.
+  facts.attention_ops = attention_decision.attention_ops;
+  FillCompileScreens(facts, config_, result);
 
   // Backend boundary: the assembled plan must be internally consistent with
   // the adapters and gradients it claims to train.
