@@ -174,6 +174,19 @@ FLAG_Q8_COL_SCALE = 16
 # against the exact stored weight; the attention blocks' products on matrix
 # tiles in another f32 summation order).
 FLAG_RELAXED = 32
+
+# CR1 #142: the distillation temperature (the KL words' low half) is a
+# finite f32 within these bounds — the validator's, the compiler's and the
+# CLI's; the manifest carries them as f32 bits and the check below holds
+# these to them exactly.
+KL_TEMPERATURE_MIN = 1e-3
+KL_TEMPERATURE_MAX = 1e3
+
+
+def f32_bits(value: float) -> int:
+    """The IEEE-754 single-precision bits of `value` (rounded to f32)."""
+    bits: int = struct.unpack("<I", struct.pack("<f", value))[0]
+    return bits
 RELAXED_GEMM_OPCODES = (1, 2, 29, 30, 43, 44)
 RELAXED_ATTENTION_OPCODES = (47, 48, 49, 50)
 
@@ -263,6 +276,9 @@ CKPT_HAS_VAL_INITIAL = 1
 CKPT_HAS_ACCURACY = 2
 CKPT_HAS_BEST_PAYLOAD = 4
 CKPT_HAS_BEST = 8
+# CR4 #145 F71: the run binding is live (before this bit every v5 file read
+# as bound; a v5 file written before it reads as unbound).
+CKPT_HAS_BINDING = 16
 
 # --- The probe trace (tool/probe_trace.h) -------------------------------------
 
@@ -318,6 +334,10 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
                         "q8_col_scale": FLAG_Q8_COL_SCALE,
                         "relaxed": FLAG_RELAXED},
          seeu["flags"])
+    same("seeu.kl_temperature_bits",
+         {"min": f32_bits(KL_TEMPERATURE_MIN),
+          "max": f32_bits(KL_TEMPERATURE_MAX)},
+         seeu["kl_temperature_bits"])
     same("seeu.fused_stages", FUSED_STAGES, seeu["fused_stages"])
     same("seeu.fused_stage", {"kind_mask": FUSED_KIND_MASK,
                               "arg_shift": FUSED_ARG_SHIFT,
@@ -332,7 +352,8 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
     same("sekp.flags", {"has_val_initial": CKPT_HAS_VAL_INITIAL,
                         "has_accuracy": CKPT_HAS_ACCURACY,
                         "has_best_payload": CKPT_HAS_BEST_PAYLOAD,
-                        "has_best": CKPT_HAS_BEST}, sekp["flags"])
+                        "has_best": CKPT_HAS_BEST,
+                        "has_binding": CKPT_HAS_BINDING}, sekp["flags"])
     same("probe_trace.magic", PROBE_TRACE_MAGIC, abi["probe_trace"]["magic"])
     same("probe_trace.version", PROBE_TRACE_VERSION,
          abi["probe_trace"]["version"])

@@ -98,6 +98,62 @@ class ReaderTest(unittest.TestCase):
             fx.Plan(assemble(64, eval_instr_offset=10 ** 9,
                              eval_instr_count=1))
 
+    def test_refuses_the_immediates_the_device_refuses(self):
+        """CR1 #142's validator and load-contract rules, held by the reader
+        too: a plan the device refuses neither trains nor diffs here."""
+        bits, nan = fx.f32_bits, float("nan")
+
+        def plan(*ops, rodata=b"", **header):
+            return fx.Plan(assemble(64, train=list(ops), rodata=rodata,
+                                    **header))
+
+        def clip(t):
+            return (28, 0, (0, t, N, N), (2, 0, 0))
+        plan(clip(bits(1.0)))
+        for t in (bits(0.0), bits(-1.0), bits(nan), bits(1.0) | 1 << 32):
+            with self.assertRaisesRegex(fx.PlanError, "clip_norm threshold"):
+                plan(clip(t))
+
+        def kl(word):
+            return (15, 0, (0, 16, 32, 48), (64, 1 << 32 | 2, word))
+        plan(kl(bits(4.0) << 32 | bits(2.0)))
+        plan(kl(bits(fx.formats.KL_TEMPERATURE_MIN)))
+        plan(kl(bits(fx.formats.KL_TEMPERATURE_MAX)))
+        for t in (0.0, -2.0, nan, 1e4, 1e-4):
+            with self.assertRaisesRegex(fx.PlanError, "temperature"):
+                plan(kl(bits(t)))
+        with self.assertRaisesRegex(fx.PlanError, "pre-v8"):
+            plan(kl(bits(4.0) << 32 | bits(2.0)), version=7)
+
+        def q8(scale, flags=0):
+            return (29, flags, (0, fx.RODATA_BIT, 16, scale), (1, 2, 2))
+        plan(q8(bits(0.5)), rodata=bytes(16))
+        for scale in (bits(0.0), bits(nan), bits(-0.5), N):
+            with self.assertRaisesRegex(fx.PlanError, "dequant scale"):
+                plan(q8(scale), rodata=bytes(16))
+        col = fx.formats.FLAG_Q8_COL_SCALE
+        good = bytes(16) + struct.pack("<2f", 0.5, 0.25)
+        plan(q8(fx.RODATA_BIT | 16, col), rodata=good)
+        with self.assertRaisesRegex(fx.PlanError, "column scale 1"):
+            plan(q8(fx.RODATA_BIT | 16, col),
+                 rodata=bytes(16) + struct.pack("<2f", 0.5, nan))
+        with self.assertRaisesRegex(fx.PlanError, "outside the rodata"):
+            plan(q8(fx.RODATA_BIT | 64, col), rodata=good)
+
+        step = (17, 0, (0, 16, N, N), (4, bits(1.0), 0))
+        plan(step)
+        with self.assertRaisesRegex(fx.PlanError, "pre-v12"):
+            plan(step, version=11)
+        with self.assertRaisesRegex(fx.PlanError, "clip threshold"):
+            plan((17, 0, (0, 16, N, N), (4, bits(nan), 0)))
+
+        for name, value in (("lr", nan), ("lr", 0.0), ("beta1", 1.0),
+                            ("beta2", nan), ("eps", 0.0),
+                            ("weight_decay", -0.01), ("clip_norm", -1.0),
+                            ("min_lr_factor", 1.5)):
+            with self.assertRaisesRegex(fx.PlanError, f"header {name}"):
+                plan(**{name: value})
+
     def test_every_opcode_of_the_abi_is_interpreted(self):
         # source/plan/instruction.h is the ABI; a new opcode there must fail
         # here until the interpreter learns it.

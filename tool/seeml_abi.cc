@@ -149,6 +149,12 @@ int main(int argc, char**) {
               unsigned(up::kFlagEpilogueActMask),
               unsigned(up::kFlagGemmAddend),
               unsigned(up::kFlagQ8ColScale), unsigned(up::kFlagRelaxed));
+  // CR1 #142: the distillation temperature's bounds, as f32 bits — the
+  // exact values the validator compares against, so the Python plane's
+  // copy is held to them bit for bit.
+  std::printf("    \"kl_temperature_bits\": {\"min\": %u, \"max\": %u},\n",
+              std::bit_cast<uint32_t>(up::kKlTemperatureMin),
+              std::bit_cast<uint32_t>(up::kKlTemperatureMax));
   Enum("fused_stages", fused, sizeof(fused) / sizeof(fused[0]), false);
   std::printf("    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "
               "\"arg_mask\": %u, \"run_is_right\": %u, \"max_stages\": %zu},\n",
@@ -176,10 +182,11 @@ int main(int argc, char**) {
   std::printf("  \"sekp\": {\n    \"magic\": %u, \"version\": %u, "
               "\"oldest_readable\": %u,\n    \"flags\": {\"has_val_initial\": "
               "%u, \"has_accuracy\": %u, \"has_best_payload\": %u, "
-              "\"has_best\": %u},\n    \"structs\": {\n",
+              "\"has_best\": %u, \"has_binding\": %u},\n    \"structs\": {\n",
               rt::kCkptMagic, rt::kCkptVersion, rt::kCkptOldestReadable,
               rt::kCkptHasValInitial, rt::kCkptHasAccuracy,
-              rt::kCkptHasBestPayload, rt::kCkptHasBest);
+              rt::kCkptHasBestPayload, rt::kCkptHasBest,
+              rt::kCkptHasBinding);
 #define X(f) SEEML_FIELD(rt::CkptHeader, f);
   Struct("CkptHeader", sizeof(rt::CkptHeader), [] { CKPT_FIELDS(X) });
 #undef X
