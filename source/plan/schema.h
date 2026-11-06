@@ -197,6 +197,14 @@ inline constexpr uint32_t kSeeuGradAccumVersion = 9;
 // version bump.
 inline constexpr uint64_t kSeeuRodataAlignment = 16384;
 
+// What the load contract proves of the rodata section's offset (CR2 #143
+// N05): every rodata ref is relative to it, so a misaligned section puts a
+// 4-aligned ref's data misaligned in memory, and 16 bytes is what every
+// kernel's vector path may assume at most. Weaker than the emitter's
+// 16 KiB above: a plan the compiler did not lay out needs only this. The
+// ABI manifest publishes it, so the Python plane's reader holds the same.
+inline constexpr uint64_t kSeeuRodataOffsetAlignment = 16;
+
 // The version that introduced the distillation loss scale: plans below it
 // must carry a zero high word on the KL temperature operand, and are
 // validated to.

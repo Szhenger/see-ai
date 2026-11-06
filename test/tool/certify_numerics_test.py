@@ -393,6 +393,20 @@ class RelaxedModelTest(unittest.TestCase):
         self.assertEqual(cn.family_of(gemm), cn.FLAGGED_FAMILY)
         self.assertEqual(cn.flagged_sites(gemm), [cn.RELAXED_GEMM_SITE])
 
+    def test_both_arms_hold_the_staged_slot_rule(self):
+        # CR2 #143 N03: the two executors run loops of their own, and each
+        # names the program and opcode of a write into the staged input
+        # slot as the oracle's executor does (assemble(64) stages [64, 68);
+        # this reduction writes [60, 68)).
+        plan = fx.Plan(fixtures.assemble(
+            64, train=[(10, 0, (0, 60, N, N), (1, 2, 0))]))
+        for ex in (cn.LockstepExecutor(plan, 8), cn.RelaxedExecutor(plan, 8)):
+            with self.subTest(executor=type(ex).__name__):
+                with self.assertRaisesRegex(
+                        fx.PlanError, r"an instruction of the train program "
+                        r"writes the staged input slot \(opcode 10\)"):
+                    ex.execute("train")
+
 
 @unittest.skipIf(np is None, "NumPy not installed")
 @unittest.skipUnless(fixtures.HAVE_CPP,

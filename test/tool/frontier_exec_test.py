@@ -47,26 +47,52 @@ HAVE_CPP = all(os.path.isfile(p) and os.access(p, os.X_OK)
                for p in (COMPILER, PROBE))
 
 
-def assemble(arena_size, train=(), persistent=b"", rodata=b"", **header):
-    """A minimal .seeu blob around hand-written instructions. The plan hash
-    is left zero: the Python reader does not seal, only the C++ probe does."""
+def assemble(arena_size, train=(), persistent=b"", rodata=b"", programs=None,
+             **header):
+    """A minimal .seeu blob around hand-written instructions that the
+    device's load contract accepts (CR2 #143): the I/O slots it demands sit
+    in an 8-byte trailer past the caller's `arena_size` bytes — the staged
+    input slot one float at `arena_size`, the loss slot at `arena_size + 4`
+    — and rodata starts 16-aligned. `programs` adds step / eval / merge
+    streams (a step program brings the grad_accum_steps = 2 that the
+    contract pairs with it). The plan hash is left zero: the Python reader
+    does not seal, only the C++ probe does."""
+    programs = {"train": list(train), **(programs or {})}
     fields = dict.fromkeys(fx._HEADER_FIELDS, 0)
     fields.update(magic=fx.SEEU_MAGIC, version=fx.SEEU_NEWEST,
-                  arena_size=arena_size, persistent_size=len(persistent),
-                  persist_init_size=len(persistent), input_ref=fx.NULL_REF,
-                  label_ref=fx.NULL_REF, loss_ref=fx.NULL_REF, lr=1e-3,
-                  beta1=0.9, beta2=0.999, eps=1e-8, batch=1)
+                  arena_size=arena_size + 8, persistent_size=len(persistent),
+                  persist_init_size=len(persistent), input_ref=arena_size,
+                  input_floats=1, label_ref=fx.NULL_REF,
+                  loss_ref=arena_size + 4, lr=1e-3, beta1=0.9, beta2=0.999,
+                  eps=1e-8, batch=1,
+                  grad_accum_steps=2 if programs.get("step") else 0)
     fields.update(header)
-    body = b"".join(fx._INSTRUCTION.pack(op, flags, imm[0] if imm else 0,
-                                         *src, *out)
-                    for op, flags, src, out, *imm in train)
-    fields["train_instr_offset"] = fx._HEADER.size
-    fields["train_instr_count"] = len(train)
+    body = b""
+    for name in fx.SECTIONS:
+        ops = programs.get(name, ())
+        fields[name + "_instr_offset"] = fx._HEADER.size + len(body)
+        fields[name + "_instr_count"] = len(ops)
+        body += b"".join(fx._INSTRUCTION.pack(op, flags, imm[0] if imm else 0,
+                                              *src, *out)
+                         for op, flags, src, out, *imm in ops)
     fields["persist_init_offset"] = fx._HEADER.size + len(body)
-    fields["rodata_offset"] = fields["persist_init_offset"] + len(persistent)
+    pad = -(fields["persist_init_offset"] + len(persistent)) % 16
+    fields["rodata_offset"] = (fields["persist_init_offset"] +
+                               len(persistent) + pad)
     fields["rodata_size"] = len(rodata)
     head = fx._HEADER.pack(*(fields[name] for name in fx._HEADER_FIELDS))
-    return bytearray(head + body + persistent + rodata)
+    return bytearray(head + body + persistent + bytes(pad) + rodata)
+
+
+def with_header(blob, **fields):
+    """`blob` with header fields rewritten after assembly — the fields
+    assemble() derives from the layout included."""
+    head = dict(zip(fx._HEADER_FIELDS, fx._HEADER.unpack_from(blob, 0)))
+    head.update(fields)
+    out = bytearray(blob)
+    out[:fx._HEADER.size] = fx._HEADER.pack(
+        *(head[name] for name in fx._HEADER_FIELDS))
+    return out
 
 
 N = fx.NULL_REF
@@ -77,8 +103,8 @@ class ReaderTest(unittest.TestCase):
         blob = assemble(64, train=[(19, 0, (0, fx.f32_bits(2.5), N, N),
                                     (4, 0, 0))], persistent=b"\1" * 8)
         plan = fx.Plan(blob)
-        self.assertEqual((plan.version, plan.arena_size),
-                         (fx.SEEU_NEWEST, 64))
+        self.assertEqual((plan.version, plan.arena_size, plan.input_ref,
+                          plan.loss_ref), (fx.SEEU_NEWEST, 72, 64, 68))
         self.assertEqual(len(plan.sections["train"]), 1)
         self.assertEqual(plan.sections["train"][0].opcode, 19)
         self.assertEqual(plan.initial_arena()[:9], b"\1" * 8 + b"\0")
@@ -95,9 +121,84 @@ class ReaderTest(unittest.TestCase):
             mutate(bad)
             with self.assertRaisesRegex(fx.PlanError, message):
                 fx.Plan(bad)
-        with self.assertRaisesRegex(fx.PlanError, "outside the file"):
-            fx.Plan(assemble(64, eval_instr_offset=10 ** 9,
-                             eval_instr_count=1))
+        with self.assertRaisesRegex(fx.PlanError,
+                                    "plan section out of bounds"):
+            fx.Plan(with_header(assemble(64), eval_instr_offset=10 ** 9,
+                                eval_instr_count=1))
+
+    def test_refuses_every_header_the_device_refuses(self):
+        """CR2 #143: PlanHeaderViolation rule for rule, in the device's
+        order and words — the N04 slot rules and the N05 rodata alignment
+        the reader used to skip among them. Each case breaks one rule of a
+        plan the device accepts; where a case breaks two, the first in the
+        device's order is the one named."""
+        good = assemble(64, rodata=bytes(16))
+        fx.Plan(good)
+        head = dict(zip(fx._HEADER_FIELDS, fx._HEADER.unpack_from(good, 0)))
+        rodata = head["rodata_offset"]
+        r, s = fx.RODATA_BIT, fx.SOURCE_BIT
+        stepped = assemble(64, programs={"step": [(0, 0, (N, N, N, N),
+                                                   (0, 0, 0))]})
+        fx.Plan(stepped)
+        cases = (
+            (good, dict(train_instr_count=1 << 58),
+             "plan section size overflows"),
+            (good, dict(emit_count=1 << 61), "plan section size overflows"),
+            # Misaligned AND past the file's end: alignment is checked first.
+            (good, dict(rodata_offset=rodata + 4),
+             "rodata section is not 16-byte aligned"),
+            (good, dict(eval_instr_offset=10 ** 9, eval_instr_count=1),
+             "plan section out of bounds"),
+            (good, dict(emit_table_offset=len(good), emit_count=1),
+             "plan section out of bounds"),
+            (good, dict(rodata_size=len(good)), "plan section out of bounds"),
+            (good, dict(version=10, gemm_tile_n=8),
+             "plan carries GEMM tile fields below v11"),
+            (good, dict(gemm_tile_k=6), "plan gemm_tile_k 6 is not a "
+             "multiple of the kernel's 4-wide unroll"),
+            (good, dict(grad_accum_steps=2),
+             "plan step program presence disagrees with grad_accum_steps"),
+            (stepped, dict(version=8),
+             "pre-v9 plan carries gradient-accumulation fields"),
+            (good, dict(batch=0), "plan batch size is zero"),
+            (good, dict(input_floats=0), "plan input width is zero"),
+            (good, dict(arena_size=(1 << 64) - 1), "arena size overflows"),
+            (good, dict(persistent_size=73),
+             "persistent segment exceeds arena"),
+            (good, dict(lr=0.0),
+             "plan header lr is not a finite value in its range"),
+            (good, dict(input_ref=s | 64), "plan input slot out of bounds"),
+            (good, dict(input_ref=r | 64), "plan input slot out of bounds"),
+            (good, dict(input_ref=66), "plan input slot out of bounds"),
+            (good, dict(input_ref=72), "plan input slot out of bounds"),
+            (good, dict(input_floats=1 << 62),
+             "plan input slot out of bounds"),
+            (good, dict(label_kind=1, label_ref=r, label_bytes=4),
+             "plan label slot out of bounds"),
+            (good, dict(label_kind=1, label_ref=s, label_bytes=4),
+             "plan label slot out of bounds"),
+            (good, dict(label_kind=1, label_ref=2, label_bytes=4),
+             "plan label slot out of bounds"),
+            (good, dict(label_kind=1, label_ref=0, label_bytes=73),
+             "plan label slot out of bounds"),
+            (good, dict(loss_ref=fx.NULL_REF), "plan loss slot out of bounds"),
+            (good, dict(loss_ref=s | 68), "plan loss slot out of bounds"),
+            (good, dict(loss_ref=70), "plan loss slot out of bounds"))
+        for base, fields, message in cases:
+            with self.subTest(**{k: repr(v) for k, v in fields.items()}):
+                with self.assertRaisesRegex(fx.PlanError, re.escape(message)):
+                    fx.Plan(with_header(base, **fields))
+        # What the rules leave alone: an empty rodata section's offset, the
+        # label slot of a plan that stages no labels, a 16-aligned rodata
+        # the compiler did not put on a page, and the persist image shorter
+        # than the persistent segment (the engine copies it over zeros).
+        fx.Plan(with_header(good, rodata_size=0, rodata_offset=rodata + 4))
+        fx.Plan(with_header(good, label_kind=0, label_ref=r | 3))
+        self.assertNotEqual(rodata % fx.formats.RODATA_ALIGNMENT, 0)
+        short = fx.Plan(with_header(assemble(64, persistent=b"\7" * 8),
+                                    persistent_size=16))
+        self.assertEqual(bytes(short.initial_arena()[:17]),
+                         b"\7" * 8 + bytes(9))
 
     def test_refuses_the_immediates_the_device_refuses(self):
         """CR1 #142's validator and load-contract rules, held by the reader
@@ -520,6 +621,54 @@ class InterpreterSelfCheck(unittest.TestCase):
         np.testing.assert_array_equal(outs[0], outs[1])
         np.testing.assert_array_equal(outs[0][:12],
                                       [3, 3, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
+
+
+@unittest.skipIf(np is None, "NumPy not installed")
+class StagedSlotTest(unittest.TestCase):
+    """CR2 #143 N03: no instruction of any program writes the staged input
+    or label slot — refused in the device's words on the bytes the
+    instruction really writes, by both memory models."""
+
+    class Slots(fx.NumpyBackend):
+        arena_views = False
+
+    @staticmethod
+    def fill(off, n):
+        return (19, 0, (off, fx.f32_bits(1.0), N, N), (n, 0, 0))
+
+    def test_no_program_writes_the_staged_input_slot(self):
+        # assemble(64): the input slot is [64, 68), the loss slot [68, 72).
+        for backend in (fx.NumpyBackend, self.Slots):
+            for program in fx.SECTIONS:
+                with self.subTest(backend=backend.__name__, program=program):
+                    plan = fx.Plan(assemble(
+                        64, programs={program: [self.fill(60, 2)]}))
+                    ex = fx.Executor(plan, backend("float64"))
+                    with self.assertRaisesRegex(
+                            fx.PlanError,
+                            f"an instruction of the {program} program writes "
+                            r"the staged input slot \(opcode 19\)"):
+                        ex.execute(program)
+
+    def test_the_label_slot_too_and_nothing_beside_them(self):
+        plan = fx.Plan(assemble(64, train=[self.fill(48, 1)], label_kind=1,
+                                label_ref=48, label_bytes=4))
+        with self.assertRaisesRegex(fx.PlanError, "writes the staged label "
+                                    "slot"):
+            fx.Executor(plan, fx.NumpyBackend("float64")).execute("train")
+        # The bytes beside the slots, the loss slot (the loss kernels write
+        # it), and the feeder's own staging are all in order.
+        plan = fx.Plan(assemble(64, train=[self.fill(40, 2), self.fill(56, 2),
+                                           self.fill(68, 1)],
+                                label_kind=1, label_ref=48, label_bytes=4))
+        ex = fx.Executor(plan, fx.NumpyBackend("float64"))
+        ex.mem.stage(48, struct.pack("<i", 3))
+        ex.mem.stage(64, struct.pack("<f", 2.5))
+        ex.execute("train")
+        arena = ex.mem.export()
+        self.assertEqual(struct.unpack_from("<i", arena, 48)[0], 3)
+        self.assertEqual(struct.unpack_from("<f", arena, 64)[0], 2.5)
+        self.assertEqual(struct.unpack_from("<f", arena, 68)[0], 1.0)
 
 
 # --- The differential suite ----------------------------------------------------

@@ -166,11 +166,97 @@ def hi_lo(word):
     return word >> 32, word & 0xFFFFFFFF
 
 
+_U64 = 1 << 64
+_EMIT_ENTRY_BYTES = formats.EMIT_ENTRY.struct.size
+
+
+def header_violation(h, plan_size):
+    """PlanHeaderViolation (source/contract/plan_contract.h) rule for rule,
+    in its order and in its words: the first violated rule's reason, or
+    None. `h` carries the header's fields as attributes. The device refuses
+    a plan whose header breaks any of these before a byte of it runs; so
+    does this reader, so a plan the device refuses never trains, diffs or
+    prices here (CR2 #143: the review's N04 and N05 were rules this copy
+    skipped). The C++ statement stays the one the device runs; this is held
+    to it by test, rule by rule, and by the ABI manifest for its constants."""
+    def mul_ok(a, b):
+        return a * b < _U64
+
+    def range_ok(off, size, limit):
+        return off <= limit and size <= limit - off
+
+    counts = ((h.train_instr_count, _INSTRUCTION.size),
+              (h.merge_instr_count, _INSTRUCTION.size),
+              (h.eval_instr_count, _INSTRUCTION.size),
+              (h.step_instr_count, _INSTRUCTION.size),
+              (h.emit_count, _EMIT_ENTRY_BYTES))
+    if not all(mul_ok(n, size) for n, size in counts):
+        return "plan section size overflows"
+    align = formats.RODATA_OFFSET_ALIGNMENT
+    if h.rodata_size != 0 and h.rodata_offset % align != 0:
+        return f"rodata section is not {align}-byte aligned"
+    sections = ((h.train_instr_offset, h.train_instr_count * _INSTRUCTION.size),
+                (h.merge_instr_offset, h.merge_instr_count * _INSTRUCTION.size),
+                (h.eval_instr_offset, h.eval_instr_count * _INSTRUCTION.size),
+                (h.step_instr_offset, h.step_instr_count * _INSTRUCTION.size),
+                (h.rodata_offset, h.rodata_size),
+                (h.persist_init_offset, h.persist_init_size),
+                (h.emit_table_offset, h.emit_count * _EMIT_ENTRY_BYTES))
+    if not all(range_ok(off, size, plan_size) for off, size in sections):
+        return "plan section out of bounds"
+    # GEMM tiles (v11, kSeeuGemmTilesVersion): padding below it.
+    if h.version < 11 and (h.gemm_tile_k != 0 or h.gemm_tile_n != 0):
+        return "plan carries GEMM tile fields below v11"
+    if h.gemm_tile_k % 4 != 0:
+        return (f"plan gemm_tile_k {h.gemm_tile_k} is not a multiple of the "
+                "kernel's 4-wide unroll")
+    # Gradient accumulation (v9, kSeeuGradAccumVersion).
+    if (h.grad_accum_steps > 1) != (h.step_instr_count > 0):
+        return "plan step program presence disagrees with grad_accum_steps"
+    if h.version < 9 and (h.grad_accum_steps > 1 or h.step_instr_count > 0):
+        return "pre-v9 plan carries gradient-accumulation fields"
+    if h.batch == 0:
+        return "plan batch size is zero"
+    if h.input_floats == 0:
+        return "plan input width is zero"
+    if h.arena_size > _U64 - 64:  # UINT64_MAX - 63
+        return "arena size overflows"
+    if h.persist_init_size > h.arena_size or h.persistent_size > h.arena_size:
+        return "persistent segment exceeds arena"
+    # The optimizer hyperparameters (CR1 #142), each finite and in range.
+    for name, in_range in (
+            ("lr", h.lr > 0.0),
+            ("beta1", 0.0 <= h.beta1 < 1.0),
+            ("beta2", 0.0 <= h.beta2 < 1.0),
+            ("eps", h.eps > 0.0),
+            ("weight_decay", h.weight_decay >= 0.0),
+            ("clip_norm", h.clip_norm >= 0.0),
+            ("min_lr_factor", 0.0 <= h.min_lr_factor <= 1.0)):
+        if not (math.isfinite(getattr(h, name)) and in_range):
+            return f"plan header {name} is not a finite value in its range"
+
+    # The I/O slots (N04): arena refs, element-aligned and in bounds. A
+    # rodata or source ref would be read through the arena pointer and
+    # written by the feeder.
+    def slot_ok(ref, nbytes):
+        return (not ref & RODATA_BIT and not is_source_ref(ref) and
+                ref % 4 == 0 and range_ok(ref, nbytes, h.arena_size))
+    if not (mul_ok(h.input_floats, 4) and
+            slot_ok(h.input_ref, 4 * h.input_floats)):
+        return "plan input slot out of bounds"
+    if h.label_kind != 0 and not slot_ok(h.label_ref, h.label_bytes):
+        return "plan label slot out of bounds"
+    if not slot_ok(h.loss_ref, 4):
+        return "plan loss slot out of bounds"
+    return None
+
+
 class Plan:
     """A parsed .seeu blob: the header as attributes, the four instruction
-    streams, and the byte sections. Bounds are checked here because nothing
-    downstream re-checks them — this is a build-host tool, but it still must
-    not index outside a file someone handed it."""
+    streams, and the byte sections. The device's load contract is checked
+    here (header_violation) because nothing downstream re-checks it — this
+    is a build-host tool, but it must neither index outside a file someone
+    handed it nor run a plan the device would refuse."""
 
     def __init__(self, blob, path="<memory>"):
         self.path, self.blob = path, blob
@@ -183,23 +269,18 @@ class Plan:
         if not SEEU_OLDEST <= self.version <= SEEU_NEWEST:
             raise PlanError(f"{path}: plan version {self.version} is outside "
                             f"[{SEEU_OLDEST}, {SEEU_NEWEST}]")
+        why = header_violation(self, len(blob))
+        if why:
+            raise PlanError(f"{path}: {why}")
         self.sections = {}
         for name in SECTIONS:
             off = getattr(self, name + "_instr_offset")
             count = getattr(self, name + "_instr_count")
-            self._bounds(name, off, count * _INSTRUCTION.size)
             self.sections[name] = [
                 Instruction(op, flags, (a, b, c, d), (x, y, z), imm)
                 for op, flags, imm, a, b, c, d, x, y, z in
                 _INSTRUCTION.iter_unpack(
                     blob[off:off + count * _INSTRUCTION.size])]
-        self._bounds("rodata", self.rodata_offset, self.rodata_size)
-        self._bounds("persist_init", self.persist_init_offset,
-                     self.persist_init_size)
-        if self.persist_init_size != self.persistent_size:
-            raise PlanError(f"{path}: persist_init_size != persistent_size")
-        if self.persistent_size > self.arena_size:
-            raise PlanError(f"{path}: persistent segment exceeds the arena")
         self.grad_accum = max(1, self.grad_accum_steps)
         self._check_immediates()
         # v18 / v20: the instructions a certified relaxed kernel may run —
@@ -211,23 +292,12 @@ class Plan:
                                  if i.opcode in RELAXED_GEMM_OPCODES)
 
     def _check_immediates(self):
-        """The device validator's immediate-float rules and the load
-        contract's hyperparameter rules (CR1 #142), held here too: a plan
-        the device refuses must not train, diff or price in this tool as if
-        it ran. Every float an instruction carries as bits is finite and in
-        its range; so is every optimizer float of the header."""
+        """The device validator's immediate-float rules (CR1 #142), held
+        here too: a plan the device refuses must not train, diff or price
+        in this tool as if it ran. Every float an instruction carries as
+        bits is finite and in its range. (The header's optimizer floats are
+        the load contract's, checked by header_violation.)"""
         p = self.path
-        for name, in_range in (
-                ("lr", self.lr > 0.0),
-                ("beta1", 0.0 <= self.beta1 < 1.0),
-                ("beta2", 0.0 <= self.beta2 < 1.0),
-                ("eps", self.eps > 0.0),
-                ("weight_decay", self.weight_decay >= 0.0),
-                ("clip_norm", self.clip_norm >= 0.0),
-                ("min_lr_factor", 0.0 <= self.min_lr_factor <= 1.0)):
-            if not (math.isfinite(getattr(self, name)) and in_range):
-                raise PlanError(f"{p}: plan header {name} is not a finite "
-                                "value in its range")
 
         def positive(word):
             """A finite positive f32 in the low half, the high half zero."""
@@ -335,11 +405,6 @@ class Plan:
                 raise PlanError(f"{where}: column scale {i} is not a finite "
                                 "positive float")
 
-    def _bounds(self, what, off, size):
-        if off > len(self.blob) or size > len(self.blob) - off:
-            raise PlanError(f"{self.path}: the {what} section lies outside "
-                            "the file")
-
     @classmethod
     def load(cls, path):
         try:
@@ -354,8 +419,8 @@ class Plan:
         """The engine's arena at load: zeros, with the persistent prefix
         (adapters, optimizer state, accumulators) set to its initial image."""
         arena = bytearray(self.arena_size)
-        o = self.persist_init_offset
-        arena[:self.persistent_size] = self.blob[o:o + self.persistent_size]
+        o, n = self.persist_init_offset, self.persist_init_size
+        arena[:n] = self.blob[o:o + n]  # the engine's memcpy, over zeros
         return arena
 
     def effective_lr(self, step, horizon=0):
@@ -925,6 +990,9 @@ class Memory:
         self.recorder = None
         self._frozen = {}
         self.source = None  # v17: the source model file's bytes (E12)
+        # (program, opcode) of the instruction running, set by the executor
+        # for the staged-slot refusal's words.
+        self.where = None
 
     # Frozen weights: f32 as stored, int8 and bf16 widened once. A frontier
     # framework holds its weights in a dtype it can multiply; the on-the-fly
@@ -973,6 +1041,30 @@ class Memory:
         if ref + nbytes > len(self.arena):
             raise PlanError("an arena operand lies outside the arena")
 
+    def _check_write(self, ref, nbytes):
+        """A write's operand, checked as `_check` checks every access, and
+        the executor contract's staged-slot rule (CR2 #143 N03): the staged
+        input and label slots are the feeder's, so no instruction of any
+        program may write them — the corpus check proved the values staged
+        there, and every later read of the slot relies on that proof. Held
+        on the bytes an instruction really writes, as this tool holds every
+        memory rule, rather than from a second copy of the validator's
+        per-opcode extents (seeai.md §7: never a second copy of a contract).
+        The executor runs the train, step and eval programs, and a diff the
+        merge program too, where the probe's executor contract refuses the
+        plan first; a Plan only priced or histogrammed runs nothing."""
+        self._check(ref, nbytes)
+        p = self.plan
+        slots = ((p.input_ref, 4 * p.input_floats, "input"),
+                 (p.label_ref, p.label_bytes if p.label_kind else 0, "label"))
+        for slot, size, what in slots:
+            if size and nbytes and ref < slot + size and slot < ref + nbytes:
+                program, opcode = self.where or (None, None)
+                who = (f"an instruction of the {program} program"
+                       if program else "an instruction")
+                op = f" (opcode {opcode})" if opcode is not None else ""
+                raise PlanError(f"{who} writes the staged {what} slot{op}")
+
     def read(self, ref, shape, kind="<f4"):
         if ref != NULL_REF and (ref & RODATA_BIT or is_source_ref(ref)):
             return self.frozen(ref, tuple(shape), kind)
@@ -999,7 +1091,7 @@ class ArenaMemory(Memory):
 
     def write(self, ref, tensor):
         n = _count(tensor.shape)
-        self._check(ref, 4 * n)
+        self._check_write(ref, 4 * n)
         self.x.store(self.x.view(self.arena, "<f4", n, ref), tensor)
         if self.recorder:
             self.recorder(ref, self.np.frombuffer(self.arena, "<f4", n,
@@ -1070,7 +1162,7 @@ class SlotMemory(Memory):
 
     def write(self, ref, tensor):
         nbytes = 4 * _count(tensor.shape)
-        self._check(ref, nbytes)
+        self._check_write(ref, nbytes)
         self._evict(ref, nbytes, flush=False)
         self._insert(ref, nbytes, "<f4", tensor.reshape(-1))
         if self.recorder:
@@ -1667,9 +1759,11 @@ class Executor:
     def execute(self, section, scalars=None, on_instruction=None):
         scalars = scalars or self.step_scalars()
         for index, ins in enumerate(self.plan.sections[section]):
+            self.mem.where = (section, ins.opcode)
             INTERPRETER[ins.opcode](self.mem, self.x, ins, scalars)
             if on_instruction:
                 on_instruction(index, ins)
+        self.mem.where = None
 
     def train_step(self, corpus):
         """One optimizer step: G grad executions, then the step program.
