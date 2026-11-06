@@ -9,6 +9,12 @@
 // child ends with `_exit`: no destructor of the parent's state runs (its
 // temp directories stay the parent's), no buffered output is flushed twice,
 // and no core is dumped. POSIX only.
+//
+// The body reports through its return value alone: an EXPECT_* or ASSERT_*
+// inside it records in the child's copy of the registry, which the parent
+// never sees. And only the forking thread lives on in the child, so a body
+// must not reach the parallel-for pool (ParallelFor, a multi-chunk
+// ContentHash64): a worker the parent had would never answer.
 // =============================================================================
 
 #ifndef _WIN32
@@ -34,7 +40,8 @@ enum class PastTheLimit {
 
 /// Runs `body` in a forked child whose files may not grow past `limit`
 /// bytes, and returns the child's wait status: it exits with what `body`
-/// returns (0 when the child's own checks held), or dies of SIGXFSZ.
+/// returns (0 when the child's own checks held), with 124 when `body` threw,
+/// or dies of SIGXFSZ. -1 when the child could not be forked or waited for.
 inline int RunUnderFileSizeLimit(uint64_t limit, PastTheLimit past,
                                  const std::function<int()>& body) {
   std::fflush(nullptr);  // nothing buffered is written twice
@@ -48,7 +55,15 @@ inline int RunUnderFileSizeLimit(uint64_t limit, PastTheLimit past,
     if (::getrlimit(RLIMIT_FSIZE, &fsize) != 0) ::_exit(125);
     fsize.rlim_cur = static_cast<rlim_t>(limit);
     if (::setrlimit(RLIMIT_FSIZE, &fsize) != 0) ::_exit(126);
-    ::_exit(body());
+    // An exception must not leave the child: unwinding would run the test's
+    // destructors here (a ScopedTempDir removing the parent's directory),
+    // and the runner would go on to run the rest of the suite in the child.
+    int code = 124;
+    try {
+      code = body();
+    } catch (...) {
+    }
+    ::_exit(code);
   }
   int status = 0;
   while (::waitpid(pid, &status, 0) < 0)

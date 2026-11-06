@@ -32,7 +32,8 @@ struct ByteSpan {
 /// What one durable write cost on disk (CR4 #145, the storage role's
 /// screen line): the bytes it wrote, and the fsyncs that succeeded — the
 /// file's, then its directory's, which is best effort (a filesystem that
-/// refuses a directory fsync leaves one).
+/// refuses a directory fsync leaves one; so does Windows, whose rename is
+/// written through instead).
 struct DurableWriteStats {
   uint64_t bytes = 0;
   uint64_t fsyncs = 0;

@@ -253,7 +253,7 @@ With `--checkpoint` and `--checkpoint-every`, the storage role adds three rows a
   fsyncs per checkpoint    2.0                           the file's and its directory's, the mean
 ```
 
-Each checkpoint is the plan's persistent segment behind a header, staged beside the destination, synced, renamed into place, and its directory synced: two fsyncs, or one on a filesystem that refuses a directory fsync. The bytes are a mean because a checkpoint also carries the best state while it differs from the segment.
+Each checkpoint is the plan's persistent segment behind a header, staged beside the destination, synced, renamed into place, and its directory synced: two fsyncs, or one on a filesystem that refuses a directory fsync, and one on Windows, where the rename is written through instead. The bytes are a mean because a checkpoint also carries the best state while it differs from the segment.
 
 Exit codes are the API for your update orchestrator: `0` committed, `1` runtime error, `2` bad arguments, `3` regression-gate rejection, `4` committed but `--report` or `--loss-log` could not be written. `--loss-log` writes the full per-step CSV loss curve once training completes (it is not appended live, so tail it after the run, not during).
 

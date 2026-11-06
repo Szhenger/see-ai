@@ -178,7 +178,10 @@ def header_violation(h, plan_size):
     does this reader, so a plan the device refuses never trains, diffs or
     prices here (CR2 #143: the review's N04 and N05 were rules this copy
     skipped). The C++ statement stays the one the device runs; this is held
-    to it by test, rule by rule, and by the ABI manifest for its constants."""
+    to it by test, rule by rule. The ABI manifest holds the rodata offset
+    alignment and the record sizes; the version gates (v11 GEMM tiles, v9
+    gradient accumulation) and the 4-wide unroll are literals here, as
+    every version gate of this reader is, held by the test alone."""
     def mul_ok(a, b):
         return a * b < _U64
 
@@ -993,6 +996,12 @@ class Memory:
         # (program, opcode) of the instruction running, set by the executor
         # for the staged-slot refusal's words.
         self.where = None
+        # The feeder's staged slots (CR2 #143 N03), fixed for the plan's
+        # life: (offset, bytes, name); a plan that stages no labels has a
+        # label slot of no bytes.
+        self._staged = ((plan.input_ref, 4 * plan.input_floats, "input"),
+                        (plan.label_ref,
+                         plan.label_bytes if plan.label_kind else 0, "label"))
 
     # Frozen weights: f32 as stored, int8 and bf16 widened once. A frontier
     # framework holds its weights in a dtype it can multiply; the on-the-fly
@@ -1054,10 +1063,7 @@ class Memory:
         merge program too, where the probe's executor contract refuses the
         plan first; a Plan only priced or histogrammed runs nothing."""
         self._check(ref, nbytes)
-        p = self.plan
-        slots = ((p.input_ref, 4 * p.input_floats, "input"),
-                 (p.label_ref, p.label_bytes if p.label_kind else 0, "label"))
-        for slot, size, what in slots:
+        for slot, size, what in self._staged:
             if size and nbytes and ref < slot + size and slot < ref + nbytes:
                 program, opcode = self.where or (None, None)
                 who = (f"an instruction of the {program} program"
@@ -1756,14 +1762,24 @@ class Executor:
                 raise PlanError("a staged batch does not match label_bytes")
             self.mem.stage(p.label_ref, labels)
 
+    def dispatch(self, section, ins, x, scalars, mem=None):
+        """One instruction through the interpreter, on `mem` (the executor's
+        own by default) and backend `x`. The memory knows which program and
+        opcode it runs for as long as it runs, so a staged-slot refusal
+        names them (CR2 #143 N03), and forgets them however it returns.
+        Every executor's loop dispatches through here."""
+        self.mem.where = (section, ins.opcode)
+        try:
+            INTERPRETER[ins.opcode](mem or self.mem, x, ins, scalars)
+        finally:
+            self.mem.where = None
+
     def execute(self, section, scalars=None, on_instruction=None):
         scalars = scalars or self.step_scalars()
         for index, ins in enumerate(self.plan.sections[section]):
-            self.mem.where = (section, ins.opcode)
-            INTERPRETER[ins.opcode](self.mem, self.x, ins, scalars)
+            self.dispatch(section, ins, self.x, scalars)
             if on_instruction:
                 on_instruction(index, ins)
-        self.mem.where = None
 
     def train_step(self, corpus):
         """One optimizer step: G grad executions, then the step program.

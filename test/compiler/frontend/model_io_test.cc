@@ -472,12 +472,6 @@ TEST(ModelIo, ByteBalancedParallelLoadIsExactAtAnyWidth) {
 }
 
 #ifndef _WIN32
-// The whole file at `path`, or empty when it cannot be read.
-std::vector<char> Contents(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
-}
-
 TEST(Smf, AWriteThatFailsMidwayLeavesTheModelAndTheDiskUntouched) {
   // CR4 #145 F05, the failure the open-failure test below cannot reach: the
   // disk fills partway through the file. The child's files may not grow
@@ -490,10 +484,10 @@ TEST(Smf, AWriteThatFailsMidwayLeavesTheModelAndTheDiskUntouched) {
   const std::string path = dir.File("model.smf");
   SmfModel old_model = MakeMlp(4, 8, 2, 2);
   ASSERT_OK(SaveSmf(path, old_model));
-  const std::vector<char> old_bytes = Contents(path);
+  const std::vector<uint8_t> old_bytes = ReadAll(path);
   SmfModel probe = MakeMlp(64, 256, 16, 3);
   ASSERT_OK(SaveSmf(dir.File("probe.smf"), probe));
-  const uint64_t full = Contents(dir.File("probe.smf")).size();
+  const uint64_t full = ReadAll(dir.File("probe.smf")).size();
   SmfModel model = MakeMlp(64, 256, 16, 3);
   for (SmfTensor& t : model.tensors)
     if (t.is_const) {
@@ -506,7 +500,7 @@ TEST(Smf, AWriteThatFailsMidwayLeavesTheModelAndTheDiskUntouched) {
         auto r = SaveSmf(path, model);
         if (r) return 1;
         if (r.error().find("short write") == std::string::npos) return 2;
-        if (Contents(path) != old_bytes) return 3;
+        if (ReadAll(path) != old_bytes) return 3;
         if (std::ifstream(path + ".tmp").good()) return 4;
         for (const SmfTensor& t : model.tensors)
           if (t.is_const && (t.data_offset != 7777 || t.byte_size != 1))
@@ -529,11 +523,11 @@ TEST(Smf, AWriterKilledMidSaveLeavesTheOldFile) {
   const std::string path = dir.File("model.smf");
   SmfModel old_model = MakeMlp(4, 8, 2, 2);
   ASSERT_OK(SaveSmf(path, old_model));
-  const std::vector<char> old_bytes = Contents(path);
+  const std::vector<uint8_t> old_bytes = ReadAll(path);
   SmfModel model = MakeMlp(64, 256, 16, 3);
   SmfModel probe = model;
   ASSERT_OK(SaveSmf(dir.File("probe.smf"), probe));
-  const uint64_t full = Contents(dir.File("probe.smf")).size();
+  const uint64_t full = ReadAll(dir.File("probe.smf")).size();
   const int status = seeml::testing::RunUnderFileSizeLimit(
       full / 2, PastTheLimit::kKill, [&] {
         (void)SaveSmf(path, model);
@@ -541,15 +535,15 @@ TEST(Smf, AWriterKilledMidSaveLeavesTheOldFile) {
       });
   ASSERT_TRUE(WIFSIGNALED(status));
   EXPECT_EQ(WTERMSIG(status), SIGXFSZ);
-  EXPECT_TRUE(Contents(path) == old_bytes);
-  const std::vector<char> stage = Contents(path + ".tmp");
+  EXPECT_TRUE(ReadAll(path) == old_bytes);
+  const std::vector<uint8_t> stage = ReadAll(path + ".tmp");
   ASSERT_TRUE(std::ifstream(path + ".tmp").good());
   EXPECT_LE(uint64_t{stage.size()}, full / 2);
   ASSERT_OK_AND_ASSIGN(SmfModel loaded, LoadSmf(path));
   EXPECT_EQ(loaded.tensors.size(), old_model.tensors.size());
   ASSERT_OK(SaveSmf(path, model));
   EXPECT_FALSE(std::ifstream(path + ".tmp").good());
-  EXPECT_EQ(uint64_t{Contents(path).size()}, full);
+  EXPECT_EQ(uint64_t{ReadAll(path).size()}, full);
 }
 #endif  // _WIN32
 

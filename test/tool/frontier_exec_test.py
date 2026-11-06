@@ -651,24 +651,30 @@ class StagedSlotTest(unittest.TestCase):
                         ex.execute(program)
 
     def test_the_label_slot_too_and_nothing_beside_them(self):
-        plan = fx.Plan(assemble(64, train=[self.fill(48, 1)], label_kind=1,
-                                label_ref=48, label_bytes=4))
-        with self.assertRaisesRegex(fx.PlanError, "writes the staged label "
-                                    "slot"):
-            fx.Executor(plan, fx.NumpyBackend("float64")).execute("train")
-        # The bytes beside the slots, the loss slot (the loss kernels write
-        # it), and the feeder's own staging are all in order.
-        plan = fx.Plan(assemble(64, train=[self.fill(40, 2), self.fill(56, 2),
-                                           self.fill(68, 1)],
-                                label_kind=1, label_ref=48, label_bytes=4))
-        ex = fx.Executor(plan, fx.NumpyBackend("float64"))
-        ex.mem.stage(48, struct.pack("<i", 3))
-        ex.mem.stage(64, struct.pack("<f", 2.5))
-        ex.execute("train")
-        arena = ex.mem.export()
-        self.assertEqual(struct.unpack_from("<i", arena, 48)[0], 3)
-        self.assertEqual(struct.unpack_from("<f", arena, 64)[0], 2.5)
-        self.assertEqual(struct.unpack_from("<f", arena, 68)[0], 1.0)
+        for backend in (fx.NumpyBackend, self.Slots):
+            with self.subTest(backend=backend.__name__):
+                plan = fx.Plan(assemble(64, train=[self.fill(48, 1)],
+                                        label_kind=1, label_ref=48,
+                                        label_bytes=4))
+                with self.assertRaisesRegex(fx.PlanError, "writes the staged "
+                                            "label slot"):
+                    fx.Executor(plan, backend("float64")).execute("train")
+                # The bytes beside the slots, the loss slot (the loss
+                # kernels write it), and the feeder's own staging are all
+                # in order.
+                plan = fx.Plan(assemble(
+                    64, train=[self.fill(40, 2), self.fill(56, 2),
+                               self.fill(68, 1)],
+                    label_kind=1, label_ref=48, label_bytes=4))
+                ex = fx.Executor(plan, backend("float64"))
+                ex.mem.stage(48, struct.pack("<i", 3))
+                ex.mem.stage(64, struct.pack("<f", 2.5))
+                ex.execute("train")
+                arena = ex.mem.export()
+                self.assertEqual(struct.unpack_from("<i", arena, 48)[0], 3)
+                self.assertEqual(struct.unpack_from("<f", arena, 64)[0], 2.5)
+                self.assertEqual(struct.unpack_from("<f", arena, 68)[0], 1.0)
+                self.assertEqual(struct.unpack_from("<f", arena, 60)[0], 1.0)
 
 
 # --- The differential suite ----------------------------------------------------
