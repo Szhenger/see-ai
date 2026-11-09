@@ -101,6 +101,16 @@ the compiled split (S2 acceptance 3), since `tool/frontier_run.py` still
 compiles without `--data` and passes `--val-frac` to the runner; a
 compiled-split plan would refuse that flag — the harness is to switch to
 `--data` + `--val-frac` at compile time when the row is next re-run.
+**Run end to end (2026-11-09):** the demo decoder compiled with `--data
+decoder_corpus.sds --val-frac 0.25 --split-seed 3 --build` (192 records,
+48 held out, split 6317ea27c92d5e82) trains 2 steps through the emitted
+runner and reports the held-out loss and accuracy; the same runner refuses
+`--val-frac 0.1` ("--val-frac is not a runner decision for this plan"), a
+corpus one record shorter ("does not yield the plan's compiled split"), and
+a masked twin of the corpus ("pinned to another corpus"); the same decoder
+compiled with `--data masked.sds --val-frac 0.25 --build` (861 of 1536
+positions targets) trains 2 steps on the masked cross-entropy with a
+periodic validation, the best state and accuracy judged on target rows.
 
 ## Acceptance
 
