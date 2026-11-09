@@ -13,7 +13,7 @@ namespace seeml::update {
 namespace {
 
 bool IsFrontendPhase(std::string_view name) {
-  return name == "finite-sweep" || name == "frontend";
+  return name == "ingress" || name == "topology" || name == "frontend";
 }
 
 bool IsBackendPhase(std::string_view name) {
@@ -41,25 +41,42 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
   }
 
   // --- frontend ---------------------------------------------------------------
+  const IngressorFacts& ing = f.frontend.ingressor;
+  const TopologyFacts& top = f.frontend.topology;
+  const AccountantFacts& acc = f.frontend.accountant;
   Screen& fe = s.frontend;
-  fe.Set("model_ops", f.model_ops);
-  fe.Set("model_tensors", f.model_tensors);
-  fe.Set("weight_tensors", f.weight_tensors);
-  fe.Set("weight_bytes", f.weight_bytes);
-  fe.Set("parameters", f.weight_bytes / 4);
-  fe.Set("input", f.token_input
-                      ? "token ids, " + std::to_string(f.seq_len) +
+  fe.Set("model_ops", ing.model_ops);
+  fe.Set("model_tensors", ing.model_tensors);
+  fe.Set("weight_tensors", ing.weight_tensors);
+  fe.Set("weight_bytes", ing.weight_bytes);
+  fe.Set("parameters", ing.weight_bytes / 4);
+  fe.Set("input", ing.token_input
+                      ? "token ids, " + std::to_string(ing.seq_len) +
                             " per sequence"
-                      : std::to_string(f.input_width) + " features per row");
-  if (f.vocabulary) fe.Set("vocabulary", f.vocabulary);
-  if (f.has_teacher) fe.Set("teacher_ops", f.teacher_ops);
-  fe.Set("footprint_weights", f.footprint_weights);
-  fe.Set("footprint_activations", f.footprint_activations);
-  fe.Set("footprint_deltas", f.footprint_deltas);
-  fe.Set("footprint_caches", f.footprint_caches);
-  fe.Set("footprint_total", f.footprint_total);
-  fe.Set("memory_budget", f.memory_budget);
+                      : std::to_string(ing.input_width) + " features per row");
+  if (top.vocabulary) fe.Set("vocabulary", top.vocabulary);
+  if (top.has_teacher) fe.Set("teacher_ops", top.teacher_ops);
+  fe.Set("adapted_tensors", top.adapted_tensors);
+  fe.Set("adapted_bytes", top.adapted_bytes);
+  fe.Set("activations", top.activations);
+  fe.Set("activation_bytes", top.activation_bytes);
+  fe.Set("weights_source", acc.weights_mapped
+                               ? "mapped from the model file, not counted"
+                               : "in the plan");
+  fe.Set("footprint_weights", acc.footprint_weights);
+  fe.Set("footprint_activations", acc.footprint_activations);
+  fe.Set("footprint_deltas", acc.footprint_deltas);
+  fe.Set("footprint_caches", acc.footprint_caches);
+  fe.Set("footprint_total", acc.footprint_total);
+  const uint64_t device_bytes = r.arena_size + r.plan.size();
+  fe.Set("bound_ratio", device_bytes ? static_cast<double>(r.estimate_bytes) /
+                                           static_cast<double>(device_bytes)
+                                     : 0.0);
+  fe.Set("memory_budget", acc.memory_budget);
   fe.Set("frontend_ms", frontend_ms);
+  for (const WeightRange& w : ing.ranges)
+    fe.AddRow("tensors", {w.name, w.bytes, static_cast<double>(w.min),
+                          static_cast<double>(w.max)});
 
   // --- analysis ---------------------------------------------------------------
   Screen& an = s.analysis;
@@ -74,7 +91,7 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
     trainable += static_cast<uint64_t>(a.r) *
                  static_cast<uint64_t>(a.k + a.m);
   an.Set("trainable_parameters", trainable);
-  const uint64_t parameters = f.weight_bytes / 4;
+  const uint64_t parameters = ing.weight_bytes / 4;
   an.Set("trainable_share",
          parameters ? 100.0 * static_cast<double>(trainable) /
                           static_cast<double>(parameters)
@@ -131,11 +148,7 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
   be.Set("transient_bytes", r.transient_size);
   be.Set("rodata_bytes", r.rodata_size);
   be.Set("plan_bytes", r.plan.size());
-  const uint64_t device_bytes = r.arena_size + r.plan.size();
   be.Set("device_bytes", device_bytes);
-  be.Set("bound_ratio", device_bytes ? static_cast<double>(r.estimate_bytes) /
-                                           static_cast<double>(device_bytes)
-                                     : 0.0);
   const PlanWork work = MeasurePlanWork(r.plan);
   be.Set("gemm_flops", work.GemmFlopsPerStep());
   be.Set("attention_flops", work.AttentionFlopsPerStep());

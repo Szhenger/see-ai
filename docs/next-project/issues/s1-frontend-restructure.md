@@ -49,11 +49,57 @@ home: the accountant's screen and the ratio printed on it.
    screen prints it as an estimate with the honesty ratio.
 5. Each stage fills its statistics struct (S0).
 
+## Status 2026-11-09
+
+Landed on `claude/v100b-s1s2s3`, the first step of the S1/S2/S3 plan.
+The boundary exists: `sema::VerifyModel` (`frontend/topology/sema.cc`)
+runs to completion over the decoded model before anything else — the
+whole-graph checks, every op's arity, operand existence and constness,
+and one shape rule per op kind applied to the tensor table and the batch
+— and returns the shape of every value; `BuildForward`
+(`frontend/computation/parser.cc`) reads those shapes and recomputes none,
+so computation has no shape rule of its own. `sema::VerifyCrossInputs`
+holds what no single model can know: the student's output rows are the
+batch (F68), a token model takes no MSE loss (N19), every `--targets`
+filter names a tensor, no student name starts with `t::` (F06), and a
+teacher shares the input kind and width, the seq_len of a sequential
+student (F02) and the output shape. The ingressor proves payload
+placement on load — 64-byte aligned, after the metadata, sorted and
+non-overlapping (F04) — and owns the value rule: `SweepWeights` refuses
+the first non-finite element by role, tensor and element (F12 / F34,
+moved here from the driver) and records each tensor's range in the same
+pass. The accountant's `AdaptedWeights` rule is topology's one reading
+of it, and under `--adapter-only` the bound counts no weight bytes (the
+plan carries none; the 2026-11-09 review's B1, where the bound read
+1.31× the exact footprint and refused a budget the plan fit). The driver
+runs `ingress` and `topology` as phases of their own before the
+accountant (`finite-sweep` is gone), fills `FrontendStats{ingressor,
+topology, accountant}`, and the frontend screen renders the three:
+adapted weights, where the frozen weights live, `bound ÷ exact`, and
+under `--verbose` every frozen tensor with its payload and value range.
+Verified: all 29 C++ suites and the 183 Python tests; the plan content
+(instructions, rodata, persistent image, emit table — the whole plan, the
+header included) is byte-identical to main a72a6ec on 14 fixture compiles
+(the demo MLP under xent / int8 + grad-accum / mse / kl / xent+kl, the
+demo decoder under xent / int8 / bf16 / tiled / remat / adapter-only /
+relaxed / targets, and `dec_wide`); the goldens and the ABI manifest
+carry the new rows. Not here: the tokenizer-vocab == embedding-rows ==
+head-width rule waits on the SMF tokenizer section (S2).
+
 ## Acceptance
 
-- Every F04/F06/F68/F02/N19/N29/F03/F12 reproduction from the review is a
-  compile-time refusal with a diagnostic naming the stage.
-- Bit-identical plans for every fixture against main (a restructure, not a
-  semantic change) — except the refusals above.
-- The frontend screen prints the parameter census by role, per-tensor
-  ranges, the estimate and its ratio.
+- [x] Every F04/F06/F68/F02/N19/N29/F03/F12 reproduction from the review is
+  a compile-time refusal with a diagnostic naming the stage — F04
+  (`Smf.LoadProvesPayloadPlacement`), F06 / F68 / N19 / F02
+  (`UpdateCompiler.TopologyRefusesWhatTheReviewFoundMissing`), F12
+  (`Smf.TheSweepRefusesNonFiniteWeightsAndReportsRanges`,
+  `UpdateCompiler.ANonFiniteWeightIsRefusedBeforeAnyPass`), N29 / F03
+  (landed 2026-11-03 under F5; the lower-bound test now also covers bf16,
+  a teacher, adapter-only and the MLP fixture).
+- [x] Bit-identical plans for every fixture against main (a restructure,
+  not a semantic change) — 14 fixture compiles identical to a72a6ec,
+  2026-11-09.
+- [x] The frontend screen prints the parameter census by role, per-tensor
+  ranges, the estimate and its ratio — `adapted weights`, `frozen weights
+  live`, `step-0 bound`, `bound ÷ exact`, and the `--verbose` `tensors`
+  table (name, bytes, min, max).

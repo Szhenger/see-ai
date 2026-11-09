@@ -43,6 +43,16 @@ inline constexpr StatRow kFrontendRows[] = {
      "rows of the embedding table", screens_detail::kO},
     {"teacher_ops", "teacher operators", StatKind::kCount, "ops",
      "operators of the distillation teacher", screens_detail::kO},
+    {"adapted_tensors", "adapted weights", StatKind::kCount, "",
+     "frozen weights LoRA will adapt: read only as a MatMul's weight"},
+    {"adapted_bytes", "adapted payload", StatKind::kBytes, "B",
+     "those tensors' f32 bytes", screens_detail::kV},
+    {"activations", "activations", StatKind::kCount, "",
+     "forward values the graph computes at this batch", screens_detail::kV},
+    {"activation_bytes", "activation payload", StatKind::kBytes, "B",
+     "their f32 bytes, every value kept", screens_detail::kV},
+    {"weights_source", "frozen weights live", StatKind::kText, "",
+     "in the plan, or mapped from the model file (adapter-only)"},
     {"footprint_weights", "step-0 weights", StatKind::kBytes, "B",
      "frozen weights at the base's storage", screens_detail::kV},
     {"footprint_activations", "step-0 activations", StatKind::kBytes, "B",
@@ -53,14 +63,32 @@ inline constexpr StatRow kFrontendRows[] = {
      "attention probability caches, or tiled stats rows", screens_detail::kV},
     {"footprint_total", "step-0 bound", StatKind::kBytes, "B",
      "the accountant's lower bound the early gate proved fits"},
+    {"bound_ratio", "bound ÷ exact", StatKind::kReal, "",
+     "the step-0 bound ÷ arena + plan: the accountant's honesty, ≤ 1", 0, 4},
     {"memory_budget", "memory budget", StatKind::kBytes, "B",
      "the configured budget, else this host's memory", screens_detail::kX},
     {"frontend_ms", "frontend time", StatKind::kReal, "ms",
-     "ingest checks and the forward SIR, wall time",
+     "ingress, topology, the accountant and the forward SIR, wall time",
      screens_detail::kV | screens_detail::kX, 3},
 };
+inline constexpr StatColumn kTensorColumns[] = {
+    {"name", StatKind::kText, ""},
+    {"bytes", StatKind::kBytes, "B"},
+    // The fixtures' weights are drawn by the standard library's normal
+    // distribution, whose algorithm differs between libc++ and libstdc++:
+    // the values are the file's, not the toolchain's, so they stay out of
+    // the golden blocks.
+    {"min", StatKind::kReal, "", screens_detail::kX, 6},
+    {"max", StatKind::kReal, "", screens_detail::kX, 6},
+};
+inline constexpr StatTable kFrontendTables[] = {
+    {"tensors", "frozen weights",
+     "each constant tensor: its payload and its value range, from the "
+     "ingress sweep",
+     kTensorColumns},
+};
 inline constexpr ScreenSpec kFrontendScreen = {
-    "frontend", "the model the compiler read", kFrontendRows};
+    "frontend", "the model the compiler read", kFrontendRows, kFrontendTables};
 
 // --- analysis: what the passes did ------------------------------------------------
 
@@ -146,8 +174,6 @@ inline constexpr StatRow kBackendRows[] = {
     {"plan_bytes", "plan file", StatKind::kBytes, "B", "the sealed .seeu"},
     {"device_bytes", "arena + plan", StatKind::kBytes, "B",
      "what the device holds: the arena and the mapped plan"},
-    {"bound_ratio", "bound ÷ exact", StatKind::kReal, "",
-     "the step-0 bound ÷ arena + plan", 0, 4},
     {"gemm_flops", "GEMM work", StatKind::kCount, "FLOP",
      "per step: 2·M·N·K over the train GEMMs, times G"},
     {"attention_flops", "attention work", StatKind::kCount, "FLOP",

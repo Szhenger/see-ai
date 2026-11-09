@@ -129,10 +129,13 @@ frontend — the model the compiler read
   parameters               176,097,600                   weight elements: the payload ÷ 4 B (f32)
   input                    token ids, 128 per sequence   token ids per sequence, or features per row
   vocabulary               49,152 tokens                 rows of the embedding table
+  adapted weights          211                           frozen weights LoRA will adapt: read only as a MatMul's weight
+  frozen weights live      in the plan                   in the plan, or mapped from the model file (adapter-only)
   step-0 bound             1,600,448,832 B (1.5 GiB)     the accountant's lower bound the early gate proved fits
+  bound ÷ exact            0.8533                        the step-0 bound ÷ arena + plan: the accountant's honesty, ≤ 1
   memory budget            17,179,869,184 B (16.0 GiB)   the configured budget, else this host's memory
 analysis — what the passes did
-  passes                   18                            passes and driver phases run, each timed
+  passes                   19                            passes and driver phases run, each timed
   ops in                   757 ops                       the forward SIR the frontend built
   ops out                  4,426 ops                     the training SIR after every pass, as lowered
   adapters                 211                           LoRA adapters grafted, one per targeted matmul weight
@@ -154,13 +157,12 @@ backend — the plan it emitted
   rodata                   262,048,512 B (249.9 MiB)     frozen weights packed into the plan
   plan file                298,631,168 B (284.8 MiB)     the sealed .seeu
   arena + plan             1,875,529,856 B (1.7 GiB)     what the device holds: the arena and the mapped plan
-  bound ÷ exact            0.8533                        the step-0 bound ÷ arena + plan
   GEMM work                310,851,403,776 FLOP          per step: 2·M·N·K over the train GEMMs, times G
   attention work           13,589,544,960 FLOP           per step: 4·B·H·S²·d forward + 8·B·H·S²·d backward
   target peak              1000.0 GFLOP/s                the target's peak, as passed with --peak-gflops
   predicted step           324.441 ms                    (GEMM + attention work) ÷ the target peak
   kernel policy            runtime default               the CPU GEMM tiles the header carries
-  plan hash                1063fab4621f7f4a              the plan's self-hash, which checkpoints bind to
+  plan hash                d1a300d0f105bb6e              the plan's self-hash, which checkpoints bind to
 runtime — planned by the compiler, measured by the device
   planned memory           1,875,529,856 B (1.7 GiB)     arena + plan: the resource contract the device checks
   work per step            324,440,948,736 FLOP          GEMM + attention work of one optimizer step
@@ -169,12 +171,12 @@ runtime — planned by the compiler, measured by the device
 
 Reading it top to bottom:
 
-- **frontend.** The file holds 483 operators and 273 frozen weights — 672 MiB of f32, 176 million parameters — and its input is token ids, 128 per sequence, over a 49,152-token vocabulary. The step-0 bound (1.5 GiB) is the accountant's lower bound on the training footprint, proven to fit before any pass runs; with no `--memory-budget-mib` it is judged against this host's memory, which is what the budget row says.
+- **frontend.** The file holds 483 operators and 273 frozen weights — 672 MiB of f32, 176 million parameters — and its input is token ids, 128 per sequence, over a 49,152-token vocabulary; 211 of the weights are the ones LoRA will adapt (read only as a MatMul's weight), and the frozen weights live in the plan (an `--adapter-only` plan reads them from the model file instead, and says so). The step-0 bound (1.5 GiB) is the accountant's lower bound on the training footprint, proven to fit before any pass runs, and once the backend has bound every byte the ratio beside it is the accountant's honesty at this shape: the bound was 85% of what the device holds, and it is never above it. With no `--memory-budget-mib` the bound is judged against this host's memory, which is what the budget row says. `--verbose` adds every frozen tensor with its payload and value range.
 - **analysis.** LoRA grafted 211 adapters at rank 8: 3.0 million trainable parameters, 1.7% of the model. The 419 addend fusions are every LoRA site's activation-sized sums folded into the GEMM that produces them, and the 419 dead ops are the GEMMs they orphaned. Attention keeps its probabilities (the 30 layers' caches fit the cache budget at this shape); rematerialization stays off because no memory budget was given; `--quantize-base` stored the 211 matmul weights as int8, which is why rodata is 250 MiB rather than the file's 672.
-- **backend.** One micro-batch is 2,887 instructions; validation runs 907, the merge 422. The arena is the one allocation the device makes; arena + plan, 1.7 GiB, is what the device holds, and the step-0 bound was 85% of it (bound ÷ exact — the accountant's honesty at this shape). A step is 311 GFLOP of GEMMs and 14 GFLOP of attention (model FLOPs: causal masking not discounted, recomputation not counted); at the stated 1000 GFLOP/s that predicts 324 ms. The plan hash is what checkpoints bind to.
+- **backend.** One micro-batch is 2,887 instructions; validation runs 907, the merge 422. The arena is the one allocation the device makes; arena + plan, 1.7 GiB, is what the device holds. A step is 311 GFLOP of GEMMs and 14 GFLOP of attention (model FLOPs: causal masking not discounted, recomputation not counted); at the stated 1000 GFLOP/s that predicts 324 ms. The plan hash is what checkpoints bind to.
 - **runtime.** What the device must hold and do, as planned. The device prints the same screen with what it measured beside it (Step 3).
 
-The default output stays near 46 lines whatever the model's size: the rows are aggregates, and the per-item detail is `--verbose`'s. The suite pins the four screens as golden blocks (`test/fixtures/golden/screens/`: two MLPs and the `dec_wide` decoder), so a pass that silently changes what it does changes a number the suite sees; after a deliberate change, `SEEML_UPDATE_GOLDEN=1 ./build/seeml_screens_test` rewrites them for review.
+The default output stays near 49 lines whatever the model's size: the rows are aggregates, and the per-item detail is `--verbose`'s. The suite pins the four screens as golden blocks (`test/fixtures/golden/screens/`: two MLPs and the `dec_wide` decoder), so a pass that silently changes what it does changes a number the suite sees; after a deliberate change, `SEEML_UPDATE_GOLDEN=1 ./build/seeml_screens_test` rewrites them for review.
 
 ## Step 3: Run the Update (device)
 

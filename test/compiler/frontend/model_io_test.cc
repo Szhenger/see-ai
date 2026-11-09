@@ -328,6 +328,127 @@ TEST(Smf, LoadRejectsDataRangeBeyondFile) {
   EXPECT_ERROR_CONTAINS(LoadSmf(path), "exceeds file size");
 }
 
+// A v6 file with one non-const input `x` {-1, 2}, const weights at the
+// offsets given (each 2x2 f32, 16 bytes), and one MatMul(x, w0) -> y. With
+// `write_payloads` the payload bytes are written at the offsets claimed
+// (the file grows to hold them), so every range lies inside the file and
+// only the placement rules can refuse it; without, the bytes already there
+// stand in (for an offset inside the metadata). `metadata_out` receives
+// the metadata's length.
+std::vector<uint8_t> SmfWithPayloadsAt(const std::vector<uint64_t>& offsets,
+                                       bool write_payloads = true,
+                                       size_t* metadata_out = nullptr) {
+  std::vector<uint8_t> b;
+  auto u16 = [&](uint16_t v) {
+    for (int i = 0; i < 2; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+  };
+  auto u32 = [&](uint32_t v) {
+    for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+  };
+  auto u64 = [&](uint64_t v) {
+    for (int i = 0; i < 8; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+  };
+  auto str = [&](const std::string& s) {
+    u16(static_cast<uint16_t>(s.size()));
+    b.insert(b.end(), s.begin(), s.end());
+  };
+  u32(kSmfMagic);
+  u32(6);
+  u32(static_cast<uint32_t>(1 + offsets.size()));
+  u32(1);
+  str("x");
+  str("y");
+  u64(0);  // seq_len
+  str("x");
+  b.push_back(2);  // rank
+  b.push_back(0);  // non-const
+  u64(static_cast<uint64_t>(int64_t{-1}));
+  u64(2);
+  u64(0);
+  u64(0);
+  for (size_t i = 0; i < offsets.size(); ++i) {
+    str("w" + std::to_string(i));
+    b.push_back(2);  // rank
+    b.push_back(1);  // const
+    u64(2);
+    u64(2);
+    u64(offsets[i]);
+    u64(16);
+  }
+  b.push_back(static_cast<uint8_t>(SmfOpKind::kMatMul));
+  str("mm");
+  b.push_back(2);
+  str("x");
+  str("w0");
+  str("y");
+  u32(0);
+  u32(0);
+  u32(0);
+  if (metadata_out) *metadata_out = b.size();
+  if (!write_payloads) return b;
+  for (uint64_t off : offsets) {
+    if (b.size() < off + 16) b.resize(off + 16, 0);
+    const float ones[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::memcpy(b.data() + off, ones, sizeof(ones));
+  }
+  return b;
+}
+
+TEST(Smf, LoadProvesPayloadPlacement) {
+  // S1 #147 (F04): a payload must start on the 64-byte boundary, at or
+  // after the metadata, and no two payloads may share bytes. Each rule
+  // refused by name; the compliant layout loads.
+  ScopedTempDir dir;
+  const std::string path = dir.File("placed.smf");
+  // The metadata's length depends on the tensor count: measure it for
+  // each layout and place the first payload on the boundary past it.
+  auto first_after = [](size_t tensors) {
+    size_t metadata = 0;
+    SmfWithPayloadsAt(std::vector<uint64_t>(tensors, 1u << 20), false,
+                      &metadata);
+    return static_cast<uint64_t>(((metadata + 63) / 64) * 64);
+  };
+  const uint64_t one = first_after(1), two = first_after(2);
+
+  WriteAll(path, SmfWithPayloadsAt({two, two + 64}));
+  EXPECT_OK(LoadSmf(path));
+
+  WriteAll(path, SmfWithPayloadsAt({one + 4}));
+  EXPECT_ERROR_CONTAINS(LoadSmf(path), "not 64-byte aligned");
+
+  // Inside the metadata: offset 64 is aligned and inside the file (the
+  // metadata of a one-tensor file is longer than 80 bytes), and the bytes
+  // there are the tensor table itself.
+  WriteAll(path, SmfWithPayloadsAt({64}, /*write_payloads=*/false));
+  EXPECT_ERROR_CONTAINS(LoadSmf(path), "overlaps the file's metadata");
+
+  // Two tensors claiming the same bytes.
+  WriteAll(path, SmfWithPayloadsAt({two, two}));
+  EXPECT_ERROR_CONTAINS(LoadSmf(path), "overlaps tensor 'w0'");
+}
+
+TEST(Smf, TheSweepRefusesNonFiniteWeightsAndReportsRanges) {
+  // The ingressor's value rule (S1 #147; CR1 F12 / F34): every constant
+  // element finite, named by role, tensor and element; the same pass
+  // records each tensor's range, which the frontend screen prints.
+  SmfModel model = MakeMlp(4, 8, 2, 5);
+  ASSERT_OK_AND_ASSIGN(WeightSweep sweep, SweepWeights(model, "student"));
+  size_t consts = 0;
+  for (const SmfTensor& t : model.tensors) consts += t.is_const ? 1 : 0;
+  EXPECT_EQ(sweep.ranges.size(), consts);
+  for (const WeightRange& r : sweep.ranges) EXPECT_LE(r.min, r.max);
+  SmfTensor* w = nullptr;
+  for (SmfTensor& t : model.tensors)
+    if (t.is_const && t.dims.size() == 2) w = &t;
+  ASSERT_TRUE(w != nullptr);
+  const float inf = INFINITY;
+  std::memcpy(w->data.data() + 2 * sizeof(float), &inf, sizeof(inf));
+  const auto refused = SweepWeights(model, "teacher");
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_STR_CONTAINS(refused.error(), "teacher tensor '" + w->name + "'");
+  EXPECT_STR_CONTAINS(refused.error(), "element 2");
+}
+
 TEST(Smf, LoadRejectsByteSizeDimsDisagreement) {
   ScopedTempDir dir;
   // dims say 2x2 = 16 bytes, but the blob holds 3 floats. SaveSmf writes

@@ -565,14 +565,19 @@ std::expected<void, std::string> VerifyCrossInputs(
         "--loss mse needs dense f32 labels, and a token model's labels are "
         "next-token classes; use xent (or kl / xent+kl with a teacher)");
 
-  // Every adapter filter names at least one eligible weight: a filter that
-  // matches nothing compiles a plan with fewer adapters than asked for.
+  // Every adapter filter names some tensor of the model: a filter that
+  // matches no name at all is a typo that would compile a plan with fewer
+  // adapters than asked for. A filter that names only weights LoRA cannot
+  // adapt (a tied embedding / LM head, a bias) is the grafter's to refuse —
+  // it says which rule each weight failed.
   for (const std::string& f : inputs.target_filters) {
-    const std::string one[] = {f};
-    if (AdaptedWeights(student, one).empty())
+    bool named = false;
+    for (const SmfTensor& t : student.tensors)
+      named = named || t.name.find(f) != std::string::npos;
+    if (!named)
       return parsing::Error("--targets '" + f +
-                            "' matches no weight LoRA can adapt (a constant "
-                            "2-D tensor read only as a MatMul's weight)");
+                            "' matches no eligible weight: no tensor of the "
+                            "model carries that name");
   }
 
   if (!teacher) return {};

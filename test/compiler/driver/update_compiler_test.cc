@@ -1213,6 +1213,65 @@ TEST(UpdateCompiler, AttentionAutoDecidesAgainstAConfiguredBudgetOnly) {
     EXPECT_STR_CONTAINS(tiled.error(), "cannot run locally");
 }
 
+TEST(UpdateCompiler, TopologyRefusesWhatTheReviewFoundMissing) {
+  // S1 #147: the cross-input checks that had no home while shape checks ran
+  // inside the build loop — each a compile-time refusal naming the rule.
+  // F06: the teacher's `t::` namespace is reserved.
+  {
+    SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 21);
+    for (SmfTensor& t : model.tensors)
+      if (t.name == "w1") t.name = "t::w1";
+    for (SmfOp& op : model.ops)
+      for (std::string& in : op.inputs)
+        if (in == "w1") in = "t::w1";
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
+                          "reserved namespace 't::'");
+  }
+  // F68: the output's rows are the batch — a MatMul over a constant LHS
+  // has its own row count, and the loss would read labels past the slot.
+  {
+    SmfModel model;
+    model.input_name = "x";
+    model.output_name = "logits";
+    model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+    model.tensors.push_back({.name = "c",
+                             .dims = {5, 4},
+                             .is_const = true,
+                             .data = seeml::testing::AsPayload(
+                                 std::vector<float>(20, 0.5f))});
+    model.tensors.back().byte_size = 80;
+    model.tensors.push_back({.name = "w",
+                             .dims = {4, 3},
+                             .is_const = true,
+                             .data = seeml::testing::AsPayload(
+                                 std::vector<float>(12, 0.25f))});
+    model.tensors.back().byte_size = 48;
+    model.ops.push_back({SmfOpKind::kMatMul, "mm", {"c", "w"}, "logits"});
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
+                          "has 5 rows, but the compiled batch is 4");
+  }
+  // N19: a token model's labels are next-token classes; MSE has no
+  // dataset that could satisfy its contract.
+  {
+    SmfModel model =
+        seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+    UpdateConfig config = BaseConfig(16);
+    config.loss = LossKind::kMse;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                          "--loss mse needs dense f32 labels");
+  }
+  // F02: a sequential teacher must agree on seq_len — the causal mask and
+  // the rotary positions follow each model's own declaration.
+  {
+    SmfModel student = seeml::testing::MakeTinyDecoder(8, 2, 4, 12, 3, 9);
+    SmfModel teacher = seeml::testing::MakeTinyDecoder(8, 2, 2, 12, 3, 10);
+    UpdateConfig config = BaseConfig(4);
+    config.loss = LossKind::kKLDistill;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(student, &teacher),
+                          "teacher seq_len 2 disagrees with the student's 4");
+  }
+}
+
 TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {
   // CR1 #142 F12 / F34: a NaN weight passed the quantization review (max
   // skips NaN) and reached the int8 pack's cast — undefined behavior. The
