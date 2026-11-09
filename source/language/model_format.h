@@ -79,6 +79,13 @@ inline constexpr uint32_t kSmfMagic = 0x31464D53;  // "SMF1" little-endian
 inline constexpr uint32_t kSmfVersion = 6;
 inline constexpr uint32_t kSmfMinVersion = 1;
 
+// Every constant tensor's payload starts on this boundary (a cache line),
+// at or after the end of the metadata, and no two payloads overlap: both
+// writers lay files out this way, and the ingressor proves it on load
+// (S1 #147, F04) — a payload inside the header or inside another tensor
+// would otherwise compile and commit over bytes the plan never meant.
+inline constexpr uint64_t kSmfPayloadAlignment = 64;
+
 // SMF is read/written by memcpy of host integers; the documented on-disk
 // contract is little-endian. Big-endian hosts need byte-swapping I/O.
 static_assert(std::endian::native == std::endian::little,

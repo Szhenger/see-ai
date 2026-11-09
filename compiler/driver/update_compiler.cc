@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -18,6 +19,8 @@
 #include "compiler/driver/statistics.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/computation/parser.h"
+#include "compiler/frontend/ingressor/model_reader.h"
+#include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
 #include "source/identity/hash.h"
@@ -45,39 +48,6 @@ std::expected<CompiledUpdate, std::string> Attributed(
   return compiled;
 }
 
-// CR1 #142 F12 / F34: the models cross into the compiler finite. A NaN
-// weight passed the quantization review's max-abs scan (std::max skips a
-// NaN) at a finite scale and reached the int8 pack, where casting it is
-// undefined behavior — plans that differ by host. Every constant tensor of
-// the student and the teacher is swept, in the review's chunk geometry,
-// before any pass runs; the first offender is named by tensor and element.
-std::expected<void, std::string> SweepFinite(const SmfModel& model,
-                                             const char* role) {
-  for (const SmfTensor& t : model.tensors) {
-    if (!t.is_const) continue;
-    const size_t count = t.data.size() / sizeof(float);
-    const float* data = reinterpret_cast<const float*>(t.data.data());
-    size_t first[kMaxParallelChunks];
-    for (size_t& f : first) f = SIZE_MAX;
-    ParallelFor(count, kWeightSweepGrain, [&](size_t b, size_t e, size_t c) {
-      for (size_t i = b; i < e; ++i)
-        if (!std::isfinite(data[i])) {
-          first[c] = i;
-          return;
-        }
-    });
-    const size_t chunks = ParallelChunkCount(count, kWeightSweepGrain);
-    for (size_t c = 0; c < chunks; ++c)
-      if (first[c] != SIZE_MAX)
-        return generating::Error(
-            generating::kDriver,
-            std::string(role) + " tensor '" + t.name +
-                "' carries a non-finite value at element " +
-                std::to_string(first[c]) +
-                ": NaN and Inf are refused before any pass runs");
-  }
-  return {};
-}
 }  // namespace
 
 AttentionKind DecideAttention(const TrainingFootprint& footprint,
@@ -172,11 +142,19 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   if (wants_teacher && !teacher)
     return generating::Error(generating::kDriver,
                              "the selected loss requires a teacher model");
-  if (auto r = SweepFinite(source, "student"); !r) return std::unexpected(r.error());
-  if (teacher)
-    if (auto r = SweepFinite(*teacher, "teacher"); !r)
-      return std::unexpected(r.error());
-  phase("finite-sweep", 0);
+  // --- Ingress: the weights cross into the compiler finite (CR1 #142 F12
+  // / F34; the ingressor's rule, S1 #147), and the same pass records each
+  // tensor's range for the frontend screen.
+  CompileFacts facts;
+  {
+    auto swept = SweepWeights(source, "student");
+    if (!swept) return std::unexpected(swept.error());
+    facts.frontend.ingressor.ranges = std::move(swept->ranges);
+    if (teacher)
+      if (auto t = SweepWeights(*teacher, "teacher"); !t)
+        return std::unexpected(t.error());
+  }
+  phase("ingress", 0);
   // The adapter-only package (F6 #134, plan v21): the frozen weights stay
   // in the model file the device already holds, bound by hash at run time,
   // so the plan ships at adapter scale. Its preconditions are the config
@@ -290,27 +268,57 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           "the compiled batch must be a whole number of sequences");
   }
 
+  // --- Topology, to completion (S1 #147): the whole model verified and
+  // every value shaped from the tensor table before the accountant walks
+  // it or computation builds it; then what no single model can know — the
+  // teacher against the student, the loss against the input kind, the
+  // adapter filters against the weights, the reserved `t::` namespace.
+  auto topology = sema::VerifyModel(source, batch);
+  if (!topology) return std::unexpected(topology.error());
+  std::optional<sema::Topology> teacher_topology;
+  if (wants_teacher) {
+    auto tt = sema::VerifyModel(*teacher, batch);
+    if (!tt) return std::unexpected(tt.error());
+    teacher_topology = std::move(*tt);
+  }
+  if (auto ok = sema::VerifyCrossInputs(
+          source, *topology, wants_teacher ? teacher : nullptr,
+          teacher_topology ? &*teacher_topology : nullptr,
+          sema::CrossInputs{batch, config_.loss, config_.lora.target_filters});
+      !ok)
+    return std::unexpected(ok.error());
+  phase("topology", source.ops.size());
+
   // The model as read, for the frontend screen (S0 #146). Captured before
   // any pass: the consuming compile releases the weight payloads as plan
   // assembly packs them, so the byte counts come from the tensors' sizes.
-  CompileFacts facts;
-  facts.model_ops = source.ops.size();
-  facts.model_tensors = source.tensors.size();
-  for (const SmfTensor& t : source.tensors) {
-    if (!t.is_const) continue;
-    ++facts.weight_tensors;
-    facts.weight_bytes += t.byte_size != 0 ? t.byte_size : t.data.size();
+  {
+    IngressorFacts& ing = facts.frontend.ingressor;
+    ing.model_ops = source.ops.size();
+    ing.model_tensors = source.tensors.size();
+    for (const SmfTensor& t : source.tensors) {
+      if (!t.is_const) continue;
+      ++ing.weight_tensors;
+      ing.weight_bytes += t.byte_size != 0 ? t.byte_size : t.data.size();
+    }
+    ing.token_input = token_input;
+    ing.input_width = token_input ? 0 : static_cast<uint64_t>(in_dim);
+    ing.seq_len = source.seq_len;
+    ing.content_hash = source.content_hash;
+    TopologyFacts& top = facts.frontend.topology;
+    top.vocabulary = topology->vocabulary;
+    top.activations = topology->activations;
+    top.activation_bytes = topology->activation_bytes;
+    top.embedding_ops = topology->embedding_ops;
+    top.attention_ops = topology->attention_ops;
+    top.has_teacher = teacher != nullptr;
+    if (teacher) top.teacher_ops = teacher->ops.size();
+    const auto adapted =
+        sema::AdaptedWeights(source, config_.lora.target_filters);
+    top.adapted_tensors = adapted.size();
+    for (const SmfTensor& t : source.tensors)
+      if (adapted.contains(t.name)) top.adapted_bytes += t.byte_size;
   }
-  facts.token_input = token_input;
-  facts.input_width = token_input ? 0 : static_cast<uint64_t>(in_dim);
-  facts.seq_len = source.seq_len;
-  for (const SmfOp& op : source.ops)
-    if (op.kind == SmfOpKind::kEmbedding && op.inputs.size() >= 2)
-      if (const SmfTensor* table = source.FindTensor(op.inputs[1]);
-          table && !table->dims.empty())
-        facts.vocabulary = static_cast<uint64_t>(table->dims[0]);
-  facts.has_teacher = teacher != nullptr;
-  if (teacher) facts.teacher_ops = teacher->ops.size();
 
   // --- 0. Fail fast: prove the training footprint fits local memory. -------
   // The teacher is a frozen forward — no backward caches its activations —
@@ -326,6 +334,13 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     footprint.weight_bytes /= 4;
   else if (config_.bf16_base)
     footprint.weight_bytes /= 2;
+  // An adapter-only plan (F6 #134) carries no weights at all: every frozen
+  // tensor is read from the model file the device already holds, through
+  // a clean, evictable mapping. The exact side of the bound — the arena
+  // plus the plan — holds none of those bytes, so the bound counts none
+  // either; the screen says so (S1 #147: the estimate is a lower bound on
+  // what the plan and the arena hold, never above it).
+  if (config_.adapter_only) footprint.weight_bytes = 0;
   // Rematerialization (step 8b) frees the recomputable activations in the
   // forward wherever it may run — forced, or `auto` against a configured
   // budget (with none, auto keeps the plan plain) — so there the bound is
@@ -356,14 +371,18 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                             " B of stats rows");
     footprint.probs_cache_bytes = footprint.attention_stats_bytes;
   }
-  facts.footprint_weights = footprint.weight_bytes;
-  facts.footprint_activations = footprint.activation_bytes;
-  facts.footprint_deltas = footprint.delta_bytes;
-  facts.footprint_caches = footprint.probs_cache_bytes;
-  facts.footprint_total = footprint.total_bytes();
-  facts.memory_budget = config_.memory_budget_bytes != 0
+  {
+    AccountantFacts& acc = facts.frontend.accountant;
+    acc.footprint_weights = footprint.weight_bytes;
+    acc.footprint_activations = footprint.activation_bytes;
+    acc.footprint_deltas = footprint.delta_bytes;
+    acc.footprint_caches = footprint.probs_cache_bytes;
+    acc.footprint_total = footprint.total_bytes();
+    acc.memory_budget = config_.memory_budget_bytes != 0
                             ? config_.memory_budget_bytes
                             : DetectLocalMemoryBytes();
+    acc.weights_mapped = config_.adapter_only;
+  }
   facts.remat_budget_configured = config_.memory_budget_bytes != 0;
   if (auto fits = CheckTrainableLocally(footprint, config_.memory_budget_bytes);
       !fits) {
@@ -404,19 +423,12 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
 
   sir::Value* teacher_out = nullptr;
   if (wants_teacher) {
-    const SmfTensor* t_in = teacher->FindTensor(teacher->input_name);
-    const bool t_token = t_in && t_in->dims.size() == 1 &&
-                         t_in->dims.back() == -1;
-    if (!t_in || t_in->dims.empty() ||
-        (token_input ? !t_token : t_in->dims.back() != in_dim))
-      return generating::Error(generating::kDriver,
-                               "teacher input dimensionality mismatch");
-    auto t_out = BuildForward(block, *teacher, "t::", build.input, batch, build);
+    // Topology's cross-input check proved the teacher's input and output
+    // agree with the student's; the build is a translation.
+    auto t_out = BuildForward(block, *teacher, std::string(sema::kTeacherPrefix),
+                              build.input, batch, build);
     if (!t_out) return std::unexpected(t_out.error());
     teacher_out = *t_out;
-    if (teacher_out->shape().dims.at(1) != out_dim)
-      return generating::Error(generating::kDriver,
-                               "teacher output dimensionality mismatch");
   }
 
   // Frontend boundary: the forward SIR and graph-build state must be fit
