@@ -29,13 +29,25 @@ struct ByteSpan {
   size_t size;
 };
 
+/// What one durable write cost on disk (CR4 #145, the storage role's
+/// screen line): the bytes it wrote, and the fsyncs that succeeded — the
+/// file's, then its directory's, which is best effort (a filesystem that
+/// refuses a directory fsync leaves one; so does Windows, whose rename is
+/// written through instead).
+struct DurableWriteStats {
+  uint64_t bytes = 0;
+  uint64_t fsyncs = 0;
+};
+
 /// Durably replaces `path` with the concatenation of `parts`. The gather form
 /// lets callers with a header + payload (checkpoints) avoid staging a
-/// concatenated blob.
+/// concatenated blob. `stats`, when given, receives the write's cost once
+/// the file is in place.
 [[nodiscard]] std::expected<void, std::string> WriteFileDurable(
     const std::string& path, std::initializer_list<ByteSpan> parts);
 [[nodiscard]] std::expected<void, std::string> WriteFileDurable(
-    const std::string& path, std::span<const ByteSpan> parts);
+    const std::string& path, std::span<const ByteSpan> parts,
+    DurableWriteStats* stats = nullptr);
 
 [[nodiscard]] std::expected<void, std::string> WriteFileDurable(
     const std::string& path, const uint8_t* data, size_t size);

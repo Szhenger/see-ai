@@ -47,7 +47,8 @@ std::expected<void, std::string> ReadHeaders(std::ifstream& f,
 
 std::expected<void, std::string> SaveCheckpointRecord(
     const std::string& path, uint64_t plan_hash, const CheckpointRecord& record,
-    const uint8_t* persistent, uint64_t persistent_size) {
+    const uint8_t* persistent, uint64_t persistent_size,
+    DurableWriteStats* stats) {
   CkptHeader h;
   CkptHeaderV4Tail v4;
   CkptHeaderV5Tail v5;
@@ -89,7 +90,7 @@ std::expected<void, std::string> SaveCheckpointRecord(
       ByteSpan{reinterpret_cast<const uint8_t*>(&v5), sizeof(v5)},
       ByteSpan{persistent, persistent_size}};
   if (best) parts.push_back(ByteSpan{record.best_payload.data(), persistent_size});
-  return WriteFileDurable(path, std::span<const ByteSpan>(parts));
+  return WriteFileDurable(path, std::span<const ByteSpan>(parts), stats);
 }
 
 std::expected<CheckpointRecord, std::string> LoadCheckpointRecord(

@@ -303,7 +303,7 @@ class RelaxedExecutor(fx.Executor):
         scalars = scalars or self.step_scalars()
         for index, ins in enumerate(self.plan.sections[section]):
             x = self.lane if self.relax(ins) else self.x
-            fx.INTERPRETER[ins.opcode](self.mem, x, ins, scalars)
+            self.dispatch(section, ins, x, scalars)
             if on_instruction:
                 on_instruction(index, ins)
 
@@ -324,16 +324,15 @@ class LockstepExecutor(fx.Executor):
         np = self.x.np
         scalars = scalars or self.step_scalars()
         for ins in self.plan.sections[section]:
-            op = fx.INTERPRETER[ins.opcode]
             if not is_site(ins):
-                op(self.mem, self.x, ins, scalars)
+                self.dispatch(section, ins, self.x, scalars)
                 continue
             dry = DryMemory(self.mem)
             self.lane.bound_rel = 0.0
-            op(dry, self.lane, ins, scalars)
+            self.dispatch(section, ins, self.lane, scalars, mem=dry)
             exact = []
             self.mem.recorder = lambda off, values: exact.append((off, values))
-            op(self.mem, self.x, ins, scalars)
+            self.dispatch(section, ins, self.x, scalars)
             self.mem.recorder = None
             stat = self.sites.setdefault(site_name(ins), {
                 "instances": 0, "observed_rel": 0.0, "bound_rel": 0.0,

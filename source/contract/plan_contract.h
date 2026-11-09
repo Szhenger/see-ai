@@ -48,10 +48,13 @@ inline std::optional<std::string> PlanHeaderViolation(
   // The rodata section's offset is proven aligned (CR2 #143 N05): every
   // rodata ref's offset is relative to it, so a 4-aligned ref lands
   // misaligned in memory when the section does not — the compiler puts
-  // it on a page boundary; 16 bytes is what every kernel's vector path
-  // may assume at most.
-  if (header.rodata_size != 0 && header.rodata_offset % 16 != 0)
-    return contract_detail::Violation("rodata section is not 16-byte aligned");
+  // it on a page boundary; kSeeuRodataOffsetAlignment (16 bytes) is what
+  // every kernel's vector path may assume at most.
+  if (header.rodata_size != 0 &&
+      header.rodata_offset % kSeeuRodataOffsetAlignment != 0)
+    return contract_detail::Violation(
+        "rodata section is not " +
+        std::to_string(kSeeuRodataOffsetAlignment) + "-byte aligned");
   if (!RangeOk(header.train_instr_offset, train_bytes, plan_size) ||
       !RangeOk(header.merge_instr_offset, merge_bytes, plan_size) ||
       !RangeOk(header.eval_instr_offset, eval_bytes, plan_size) ||
