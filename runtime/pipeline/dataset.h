@@ -160,6 +160,16 @@ class Dataset {
   /// held-out validation set, removing them from this dataset. Deterministic:
   /// the same file and fraction always produce the same split. At least one
   /// sample stays on each side.
+  /// Splits off the records at `held` (sorted ascending, distinct, each
+  /// below num_samples, at least one left on each side) as the validation
+  /// set — the compiled split (S3 #149): the indices come from
+  /// HeldOutIndices(num_samples, seed, frac) and `split_hash` is their
+  /// SplitHash, recorded on both halves for the feeder contract. Before any
+  /// shuffling.
+  [[nodiscard]] std::expected<Dataset, std::string> SplitHeldOut(
+      const std::vector<uint64_t>& held, uint64_t split_hash);
+  uint64_t split_hash() const { return split_hash_; }
+
   [[nodiscard]] std::expected<Dataset, std::string> SplitValidation(
       double fraction);
 
@@ -188,6 +198,7 @@ class Dataset {
   bool masked_ = false;
   uint64_t tokenizer_hash_ = 0;
   uint64_t content_hash_ = 0;
+  uint64_t split_hash_ = 0;
   uint64_t num_samples_ = 0;
   uint64_t input_dim_ = 0;
   uint32_t label_kind_ = 0;

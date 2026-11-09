@@ -92,6 +92,12 @@ struct CorpusFacts {
   uint64_t corpus_hash = 0;
   uint64_t tokenizer_hash = 0;
   bool masked = false;
+  // The compiled split (S3 #149): the held-out records, the seed they were
+  // drawn with and the indices' hash the plan carries.
+  bool split = false;
+  uint64_t val_records = 0;
+  uint64_t split_seed = 0;
+  uint64_t val_split_hash = 0;
 };
 
 struct FrontendStats {

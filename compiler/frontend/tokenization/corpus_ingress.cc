@@ -164,12 +164,12 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
   auto text = ReadFile(path);
   if (!text) return std::unexpected(text.error());
 
-  std::vector<std::string> documents;
+  std::vector<seeml::tokenizer::Document> documents;
   seeml::tokenizer::IngestOptions options;
   options.seq_len = model.seq_len;
   if (ext == "txt") {
     options.one_document = true;
-    documents.push_back(std::move(*text));
+    documents.push_back({std::move(*text), {}, false});
   } else {
     auto docs = seeml::tokenizer::DocumentsFromJsonl(*text);
     if (!docs) return Error(path + ": " + docs.error());
@@ -183,7 +183,7 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
   // The dataset the feeder would serve, from the packed ids: the id bound
   // and the label entropy come from it, as they do for a given SDS.
   auto ds = Dataset::FromTokens(ingest->ids, ingest->manifest.windows,
-                                model.seq_len, {}, tokenizer_hash);
+                                model.seq_len, ingest->mask, tokenizer_hash);
   if (!ds) return Error(ds.error());
   if (auto ok = HoldToModel(*ds, model, topology); !ok)
     return std::unexpected(ok.error());
@@ -193,7 +193,7 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
   out.manifest_json = seeml::tokenizer::ManifestJson(ingest->manifest);
   out.corpus_hash = ingest->corpus_hash;
   out.tokenizer_hash = tokenizer_hash;
-  out.masked = false;
+  out.masked = ingest->masked;
   CorpusFacts& f = out.facts;
   f.kind = ext;
   const auto& m = ingest->manifest;

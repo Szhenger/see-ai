@@ -506,6 +506,37 @@ TEST(DatasetSplit, HoldsOutTheTailDeterministically) {
   EXPECT_EQ(static_cast<uint64_t>(x[0]), 48u);
 }
 
+TEST(DatasetSplit, HoldsOutTheNamedRecords) {
+  // The compiled split (S3 #149): the records at the given indices move to
+  // the validation set, both halves keep the corpus order and carry the
+  // split hash; the index list is held to its contract.
+  ASSERT_OK_AND_ASSIGN(Dataset data, MarkerDataset());
+  const std::vector<uint64_t> held = {0, 5, 63};
+  ASSERT_OK_AND_ASSIGN(Dataset val, data.SplitHeldOut(held, 0xABCD));
+  EXPECT_EQ(data.num_samples(), 61u);
+  EXPECT_EQ(val.num_samples(), 3u);
+  EXPECT_EQ(data.split_hash(), 0xABCDu);
+  EXPECT_EQ(val.split_hash(), 0xABCDu);
+  std::vector<float> x(12);
+  std::vector<int32_t> l(3);
+  val.FillBatch(3, x.data(), reinterpret_cast<uint8_t*>(l.data()));
+  EXPECT_EQ(static_cast<uint64_t>(x[0]), 0u);
+  EXPECT_EQ(static_cast<uint64_t>(x[4]), 5u);
+  EXPECT_EQ(static_cast<uint64_t>(x[8]), 63u);
+  data.FillBatch(2, x.data(), reinterpret_cast<uint8_t*>(l.data()));
+  EXPECT_EQ(static_cast<uint64_t>(x[0]), 1u);
+  EXPECT_EQ(static_cast<uint64_t>(x[4]), 2u);
+  ASSERT_OK_AND_ASSIGN(Dataset again, MarkerDataset());
+  EXPECT_ERROR_CONTAINS(again.SplitHeldOut({5, 0}, 1), "sorted and distinct");
+  EXPECT_ERROR_CONTAINS(again.SplitHeldOut({0, 64}, 1), "past the corpus");
+  EXPECT_ERROR_CONTAINS(again.SplitHeldOut({}, 1), "at least one record");
+  std::vector<uint64_t> all(64);
+  for (uint64_t i = 0; i < 64; ++i) all[i] = i;
+  EXPECT_ERROR_CONTAINS(again.SplitHeldOut(all, 1), "at least one record");
+  again.EnableShuffle(3);
+  EXPECT_ERROR_CONTAINS(again.SplitHeldOut({1}, 1), "before enabling shuffle");
+}
+
 TEST(DatasetSplit, RejectsDegenerateRequests) {
   ASSERT_OK_AND_ASSIGN(Dataset data, MarkerDataset());
   EXPECT_ERROR_CONTAINS(data.SplitValidation(0.0), "fraction");

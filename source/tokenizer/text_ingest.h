@@ -43,6 +43,17 @@ struct IngestOptions {
                                  // exporter's --text-corpus)
 };
 
+/// One input document: plain text (every position a loss target), or a
+/// prompt / response pair (S3 #149) the pipeline renders through the ChatML
+/// template — `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n`
+/// then `{response}<|im_end|>\n` — with the response side's ids the only
+/// targets. The section must name both markers as special tokens.
+struct Document {
+  std::string text;      // the plain text, or the prompt
+  std::string response;  // the response (chat documents)
+  bool chat = false;
+};
+
 /// One document's sanitizer counts.
 struct SanitizeCounts {
   uint64_t invalid_utf8_bytes = 0;
@@ -59,6 +70,10 @@ struct DropRecord {
 struct IngestManifest {
   uint64_t documents_in = 0;
   uint64_t documents_kept = 0;
+  uint64_t chat_documents = 0;      // prompt / response pairs among them
+  uint64_t dropped_zero_target_windows = 0;  // masked windows with no target
+  uint64_t target_tokens = 0;       // positions the loss counts (masked)
+  uint64_t total_tokens = 0;        // positions in the records (windows x S)
   uint64_t dropped_empty = 0;
   uint64_t dropped_duplicate = 0;
   uint64_t dropped_degenerate = 0;  // fewer than two ids: no target
@@ -77,6 +92,9 @@ struct IngestResult {
   std::vector<int32_t> ids;   // the packed ids the records hold (windows ×
                               // (S + 1)), for a caller that serves them
                               // without reading the SDS back
+  std::vector<uint8_t> mask;  // windows × S target flags (masked corpora;
+                              // empty when every position is a target)
+  bool masked = false;
   IngestManifest manifest;
   uint64_t corpus_hash = 0;   // ContentHash64 of `sds`
   uint64_t tokenizer_hash = 0;
@@ -88,18 +106,20 @@ std::string Sanitize(std::string_view text, bool count_only,
                      SanitizeCounts* counts);
 
 /// Splits a .jsonl file into its documents: each line a JSON object with a
-/// "text" string (JSON string escapes decoded); a line that is not such an
-/// object is refused by line number.
-std::expected<std::vector<std::string>, std::string> DocumentsFromJsonl(
+/// "text" string, or a "prompt" and a "response" string (JSON string escapes
+/// decoded); a line that is neither is refused by line number.
+std::expected<std::vector<Document>, std::string> DocumentsFromJsonl(
     std::string_view jsonl);
 
 /// Ingests `documents` through the stages above with `tokenizer`, whose
 /// section hash is `tokenizer_hash` (0 = the corpus names none). Refuses a
-/// multi-document corpus whose section names no EOS, a seq_len of zero, and
-/// a corpus that yields no complete window.
+/// multi-document corpus whose section names no EOS, a seq_len of zero, a
+/// chat document under a section without the ChatML markers, and a corpus
+/// that yields no complete window. A corpus with a chat document is
+/// masked: the SDS carries the mask and windows with no target are dropped.
 std::expected<IngestResult, std::string> Ingest(
     const ByteLevelBpe& tokenizer, uint64_t tokenizer_hash,
-    const std::vector<std::string>& documents, const IngestOptions& options);
+    const std::vector<Document>& documents, const IngestOptions& options);
 
 /// The manifest as JSON (one object; the drops as an array).
 std::string ManifestJson(const IngestManifest& m);

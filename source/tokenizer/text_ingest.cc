@@ -1,6 +1,7 @@
 #include "source/tokenizer/text_ingest.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -171,6 +172,9 @@ size_t SkipSpaces(std::string_view s, size_t i) {
   return i;
 }
 
+constexpr std::string_view kImStart = "<|im_start|>";
+constexpr std::string_view kImEnd = "<|im_end|>";
+
 }  // namespace
 
 std::string Sanitize(std::string_view text, bool count_only,
@@ -201,9 +205,9 @@ std::string Sanitize(std::string_view text, bool count_only,
   return out;
 }
 
-std::expected<std::vector<std::string>, std::string> DocumentsFromJsonl(
+std::expected<std::vector<Document>, std::string> DocumentsFromJsonl(
     std::string_view jsonl) {
-  std::vector<std::string> docs;
+  std::vector<Document> docs;
   size_t line_no = 0, pos = 0;
   while (pos < jsonl.size()) {
     size_t end = jsonl.find('\n', pos);
@@ -218,8 +222,8 @@ std::expected<std::vector<std::string>, std::string> DocumentsFromJsonl(
     };
     if (line[i] != '{') return refuse("not a JSON object");
     i = SkipSpaces(line, i + 1);
-    std::string text;
-    bool have_text = false;
+    std::string text, prompt, response;
+    bool have_text = false, have_prompt = false, have_response = false;
     while (i < line.size() && line[i] != '}') {
       std::string key;
       const size_t after_key = ParseJsonString(line, i, key);
@@ -237,6 +241,14 @@ std::expected<std::vector<std::string>, std::string> DocumentsFromJsonl(
           if (have_text) return refuse("two \"text\" fields");
           text = std::move(value);
           have_text = true;
+        } else if (key == "prompt") {
+          if (have_prompt) return refuse("two \"prompt\" fields");
+          prompt = std::move(value);
+          have_prompt = true;
+        } else if (key == "response") {
+          if (have_response) return refuse("two \"response\" fields");
+          response = std::move(value);
+          have_response = true;
         }
       } else {
         // Any other JSON value: skip to the next top-level ',' or '}' —
@@ -250,15 +262,29 @@ std::expected<std::vector<std::string>, std::string> DocumentsFromJsonl(
       if (i < line.size() && line[i] == ',') i = SkipSpaces(line, i + 1);
     }
     if (i >= line.size()) return refuse("truncated object");
-    if (!have_text) return refuse("no \"text\" field");
-    docs.push_back(std::move(text));
+    if (have_text && (have_prompt || have_response))
+      return refuse("a record is {\"text\"} or {\"prompt\", \"response\"}, "
+                    "not both");
+    if (have_prompt != have_response)
+      return refuse("a prompt / response record needs both fields");
+    if (!have_text && !have_prompt)
+      return refuse("no \"text\" field (nor a \"prompt\" / \"response\" pair)");
+    Document d;
+    if (have_text) {
+      d.text = std::move(text);
+    } else {
+      d.text = std::move(prompt);
+      d.response = std::move(response);
+      d.chat = true;
+    }
+    docs.push_back(std::move(d));
   }
   return docs;
 }
 
 std::expected<IngestResult, std::string> Ingest(
     const ByteLevelBpe& tokenizer, uint64_t tokenizer_hash,
-    const std::vector<std::string>& documents, const IngestOptions& options) {
+    const std::vector<Document>& documents, const IngestOptions& options) {
   if (options.seq_len == 0) return std::unexpected("ingest: seq_len is zero");
   if (documents.empty()) return std::unexpected("ingest: no documents");
   if (options.one_document && documents.size() != 1)
@@ -268,6 +294,25 @@ std::expected<IngestResult, std::string> Ingest(
     return std::unexpected(
         "ingest: the tokenizer names no EOS token, which joining documents "
         "needs");
+  bool any_chat = false;
+  for (const Document& d : documents) any_chat |= d.chat;
+  if (any_chat) {
+    if (options.one_document)
+      return std::unexpected("ingest: one-document mode takes plain text");
+    // The ChatML markers must be special tokens of the section, or the
+    // template's text would be BPE-encoded as ordinary characters.
+    bool im_start = false, im_end = false;
+    for (uint32_t id = 0; id < tokenizer.info().vocab_size; ++id) {
+      if (!tokenizer.is_special(id)) continue;
+      if (tokenizer.token(id) == kImStart) im_start = true;
+      if (tokenizer.token(id) == kImEnd) im_end = true;
+    }
+    if (!im_start || !im_end)
+      return std::unexpected(
+          "ingest: prompt / response records are rendered through the ChatML "
+          "template, whose markers <|im_start|> and <|im_end|> the tokenizer "
+          "section does not name as special tokens");
+  }
 
   IngestResult result;
   IngestManifest& m = result.manifest;
@@ -275,24 +320,36 @@ std::expected<IngestResult, std::string> Ingest(
   result.tokenizer_hash = tokenizer_hash;
 
   // Sanitize, deduplicate, encode: one pass over the documents, in order.
+  // `target` marks, per id, whether predicting it is a loss target: every
+  // id of a plain document, the response side of a chat document, and the
+  // EOS that joins documents when the document before it was plain.
   std::unordered_map<uint64_t, uint64_t> seen;  // hash -> first index
   std::vector<int32_t> ids;                     // the packed stream
+  std::vector<uint8_t> target;
   std::vector<uint64_t> boundaries;             // ids index of each EOS join
+  bool previous_plain = true;
   for (uint64_t d = 0; d < documents.size(); ++d) {
+    const Document& doc = documents[d];
     SanitizeCounts counts;
-    const std::string clean =
-        Sanitize(documents[d], options.one_document, &counts);
+    const std::string clean = Sanitize(doc.text, options.one_document, &counts);
+    const std::string clean_response =
+        doc.chat ? Sanitize(doc.response, false, &counts) : std::string();
     m.sanitized.invalid_utf8_bytes += counts.invalid_utf8_bytes;
     m.sanitized.control_chars += counts.control_chars;
     m.sanitized.bidi_controls += counts.bidi_controls;
-    if (clean.empty()) {
+    if (clean.empty() && clean_response.empty()) {
       ++m.dropped_empty;
       m.drops.push_back({d, "empty"});
       continue;
     }
     if (!options.one_document) {
+      std::string key = clean;
+      if (doc.chat) {
+        key += '\x1F';
+        key += clean_response;
+      }
       const uint64_t h = seeml::update::ContentHash64(
-          reinterpret_cast<const uint8_t*>(clean.data()), clean.size());
+          reinterpret_cast<const uint8_t*>(key.data()), key.size());
       auto [it, fresh] = seen.try_emplace(h, d);
       if (!fresh) {
         ++m.dropped_duplicate;
@@ -301,19 +358,45 @@ std::expected<IngestResult, std::string> Ingest(
       }
     }
     std::vector<int32_t> doc_ids;
-    if (auto ok = tokenizer.Encode(clean, doc_ids); !ok)
-      return std::unexpected("ingest: document " + std::to_string(d) + ": " +
-                             ok.error());
-    if (doc_ids.empty()) {
-      ++m.dropped_degenerate;
-      m.drops.push_back({d, "degenerate: no ids"});
-      continue;
+    size_t prompt_ids = 0;
+    if (doc.chat) {
+      const std::string prompt_side = std::string(kImStart) + "user\n" + clean +
+                                      std::string(kImEnd) + "\n" +
+                                      std::string(kImStart) + "assistant\n";
+      const std::string response_side =
+          clean_response + std::string(kImEnd) + "\n";
+      if (auto ok = tokenizer.Encode(prompt_side, doc_ids); !ok)
+        return std::unexpected("ingest: document " + std::to_string(d) + ": " +
+                               ok.error());
+      prompt_ids = doc_ids.size();
+      if (auto ok = tokenizer.Encode(response_side, doc_ids); !ok)
+        return std::unexpected("ingest: document " + std::to_string(d) + ": " +
+                               ok.error());
+      if (doc_ids.size() == prompt_ids) {
+        ++m.dropped_degenerate;
+        m.drops.push_back({d, "degenerate: no response ids"});
+        continue;
+      }
+      ++m.chat_documents;
+    } else {
+      if (auto ok = tokenizer.Encode(clean, doc_ids); !ok)
+        return std::unexpected("ingest: document " + std::to_string(d) + ": " +
+                               ok.error());
+      if (doc_ids.empty()) {
+        ++m.dropped_degenerate;
+        m.drops.push_back({d, "degenerate: no ids"});
+        continue;
+      }
     }
     if (!ids.empty()) {
       ids.push_back(eos);
+      target.push_back(previous_plain ? 1 : 0);
       boundaries.push_back(ids.size() - 1);
     }
     ids.insert(ids.end(), doc_ids.begin(), doc_ids.end());
+    for (size_t i = 0; i < doc_ids.size(); ++i)
+      target.push_back(doc.chat && i < prompt_ids ? 0 : 1);
+    previous_plain = !doc.chat;
     ++m.documents_kept;
   }
   m.tokens = ids.size();
@@ -322,15 +405,23 @@ std::expected<IngestResult, std::string> Ingest(
                            " ids is fewer than one record of " +
                            std::to_string(options.seq_len + 1));
 
-  // Pack: consecutive non-overlapping windows of S + 1 ids.
-  const uint64_t rec = options.seq_len + 1;
+  // Pack: consecutive non-overlapping windows of S + 1 ids. The mask of a
+  // window holds, per position j, whether the next id (j + 1) is a target;
+  // under a mask, a window with no target trains nothing and is dropped.
+  const uint64_t S = options.seq_len, rec = S + 1;
   const uint64_t windows = ids.size() / rec;
-  m.windows = windows;
   m.remainder_tokens = ids.size() - windows * rec;
+  const bool masked = any_chat;
+  std::vector<int32_t> kept_ids;
+  std::vector<uint8_t> kept_mask;
+  kept_ids.reserve(windows * rec);
+  if (masked) kept_mask.reserve(windows * S);
   {
     size_t b = 0;
     for (uint64_t w = 0; w < windows; ++w) {
       const uint64_t lo = w * rec, hi = lo + rec;  // [lo, hi)
+      uint64_t targets = 0;
+      for (uint64_t j = 0; j < S; ++j) targets += target[lo + j + 1];
       bool straddles = false;
       while (b < boundaries.size() && boundaries[b] < hi) {
         // An EOS strictly inside the window (not its first id) is a
@@ -339,26 +430,40 @@ std::expected<IngestResult, std::string> Ingest(
         if (boundaries[b] > lo) straddles = true;
         ++b;
       }
+      if (masked && targets == 0) {
+        ++m.dropped_zero_target_windows;
+        continue;
+      }
       if (straddles) ++m.straddling_windows;
+      kept_ids.insert(kept_ids.end(), ids.begin() + static_cast<ptrdiff_t>(lo),
+                      ids.begin() + static_cast<ptrdiff_t>(hi));
+      if (masked)
+        for (uint64_t j = 0; j < S; ++j) kept_mask.push_back(target[lo + j + 1]);
+      m.target_tokens += masked ? targets : S;
+      ++m.windows;
     }
   }
+  if (m.windows == 0)
+    return std::unexpected("ingest: every window was dropped (no loss target)");
+  m.total_tokens = m.windows * S;
   {
-    std::unordered_set<int32_t> distinct;
-    for (uint64_t i = 0; i < windows * rec; ++i) distinct.insert(ids[i]);
+    std::unordered_set<int32_t> distinct(kept_ids.begin(), kept_ids.end());
     m.distinct_ids = distinct.size();
   }
 
-  // The canonical SDS: v3 when the corpus names its tokenizer, else v2.
+  // The canonical SDS: v3 when the corpus names its tokenizer or carries a
+  // mask, else v2.
   using namespace seeml::update;
-  const uint32_t version = tokenizer_hash != 0 ? 3 : 2;
+  const uint32_t version = (tokenizer_hash != 0 || masked) ? 3 : 2;
   std::vector<uint8_t>& sds = result.sds;
   auto put = [&](const void* p, size_t n) {
-    const auto* b = static_cast<const uint8_t*>(p);
-    sds.insert(sds.end(), b, b + n);
+    const auto* bytes = static_cast<const uint8_t*>(p);
+    sds.insert(sds.end(), bytes, bytes + n);
   };
   const uint32_t label_kind = 1, input_kind = 1, zero32 = 0;
-  const uint64_t num_samples = windows, input_dim = options.seq_len,
-                 label_dim = 0, zero64 = 0;
+  const uint32_t flags = masked ? kSdsFlagMasked : 0;
+  const uint64_t num_samples = m.windows, input_dim = S, label_dim = 0,
+                 zero64 = 0;
   put(&kSdsMagic, 4);
   put(&version, 4);
   put(&num_samples, 8);
@@ -368,29 +473,41 @@ std::expected<IngestResult, std::string> Ingest(
   put(&label_dim, 8);
   if (version >= 3) {
     put(&tokenizer_hash, 8);
-    put(&zero32, 4);  // flags: no mask
+    put(&flags, 4);
     put(&zero32, 4);
     put(&zero64, 8);
   }
-  put(ids.data(), windows * rec * sizeof(int32_t));
+  if (!masked) {
+    put(kept_ids.data(), kept_ids.size() * sizeof(int32_t));
+  } else {
+    const uint64_t mask_bytes = SdsMaskBytes(S);
+    for (uint64_t w = 0; w < m.windows; ++w) {
+      put(kept_ids.data() + w * rec, rec * sizeof(int32_t));
+      put(kept_mask.data() + w * S, S);
+      for (uint64_t pad = S; pad < mask_bytes; ++pad) sds.push_back(0);
+    }
+  }
   result.corpus_hash = ContentHash64(sds.data(), sds.size());
-  ids.resize(windows * rec);
-  result.ids = std::move(ids);
+  result.ids = std::move(kept_ids);
+  result.mask = std::move(kept_mask);
+  result.masked = masked;
   return result;
 }
 
 std::string ManifestJson(const IngestManifest& m) {
   std::string s = "{\n";
-  auto field = [&](const char* k, uint64_t v, bool last = false) {
+  auto field = [&](const char* k, uint64_t v) {
     s += "  \"";
     s += k;
-    s += "\": " + std::to_string(v) + (last ? "\n" : ",\n");
+    s += "\": " + std::to_string(v) + ",\n";
   };
   field("documents_in", m.documents_in);
   field("documents_kept", m.documents_kept);
+  field("chat_documents", m.chat_documents);
   field("dropped_empty", m.dropped_empty);
   field("dropped_duplicate", m.dropped_duplicate);
   field("dropped_degenerate", m.dropped_degenerate);
+  field("dropped_zero_target_windows", m.dropped_zero_target_windows);
   field("invalid_utf8_bytes", m.sanitized.invalid_utf8_bytes);
   field("control_chars", m.sanitized.control_chars);
   field("bidi_controls", m.sanitized.bidi_controls);
@@ -398,6 +515,8 @@ std::string ManifestJson(const IngestManifest& m) {
   field("windows", m.windows);
   field("remainder_tokens", m.remainder_tokens);
   field("straddling_windows", m.straddling_windows);
+  field("target_tokens", m.target_tokens);
+  field("total_tokens", m.total_tokens);
   field("distinct_ids", m.distinct_ids);
   s += "  \"drops\": [";
   for (size_t i = 0; i < m.drops.size(); ++i) {

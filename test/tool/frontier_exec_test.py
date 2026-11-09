@@ -743,6 +743,14 @@ def _write_models(out_dir):
         em.export_sds(x, None, os.path.join(out_dir, "none.sds"))
         em._demo_decoder(out_dir, vocab=40, dim=24, heads=4, seq=6,
                          blocks_n=2, samples=48, seed=1)
+        # A masked token corpus (SDS v3, S3 #149): the decoder's geometry,
+        # every record with at least one target, a prompt-shaped mask.
+        rng = np.random.default_rng(5)
+        ids = rng.integers(0, 40, (48, 7)).astype("<i4")
+        mask = (rng.random((48, 6)) < 0.6).astype(np.uint8)
+        mask[:, -1] = 1
+        em.export_token_sds(ids, os.path.join(out_dir, "decoder_masked.sds"),
+                            mask=mask)
         os.makedirs(os.path.join(out_dir, "eps6"), exist_ok=True)
         em._demo_decoder(os.path.join(out_dir, "eps6"), vocab=40, dim=24,
                          heads=4, seq=6, blocks_n=2, samples=48, seed=1,
@@ -786,6 +794,10 @@ MATRIX = [
     # probability recomputed by the backward passes.
     ("dec_tiled", "decoder.smf", "decoder_corpus.sds", 12,
      ["--attention", "tiled", "--lora-rank", "4"]),
+    # The masked cross-entropy (S3 #149, plan v22): compiled over a masked
+    # corpus by --data, which also pins the plan to it.
+    ("dec_masked", "decoder.smf", "decoder_masked.sds", 12,
+     ["--data", "decoder_masked.sds", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
 # placeholder, kCopy a utility no pass selects, and kReduceRows the bias
@@ -807,8 +819,8 @@ class DifferentialSuite(unittest.TestCase):
         cls.plans = {}
         for name, model, corpus, batch, flags in MATRIX:
             out = os.path.join(cls.dir, name)
-            flags = [os.path.join(cls.dir, f) if f.endswith(".smf") else f
-                     for f in flags]
+            flags = [os.path.join(cls.dir, f)
+                     if f.endswith((".smf", ".sds")) else f for f in flags]
             done = subprocess.run(
                 [COMPILER, "--source", os.path.join(cls.dir, model), "--out",
                  out, "--data-batch", str(batch), "--no-embed"] + flags,
@@ -915,6 +927,31 @@ class DifferentialSuite(unittest.TestCase):
             corpus_hash=pin_hash ^ 1))
         with self.assertRaisesRegex(fx.PlanError, "another corpus"):
             fx.Corpus(np, pin_path).check(other)
+        # The compiled split (v22, S3 #149): the literal fixture the C++
+        # split_test pins (n = 10, seed = 1, 30 %), the hash over the
+        # indices, the partition, and the contract rule.
+        self.assertEqual(fx.held_out_indices(10, 1, 0.3), [1, 5, 7])
+        self.assertEqual(fx.split_hash([1, 5, 7]), 0xe731eed086e2a95d)
+        self.assertEqual(fx.held_out_count(501, 0.1), 50)
+        self.assertEqual(fx.held_out_indices(1, 0, 0.5), [])
+        ten = np.arange(10 * (s + 1), dtype="<i4").reshape(10, s + 1) % vocab
+        ten_path = os.path.join(self.dir, "check_split.sds")
+        em.export_token_sds(ten, ten_path)
+        full = fx.Corpus(np, ten_path)
+        train, held = full.split_held_out([1, 5, 7], 0xe731eed086e2a95d)
+        self.assertEqual((train.num_samples, held.num_samples), (7, 3))
+        self.assertTrue((held.tokens == ten[[1, 5, 7]]).all())
+        self.assertTrue((train.tokens == ten[[0, 2, 3, 4, 6, 8, 9]]).all())
+        split_plan = fx.Plan(with_header(
+            blob, data_flags=fx.formats.DATA_FLAG_SPLIT, split_seed=1,
+            val_frac_bits=struct.unpack("<I", struct.pack("<f", 0.3))[0],
+            val_split_hash=0xe731eed086e2a95d))
+        train.check(split_plan)
+        held.check(split_plan)
+        with self.assertRaisesRegex(fx.PlanError, "not split as the plan"):
+            fx.Corpus(np, ten_path).check(split_plan)
+        with self.assertRaisesRegex(fx.PlanError, "sorted, distinct"):
+            fx.Corpus(np, ten_path).split_held_out([5, 1], 1)
         records[1, 2] = vocab
         with self.assertRaisesRegex(fx.PlanError, "token id"):
             corpus("check_tokbad.sds", lambda p: em.export_token_sds(records, p)).check(

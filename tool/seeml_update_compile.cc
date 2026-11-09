@@ -95,6 +95,7 @@
 #include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/ingressor/model_reader.h"
+#include "source/contract/split.h"
 #include "source/identity/version.h"
 
 namespace {
@@ -123,6 +124,11 @@ void PrintUsage() {
                "  [--data corpus.txt|.jsonl|.sds]  the training data: raw text is\n"
                "                      tokenized with the model's section into\n"
                "                      <out>/corpus.sds; the plan is pinned to it\n"
+               "  [--val-frac F] [--split-seed S]  the held-out split, compiled\n"
+               "                      from the corpus and named in the plan\n"
+               "  [--masked-loss]     the cross-entropy over target positions\n"
+               "                      alone (labels of -1 ignored); implied by\n"
+               "                      a --data corpus that carries a mask\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -451,6 +457,25 @@ int main(int argc, char** argv) {
   // are written beside the plan after the compile.
   const auto data_path = args.TakeValue("--data");
   if (data_path) config.data_path = *data_path;
+  // --val-frac / --split-seed (S3 #149): the held-out split is compiled —
+  // drawn here from the corpus, named in the plan, recomputed on the
+  // device — so it needs --data.
+  if (auto v = args.TakeValue("--val-frac")) {
+    if (!ParseF32(*v, &config.val_frac) || !(config.val_frac > 0.0f) ||
+        !(config.val_frac < 1.0f))
+      return Fail("--val-frac must lie in (0, 1), got '" + *v + "'");
+    if (!data_path)
+      return Fail("--val-frac compiles the validation split from the corpus: "
+                  "pass --data too");
+  }
+  config.masked_loss = args.Take("--masked-loss");
+  if (auto v = args.TakeValue("--split-seed")) {
+    if (!ParseU64(*v, &config.split_seed))
+      return Fail("--split-seed must be a non-negative integer, got '" + *v +
+                  "'");
+    if (config.val_frac == 0.0f)
+      return Fail("--split-seed needs --val-frac");
+  }
   if (auto v = args.TakeValue("--memory-budget-mib")) {
     uint64_t mib = 0;
     if (!ParseU64(*v, &mib) || mib == 0 || mib > (1ull << 40))
@@ -720,7 +745,8 @@ int main(int argc, char** argv) {
                  "  \"relaxed_attention\": %" PRIu64 ",\n"
                  "  \"data\": {\"corpus\": %s, \"corpus_hash\": \"%016" PRIx64
                  "\", \"tokenizer_hash\": \"%016" PRIx64
-                 "\", \"data_flags\": %u},\n"
+                 "\", \"data_flags\": %u, \"val_frac\": %.9g, \"split_seed\": %" PRIu64
+                 ", \"val_split_hash\": \"%016" PRIx64 "\"},\n"
                  "  \"validation_scores\": \"%s\",\n"
                  "  \"attention\": {\"family\": \"%s\", "
                  "\"cached_probs_bytes\": %" PRIu64 "},\n"
@@ -763,6 +789,8 @@ int main(int argc, char** argv) {
                  compiled->relaxed_gemms, compiled->relaxed_attention,
                  corpus_json.c_str(), plan_header.corpus_hash,
                  plan_header.tokenizer_hash, plan_header.data_flags,
+                 static_cast<double>(ValFracOf(plan_header.val_frac_bits)),
+                 plan_header.split_seed, plan_header.val_split_hash,
                  compiled->scores_shipped ? "shipped" : "plan",
                  compiled->attention_tiled ? "tiled" : "cached",
                  compiled->probs_cache_bytes,

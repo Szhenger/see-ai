@@ -19,6 +19,7 @@
 #include "compiler/frontend/egressor/model_writer.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "runtime/pipeline/dataset.h"
+#include "source/contract/split.h"
 #include "source/identity/hash.h"
 #include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
@@ -1390,6 +1391,38 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   EXPECT_EQ(HeaderOf(*plain).corpus_hash, 0u);
   EXPECT_EQ(HeaderOf(*plain).data_flags & kDataFlagCorpusPinned, 0u);
 
+  // The compiled split (S3 #149): two compiles of the same corpus and seed
+  // name the same held-out set; the header carries seed, fraction and the
+  // indices' hash; a split without a corpus is refused.
+  cfg.data_path = sds_path;
+  cfg.val_frac = 0.25f;
+  cfg.split_seed = 3;
+  auto split_a = UpdateCompiler(cfg).Compile(model);
+  auto split_b = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(split_a);
+  ASSERT_OK(split_b);
+  const PlanHeader hs = HeaderOf(*split_a);
+  EXPECT_NE(hs.data_flags & kDataFlagSplit, 0u);
+  EXPECT_EQ(hs.split_seed, 3u);
+  EXPECT_EQ(hs.val_frac_bits, ValFracBits(0.25f));
+  EXPECT_EQ(hs.val_split_hash, SplitHash(HeldOutIndices(8, 3, 0.25f)));
+  EXPECT_EQ(hs.val_split_hash, HeaderOf(*split_b).val_split_hash);
+  EXPECT_EQ(split_a->plan, split_b->plan);
+  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
+                      "\"validation\": \"2 of 8 records held out, seed 3, split ");
+  cfg.split_seed = 4;
+  auto split_c = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(split_c);
+  EXPECT_NE(HeaderOf(*split_c).val_split_hash, hs.val_split_hash);
+  cfg.data_path.clear();
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "needs the corpus");
+  cfg.data_path = sds_path;
+  cfg.val_frac = 1.5f;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "val_frac must lie");
+  cfg.val_frac = 0.0f;
+  cfg.split_seed = 0;
+
   // Refusals, by name.
   cfg.data_path = write("corpus.csv", text);
   EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
@@ -1417,7 +1450,37 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   ASSERT_OK(masked);
   ASSERT_OK(masked->SaveToFile(dir.File("masked.sds")));
   cfg.data_path = dir.File("masked.sds");
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "loss mask");
+  // A masked corpus compiles the masked cross-entropy (S3 #149): the flag
+  // in the header, opcodes 51 / 52 in place of 11 / 12 in every program,
+  // and the loss objective is the cross-entropy alone.
+  auto masked_plan = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(masked_plan);
+  EXPECT_NE(HeaderOf(*masked_plan).data_flags & kDataFlagMaskedLoss, 0u);
+  {
+    const auto all = TrainProgramOf(*masked_plan);
+    EXPECT_EQ(CountOpcode(all, OpCode::kSoftmaxXEntFwd), 0u);
+    EXPECT_EQ(CountOpcode(all, OpCode::kSoftmaxXEntBwd), 0u);
+    EXPECT_GT(CountOpcode(all, OpCode::kSoftmaxXEntMaskedFwd), 0u);
+    EXPECT_GT(CountOpcode(all, OpCode::kSoftmaxXEntMaskedBwd), 0u);
+  }
+  EXPECT_STR_CONTAINS(masked_plan->screens.frontend.Json(0),
+                      "\"corpus_targets\": \"32 of 32\"");
+  // The mask is the cross-entropy's alone: a feature model under MSE (which
+  // topology admits) with --masked-loss is refused by the driver.
+  UpdateConfig mse_masked = BaseConfig(kBatch);
+  mse_masked.masked_loss = true;
+  mse_masked.loss = LossKind::kMse;
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(mse_masked).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "cross-entropy alone");
+  // --masked-loss without data: the flag and the masked opcodes, no pin.
+  UpdateConfig flagged_cfg = cfg;
+  flagged_cfg.data_path.clear();
+  flagged_cfg.masked_loss = true;
+  auto flagged = UpdateCompiler(flagged_cfg).Compile(model);
+  ASSERT_OK(flagged);
+  EXPECT_NE(HeaderOf(*flagged).data_flags & kDataFlagMaskedLoss, 0u);
+  EXPECT_EQ(HeaderOf(*flagged).data_flags & kDataFlagCorpusPinned, 0u);
   // A record wider than the model's seq_len, and an id past the table.
   auto wide = seeml::update_rt::Dataset::FromTokens(std::vector<int32_t>(8 * 6, 1),
                                                     8, seq + 1);

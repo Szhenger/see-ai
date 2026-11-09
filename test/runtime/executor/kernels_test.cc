@@ -319,6 +319,61 @@ TEST(SoftmaxXEnt, ForwardIsShiftInvariantAndBoundedBelow) {
   EXPECT_GT(loss_a, 0.0f);
 }
 
+TEST(SoftmaxXEnt, TheMaskedPairIsThePlainPairOverTheTargetRows) {
+  // S3 #149: with a label of -1 on row 1 of 3, the masked loss is the plain
+  // loss over rows 0 and 2 alone; the ignored row's probabilities are still
+  // written and its gradient is zero; a batch with no target has loss 0 and
+  // a zero gradient.
+  const size_t N = 3, C = 4;
+  const std::vector<float> logits = {1.0f, 2.0f, 0.5f, -1.0f, 3.0f, 0.0f,
+                                     0.0f, 0.0f, -2.0f, 1.0f, 1.5f, 0.25f};
+  const std::vector<int32_t> labels = {2, -1, 0};
+  std::vector<float> probs(N * C), probs_ref(2 * C);
+  float loss = 0.0f, loss_ref = 0.0f;
+  k::SoftmaxXEntMaskedFwd(logits.data(), labels.data(), &loss, probs.data(),
+                          N, C);
+  std::vector<float> two_rows(logits.begin(), logits.begin() + C);
+  two_rows.insert(two_rows.end(), logits.begin() + 2 * C, logits.end());
+  const std::vector<int32_t> two_labels = {2, 0};
+  k::SoftmaxXEntFwd(two_rows.data(), two_labels.data(), &loss_ref,
+                    probs_ref.data(), 2, C);
+  EXPECT_NEAR(loss, loss_ref, 1e-7);
+  for (size_t c = 0; c < C; ++c) {
+    EXPECT_NEAR(probs[c], probs_ref[c], 1e-7);
+    EXPECT_NEAR(probs[2 * C + c], probs_ref[C + c], 1e-7);
+  }
+  float row1 = 0.0f;
+  for (size_t c = 0; c < C; ++c) row1 += probs[C + c];
+  EXPECT_NEAR(row1, 1.0f, 1e-6);  // the ignored row's softmax is written
+  const float seed = 2.0f;
+  std::vector<float> d(N * C), d_ref(2 * C);
+  k::SoftmaxXEntMaskedBwd(probs.data(), labels.data(), &seed, d.data(), N, C);
+  k::SoftmaxXEntBwd(probs_ref.data(), two_labels.data(), &seed, d_ref.data(),
+                    2, C);
+  for (size_t c = 0; c < C; ++c) {
+    EXPECT_NEAR(d[c], d_ref[c], 1e-7);
+    EXPECT_EQ(d[C + c], 0.0f);
+    EXPECT_NEAR(d[2 * C + c], d_ref[C + c], 1e-7);
+  }
+  const std::vector<int32_t> none = {-1, -1, -1};
+  k::SoftmaxXEntMaskedFwd(logits.data(), none.data(), &loss, probs.data(), N,
+                          C);
+  EXPECT_EQ(loss, 0.0f);
+  k::SoftmaxXEntMaskedBwd(probs.data(), none.data(), &seed, d.data(), N, C);
+  for (float v : d) EXPECT_EQ(v, 0.0f);
+  // No mask: bit-identical to the plain pair.
+  const std::vector<int32_t> all = {2, 1, 0};
+  float loss_m = 0.0f, loss_p = 0.0f;
+  std::vector<float> pm(N * C), pp(N * C), dm(N * C), dp(N * C);
+  k::SoftmaxXEntMaskedFwd(logits.data(), all.data(), &loss_m, pm.data(), N, C);
+  k::SoftmaxXEntFwd(logits.data(), all.data(), &loss_p, pp.data(), N, C);
+  EXPECT_EQ(loss_m, loss_p);
+  EXPECT_EQ(pm, pp);
+  k::SoftmaxXEntMaskedBwd(pm.data(), all.data(), &seed, dm.data(), N, C);
+  k::SoftmaxXEntBwd(pp.data(), all.data(), &seed, dp.data(), N, C);
+  EXPECT_EQ(dm, dp);
+}
+
 TEST(SoftmaxXEnt, BackwardIsScaledProbsMinusOneHot) {
   const size_t N = 2, C = 3;
   const std::vector<float> probs = {0.2f, 0.3f, 0.5f, 0.1f, 0.8f, 0.1f};

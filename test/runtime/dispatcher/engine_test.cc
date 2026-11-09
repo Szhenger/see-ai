@@ -309,6 +309,16 @@ TEST(EngineContract, FeederContractBindsTheTokenizerAndTheMask) {
                       "pinned to another corpus");
   corpus.corpus_hash = 0x77;
   EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  // The compiled split: the fed set must carry the plan's split hash.
+  header.data_flags = up::kDataFlagSplit;
+  header.val_split_hash = 0x99;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "not split as the plan compiled it");
+  corpus.split_hash = 0x99;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  header.data_flags = 0;
+  corpus.split_hash = 0x98;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
 }
 
 TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
@@ -489,6 +499,59 @@ TEST(CoverageTable, TheClassWidthScanCoversEveryProgram) {
                 loaded.has_value() ? "NOT checked" : loaded.error().c_str());
     ASSERT_FALSE(loaded.has_value());
     EXPECT_STR_CONTAINS(loaded.error(), "class widths");
+  }
+}
+
+TEST(CoverageTable, TheMaskedLossFlagAndTheMaskedOpcodesAgree) {
+  // S3 #149: the masked cross-entropy appears exactly when the header
+  // carries kDataFlagMaskedLoss — a masked opcode without the flag, a
+  // plain one under it, and the flag with no masked opcode are refused,
+  // in every program.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  for (int p = 0; p < kPrograms; ++p) {
+    OpenPlan open(plan);
+    ASSERT_TRUE(open.Count(p) > 0);
+    const uint64_t logits = open.Scratch(kBatch * 3 * 4, 0);
+    const uint64_t loss = open.Scratch(16, 1);
+    const uint64_t probs = open.Scratch(kBatch * 3 * 4, 2);
+    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX && probs != UINT64_MAX);
+    up::UpdateInstruction sm{};
+    sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedFwd);
+    sm.in[0] = up::MakeArenaRef(logits);
+    sm.in[1] = open.h.label_ref;
+    sm.in[2] = up::MakeArenaRef(loss);
+    sm.in[3] = up::MakeArenaRef(probs);
+    sm.out[0] = open.h.batch;
+    sm.out[1] = 3;
+    open.Replace(p, 0, sm);
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto loaded = engine.LoadFromMemory(edited.data(), edited.size());
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), "without the masked-loss flag");
+  }
+  {
+    // The flag alone: the plain cross-entropy the plan carries is refused.
+    OpenPlan open(plan);
+    open.h.data_flags |= up::kDataFlagMaskedLoss;
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto loaded = engine.LoadFromMemory(edited.data(), edited.size());
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), "carries the masked-loss flag");
+  }
+  {
+    // A masked plan the compiler built loads, and runs a step on a masked
+    // corpus; the same corpus is refused by the plain plan.
+    up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
+    up::UpdateConfig cfg = AccumulatingConfig(kBatch);
+    cfg.masked_loss = true;
+    auto compiled = up::UpdateCompiler(cfg).Compile(model);
+    ASSERT_OK(compiled);
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
+    EXPECT_NE(engine.header().data_flags & up::kDataFlagMaskedLoss, 0u);
   }
 }
 

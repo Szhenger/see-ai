@@ -380,6 +380,12 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);");
     EXPECT_STR_CONTAINS(main_tu, "\"--peak-gflops\"");
     EXPECT_STR_CONTAINS(main_tu, "runtime_screen.Json(2)");
+    // S3 #149: the runner takes a compiled split from the plan header,
+    // recomputes it with the vendored function and refuses --val-frac.
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update::kDataFlagSplit");
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update::HeldOutIndices(");
+    EXPECT_STR_CONTAINS(main_tu, "--val-frac is not a runner ");
+    EXPECT_STR_CONTAINS(main_tu, "dataset->SplitHeldOut(held, split_hash)");
     // CR4 #145, the storage role's rows: only for a run that saved a
     // checkpoint, the bytes and the fsyncs as means over its checkpoints.
     EXPECT_STR_CONTAINS(main_tu, "if (report->checkpoints > 0) {");
@@ -391,7 +397,8 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
                         "static_cast<double>(report->checkpoint_fsyncs) /");
     for (const char* header :
          {"source/statistics/screen.h", "source/statistics/screens.h",
-          "source/statistics/plan_work.h", "source/statistics/process.h"}) {
+          "source/statistics/plan_work.h", "source/statistics/process.h",
+          "source/contract/split.h", "source/language/dataset_format.h"}) {
       bool vendored = false;
       for (const std::string& v : paths.vendored_sources) vendored |= v == header;
       if (!vendored) ADD_FAILURE(std::string(header) + " is not vendored");

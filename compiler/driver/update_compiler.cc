@@ -21,6 +21,7 @@
 #include "compiler/frontend/computation/parser.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "compiler/frontend/tokenization/corpus_ingress.h"
+#include "source/contract/split.h"
 #include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
@@ -301,15 +302,42 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
         static_cast<uint64_t>(batch) * config_.grad_accum_steps,
         config_.default_steps);
     if (!c) return std::unexpected(c.error());
-    if (c->masked)
-      return generating::Error(
-          generating::kDriver,
-          "the corpus carries a loss mask; the masked cross-entropy (S3 "
-          "#149) is not compiled yet — pass an unmasked corpus");
     corpus = std::move(*c);
+    // The compiled split (S3 #149): the held-out records drawn here, by
+    // the function the device recomputes; the plan carries the seed, the
+    // fraction and the indices' hash.
+    if (config_.val_frac != 0.0f) {
+      if (!(config_.val_frac > 0.0f && config_.val_frac < 1.0f))
+        return generating::Error(generating::kDriver,
+                                 "val_frac must lie in (0, 1)");
+      if (corpus->facts.records < 2)
+        return generating::Error(
+            generating::kDriver,
+            "a held-out split needs at least two records");
+      const std::vector<uint64_t> held = HeldOutIndices(
+          corpus->facts.records, config_.split_seed, config_.val_frac);
+      corpus->facts.val_records = held.size();
+      corpus->facts.split_seed = config_.split_seed;
+      corpus->facts.val_split_hash = SplitHash(held);
+      corpus->facts.split = true;
+    }
     facts.frontend.corpus = corpus->facts;
     phase("data", source.ops.size());
+  } else if (config_.val_frac != 0.0f) {
+    return generating::Error(generating::kDriver,
+                             "a compiled validation split needs the corpus: "
+                             "pass --data with --val-frac");
   }
+  // The masked loss (S3 #149, plan v22 kDataFlagMaskedLoss): asked for, or
+  // implied by a corpus that carries a mask. The cross-entropy alone has a
+  // masked form; the other objectives take every position.
+  const bool masked_loss =
+      config_.masked_loss || (corpus && corpus->masked);
+  if (masked_loss && config_.loss != LossKind::kSoftmaxXEnt)
+    return generating::Error(
+        generating::kDriver,
+        "a loss mask applies to the cross-entropy alone (--loss xent): the "
+        "distillation and MSE objectives take every position");
 
   // The model as read, for the frontend screen (S0 #146). Captured before
   // any pass: the consuming compile releases the weight payloads as plan
@@ -468,7 +496,8 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     labels = block.addArgument(sir::DataType::I32, sir::Shape{batch});
     label_kind = 1;
     label_bytes = static_cast<uint64_t>(batch) * sizeof(int32_t);
-    sir::Operation* op = block.appendOp("sc_high.softmax_xent");
+    sir::Operation* op = block.appendOp(
+        masked_loss ? "sc_high.softmax_xent_masked" : "sc_high.softmax_xent");
     op->addOperand(build.output);
     op->addOperand(labels);
     sir::Value* l = op->addResult("loss.xent", sir::DataType::F32, sir::Shape{});
@@ -1168,9 +1197,16 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the same one (or none). The split and mask words stay zero until a
   // compile takes data (S3 #149).
   header.tokenizer_hash = source.TokenizerHash();
+  if (masked_loss) header.data_flags |= kDataFlagMaskedLoss;
   if (corpus) {
     header.corpus_hash = corpus->corpus_hash;
     header.data_flags |= kDataFlagCorpusPinned;
+    if (corpus->facts.split) {
+      header.split_seed = corpus->facts.split_seed;
+      header.val_frac_bits = ValFracBits(config_.val_frac);
+      header.val_split_hash = corpus->facts.val_split_hash;
+      header.data_flags |= kDataFlagSplit;
+    }
   }
 
   uint64_t off = AlignUp(sizeof(PlanHeader));

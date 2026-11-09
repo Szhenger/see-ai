@@ -338,7 +338,9 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program)
       if (static_cast<up::OpCode>(ins.opcode) ==
-          up::OpCode::kSoftmaxXEntFwd) {
+              up::OpCode::kSoftmaxXEntFwd ||
+          static_cast<up::OpCode>(ins.opcode) ==
+              up::OpCode::kSoftmaxXEntMaskedFwd) {
         if (fwd_classes != 0 && fwd_classes != ins.out[1])
           return diag::executing::Error(
               "plan softmax class widths disagree across programs");
@@ -387,12 +389,15 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
           }
   for (const up::UpdateInstruction& ins : eval) {
     const auto op = static_cast<up::OpCode>(ins.opcode);
-    if (op == up::OpCode::kSoftmaxXEntFwd) {
+    if (op == up::OpCode::kSoftmaxXEntFwd ||
+        op == up::OpCode::kSoftmaxXEntMaskedFwd) {
       eval_probs_ref = ins.in[3];
       eval_softmax_rows = ins.out[0];
       eval_softmax_cols = ins.out[1];
       if (ins.in[2] == header.loss_ref && ins.out[0] == header.batch)
-        eval_tail = {EvalTail::kXent, ins.in[3], ins.in[1], ins.out[1]};
+        eval_tail = {op == up::OpCode::kSoftmaxXEntFwd ? EvalTail::kXent
+                                                        : EvalTail::kXentMasked,
+                     ins.in[3], ins.in[1], ins.out[1]};
     } else if (op == up::OpCode::kMseFwd && ins.in[2] == header.loss_ref &&
                header.batch > 0 && ins.out[0] % header.batch == 0) {
       eval_tail = {EvalTail::kMse, ins.in[0], ins.in[1],
@@ -412,7 +417,9 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
     for (const up::UpdateInstruction& ins : *program) {
       const auto op = static_cast<up::OpCode>(ins.opcode);
       if (op != up::OpCode::kSoftmaxXEntFwd &&
-          op != up::OpCode::kSoftmaxXEntBwd)
+          op != up::OpCode::kSoftmaxXEntBwd &&
+          op != up::OpCode::kSoftmaxXEntMaskedFwd &&
+          op != up::OpCode::kSoftmaxXEntMaskedBwd)
         continue;
       const uint64_t classes = ins.out[1];
       if (classes != 0 && (num_classes == 0 || classes < num_classes))
@@ -535,7 +542,8 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   train_opt_begin_ = train_program_.size();
   for (size_t i = 0; i < train_program_.size(); ++i) {
     const auto op = static_cast<up::OpCode>(train_program_[i].opcode);
-    if (op == up::OpCode::kSoftmaxXEntFwd || op == up::OpCode::kMseFwd ||
+    if (op == up::OpCode::kSoftmaxXEntFwd ||
+        op == up::OpCode::kSoftmaxXEntMaskedFwd || op == up::OpCode::kMseFwd ||
         op == up::OpCode::kKLDistillFwd)
       train_bwd_begin_ = i + 1;
     if ((op == up::OpCode::kClipNorm || op == up::OpCode::kSgdStep ||
@@ -812,8 +820,9 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
             std::min<uint64_t>(samples_per_step,
                                data.num_samples() - served_samples) *
             rows_per_sample;
-        real_row_loss += RealRowLoss(real_here, label_slot);
-        real_rows += real_here;
+        uint64_t counted_here = 0;
+        real_row_loss += RealRowLoss(real_here, label_slot, &counted_here);
+        real_rows += counted_here;
       }
       if (track_accuracy) {
         // Rows past the dataset's tail in the final batch are wrapped
@@ -837,31 +846,37 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
         // dominant eval cost — behind a GEMM that had used every core.
         // Per-chunk integer tallies summed afterwards: exact at any width.
         const uint64_t cols = eval_softmax_cols_;
+        // A masked plan (S3 #149) judges the target rows alone: a row
+        // whose label is -1 is neither a hit nor counted. A plain plan
+        // never stages -1, so every real row counts, as before.
         uint64_t tallies[up::kMaxParallelChunks] = {};
+        uint64_t judged[up::kMaxParallelChunks] = {};
         up::ParallelFor(
             real, kernels::RowGrain(cols, kernels::kGrainCheap),
             [&](size_t r0, size_t r1, size_t chunk) {
-              uint64_t hits = 0;
+              uint64_t hits = 0, rows = 0;
               for (size_t r = r0; r < r1; ++r) {
+                if (labels[r] < 0) continue;
+                ++rows;
                 const float* row = probs + r * cols;
                 uint64_t argmax = 0;
                 for (uint64_t c = 1; c < cols; ++c)
                   if (row[c] > row[argmax]) argmax = c;
-                if (labels[r] >= 0 &&
-                    static_cast<uint64_t>(labels[r]) == argmax)
-                  ++hits;
+                if (static_cast<uint64_t>(labels[r]) == argmax) ++hits;
               }
               tallies[chunk] = hits;
+              judged[chunk] = rows;
             });
         for (const uint64_t hits : tallies) correct += hits;
-        counted += real;
+        for (const uint64_t rows : judged) counted += rows;
       }
     }
   }
   data.RestoreServingPos(entry_pos);
   EvalMetrics m;
   m.loss = static_cast<float>(
-      ragged ? real_row_loss / static_cast<double>(real_rows)
+      ragged ? (real_rows ? real_row_loss / static_cast<double>(real_rows)
+                          : 0.0)
              : total / static_cast<double>(batches));
   if (track_accuracy && counted > 0) {
     m.accuracy = static_cast<float>(static_cast<double>(correct) /
@@ -1220,18 +1235,24 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   return report;
 }
 
-double UpdateEngine::RealRowLoss(uint64_t real,
-                                 const uint8_t* label_slot) const {
+double UpdateEngine::RealRowLoss(uint64_t real, const uint8_t* label_slot,
+                                 uint64_t* counted) const {
   // The sum of the per-row losses of the batch just evaluated over its
   // first `real` rows — each row's loss evaluated with the loss kernel's
   // own expression, so a full batch sums to rows x the kernel's mean up to
-  // the order of a double sum.
+  // the order of a double sum. `counted` is the rows the sum is over: the
+  // real rows, or for a masked loss (S3 #149) the real TARGET rows.
+  *counted = real;
   switch (eval_tail_.kind) {
-    case EvalTail::kXent: {
+    case EvalTail::kXent:
+    case EvalTail::kXentMasked: {
       const float* probs = ReadPtr(eval_tail_.a);
       const auto* labels = reinterpret_cast<const int32_t*>(label_slot);
       double sum = 0.0;
+      uint64_t rows = 0;
       for (uint64_t r = 0; r < real; ++r) {
+        if (labels[r] < 0) continue;
+        ++rows;
         const float p = probs[r * eval_tail_.width +
                               static_cast<uint64_t>(labels[r])];
         const double safe = std::isnan(p)
@@ -1239,6 +1260,7 @@ double UpdateEngine::RealRowLoss(uint64_t real,
                                 : static_cast<double>(std::fmax(p, 1e-12f));
         sum -= std::log(safe);
       }
+      *counted = rows;
       return sum;
     }
     case EvalTail::kMse: {

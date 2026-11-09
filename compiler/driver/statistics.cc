@@ -102,6 +102,16 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
     std::snprintf(hex, sizeof(hex), "%016llx",
                   static_cast<unsigned long long>(c.corpus_hash));
     fe.Set("corpus_hash", std::string(hex));
+    if (c.split) {
+      char split_hex[32];
+      std::snprintf(split_hex, sizeof(split_hex), "%016llx",
+                    static_cast<unsigned long long>(c.val_split_hash));
+      fe.Set("validation", std::to_string(c.val_records) + " of " +
+                               std::to_string(c.records) +
+                               " records held out, seed " +
+                               std::to_string(c.split_seed) + ", split " +
+                               split_hex);
+    }
   }
   fe.Set("footprint_weights", acc.footprint_weights);
   fe.Set("footprint_activations", acc.footprint_activations);

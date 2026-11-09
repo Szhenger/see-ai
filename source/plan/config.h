@@ -193,6 +193,20 @@ struct UpdateConfig {
   // rows. Empty = no data at compile time: the plan takes any corpus of the
   // right geometry, as every plan did before v22.
   std::string data_path;
+  // The compiled held-out split (S3 #149, plan v22 kDataFlagSplit): with
+  // --data, this fraction of the corpus's records — drawn by
+  // HeldOutIndices(records, split_seed, val_frac), source/contract/split.h
+  // — is the validation set, named in the plan header and recomputed on the
+  // device from the same corpus. 0 = no compiled split: the runner's
+  // --val-frac decides, by position, as before.
+  float val_frac = 0.0f;
+  uint64_t split_seed = 0;
+  // The masked cross-entropy (S3 #149, plan v22 kDataFlagMaskedLoss): the
+  // labels carry -1 at the positions the loss ignores (a prompt/response
+  // corpus's prompt), the mean runs over the target positions. Implied by
+  // a --data corpus that carries a mask; set here for a plan compiled
+  // without data that will be fed one. The cross-entropy alone.
+  bool masked_loss = false;
 };
 
 }  // namespace seeml::update

@@ -206,6 +206,10 @@ struct CorpusShape {
   // The corpus identity (ContentHash64 of the SDS file; 0 = built in
   // memory), checked only when the plan pins one (kDataFlagCorpusPinned).
   uint64_t corpus_hash = 0;
+  // The split identity (SplitHash of the held-out indices the corpus was
+  // partitioned by, source/contract/split.h; 0 = not split, or split by
+  // position), checked only when the plan compiled one (kDataFlagSplit).
+  uint64_t split_hash = 0;
 };
 
 /// The corpus's shape fits the plan's I/O slots — the feeder contract's
@@ -231,6 +235,16 @@ inline std::optional<std::string> CorpusGeometryViolation(
       corpus.corpus_hash != header.corpus_hash)
     return Violation(
         "the plan is pinned to another corpus (corpus hash mismatch)");
+  // The compiled split (v22, S3 #149): the training set the plan is fed
+  // must be the corpus less the held-out records the compile named — the
+  // same function of (records, seed, fraction), recomputed and hashed on
+  // the device — so the gate scores the set the compile decided, not one
+  // the data source chose.
+  if ((header.data_flags & kDataFlagSplit) != 0 &&
+      corpus.split_hash != header.val_split_hash)
+    return Violation(
+        "the corpus was not split as the plan compiled it (split hash "
+        "mismatch)");
   // The loss mask (v22): a masked corpus stages -1 labels the masked
   // cross-entropy ignores; a plan compiled for the plain loss would train
   // on them as class -1, and a masked plan over a plain corpus would read

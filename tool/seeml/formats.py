@@ -186,7 +186,8 @@ OPCODES = {
     40: "attn.dk", 41: "embed.fwd", 42: "accumulate", 43: "gemm.nn.bf16",
     44: "gemm.nt.bf16", 45: "rope.table", 46: "fused.map",
     47: "attn.fwd.tiled", 48: "attn.dq.tiled", 49: "attn.dk.tiled",
-    50: "attn.dv.tiled",
+    50: "attn.dv.tiled", 51: "softmax_xent_masked.fwd",
+    52: "softmax_xent_masked.bwd",
 }
 # The tiled family's stats row: [row max, 1/denominator, delta, pad].
 ATTN_STATS_WIDTH = 4

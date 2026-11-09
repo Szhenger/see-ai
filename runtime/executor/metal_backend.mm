@@ -128,6 +128,7 @@ enum Pipe : int {
   kPClipPartials, kPClipFinish, kPClipApply, kPSgdClip, kPAdamWClip,
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
   kPXentFwd, kPXentFinish, kPXentBwd,
+  kPXentMaskedFwd, kPXentMaskedFinish, kPXentMaskedCount, kPXentMaskedBwd,
   kPRopeTable, kPEmbedFwd,
   kPAttnFwdTiled, kPAttnDQTiled, kPAttnDKTiled, kPAttnDVTiled,
   kPAttnFwdTiledBlk, kPAttnDQTiledBlk, kPAttnDKTiledBlk, kPAttnDVTiledBlk,
@@ -168,6 +169,8 @@ const char* const kPipeNames[kPipeCount] = {
     "k_adamw_clip", "k_rope_fwd",
     "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
     "k_xent_fwd", "k_xent_finish", "k_xent_bwd",
+    "k_xent_masked_fwd", "k_xent_masked_finish", "k_xent_masked_count",
+    "k_xent_masked_bwd",
     "k_rope_table", "k_embed_fwd",
     "k_attn_fwd_tiled", "k_attn_dq_tiled", "k_attn_dk_tiled",
     "k_attn_dv_tiled",
@@ -549,6 +552,8 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     }
     case up::OpCode::kSoftmaxXEntFwd:
     case up::OpCode::kSoftmaxXEntBwd:
+    case up::OpCode::kSoftmaxXEntMaskedFwd:
+    case up::OpCode::kSoftmaxXEntMaskedBwd:
       return ins.out[0] <= kMax && ins.out[1] <= kMax &&
              ins.out[0] * ins.out[1] <= kMax;
     case up::OpCode::kSoftmaxRowsBwd:
@@ -1845,6 +1850,38 @@ std::expected<void, std::string> MetalBackend::Encode(
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
       a.rows = u32(ins.out[0]); a.cols = u32(ins.out[1]);
       Dispatch(kPXentBwd, a, a.rows * a.cols, kElementwiseGroup);
+      return {};
+    // The masked pair (S3 #149): the row kernel leaves -log p[label] or 0
+    // in scratch, the finish kernel counts the target rows and divides;
+    // the backward reads the count the count kernel leaves in scratch[0].
+    case up::OpCode::kSoftmaxXEntMaskedFwd: {
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
+      a.rows = u32(ins.out[0]); a.cols = u32(ins.out[1]);
+      if (a.rows > scratch_floats_) {
+        if (auto r = Flush(); !r) return r;
+        scratch_ = [device_ newBufferWithLength:size_t{a.rows} * sizeof(float)
+                                        options:MTLResourceStorageModeShared];
+        if (!scratch_) return std::unexpected("scratch allocation failed");
+        scratch_floats_ = a.rows;
+        if (auto r = EnsureEncoder(); !r) return r;
+      }
+      Dispatch(kPXentMaskedFwd, a, a.rows * 32u, kElementwiseGroup, true);
+      Dispatch(kPXentMaskedFinish, a, 1, 1, true);
+      return {};
+    }
+    case up::OpCode::kSoftmaxXEntMaskedBwd:
+      ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
+      a.rows = u32(ins.out[0]); a.cols = u32(ins.out[1]);
+      if (scratch_floats_ < 1) {
+        if (auto r = Flush(); !r) return r;
+        scratch_ = [device_ newBufferWithLength:sizeof(float)
+                                        options:MTLResourceStorageModeShared];
+        if (!scratch_) return std::unexpected("scratch allocation failed");
+        scratch_floats_ = 1;
+        if (auto r = EnsureEncoder(); !r) return r;
+      }
+      Dispatch(kPXentMaskedCount, a, 1, 1, true);
+      Dispatch(kPXentMaskedBwd, a, a.rows * a.cols, kElementwiseGroup, true);
       return {};
     default:
       return std::unexpected("opcode " + std::to_string(ins.opcode) +

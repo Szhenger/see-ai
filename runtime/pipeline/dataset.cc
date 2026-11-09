@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <fstream>
 #include <optional>
+#include <type_traits>
 
 namespace seeml::update_rt {
 
@@ -632,6 +633,67 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
   num_samples_ = train_n;
   cursor_ = 0;
   labels_scanned_ = false;  // the extent was the whole corpus's
+  return val;
+}
+
+std::expected<Dataset, std::string> Dataset::SplitHeldOut(
+    const std::vector<uint64_t>& held, uint64_t split_hash) {
+  if (!order_.empty())
+    return diag::feeding::Error("split before enabling shuffle");
+  if (held.empty() || held.size() >= num_samples_)
+    return diag::feeding::Error(
+        "the held-out set must leave at least one record on each side");
+  for (size_t i = 0; i < held.size(); ++i) {
+    if (held[i] >= num_samples_)
+      return diag::feeding::Error("held-out index past the corpus");
+    if (i > 0 && held[i] <= held[i - 1])
+      return diag::feeding::Error("held-out indices are not sorted and "
+                                  "distinct");
+  }
+  const uint64_t val_n = held.size(), train_n = num_samples_ - val_n;
+  const uint64_t lbytes = label_bytes_per_sample();
+
+  Dataset val;
+  val.num_samples_ = val_n;
+  val.input_dim_ = input_dim_;
+  val.label_kind_ = label_kind_;
+  val.label_dim_ = label_dim_;
+  val.input_kind_ = input_kind_;
+  val.tokenizer_hash_ = tokenizer_hash_;
+  val.content_hash_ = content_hash_;
+  val.masked_ = masked_;
+  val.split_hash_ = split_hash;
+  split_hash_ = split_hash;
+
+  // One pass over the records: each goes to the side the index list says,
+  // in order, so both halves keep the corpus's record order.
+  auto partition = [&](auto& mine, auto& theirs, uint64_t stride) {
+    using V = std::remove_reference_t<decltype(mine)>;
+    V keep, out;
+    keep.reserve(train_n * stride);
+    out.reserve(val_n * stride);
+    size_t h = 0;
+    for (uint64_t r = 0; r < num_samples_; ++r) {
+      const bool held_out = h < held.size() && held[h] == r;
+      if (held_out) ++h;
+      auto& dst = held_out ? out : keep;
+      dst.insert(dst.end(),
+                 mine.begin() + static_cast<ptrdiff_t>(r * stride),
+                 mine.begin() + static_cast<ptrdiff_t>((r + 1) * stride));
+    }
+    mine = std::move(keep);
+    theirs = std::move(out);
+  };
+  if (input_kind_ == 1) {
+    partition(tokens_, val.tokens_, input_dim_ + 1);
+    if (masked_) partition(mask_, val.mask_, input_dim_);
+  } else {
+    partition(inputs_, val.inputs_, input_dim_);
+    if (lbytes) partition(labels_, val.labels_, lbytes);
+  }
+  num_samples_ = train_n;
+  cursor_ = 0;
+  labels_scanned_ = false;
   return val;
 }
 
