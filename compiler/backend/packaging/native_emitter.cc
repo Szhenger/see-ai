@@ -898,6 +898,11 @@ constexpr const char* kVendoredSources[] = {
     "source/statistics/screen.h",         "source/statistics/screens.h",
     "source/statistics/plan_work.h",      "source/statistics/process.h",
     "source/parallel/parallel_for.h",     "source/parallel/parallel_for.cc",
+    // The data path (S2 #148): the SDS format the feeder reads and the
+    // tokenizer the device re-runs on its own text.
+    "source/language/dataset_format.h",
+    "source/tokenizer/tokenizer_format.h", "source/tokenizer/unicode_tables.h",
+    "source/tokenizer/byte_level_bpe.h",   "source/tokenizer/byte_level_bpe.cc",
 };
 
 std::string BuildScript(bool relaxed_plan) {

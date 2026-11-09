@@ -72,6 +72,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from seeml import formats  # noqa: E402
+from seeml import content_hash  # noqa: E402
+from seeml import tokenizer_section as tokenizer_section_mod  # noqa: E402
 
 SMF_MAGIC = formats.SMF_MAGIC
 SMF_VERSION = formats.SMF_VERSION
@@ -184,6 +186,10 @@ class _SmfBuilder:
         self.tensors = [dict(name=input_name, dims=dims, const=False, data=b"",
                              nbytes=0)]
         self.ops = []
+        # SMF v7 (S2 #148): the tokenizer section, an opaque blob placed
+        # 64-aligned after the metadata, before the first payload; empty =
+        # none, and the file stays the version it was.
+        self.tokenizer = b""
 
     def add_tensor(self, name, dims, data, nbytes=None):
         """`data` is any C-contiguous bytes-like — bytes, a memoryview, or a
@@ -211,16 +217,20 @@ class _SmfBuilder:
 
     @property
     def version(self) -> int:
+        if self.tokenizer:
+            return 7
         if any(op["attr2"] != 0 for op in self.ops):
             return 6
         needs_v5 = any(op["attr1"] != 0 for op in self.ops)
         return max(self.min_version, 5 if needs_v5 else 3)
 
-    def _meta(self, offsets, version: int) -> bytes:
+    def _meta(self, offsets, version: int, tokenizer_offset: int = 0) -> bytes:
         out = formats.SMF_PREAMBLE.pack(SMF_MAGIC, version,
                                         len(self.tensors), len(self.ops))
         out += _s(self.input_name) + _s(self.output_name)
         out += struct.pack("<Q", self.seq_len)
+        if version >= 7:
+            out += struct.pack("<QQ", tokenizer_offset, len(self.tokenizer))
         for t in self.tensors:
             out += _s(t["name"])
             out += struct.pack("<BB", len(t["dims"]), 1 if t["const"] else 0)
@@ -246,12 +256,17 @@ class _SmfBuilder:
         file padded to alignment after the last one."""
         version = self.version
         cursor, offsets = _align(len(self._meta({}, version))), {}
+        tokenizer_offset = 0
+        if self.tokenizer:
+            tokenizer_offset = cursor
+            cursor = _align(cursor + len(self.tokenizer))
         for t in self.tensors:
             if not t["const"]:
                 continue
             offsets[t["name"]] = cursor
             cursor = _align(cursor + t["nbytes"])
-        return self._meta(offsets, version), offsets, cursor
+        return (self._meta(offsets, version, tokenizer_offset), offsets,
+                cursor, tokenizer_offset)
 
     def write(self, f) -> int:
         """Stream the container to a binary file object and return the byte
@@ -260,9 +275,13 @@ class _SmfBuilder:
         so the process never holds a second copy of the model: a 540 MB
         model exports at ~1x its size, not the ~6x of assembling the whole
         file in memory first. Byte-identical to serialize()."""
-        meta, offsets, total = self._layout()
+        meta, offsets, total, tokenizer_offset = self._layout()
         f.write(meta)
         pos = len(meta)
+        if self.tokenizer:
+            f.write(b"\x00" * (tokenizer_offset - pos))
+            f.write(self.tokenizer)
+            pos = tokenizer_offset + len(self.tokenizer)
         for t in self.tensors:
             if not t["const"]:
                 continue
@@ -536,7 +555,8 @@ def export_decoder_smf(blocks, head, path: str, seq_len: int, num_heads: int,
 def export_token_decoder_smf(embedding, blocks, head, path: str, seq_len: int,
                              num_heads: int, input_name: str = "x",
                              rope_base: float = DEFAULT_ROPE_BASE,
-                             norm_eps: float = DEFAULT_NORM_EPS):
+                             norm_eps: float = DEFAULT_NORM_EPS,
+                             tokenizer_section: bytes = b""):
     """Export a token-native pre-norm causal decoder to SMF (v4; v5 / v6 as
     export_decoder_smf).
 
@@ -562,11 +582,21 @@ def export_token_decoder_smf(embedding, blocks, head, path: str, seq_len: int,
     b.add_op(OP_EMBEDDING, "embed", [input_name, "emb"], "e")
     _emit_decoder_graph(b, blocks, head, num_heads, prev="e",
                         rope_base=rope_base, norm_eps=norm_eps)
+    # SMF v7 (S2 #148): the tokenizer section, whose vocabulary must be the
+    # embedding's rows — the ids the corpus carries index that table.
+    if tokenizer_section:
+        head_info = tokenizer_section_mod.summarize(tokenizer_section)
+        if head_info["vocab_size"] != int(emb.shape[0]):
+            raise ValueError(
+                f"tokenizer vocabulary ({head_info['vocab_size']}) does not "
+                f"match the embedding table ({emb.shape[0]} rows)")
+        b.tokenizer = tokenizer_section
     with _atomic_output(path) as f:
         b.write(f)
     print(f"wrote {path} ({len(blocks)} decoder blocks, seq_len={seq_len}, "
           f"heads={num_heads}, vocab={emb.shape[0]}, token-native, "
-          f"rope_base={float(rope_base):g})")
+          f"rope_base={float(rope_base):g}"
+          f"{', tokenizer section' if tokenizer_section else ''})")
 
 
 
@@ -893,21 +923,97 @@ def hf_llama_to_seeml(config: dict, tensors: dict, seq_len: int,
 
 
 def export_hf_decoder(model_dir: str, out_path: str, seq_len: int,
-                      allow_eps_drift: bool = False):
+                      allow_eps_drift: bool = False, tokenizer: bool = True):
     """--hf: import a Llama-class checkpoint and write the SMF, mapping the
     safetensors and building each converted weight only as it is written
-    (lazy), so the export holds about one weight at a time."""
+    (lazy), so the export holds about one weight at a time. With `tokenizer`
+    (the default) the checkpoint's tokenizer.json becomes the SMF v7
+    tokenizer section (S2 #148); a construct the core does not implement is
+    a refusal naming it, which --no-tokenizer sets aside."""
     config, tensors = load_hf_checkpoint(model_dir, lazy=True)
     conv = hf_llama_to_seeml(config, tensors, seq_len,
                              allow_eps_drift=allow_eps_drift)
     for note in conv["notes"]:
         print(f"hf import: {note}", file=sys.stderr)
+    section = b""
+    if tokenizer and not os.path.isfile(os.path.join(model_dir,
+                                                      "tokenizer.json")):
+        # No tokenizer to carry: the SMF stays v6 and takes no raw text
+        # (`--data corpus.txt` needs the section); said, not assumed.
+        print("hf import: no tokenizer.json in the checkpoint: the SMF "
+              "carries no tokenizer section", file=sys.stderr)
+        tokenizer = False
+    if tokenizer:
+        try:
+            section = tokenizer_section_mod.build_section(model_dir)
+        except tokenizer_section_mod.UnsupportedTokenizer as e:
+            raise ValueError(f"tokenizer section: {e} (the core implements "
+                             "byte-level BPE with the GPT-2 pattern; pass "
+                             "--no-tokenizer to export without one)") from e
+        info = tokenizer_section_mod.summarize(section)
+        print(f"hf import: tokenizer section {len(section)} bytes, "
+              f"{info['vocab_size']} tokens, {info['num_merges']} merges, "
+              f"{info['num_special']} special, hash "
+              f"{content_hash.content_hash64(section):016x}", file=sys.stderr)
     export_token_decoder_smf(conv["embedding"], conv["blocks"], conv["head"],
                              out_path, seq_len=seq_len,
                              num_heads=conv["num_heads"],
                              rope_base=conv["rope_base"],
-                             norm_eps=conv["norm_eps"])
+                             norm_eps=conv["norm_eps"],
+                             tokenizer_section=section)
+    conv["tokenizer_section"] = section
     return conv
+
+
+def tokenizer_parity(model_dir: str, smf_path: str, corpus_path: str,
+                     tokenize_tool: str):
+    """--tokenizer-parity: the reference tokenizer (the `tokenizers`
+    package over the checkpoint's tokenizer.json) and the core's encoder
+    (`seeml-tokenize` over the exported SMF's section) must produce the same
+    ids for every line of `corpus_path` and for the file as one document.
+    Returns (lines compared, ids compared); raises ValueError naming the
+    first line that disagrees."""
+    try:
+        from tokenizers import Tokenizer
+    except ImportError as e:
+        raise RuntimeError("--tokenizer-parity needs the `tokenizers` "
+                           "package (pip install tokenizers)") from e
+    import subprocess
+    import tempfile
+    ref = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
+    with open(corpus_path, "rb") as f:
+        raw = f.read()
+
+    def core_ids(blob: bytes):
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
+            tmp.write(blob)
+            tmp_path = tmp.name
+        try:
+            out = subprocess.run([tokenize_tool, smf_path, tmp_path],
+                                 capture_output=True, text=True)
+        finally:
+            os.unlink(tmp_path)
+        if out.returncode != 0:
+            raise ValueError(f"seeml-tokenize failed: {out.stderr.strip()}")
+        return [int(x) for x in out.stdout.split()]
+
+    texts = [raw] + [line for line in raw.split(b"\n")]
+    total = 0
+    for i, blob in enumerate(texts):
+        want = ref.encode(blob.decode("utf-8", errors="strict")).ids
+        got = core_ids(blob)
+        if want != got:
+            where = "the whole file" if i == 0 else f"line {i}"
+            first = next((k for k in range(min(len(want), len(got)))
+                          if want[k] != got[k]), min(len(want), len(got)))
+            raise ValueError(
+                f"tokenizer parity failed on {where}: id {first} is "
+                f"{want[first] if first < len(want) else 'absent'} in the "
+                f"reference and {got[first] if first < len(got) else 'absent'}"
+                f" in the core ({len(want)} vs {len(got)} ids); the SMF "
+                "tokenizer section is refused")
+        total += len(want)
+    return len(texts), total
 
 
 def reference_decoder_logits(embedding, blocks, head, num_heads: int,
@@ -1007,7 +1113,8 @@ def hf_parity(model_dir: str, conv: dict, batch: int = 2, seed: int = 0):
 
 
 def export_text_corpus(model_dir: str, text_path: str, out_path: str,
-                       seq_len: int, vocab: int):
+                       seq_len: int, vocab: int,
+                       tokenizer_section: bytes = b""):
     """--text-corpus: tokenize a text file with the checkpoint's
     tokenizer.json and write consecutive (seq_len + 1)-token records
     (the remainder is dropped). Needs the `tokenizers` package (tier 2)."""
@@ -1020,6 +1127,11 @@ def export_text_corpus(model_dir: str, text_path: str, out_path: str,
     tok_path = os.path.join(model_dir, "tokenizer.json")
     if not os.path.isfile(tok_path):
         raise ValueError(f"{model_dir}: no tokenizer.json for --text-corpus")
+    # SDS v3: the corpus names the tokenizer it was encoded by, when the
+    # SMF carries the section (the same hash the plan binds to).
+    tokenizer_hash = 0
+    if tokenizer_section:
+        tokenizer_hash = content_hash.content_hash64(tokenizer_section)
     with open(text_path, encoding="utf-8") as f:
         text = f.read()
     ids = np.asarray(Tokenizer.from_file(tok_path).encode(text).ids,
@@ -1031,8 +1143,10 @@ def export_text_corpus(model_dir: str, text_path: str, out_path: str,
     if n == 0:
         raise ValueError(f"{text_path}: {ids.size} tokens is fewer than one "
                          f"record of {rec}")
-    export_token_sds(ids[:n * rec].reshape(n, rec).astype(np.int32), out_path)
-    print(f"text corpus: {ids.size} tokens -> {n} records of {rec}",
+    export_token_sds(ids[:n * rec].reshape(n, rec).astype(np.int32), out_path,
+                     tokenizer_hash=tokenizer_hash)
+    print(f"text corpus: {ids.size} tokens -> {n} records of {rec}"
+          f"{f', tokenizer hash {tokenizer_hash:016x}' if tokenizer_hash else ''}",
           file=sys.stderr)
 
 def export_sds(inputs, labels, path: str, label_kind: int = 1):
@@ -1085,13 +1199,19 @@ def export_sds(inputs, labels, path: str, label_kind: int = 1):
     print(f"wrote {path} ({n} samples, input_dim={d}, label_kind={label_kind})")
 
 
-def export_token_sds(records, path: str):
-    """Export a token corpus to SDS v2 (for token-native SMF v4 models).
+def export_token_sds(records, path: str, tokenizer_hash: int = 0,
+                     mask=None):
+    """Export a token corpus to SDS v2 (for token-native SMF v4 models),
+    or v3 when it names its tokenizer or carries a loss mask.
 
     `records`: int32 array [N, S + 1] — N training records of S + 1 token
     ids each, where S is the model's compiled seq_len. No labels are
     stored: the runtime derives next-token class labels from the shifted
-    view (record[1:] labels record[:-1]).
+    view (record[1:] labels record[:-1]). `tokenizer_hash` is the identity
+    of the SMF tokenizer section the ids came from (0 = unnamed); `mask`,
+    a [N, S] array of 0 / 1, names the positions whose next token the loss
+    counts — every record must keep at least one (S3 #149). Either makes
+    the file v3; a plain corpus stays the v2 bytes it always was.
     """
     import numpy as np
 
@@ -1118,10 +1238,38 @@ def export_token_sds(records, path: str):
     if (a < 0).any():
         raise ValueError("export_token_sds: negative token id")
     n, s = a.shape[0], a.shape[1] - 1
+    m = None
+    if mask is not None:
+        m = np.ascontiguousarray(np.asarray(mask))
+        if m.shape != (n, s):
+            raise ValueError(f"export_token_sds: mask must be [N, seq_len] = "
+                             f"{(n, s)}, got {m.shape}")
+        if not np.isin(m, (0, 1)).all():
+            raise ValueError("export_token_sds: mask values must be 0 or 1")
+        targets = m.astype(bool).any(axis=1)
+        if not targets.all():
+            bad = int(np.flatnonzero(~targets)[0])
+            raise ValueError(f"export_token_sds: record {bad} carries no "
+                             "target position")
+        m = m.astype(np.uint8)
+    version = 3 if (tokenizer_hash or m is not None) else 2
     with _atomic_output(path) as f:
-        f.write(formats.SDS_HEADER.pack(SDS_MAGIC, 2, n, s, 1, 1, 0))
-        f.write(_flat_bytes(a))
-    print(f"wrote {path} ({n} records, seq_len={s}, token-native)")
+        f.write(formats.SDS_HEADER.pack(SDS_MAGIC, version, n, s, 1, 1, 0))
+        if version >= 3:
+            f.write(formats.SDS_HEADER_V3_TAIL.pack(
+                int(tokenizer_hash), formats.SDS_FLAG_MASKED if m is not None
+                else 0, 0, 0))
+        if m is None:
+            f.write(_flat_bytes(a))
+        else:
+            pad = formats.sds_mask_bytes(s)
+            rec = np.zeros(n, dtype=np.dtype([("t", "<i4", (s + 1,)),
+                                              ("m", "u1", (pad,))]))
+            rec["t"] = a
+            rec["m"][:, :s] = m
+            f.write(_flat_bytes(rec))
+    print(f"wrote {path} ({n} records, seq_len={s}, token-native"
+          f"{', masked' if m is not None else ''}, SDS v{version})")
 
 
 def _demo(out_dir: str, width: int = 32, depth: int = 1, samples: int = 2048,
@@ -1240,6 +1388,17 @@ if __name__ == "__main__":
                         help="--hf only: after the export, compare the "
                              "SeeAI-semantics NumPy forward against "
                              "transformers (needs torch + transformers)")
+    parser.add_argument("--no-tokenizer", action="store_true",
+                        help="--hf only: export without the SMF tokenizer "
+                             "section (SMF v7; the default writes it from "
+                             "the checkpoint's tokenizer.json and refuses "
+                             "a tokenizer the core does not implement)")
+    parser.add_argument("--tokenizer-parity", action="store_true",
+                        help="--hf only: after the export, hold the core's "
+                             "encoder (build/seeml-tokenize over the SMF) to "
+                             "the `tokenizers` package on the golden corpus "
+                             "test/fixtures/tokenizer/adversarial.txt; a "
+                             "disagreement removes the export")
     parser.add_argument("--text-corpus", nargs=2,
                         metavar=("TEXT", "OUT_SDS"),
                         help="--hf only: tokenize a UTF-8 text file with the "
@@ -1303,7 +1462,12 @@ if __name__ == "__main__":
              seq_len=args.seq_len)
     _require(args.hf, "--hf",
              allow_eps_drift=args.allow_eps_drift or None,
-             hf_parity=args.hf_parity or None, text_corpus=args.text_corpus)
+             hf_parity=args.hf_parity or None, text_corpus=args.text_corpus,
+             no_tokenizer=args.no_tokenizer or None,
+             tokenizer_parity=args.tokenizer_parity or None)
+    if args.tokenizer_parity and args.no_tokenizer:
+        parser.error("--tokenizer-parity needs the tokenizer section "
+                     "(drop --no-tokenizer)")
     if args.hf and args.seq_len is None:
         parser.error("--hf requires --seq-len (the compiled sequence length)")
     _require(args.demo or args.demo_decoder, "--demo or --demo-decoder",
@@ -1340,11 +1504,31 @@ if __name__ == "__main__":
     if args.hf:
         try:
             conv = export_hf_decoder(args.hf[0], args.hf[1], args.seq_len,
-                                     allow_eps_drift=args.allow_eps_drift)
+                                     allow_eps_drift=args.allow_eps_drift,
+                                     tokenizer=not args.no_tokenizer)
+            if args.tokenizer_parity:
+                repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                tool = os.path.join(os.environ.get("SEEML_BUILD_DIR",
+                                                   os.path.join(repo, "build")),
+                                    "seeml-tokenize")
+                if not os.path.isfile(tool):
+                    raise RuntimeError(f"--tokenizer-parity needs {tool} "
+                                       "(build the tree first)")
+                corpus = os.path.join(repo, "test", "fixtures", "tokenizer",
+                                      "adversarial.txt")
+                try:
+                    n, ids = tokenizer_parity(args.hf[0], args.hf[1], corpus,
+                                              tool)
+                except ValueError:
+                    os.unlink(args.hf[1])
+                    raise
+                print(f"tokenizer parity: {n} strings, {ids} ids, the core "
+                      "and the reference agree", file=sys.stderr)
             if args.text_corpus:
                 export_text_corpus(args.hf[0], args.text_corpus[0],
                                    args.text_corpus[1], args.seq_len,
-                                   conv["vocab"])
+                                   conv["vocab"],
+                                   tokenizer_section=conv["tokenizer_section"])
             if args.hf_parity:
                 delta, scale = hf_parity(args.hf[0], conv)
                 print(f"hf parity: max |Δ logits| = {delta:.3g} "

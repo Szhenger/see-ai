@@ -1141,6 +1141,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   header.min_lr_factor = cosine ? config_.optimizer.min_lr_factor : 0.0f;
   header.clip_norm = config_.optimizer.clip_norm;
   header.source_model_hash = source.content_hash;
+  // The data contract (v22, S2 #148): a model carrying a tokenizer section
+  // binds its plan to that tokenizer; the corpus the device feeds must name
+  // the same one (or none). The split and mask words stay zero until a
+  // compile takes data (S3 #149).
+  header.tokenizer_hash = source.TokenizerHash();
 
   uint64_t off = AlignUp(sizeof(PlanHeader));
   header.train_instr_offset = off;

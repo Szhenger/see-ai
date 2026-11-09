@@ -5,8 +5,11 @@
 #include <string_view>
 #include <unordered_set>
 
+#include <cstring>
+
 #include "compiler/diagnostics/parsing/error.h"
 #include "source/contract/bounds.h"
+#include "source/tokenizer/tokenizer_format.h"
 
 namespace seeml::update::sema {
 
@@ -578,6 +581,32 @@ std::expected<void, std::string> VerifyCrossInputs(
       return parsing::Error("--targets '" + f +
                             "' matches no eligible weight: no tensor of the "
                             "model carries that name");
+  }
+
+  // The tokenizer section (SMF v7): its vocabulary is the id space the
+  // corpus will carry, so it must be the embedding table's rows and the
+  // head's width — the ids index the one, the next-token labels the other.
+  if (!student.tokenizer.empty()) {
+    if (student.tokenizer.size() < tokenizer::kSmtkHeadBytes)
+      return parsing::Error("the model's tokenizer section is truncated");
+    uint32_t magic = 0, vocab = 0;
+    std::memcpy(&magic, student.tokenizer.data(), sizeof(magic));
+    std::memcpy(&vocab, student.tokenizer.data() + 20, sizeof(vocab));
+    if (magic != tokenizer::kSmtkMagic)
+      return parsing::Error("the model's tokenizer section has a bad magic");
+    if (!st.token_input)
+      return parsing::Error("the model carries a tokenizer section but takes "
+                            "feature rows, not token ids");
+    if (st.vocabulary != vocab)
+      return parsing::Error("the tokenizer's vocabulary (" +
+                            std::to_string(vocab) + " tokens) is not the "
+                            "embedding table's rows (" +
+                            std::to_string(st.vocabulary) + ")");
+    if (static_cast<uint64_t>(st.output.dims.at(1)) != vocab)
+      return parsing::Error("the tokenizer's vocabulary (" +
+                            std::to_string(vocab) + " tokens) is not the "
+                            "head's width (" +
+                            std::to_string(st.output.dims.at(1)) + ")");
   }
 
   if (!teacher) return {};

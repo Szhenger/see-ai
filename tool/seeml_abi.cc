@@ -55,7 +55,9 @@ void Field(const char* name, size_t offset, size_t size) {
   X(gemm_tile_k) X(batch) X(default_steps) X(eval_instr_offset)               \
   X(eval_instr_count) X(source_model_hash) X(plan_hash) X(lr_schedule)        \
   X(gemm_tile_n) X(warmup_steps) X(min_lr_factor) X(clip_norm) X(input_kind)  \
-  X(grad_accum_steps) X(seq_len) X(step_instr_offset) X(step_instr_count)
+  X(grad_accum_steps) X(seq_len) X(step_instr_offset) X(step_instr_count)     \
+  X(tokenizer_hash) X(corpus_hash) X(split_seed) X(val_split_hash)            \
+  X(val_frac_bits) X(data_flags)
 #define INSTRUCTION_FIELDS(X) X(opcode) X(flags) X(imm) X(in) X(out)
 #define EMIT_ENTRY_FIELDS(X) X(smf_data_offset) X(byte_size) X(arena_offset)
 #define CKPT_FIELDS(X) \
@@ -129,10 +131,12 @@ int main(int argc, char**) {
   Enum("op_kinds", smf_ops, sizeof(smf_ops) / sizeof(smf_ops[0]), true);
   std::printf("  },\n  \"sds\": {\"magic\": %u, \"version\": %u, "
               "\"min_version\": %u, \"header_bytes\": %llu, "
+              "\"header_bytes_v3\": %llu, \"flag_masked\": %u, "
               "\"label_kind_max\": %u},\n",
               rt::kSdsMagic, rt::kSdsVersion, rt::kSdsMinVersion,
               static_cast<unsigned long long>(rt::kSdsHeaderBytes),
-              rt::kSdsLabelKindMax);
+              static_cast<unsigned long long>(rt::kSdsHeaderBytesV3),
+              rt::kSdsFlagMasked, rt::kSdsLabelKindMax);
 
   std::printf("  \"seeu\": {\n    \"magic\": %u, \"version\": %u, "
               "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "

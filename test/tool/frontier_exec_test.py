@@ -183,7 +183,18 @@ class ReaderTest(unittest.TestCase):
              "plan label slot out of bounds"),
             (good, dict(loss_ref=fx.NULL_REF), "plan loss slot out of bounds"),
             (good, dict(loss_ref=s | 68), "plan loss slot out of bounds"),
-            (good, dict(loss_ref=70), "plan loss slot out of bounds"))
+            (good, dict(loss_ref=70), "plan loss slot out of bounds"),
+            # The data contract (v22).
+            (good, dict(version=21, tokenizer_hash=1),
+             "plan carries data-contract fields below v22"),
+            (good, dict(data_flags=8), "plan data_flags carries unknown bits"),
+            (good, dict(data_flags=4),
+             "plan header val_frac is not a finite value in its range"),
+            (good, dict(data_flags=4, val_frac_bits=0x3F800000),  # 1.0
+             "plan header val_frac is not a finite value in its range"),
+            (good, dict(split_seed=5),
+             "plan carries split fields without the split flag"),
+            (good, dict(data_flags=2), "plan pins a corpus without its hash"))
         for base, fields, message in cases:
             with self.subTest(**{k: repr(v) for k, v in fields.items()}):
                 with self.assertRaisesRegex(fx.PlanError, re.escape(message)):
@@ -875,6 +886,18 @@ class DifferentialSuite(unittest.TestCase):
         records = np.zeros((3, s + 1), "<i4")
         corpus("check_tok.sds", lambda p: em.export_token_sds(records, p)).check(
             token_plan)
+        # The tokenizer identity (v22, S2 #148): a plan bound to a section
+        # takes a corpus that names no tokenizer (SDS v1 / v2, an unbound
+        # v3) or the same one, and refuses one that names another.
+        with open(self.plans["dec_f32"][0], "rb") as f:
+            bound = fx.Plan(with_header(f.read(), tokenizer_hash=0xABCD))
+        corpus("check_tok.sds", lambda p: em.export_token_sds(records, p)).check(
+            bound)
+        corpus("check_tok_same.sds", lambda p: em.export_token_sds(
+            records, p, tokenizer_hash=0xABCD)).check(bound)
+        with self.assertRaisesRegex(fx.PlanError, "another tokenizer"):
+            corpus("check_tok_other.sds", lambda p: em.export_token_sds(
+                records, p, tokenizer_hash=0x1234)).check(bound)
         records[1, 2] = vocab
         with self.assertRaisesRegex(fx.PlanError, "token id"):
             corpus("check_tokbad.sds", lambda p: em.export_token_sds(records, p)).check(

@@ -196,6 +196,63 @@ class TokenCorpusTest(unittest.TestCase):
         want += recs.astype(np.int32).tobytes()
         self.assertEqual(got, want)
 
+    def test_v3_carries_the_tokenizer_hash_and_the_mask(self):
+        # SDS v3 (S2 #148 / S3 #149): a 24-byte header tail and, under the
+        # mask flag, u8 mask[S] padded to 4 after each record's ids.
+        recs = (np.arange(6 * 3).reshape(3, 6) % 50).astype(np.int64)
+        mask = np.ones((3, 5), dtype=np.int64)
+        mask[1, :3] = 0
+        d_ = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d_, True)
+        path = os.path.join(d_, "m.sds")
+        em.export_token_sds(recs, path, tokenizer_hash=0xABCD, mask=mask)
+        with open(path, "rb") as f:
+            got = f.read()
+        want = struct.pack("<IIQQIIQ", em.SDS_MAGIC, 3, 3, 5, 1, 1, 0)
+        want += struct.pack("<QIIQ", 0xABCD, 1, 0, 0)
+        for r in range(3):
+            want += recs[r].astype(np.int32).tobytes()
+            want += mask[r].astype(np.uint8).tobytes() + b"\x00" * 3
+        self.assertEqual(got, want)
+        # A hash alone is v3 with plain records; a record with no target
+        # is refused.
+        em.export_token_sds(recs, path, tokenizer_hash=7)
+        with open(path, "rb") as f:
+            head = f.read(64)
+        self.assertEqual(struct.unpack_from("<I", head, 4)[0], 3)
+        self.assertEqual(struct.unpack_from("<QI", head, 40), (7, 0))
+        mask[2] = 0
+        with self.assertRaisesRegex(ValueError, "record 2 carries no target"):
+            em.export_token_sds(recs, path, mask=mask)
+
+
+@unittest.skipIf(np is None, "NumPy not installed")
+class TokenizerSectionTest(unittest.TestCase):
+    def test_a_tokenizer_section_makes_the_file_v7(self):
+        # SMF v7: two u64 words after seq_len place an opaque section,
+        # 64-aligned, before the first payload; without one the version is
+        # what the ops need.
+        b = em._SmfBuilder("x", 4)
+        b.add_tensor("w", (4, 2), np.zeros((4, 2), "<f4").tobytes())
+        b.add_op(em.OP_MATMUL, "mm", ["x", "w"], "y")
+        self.assertEqual(b.version, 3)
+        b.tokenizer = bytes(range(1, 101))
+        self.assertEqual(b.version, 7)
+        blob = b.serialize()
+        self.assertEqual(struct.unpack_from("<I", blob, 4)[0], 7)
+        meta_fixed = 16 + 2 + 1 + 2 + 1 + 8  # preamble, "x", "y", seq_len
+        off, size = struct.unpack_from("<QQ", blob, meta_fixed)
+        self.assertEqual(size, 100)
+        self.assertEqual(off % 64, 0)
+        self.assertEqual(blob[off:off + 100], b.tokenizer)
+        # The tensor table: x (name "x", rank 2, flags, two dims, offset,
+        # size) then w up to its data offset.
+        x_record = 2 + 1 + 1 + 1 + 16 + 8 + 8
+        w_to_offset = 2 + 1 + 1 + 1 + 16
+        w_off = struct.unpack_from("<Q", blob,
+                                   meta_fixed + 16 + x_record + w_to_offset)[0]
+        self.assertGreaterEqual(w_off, off + 100)
+
 
 @unittest.skipIf(np is None, "NumPy not installed")
 class ContainerTest(unittest.TestCase):
@@ -229,7 +286,7 @@ class ContainerTest(unittest.TestCase):
             self.assertEqual(struct.unpack_from("<II", got)[1], version)
             # Every tensor lands 64-byte aligned and the file is padded.
             self.assertEqual(len(got) % em.ALIGN, 0)
-            _, offsets, total = b._layout()
+            _, offsets, total, _ = b._layout()
             self.assertEqual(total, len(got))
             self.assertTrue(all(o % em.ALIGN == 0 for o in offsets.values()))
 

@@ -47,6 +47,8 @@ compile compiler/frontend/ingressor/model_reader.cc model_reader.o
 compile compiler/frontend/egressor/model_writer.cc model_writer.o
 compile compiler/frontend/accountant/resource_analyzer.cc resource_analyzer.o
 compile source/parallel/parallel_for.cc       parallel_for.o
+compile source/tokenizer/byte_level_bpe.cc    tokenizer_bpe.o
+compile source/tokenizer/text_ingest.cc       tokenizer_ingest.o
 compile compiler/frontend/computation/value_resolver.cc value_resolver.o
 compile compiler/frontend/topology/sema.cc      sema.o
 compile compiler/frontend/computation/parser.cc    parser.o
@@ -122,6 +124,7 @@ compile tool/seeml_update_compile.cc          seeml_update_compile.o
 compile tool/seeml_seeu_dump.cc               seeml_seeu_dump.o
 compile tool/seeml_plan_probe.cc              seeml_plan_probe.o
 compile tool/seeml_abi.cc                     seeml_abi.o
+compile tool/seeml_tokenize.cc                seeml_tokenize.o
 compile test/framework/registry.cc            seetest_registry.o
 compile test/framework/seetest_main.cc        seetest_main.o
 compile test/support/scoped_temp_dir.cc       scoped_temp_dir.o
@@ -154,7 +157,7 @@ LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
       build/dataset.o \
       build/batch_pipeline.o build/durable_io.o build/plan_validator.o \
       build/checkpoint.o build/engine_contract.o build/update_engine.o \
-      build/parallel_for.o"
+      build/parallel_for.o build/tokenizer_bpe.o build/tokenizer_ingest.o"
 TESTING="build/seetest_registry.o build/seetest_main.o \
          build/scoped_temp_dir.o build/fixtures_models.o \
          build/fixtures_corpora.o build/fixtures_probes.o"
@@ -167,6 +170,10 @@ eval "$CXX -pthread build/seeml_seeu_dump.o build/parallel_for.o -o build/seeml-
 echo "  LINK seeml-abi"
 # The ABI manifest generator (tool/seeml/abi.json, P6): header-only inputs.
 eval "$CXX -pthread build/seeml_abi.o -o build/seeml-abi"
+echo "  LINK seeml-tokenize"
+# The core's tokenizer over an SMF model's section (S2 #148): the parity
+# harness and the frontend's data path call the same encoder.
+eval "$CXX -pthread build/seeml_tokenize.o build/tokenizer_bpe.o build/model_format.o build/model_reader.o build/parallel_for.o build/logger.o -o build/seeml-tokenize"
 echo "  LINK seeml-plan-probe"
 # The frontier executor's C++ oracle (tool/frontier_exec.py, P4): one plan
 # section through one executor backend, every write traced.
@@ -182,7 +189,8 @@ fi
 
 for suite in \
     source/identity/hash_test source/parallel/parallel_for_test \
-    source/statistics/screen_test \
+    source/statistics/screen_test source/tokenizer/bpe_test \
+    source/tokenizer/ingest_test \
     compiler/frontend/model_io_test compiler/frontend/golden_fixture_test \
     compiler/frontend/resource_analyzer_test \
     compiler/frontend/sir_test compiler/frontend/operator_test \

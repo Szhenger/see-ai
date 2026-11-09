@@ -139,6 +139,9 @@ int DumpJson(const std::vector<uint8_t>& plan, const PlanHeader& h,
   U(source_model_hash); U(plan_hash); U(lr_schedule); U(gemm_tile_n);
   U(warmup_steps); U(input_kind); U(grad_accum_steps); U(seq_len);
   U(step_instr_offset); U(step_instr_count);
+  // v22: the data contract — zero below v22, proven so by the contract.
+  U(tokenizer_hash); U(corpus_hash); U(split_seed); U(val_split_hash);
+  U(val_frac_bits); U(data_flags);
   // Floats travel as their f32 bit patterns: exact, and free of any
   // decimal round trip a reader would have to reproduce.
   F(lr); F(beta1); F(beta2); F(eps); F(weight_decay); F(min_lr_factor);

@@ -69,7 +69,7 @@ class Layout:
 # --- SMF: the model container (source/language/model_format.h) ---------------
 
 SMF_MAGIC = 0x31464D53  # "SMF1"
-SMF_VERSION = 6         # v6: per-op attr2 (norm epsilon as f32 bits) after attr1
+SMF_VERSION = 7         # v7: the tokenizer section (offset, size after seq_len)
 SMF_MIN_VERSION = 1
 SMF_DEFAULT_ROPE_BASE = 10000.0  # what attr1 == 0 means on a Rope op
 SMF_DEFAULT_NORM_EPS = 1e-5  # what attr2 == 0 means on a LayerNorm / RmsNorm
@@ -85,19 +85,43 @@ SMF_PREAMBLE = Layout("SmfPreamble", [
 # --- SDS: the corpus container (runtime/pipeline/dataset.h) --------------------
 
 SDS_MAGIC = 0x31534453  # "SDS1"
-SDS_VERSION = 2         # v2: token records (input_kind 1)
+SDS_VERSION = 3         # v3: tokenizer hash + flags (a per-position loss mask)
 SDS_MIN_VERSION = 1
 SDS_LABEL_KIND_MAX = 2  # 0 none, 1 class index (i32), 2 float vector
 SDS_HEADER = Layout("SdsHeader", [
     ("magic", "I"), ("version", "I"), ("num_samples", "Q"),
     ("input_dim", "Q"), ("label_kind", "I"), ("input_kind", "I"),
     ("label_dim", "Q")])
-SDS_HEADER_BYTES = SDS_HEADER.size
+SDS_HEADER_BYTES = SDS_HEADER.size  # v1 / v2
+# v3 appends: the tokenizer identity the records were encoded by, flags
+# (bit 0 = every token record carries a u8 mask[S], padded to 4 bytes,
+# naming the positions the loss counts), two reserved words that must be 0.
+SDS_HEADER_V3_TAIL = Layout("SdsHeaderV3Tail", [
+    ("tokenizer_hash", "Q"), ("flags", "I"), ("reserved0", "I"),
+    ("reserved1", "Q")])
+SDS_HEADER_BYTES_V3 = SDS_HEADER.size + SDS_HEADER_V3_TAIL.size
+SDS_FLAG_MASKED = 1
+
+
+def sds_header_bytes(version: int) -> int:
+    """The header length of an SDS file of `version` (v3 grew it)."""
+    return SDS_HEADER_BYTES_V3 if version >= 3 else SDS_HEADER_BYTES
+
+
+def sds_mask_bytes(seq_len: int) -> int:
+    """Bytes of a masked token record's u8 mask[S], padded to 4."""
+    return (seq_len + 3) & ~3
 
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 21
+SEEU_VERSION = 22
+SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
+# PlanHeader.data_flags (v22).
+DATA_FLAG_MASKED_LOSS = 1
+DATA_FLAG_CORPUS_PINNED = 2
+DATA_FLAG_SPLIT = 4
+DATA_FLAGS_MASK = 7
 SEEU_OLDEST_READABLE = 4
 RODATA_BIT = 1 << 63
 # v17: the source model file (E12), the eval program only; v21: every
@@ -133,7 +157,10 @@ PLAN_HEADER = Layout("PlanHeader", [
     ("min_lr_factor", "f"), ("clip_norm", "f"),
     ("input_kind", "I"), ("grad_accum_steps", "I"),
     ("seq_len", "Q"),
-    ("step_instr_offset", "Q"), ("step_instr_count", "Q")])
+    ("step_instr_offset", "Q"), ("step_instr_count", "Q"),
+    # v22: the data contract (zero below v22).
+    ("tokenizer_hash", "Q"), ("corpus_hash", "Q"), ("split_seed", "Q"),
+    ("val_split_hash", "Q"), ("val_frac_bits", "I"), ("data_flags", "I")])
 
 # `imm` is an opcode-defined immediate — the normalization forwards'
 # epsilon bits (v16), the three f32 GEMMs' alpha bits (v19; 0 = 1.0), zero
@@ -319,6 +346,8 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
     same("sds.version", SDS_VERSION, sds["version"])
     same("sds.min_version", SDS_MIN_VERSION, sds["min_version"])
     same("sds.header_bytes", SDS_HEADER_BYTES, sds["header_bytes"])
+    same("sds.header_bytes_v3", SDS_HEADER_BYTES_V3, sds["header_bytes_v3"])
+    same("sds.flag_masked", SDS_FLAG_MASKED, sds["flag_masked"])
     same("sds.label_kind_max", SDS_LABEL_KIND_MAX, sds["label_kind_max"])
     same("seeu.magic", SEEU_MAGIC, seeu["magic"])
     same("seeu.version", SEEU_VERSION, seeu["version"])

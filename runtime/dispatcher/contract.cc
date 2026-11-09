@@ -196,7 +196,8 @@ std::expected<void, std::string> VerifyFeederContract(
   // value half reads the records.
   const up::CorpusShape shape{data.input_kind(), data.input_dim(),
                               data.label_kind(),
-                              data.label_bytes_per_sample()};
+                              data.label_bytes_per_sample(),
+                              data.tokenizer_hash(), data.masked()};
   if (auto why = up::CorpusGeometryViolation(header, shape))
     return diag::executing::Error(*why);
   if (header.input_kind == 1) {

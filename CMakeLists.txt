@@ -87,6 +87,14 @@ add_library(seeml_sir STATIC
 # passes), back end (arena binding, lowering, plan assembly, native packaging).
 # ==============================================================================
 
+# The core's tokenizer (S2 #148): byte-level BPE over the SMF tokenizer
+# section. Standard library only; vendored into every package, so both the
+# compiler's data path and the device's pipeline run the one encoder.
+add_library(seeml_tokenizer STATIC
+    source/tokenizer/byte_level_bpe.cc
+    source/tokenizer/text_ingest.cc
+)
+
 add_library(seeml_update STATIC
     source/language/model_format.cc
     compiler/frontend/ingressor/model_reader.cc
@@ -119,7 +127,7 @@ add_library(seeml_update STATIC
     compiler/driver/statistics.cc
     compiler/backend/packaging/native_emitter.cc
 )
-target_link_libraries(seeml_update PUBLIC seeml_sir seeml_parallel)
+target_link_libraries(seeml_update PUBLIC seeml_sir seeml_parallel seeml_tokenizer)
 
 # ==============================================================================
 # Target 3: The Update Runtime (seeml_update_rt)
@@ -193,6 +201,12 @@ target_link_libraries(seeml-seeu-dump PRIVATE seeml_parallel)
 # regenerated-and-diffed in CI.
 add_executable(seeml-abi tool/seeml_abi.cc)
 
+# The core's tokenizer over an SMF model's section (S2 #148): ids for a
+# text file, the section's summary; the parity harness
+# (tool/export_model.py --tokenizer-parity) holds it to the reference.
+add_executable(seeml-tokenize tool/seeml_tokenize.cc)
+target_link_libraries(seeml-tokenize PRIVATE seeml_update)
+
 # The frontier executor's C++ oracle (tool/frontier_exec.py, P4 #78): runs
 # one plan section through one executor backend and traces every write.
 add_executable(seeml-plan-probe tool/seeml_plan_probe.cc)
@@ -245,6 +259,8 @@ endfunction()
 seeml_add_test(seeml_hash_test              test/source/identity/hash_test.cc)
 seeml_add_test(seeml_parallel_for_test      test/source/parallel/parallel_for_test.cc)
 seeml_add_test(seeml_screen_test            test/source/statistics/screen_test.cc)
+seeml_add_test(seeml_bpe_test               test/source/tokenizer/bpe_test.cc)
+seeml_add_test(seeml_ingest_test            test/source/tokenizer/ingest_test.cc)
 seeml_add_test(seeml_screens_test           test/compiler/driver/screens_test.cc)
 seeml_add_test(seeml_model_io_test          test/compiler/frontend/model_io_test.cc)
 seeml_add_test(seeml_golden_fixture_test    test/compiler/frontend/golden_fixture_test.cc)

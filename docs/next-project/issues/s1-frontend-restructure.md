@@ -78,13 +78,19 @@ topology, accountant}`, and the frontend screen renders the three:
 adapted weights, where the frozen weights live, `bound ÷ exact`, and
 under `--verbose` every frozen tensor with its payload and value range.
 Verified: all 29 C++ suites and the 183 Python tests; the plan content
-(instructions, rodata, persistent image, emit table — the whole plan, the
-header included) is byte-identical to main a72a6ec on 14 fixture compiles
-(the demo MLP under xent / int8 + grad-accum / mse / kl / xent+kl, the
-demo decoder under xent / int8 / bf16 / tiled / remat / adapter-only /
-relaxed / targets, and `dec_wide`); the goldens and the ABI manifest
-carry the new rows. Not here: the tokenizer-vocab == embedding-rows ==
-head-width rule waits on the SMF tokenizer section (S2).
+is byte-identical to main a72a6ec on 14 fixture compiles (the demo MLP
+under xent / int8 + grad-accum / mse / kl / xent+kl, the demo decoder
+under xent / int8 / bf16 / tiled / remat / adapter-only / relaxed /
+targets, and `dec_wide`) — the harness compares `seeml-seeu-dump --json`
+with the header's `version` and `plan_hash` masked, and in this step
+those two were unchanged as well, so every plan hash is main's. The
+goldens and the ABI manifest carry the new rows; one row moved: `bound_ratio`
+is a frontend row now (it was the backend's), so a reader of `--report`
+finds it under `screens.frontend` — the manifest records the move. Not
+here: the tokenizer-vocab == embedding-rows == head-width rule waits on
+the SMF tokenizer section (S2). A layering note for S5: `sema.h` takes
+`LossKind` from `source/plan/config.h` for the loss↔input rule, so the
+frontend's topology now names a plan-layer enum.
 
 ## Acceptance
 

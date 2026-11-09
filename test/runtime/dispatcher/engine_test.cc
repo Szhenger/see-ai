@@ -14,6 +14,7 @@
 
 #include "compiler/driver/update_compiler.h"
 #include "runtime/dispatcher/contract.h"
+#include "source/contract/plan_contract.h"
 #include "runtime/dispatcher/update_engine.h"
 #include "source/identity/hash.h"
 #include "source/plan/update_types.h"
@@ -218,6 +219,86 @@ TEST(EngineContract, PlanContractProvesTheGemmTileFields) {
                         "GEMM tile fields below v11");
   header.gemm_tile_n = 0;
   EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+}
+
+TEST(EngineContract, PlanContractProvesTheDataContractWords) {
+  // v22 (S2 #148 / S3 #149): the forty bytes past the v21 header are the
+  // data contract — zero below v22, no unknown flag, a split only with a
+  // fraction in (0, 1) and split fields only under the flag, a pin only
+  // with its hash.
+  namespace up = seeml::update;
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.batch = 4;
+  header.input_floats = 16;
+  header.arena_size = 4096;
+  header.input_ref = up::MakeArenaRef(0);
+  header.loss_ref = up::MakeArenaRef(256);
+  constexpr uint64_t kPlanSize = 65536;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+  header.tokenizer_hash = 0x1234;
+  header.corpus_hash = 0x5678;
+  header.data_flags = up::kDataFlagCorpusPinned | up::kDataFlagSplit;
+  header.split_seed = 7;
+  header.val_frac_bits = std::bit_cast<uint32_t>(0.1f);
+  header.val_split_hash = 99;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+  header.version = up::kSeeuDataContractVersion - 1;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "data-contract fields below v22");
+  header.version = up::kSeeuVersion;
+  header.data_flags |= 1u << 7;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "unknown bits");
+  header.data_flags = up::kDataFlagCorpusPinned | up::kDataFlagSplit;
+  header.val_frac_bits = std::bit_cast<uint32_t>(1.0f);
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "val_frac is not a finite value in its range");
+  header.val_frac_bits = std::bit_cast<uint32_t>(0.1f);
+  header.data_flags = up::kDataFlagCorpusPinned;  // split fields, no flag
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "split fields without the split flag");
+  header.split_seed = 0;
+  header.val_frac_bits = 0;
+  header.val_split_hash = 0;
+  header.corpus_hash = 0;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "pins a corpus without its hash");
+  header.data_flags = 0;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+}
+
+TEST(EngineContract, FeederContractBindsTheTokenizerAndTheMask) {
+  // A plan bound to a tokenizer runs only on a corpus encoded by it; a
+  // masked corpus needs a plan that takes the mask, and the reverse.
+  namespace up = seeml::update;
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.input_kind = 1;
+  header.seq_len = 4;
+  header.batch = 8;
+  header.input_floats = 8;
+  header.label_kind = 1;
+  header.label_bytes = 32;
+  up::CorpusShape corpus{1, 4, 1, 16, 0, false};
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  // A corpus that names no tokenizer makes no claim; one that names
+  // another is refused; the same one passes.
+  header.tokenizer_hash = 0xABCD;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  corpus.tokenizer_hash = 0x1234;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "another tokenizer");
+  corpus.tokenizer_hash = 0xABCD;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  corpus.masked = true;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "carries a loss mask");
+  header.data_flags = up::kDataFlagMaskedLoss;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  corpus.masked = false;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "loss mask the dataset does not carry");
 }
 
 TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {

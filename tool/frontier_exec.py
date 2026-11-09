@@ -251,6 +251,24 @@ def header_violation(h, plan_size):
         return "plan label slot out of bounds"
     if not slot_ok(h.loss_ref, 4):
         return "plan loss slot out of bounds"
+    # The data contract (v22, kSeeuDataContractVersion): zero below it;
+    # no unknown flag; a split carries a finite fraction in (0, 1) and only
+    # a split carries split fields; a pinned corpus names its hash.
+    tail = (h.tokenizer_hash or h.corpus_hash or h.split_seed or
+            h.val_split_hash or h.val_frac_bits or h.data_flags)
+    if h.version < formats.SEEU_DATA_CONTRACT_VERSION and tail:
+        return ("plan carries data-contract fields below "
+                f"v{formats.SEEU_DATA_CONTRACT_VERSION}")
+    if h.data_flags & ~formats.DATA_FLAGS_MASK:
+        return "plan data_flags carries unknown bits"
+    if h.data_flags & formats.DATA_FLAG_SPLIT:
+        frac = struct.unpack("<f", struct.pack("<I", h.val_frac_bits))[0]
+        if not (math.isfinite(frac) and 0.0 < frac < 1.0):
+            return "plan header val_frac is not a finite value in its range"
+    elif h.val_frac_bits or h.split_seed or h.val_split_hash:
+        return "plan carries split fields without the split flag"
+    if h.data_flags & formats.DATA_FLAG_CORPUS_PINNED and not h.corpus_hash:
+        return "plan pins a corpus without its hash"
     return None
 
 
@@ -509,28 +527,68 @@ class Corpus:
          self.input_kind, self.label_dim) = formats.SDS_HEADER.unpack_from(raw)
         if magic != SDS_MAGIC or not (
                 formats.SDS_MIN_VERSION <= version <= formats.SDS_VERSION):
-            raise PlanError(f"{path}: not an SDS v1/v2 corpus")
+            raise PlanError(f"{path}: not an SDS v1/v2/v3 corpus")
+        # v3 (S2 #148 / S3 #149): the tokenizer identity and the flags —
+        # a per-position loss mask on token records — mirroring
+        # Dataset::LoadFromFile's rules in its words.
+        head = formats.sds_header_bytes(version)
+        self.tokenizer_hash, flags = 0, 0
+        if version >= 3:
+            if len(raw) < head:
+                raise PlanError(f"{path}: truncated (no SDS v3 header)")
+            (self.tokenizer_hash, flags, reserved0,
+             reserved1) = formats.SDS_HEADER_V3_TAIL.unpack_from(raw, _SDS_HEAD)
+            if reserved0 or reserved1:
+                raise PlanError(f"{path}: reserved SDS header words are not "
+                                "zero")
+            if flags & ~formats.SDS_FLAG_MASKED:
+                raise PlanError(f"{path}: unknown SDS flags")
+            if flags & formats.SDS_FLAG_MASKED and self.input_kind != 1:
+                raise PlanError(f"{path}: a loss mask needs token records")
+        self.masked = bool(flags & formats.SDS_FLAG_MASKED)
         n, d = self.num_samples, self.input_dim
         if self.input_kind == 1:
-            self.record = (d + 1) * 4
-            if len(raw) - _SDS_HEAD < n * self.record:
+            mask_bytes = formats.sds_mask_bytes(d) if self.masked else 0
+            self.record = (d + 1) * 4 + mask_bytes
+            if len(raw) - head < n * self.record:
                 raise PlanError(f"{path}: truncated records")
-            self.tokens = np.frombuffer(raw, "<i4", n * (d + 1),
-                                        _SDS_HEAD).reshape(
-                n, d + 1)
+            if len(raw) - head != n * self.record:
+                raise PlanError(f"{path}: dataset payload does not fill the "
+                                f"file: {len(raw) - head - n * self.record} "
+                                "trailing byte(s)")
+            rows = np.frombuffer(raw, np.uint8, n * self.record,
+                                 head).reshape(n, self.record)
+            self.tokens = np.ascontiguousarray(
+                rows[:, :(d + 1) * 4]).view("<i4").reshape(n, d + 1)
+            if self.masked:
+                self.mask = np.ascontiguousarray(
+                    rows[:, (d + 1) * 4:(d + 1) * 4 + d])
+                if not np.isin(self.mask, (0, 1)).all():
+                    raise PlanError(f"{path}: a loss mask byte is not 0 or 1")
+                if not self.mask.any(axis=1).all():
+                    bad = int(np.flatnonzero(~self.mask.any(axis=1))[0])
+                    raise PlanError(f"{path}: record {bad} carries no target "
+                                    "position")
+            else:
+                self.mask = None
         else:
             self.label_nbytes = {0: 0, 1: 4, 2: 4 * self.label_dim}.get(
                 self.label_kind)
             if self.label_nbytes is None:
                 raise PlanError(f"{path}: unknown label kind")
             self.record = d * 4 + self.label_nbytes
-            if len(raw) - _SDS_HEAD < n * self.record:
+            if len(raw) - head < n * self.record:
                 raise PlanError(f"{path}: truncated records")
+            if len(raw) - head != n * self.record:
+                raise PlanError(f"{path}: dataset payload does not fill the "
+                                f"file: {len(raw) - head - n * self.record} "
+                                "trailing byte(s)")
             rows = np.frombuffer(raw, np.uint8, n * self.record,
-                                 _SDS_HEAD).reshape(
+                                 head).reshape(
                 n, self.record)
             self.inputs = np.ascontiguousarray(rows[:, :d * 4])
             self.labels = np.ascontiguousarray(rows[:, d * 4:])
+            self.mask = None
         self.order, self.cursor, self.state = None, 0, 0
 
     def _view(self, lo, hi):
@@ -539,6 +597,8 @@ class Corpus:
         other.num_samples = hi - lo
         if self.input_kind == 1:
             other.tokens = self.tokens[lo:hi]
+            if self.mask is not None:
+                other.mask = self.mask[lo:hi]
         else:
             other.inputs, other.labels = self.inputs[lo:hi], self.labels[lo:hi]
         other.order, other.cursor = None, 0
@@ -579,8 +639,14 @@ class Corpus:
         if self.input_kind == 1:
             ids = [self._next() for _ in range(plan.batch // self.input_dim)]
             recs = self.tokens[ids]
+            labels = np.ascontiguousarray(recs[:, 1:])
+            if self.mask is not None:
+                # A masked position stages the label -1, which the masked
+                # cross-entropy ignores (Dataset::FillBatch).
+                labels = np.where(self.mask[ids] != 0, labels,
+                                  np.int32(-1)).astype("<i4")
             return (np.ascontiguousarray(recs[:, :-1]).tobytes(),
-                    np.ascontiguousarray(recs[:, 1:]).tobytes())
+                    labels.tobytes())
         ids = [self._next() for _ in range(plan.batch)]
         return self.inputs[ids].tobytes(), self.labels[ids].tobytes()
 
@@ -592,6 +658,19 @@ class Corpus:
         that width, as next-token labels). The C++ feeder refuses before a
         step; so does this side, before a diff that would blame a kernel
         for what the corpus did."""
+        # The tokenizer identity and the loss mask (v22) come first, as in
+        # CorpusGeometryViolation.
+        if (plan.tokenizer_hash and self.tokenizer_hash and
+                self.tokenizer_hash != plan.tokenizer_hash):
+            raise PlanError("the dataset was tokenized by another tokenizer "
+                            "than the plan's model (tokenizer hash mismatch)")
+        plan_masked = bool(plan.data_flags & formats.DATA_FLAG_MASKED_LOSS)
+        if self.masked and not plan_masked:
+            raise PlanError("the dataset carries a loss mask, but the "
+                            "compiled plan takes every position as a target")
+        if plan_masked and not self.masked:
+            raise PlanError("the compiled plan takes a loss mask the dataset "
+                            "does not carry")
         if plan.input_kind == 1:
             if self.input_kind != 1:
                 raise PlanError("the compiled plan takes token ids, but the "

@@ -50,10 +50,11 @@ class ManifestAgreement(unittest.TestCase):
         self.assertEqual(formats.check_against(formats.load_abi()), [])
 
     def test_the_known_sizes(self):
-        self.assertEqual(formats.PLAN_HEADER.size, 280)
+        self.assertEqual(formats.PLAN_HEADER.size, 320)  # v22: 280 + the data contract
         self.assertEqual(formats.INSTRUCTION.size, 64)
         self.assertEqual(formats.EMIT_ENTRY.size, 24)
         self.assertEqual(formats.SDS_HEADER.size, 40)
+        self.assertEqual(formats.SDS_HEADER_BYTES_V3, 64)
         self.assertEqual(formats.CKPT_HEADER.size, 40)
 
     def test_every_kind_of_drift_is_named(self):

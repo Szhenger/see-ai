@@ -2,12 +2,12 @@
   "schema": 1,
   "generator": "tool/seeml_abi.cc",
   "smf": {
-    "magic": 826690899, "version": 6, "min_version": 1, "default_rope_base": 10000,
+    "magic": 826690899, "version": 7, "min_version": 1, "default_rope_base": 10000,
     "op_kinds": {"matmul": 0, "add_bias": 1, "relu": 2, "gelu": 3, "silu": 4, "mul": 5, "layer_norm": 6, "add": 7, "rms_norm": 8, "rope": 9, "attention": 10, "embedding": 11}
   },
-  "sds": {"magic": 827540563, "version": 2, "min_version": 1, "header_bytes": 40, "label_kind_max": 2},
+  "sds": {"magic": 827540563, "version": 3, "min_version": 1, "header_bytes": 40, "header_bytes_v3": 64, "flag_masked": 1, "label_kind_max": 2},
   "seeu": {
-    "magic": 1430603091, "version": 21, "oldest_readable": 4,
+    "magic": 1430603091, "version": 22, "oldest_readable": 4,
     "rodata_bit": 63, "source_bit": 62, "rodata_alignment": 16384, "rodata_offset_alignment": 16, "gemm_panel_floats": 8192,
     "flags": {"epilogue_bias": 1, "epilogue_act_shift": 1, "epilogue_act_mask": 6, "gemm_addend": 8, "q8_col_scale": 16, "relaxed": 32},
     "kl_temperature_bits": {"min": 981668463, "max": 1148846080},
@@ -15,7 +15,7 @@
     "fused_stage": {"kind_mask": 15, "arg_shift": 4, "arg_mask": 3, "run_is_right": 128, "max_stages": 4},
     "opcodes": {"nop": 0, "gemm.nn": 1, "gemm.nt": 2, "gemm.tn": 3, "gemm.acc_nn": 4, "add.ew": 5, "add.bias": 6, "relu.fwd": 7, "relu.bwd": 8, "scale": 9, "reduce.rows": 10, "softmax_xent.fwd": 11, "softmax_xent.bwd": 12, "mse.fwd": 13, "mse.bwd": 14, "kl_distill.fwd": 15, "kl_distill.bwd": 16, "sgd.step": 17, "adamw.step": 18, "fill": 19, "copy": 20, "mul.ew": 21, "gelu.fwd": 22, "gelu.bwd": 23, "silu.fwd": 24, "silu.bwd": 25, "layer_norm.fwd": 26, "layer_norm.bwd": 27, "clip.norm": 28, "gemm.nn.q8": 29, "gemm.nt.q8": 30, "rms_norm.fwd": 31, "rms_norm.bwd": 32, "rope.fwd": 33, "rope.bwd": 34, "attn.fwd": 35, "attn.dp": 36, "attn.dv": 37, "softmax_rows.bwd": 38, "attn.dq": 39, "attn.dk": 40, "embed.fwd": 41, "accumulate": 42, "gemm.nn.bf16": 43, "gemm.nt.bf16": 44, "rope.table": 45, "fused.map": 46, "attn.fwd.tiled": 47, "attn.dq.tiled": 48, "attn.dk.tiled": 49, "attn.dv.tiled": 50},
     "structs": {
-      "PlanHeader": {"size": 280, "fields": [
+      "PlanHeader": {"size": 320, "fields": [
         {"name": "magic", "offset": 0, "size": 4},
         {"name": "version", "offset": 4, "size": 4},
         {"name": "arena_size", "offset": 8, "size": 8},
@@ -58,7 +58,13 @@
         {"name": "grad_accum_steps", "offset": 252, "size": 4},
         {"name": "seq_len", "offset": 256, "size": 8},
         {"name": "step_instr_offset", "offset": 264, "size": 8},
-        {"name": "step_instr_count", "offset": 272, "size": 8}
+        {"name": "step_instr_count", "offset": 272, "size": 8},
+        {"name": "tokenizer_hash", "offset": 280, "size": 8},
+        {"name": "corpus_hash", "offset": 288, "size": 8},
+        {"name": "split_seed", "offset": 296, "size": 8},
+        {"name": "val_split_hash", "offset": 304, "size": 8},
+        {"name": "val_frac_bits", "offset": 312, "size": 4},
+        {"name": "data_flags", "offset": 316, "size": 4}
       ]},
       "UpdateInstruction": {"size": 64, "fields": [
         {"name": "opcode", "offset": 0, "size": 2},

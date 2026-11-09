@@ -170,6 +170,17 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
   model.input_name = r.ReadStr();
   model.output_name = r.ReadStr();
   if (version >= 3) model.seq_len = r.Read<uint64_t>();
+  // v7: the tokenizer section's placement; proven like a payload below.
+  uint64_t tokenizer_offset = 0, tokenizer_size = 0;
+  if (version >= 7) {
+    tokenizer_offset = r.Read<uint64_t>();
+    tokenizer_size = r.Read<uint64_t>();
+    if (!r.ok) return tokenizing::FileError("truncated file", path);
+    if (tokenizer_offset > bytes.size() ||
+        tokenizer_size > bytes.size() - tokenizer_offset)
+      return tokenizing::FileError("tokenizer section exceeds file size in",
+                                   path);
+  }
   // Counts are validated implicitly by the bounded Reader; reserving to the
   // declared sizes (capped against what the file could physically contain,
   // so a hostile header cannot demand gigabytes) avoids re-growth during the
@@ -306,28 +317,48 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
   // one range: the emit table patches each tensor at its own offset.
   {
     const uint64_t metadata_end = r.pos;
-    std::vector<size_t> by_offset = const_tensors;
-    std::sort(by_offset.begin(), by_offset.end(), [&](size_t a, size_t b) {
-      return model.tensors[a].data_offset < model.tensors[b].data_offset;
-    });
-    uint64_t prev_end = 0;
-    const SmfTensor* prev = nullptr;
-    for (size_t idx : by_offset) {
+    struct Range {
+      uint64_t offset, size;
+      std::string_view name;  // a tensor's, or the tokenizer section's
+      bool tensor;
+    };
+    std::vector<Range> ranges;
+    ranges.reserve(const_tensors.size() + 1);
+    for (size_t idx : const_tensors) {
       const SmfTensor& t = model.tensors[idx];
-      if (t.data_offset % kSmfPayloadAlignment != 0)
-        return tokenizing::TensorError(
-            t.name, "payload is not " + std::to_string(kSmfPayloadAlignment) +
-                        "-byte aligned");
-      if (t.data_offset < metadata_end)
-        return tokenizing::TensorError(
-            t.name, "payload overlaps the file's metadata");
-      if (prev && t.data_offset < prev_end)
-        return tokenizing::TensorError(
-            t.name, "payload overlaps tensor '" + prev->name + "'");
-      prev = &t;
-      prev_end = t.data_offset + t.byte_size;  // in-file: cannot overflow
+      ranges.push_back({t.data_offset, t.byte_size, t.name, true});
+    }
+    if (tokenizer_size != 0)
+      ranges.push_back({tokenizer_offset, tokenizer_size,
+                        "the tokenizer section", false});
+    std::sort(ranges.begin(), ranges.end(),
+              [](const Range& a, const Range& b) { return a.offset < b.offset; });
+    auto refuse = [&](const Range& x, const std::string& what) {
+      return x.tensor ? tokenizing::TensorError(x.name, what)
+                      : tokenizing::Error(std::string(x.name) + " " + what +
+                                          " in '" + path + "'");
+    };
+    uint64_t prev_end = 0;
+    const Range* prev = nullptr;
+    for (const Range& x : ranges) {
+      if (x.offset % kSmfPayloadAlignment != 0)
+        return refuse(x, "payload is not " +
+                             std::to_string(kSmfPayloadAlignment) +
+                             "-byte aligned");
+      if (x.offset < metadata_end)
+        return refuse(x, "payload overlaps the file's metadata");
+      if (prev && x.offset < prev_end)
+        return refuse(x, prev->tensor
+                             ? "payload overlaps tensor '" +
+                                   std::string(prev->name) + "'"
+                             : "payload overlaps the tokenizer section");
+      prev = &x;
+      prev_end = x.offset + x.size;  // in-file: cannot overflow
     }
   }
+  if (tokenizer_size != 0)
+    model.tokenizer.assign(bytes.data() + tokenizer_offset,
+                           bytes.data() + tokenizer_offset + tokenizer_size);
 
   // Materialize the validated constant payloads. The copy is partitioned
   // over the payload BYTES, not the tensor list (E2, #81): a model is

@@ -1272,6 +1272,46 @@ TEST(UpdateCompiler, TopologyRefusesWhatTheReviewFoundMissing) {
   }
 }
 
+TEST(UpdateCompiler, TheTokenizerSectionMustMatchTheEmbeddingAndTheHead) {
+  // S1 / S2: an SMF v7 tokenizer section's vocabulary is the id space the
+  // corpus carries — the embedding table's rows and the head's width.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  auto section_with_vocab = [](uint32_t v) {
+    // The SMTK head alone (kSmtkHeadBytes): magic, version 1, kind 1,
+    // pre-tokenizer 1, flags 0, vocab, 0 merges, 0 special, -1 x 4, no
+    // template. Topology reads the head; the encoder is not instantiated.
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t x) {
+      for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
+    };
+    u32(0x4B544D53); u32(1); u32(1); u32(1); u32(0); u32(v); u32(0); u32(0);
+    u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu);
+    u32(0);
+    return b;
+  };
+  model.tokenizer = section_with_vocab(16);
+  auto bound = UpdateCompiler(BaseConfig(batch)).Compile(model);
+  ASSERT_OK(bound);
+  // The plan is bound to the section: its header carries the hash the
+  // corpus must name (v22), and a model without a section binds to none.
+  EXPECT_EQ(HeaderOf(*bound).tokenizer_hash, model.TokenizerHash());
+  EXPECT_NE(HeaderOf(*bound).tokenizer_hash, 0u);
+  model.tokenizer.clear();
+  auto unbound = UpdateCompiler(BaseConfig(batch)).Compile(model);
+  ASSERT_OK(unbound);
+  EXPECT_EQ(HeaderOf(*unbound).tokenizer_hash, 0u);
+  model.tokenizer = section_with_vocab(17);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(batch)).Compile(model),
+                        "vocabulary (17 tokens) is not the embedding table's "
+                        "rows (16)");
+  SmfModel mlp = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  mlp.tokenizer = section_with_vocab(static_cast<uint32_t>(kOutDim));
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(mlp),
+                        "takes feature rows, not token ids");
+}
+
 TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {
   // CR1 #142 F12 / F34: a NaN weight passed the quantization review (max
   // skips NaN) and reached the int8 pack's cast — undefined behavior. The

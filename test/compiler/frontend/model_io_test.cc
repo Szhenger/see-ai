@@ -196,13 +196,14 @@ TEST(Smf, SaveLoadRoundTripsV5RopeBase) {
     }
   }
   EXPECT_EQ(rope_ops, 2u);
-  // The writer stamps the current version.
+  // The writer stamps the lowest version that carries the model: v6 for a
+  // model without a tokenizer section (v7 only with one, SMF v7).
   std::ifstream f(path, std::ios::binary);
   uint32_t magic = 0, version = 0;
   f.read(reinterpret_cast<char*>(&magic), sizeof(magic));
   f.read(reinterpret_cast<char*>(&version), sizeof(version));
   EXPECT_EQ(magic, kSmfMagic);
-  EXPECT_EQ(version, kSmfVersion);
+  EXPECT_EQ(version, 6u);
   EXPECT_EQ(version, 6u);
 }
 
@@ -447,6 +448,51 @@ TEST(Smf, TheSweepRefusesNonFiniteWeightsAndReportsRanges) {
   ASSERT_FALSE(refused.has_value());
   EXPECT_STR_CONTAINS(refused.error(), "teacher tensor '" + w->name + "'");
   EXPECT_STR_CONTAINS(refused.error(), "element 2");
+}
+
+TEST(Smf, TheTokenizerSectionRoundTripsAsV7) {
+  // SMF v7 (S2 #148): an opaque tokenizer section placed like a payload;
+  // its hash is the tokenizer identity. A model without one is still the
+  // v6 file it always was.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(4, 8, 2, 5);
+  const std::string plain = dir.File("plain.smf");
+  ASSERT_OK(SaveSmf(plain, model));
+  std::vector<uint8_t> plain_bytes = ReadAll(plain);
+  uint32_t version = 0;
+  std::memcpy(&version, plain_bytes.data() + 4, 4);
+  EXPECT_EQ(version, 6u);
+  EXPECT_EQ(model.TokenizerHash(), 0u);
+
+  for (int i = 0; i < 100; ++i)
+    model.tokenizer.push_back(static_cast<uint8_t>(i * 7 + 1));
+  const uint64_t hash = model.TokenizerHash();
+  EXPECT_TRUE(hash != 0);
+  const std::string path = dir.File("tok.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  std::vector<uint8_t> bytes = ReadAll(path);
+  std::memcpy(&version, bytes.data() + 4, 4);
+  EXPECT_EQ(version, 7u);
+  ASSERT_OK_AND_ASSIGN(SmfModel loaded, LoadSmf(path));
+  EXPECT_TRUE(loaded.tokenizer == model.tokenizer);
+  EXPECT_EQ(loaded.TokenizerHash(), hash);
+  EXPECT_EQ(loaded.tensors.size(), model.tensors.size());
+  // The section sits 64-aligned past the metadata, before the payloads,
+  // and the content hash covers it.
+  const size_t after_names = 16 + 2 + model.input_name.size() + 2 +
+                             model.output_name.size() + 8;
+  uint64_t tok_offset = 0, tok_size = 0;
+  std::memcpy(&tok_offset, bytes.data() + after_names, 8);
+  std::memcpy(&tok_size, bytes.data() + after_names + 8, 8);
+  EXPECT_EQ(tok_size, 100u);
+  EXPECT_EQ(tok_offset % 64, 0u);
+  for (const SmfTensor& t : loaded.tensors)
+    if (t.is_const) EXPECT_GE(t.data_offset, tok_offset + tok_size);
+  EXPECT_TRUE(loaded.content_hash != 0);
+  // Overlapping the section with a payload is refused like any payload.
+  bytes[after_names] = static_cast<uint8_t>(bytes[after_names] + 64);
+  WriteAll(path, bytes);
+  EXPECT_ERROR_CONTAINS(LoadSmf(path), "overlaps");
 }
 
 TEST(Smf, LoadRejectsByteSizeDimsDisagreement) {

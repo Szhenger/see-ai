@@ -154,7 +154,18 @@ def sds_records_digest(path):
         h = dict(zip(formats.SDS_HEADER.names, formats.SDS_HEADER.unpack_from(head, 0)))
         if h["magic"] != formats.SDS_MAGIC or h["input_kind"] != 1:
             return None
-        body = f.read(h["num_samples"] * (h["input_dim"] + 1) * 4)
+        masked = False
+        if h["version"] >= 3:
+            tail = f.read(formats.SDS_HEADER_V3_TAIL.size)
+            t = dict(zip(formats.SDS_HEADER_V3_TAIL.names,
+                         formats.SDS_HEADER_V3_TAIL.unpack_from(tail, 0)))
+            masked = bool(t["flags"] & formats.SDS_FLAG_MASKED)
+        ids = (h["input_dim"] + 1) * 4
+        rec = ids + (formats.sds_mask_bytes(h["input_dim"]) if masked else 0)
+        body = f.read(h["num_samples"] * rec)
+        if masked:  # the digest is over the ids alone, as the frameworks see them
+            body = b"".join(body[i * rec:i * rec + ids]
+                            for i in range(h["num_samples"]))
     return hashlib.sha256(body).hexdigest()[:16]
 
 

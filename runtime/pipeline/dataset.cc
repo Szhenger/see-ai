@@ -8,6 +8,7 @@
 #include <cstring>
 #include <unordered_map>
 #include <fstream>
+#include <optional>
 
 namespace seeml::update_rt {
 
@@ -34,13 +35,15 @@ uint64_t Dataset::label_bytes_per_sample() const {
 }
 
 std::expected<Dataset, std::string> Dataset::FromTokens(
-    std::vector<int32_t> tokens, uint64_t num_records, uint64_t seq) {
+    std::vector<int32_t> tokens, uint64_t num_records, uint64_t seq,
+    std::vector<uint8_t> mask, uint64_t tokenizer_hash) {
   Dataset d;
   d.input_kind_ = 1;
   d.label_kind_ = 1;  // derived next-token class ids
   d.num_samples_ = num_records;
   d.input_dim_ = seq;
   d.tokens_ = std::move(tokens);
+  d.tokenizer_hash_ = tokenizer_hash;
   if (num_records == 0) return diag::feeding::Error("zero samples");
   if (seq == 0) return diag::feeding::Error("zero input dim");
   uint64_t want = 0;
@@ -51,6 +54,15 @@ std::expected<Dataset, std::string> Dataset::FromTokens(
     if (d.tokens_[i] < 0)
       return diag::feeding::Error("negative token id at position " +
                                   std::to_string(i));
+  if (!mask.empty()) {
+    uint64_t positions = 0;
+    if (!MulU64(num_records, seq, &positions) || mask.size() != positions)
+      return diag::feeding::Error("mask buffer size mismatch");
+    if (auto ok = CheckMask(mask, num_records, seq); !ok)
+      return std::unexpected(ok.error());
+    d.mask_ = std::move(mask);
+    d.masked_ = true;
+  }
   return d;
 }
 
@@ -84,6 +96,27 @@ std::expected<Dataset, std::string> Dataset::FromMemory(
   return d;
 }
 
+std::expected<void, std::string> Dataset::CheckMask(
+    const std::vector<uint8_t>& mask, uint64_t num_records, uint64_t seq) {
+  // Every mask byte is 0 or 1, and every record keeps at least one target:
+  // a record with none would divide the masked loss by zero, so the
+  // ingest drops such windows (S3 #149) and the loader refuses them.
+  for (uint64_t r = 0; r < num_records; ++r) {
+    bool any = false;
+    for (uint64_t j = 0; j < seq; ++j) {
+      const uint8_t m = mask[r * seq + j];
+      if (m > 1)
+        return diag::feeding::Error("a loss mask byte is not 0 or 1 (record " +
+                                    std::to_string(r) + ")");
+      any = any || m == 1;
+    }
+    if (!any)
+      return diag::feeding::Error("record " + std::to_string(r) +
+                                  " carries no target position");
+  }
+  return {};
+}
+
 std::expected<Dataset, std::string> Dataset::LoadFromFile(
     const std::string& path) {
   std::ifstream f(path, std::ios::binary);
@@ -111,8 +144,23 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
   if (!read(&num_samples, 8) || !read(&input_dim, 8) || !read(&label_kind, 4) ||
       !read(&input_kind, 4) || !read(&label_dim, 8))
     return diag::feeding::Error("truncated header");
+  // v3 (S2 #148 / S3 #149): the tokenizer identity and the flags; the two
+  // reserved words must be zero so a later meaning can never be misread.
+  const uint64_t header_bytes = SdsHeaderBytes(version);
+  uint64_t tokenizer_hash = 0, reserved1 = 0;
+  uint32_t flags = 0, reserved0 = 0;
+  if (version >= 3) {
+    if (!read(&tokenizer_hash, 8) || !read(&flags, 4) || !read(&reserved0, 4) ||
+        !read(&reserved1, 8))
+      return diag::feeding::Error("truncated header");
+    if (reserved0 != 0 || reserved1 != 0)
+      return diag::feeding::Error("reserved SDS header words are not zero");
+    if (flags & ~kSdsFlagsMask) return diag::feeding::Error("unknown SDS flags");
+  }
 
   Dataset d;
+  d.tokenizer_hash_ = tokenizer_hash;
+  d.masked_ = (flags & kSdsFlagMasked) != 0;
   d.num_samples_ = num_samples;
   d.input_dim_ = input_dim;
   d.label_kind_ = label_kind;
@@ -130,23 +178,56 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
   // next-token label discipline.
   if (input_kind > 1 || (version < 2 && input_kind != 0))
     return diag::feeding::Error("unknown input kind");
+  if (d.masked_ && input_kind != 1)
+    return diag::feeding::Error("a loss mask needs token records");
+  // The sample section fills the file exactly (CR2's F19): trailing bytes
+  // are not a corpus the writer meant, so they are refused, not ignored.
+  auto exact_fill = [&](uint64_t payload) -> std::optional<std::string> {
+    if (payload > file_size - header_bytes)
+      return "sample section exceeds file size";
+    if (payload != file_size - header_bytes)
+      return "dataset payload does not fill the file: " +
+             std::to_string(file_size - header_bytes - payload) +
+             " trailing byte(s)";
+    return std::nullopt;
+  };
   if (input_kind == 1) {
     if (label_kind != 1 || label_dim != 0)
       return diag::feeding::Error(
           "token corpora derive next-token class labels (label_kind 1, "
           "label_dim 0)");
-    // Records are (seq + 1) contiguous i32 ids with no stored label.
+    // Records are (seq + 1) contiguous i32 ids with no stored label, and
+    // under the mask flag a u8 mask[seq] padded to 4 bytes after them.
+    const uint64_t mask_bytes = d.masked_ ? SdsMaskBytes(input_dim) : 0;
     uint64_t record_ids = 0, payload = 0;
     if (input_dim >= UINT64_MAX ||
         !MulU64(input_dim + 1, sizeof(int32_t), &record_ids) ||
-        !MulU64(num_samples, record_ids, &payload) ||
-        payload > file_size - kSdsHeaderBytes)
+        record_ids > UINT64_MAX - mask_bytes ||
+        !MulU64(num_samples, record_ids + mask_bytes, &payload) ||
+        payload > file_size - header_bytes)
       return diag::feeding::Error("sample section exceeds file size");
+    if (auto why = exact_fill(payload)) return diag::feeding::Error(*why);
     if (payload > SIZE_MAX)
       return diag::feeding::Error("dataset too large for this host");
+    const uint64_t record_bytes = record_ids + mask_bytes;
     d.tokens_.resize(num_samples * (input_dim + 1));
-    if (!read(d.tokens_.data(), static_cast<size_t>(payload)))
-      return diag::feeding::Error("truncated inputs");
+    if (!d.masked_) {
+      if (!read(d.tokens_.data(), static_cast<size_t>(payload)))
+        return diag::feeding::Error("truncated inputs");
+    } else {
+      d.mask_.resize(num_samples * input_dim);
+      std::vector<uint8_t> rec(static_cast<size_t>(record_bytes));
+      for (uint64_t r = 0; r < num_samples; ++r) {
+        if (!read(rec.data(), rec.size()))
+          return diag::feeding::Error("truncated inputs");
+        std::memcpy(d.tokens_.data() + r * (input_dim + 1), rec.data(),
+                    static_cast<size_t>(record_ids));
+        std::memcpy(d.mask_.data() + r * input_dim, rec.data() + record_ids,
+                    static_cast<size_t>(input_dim));
+      }
+      if (auto ok = CheckMask(d.mask_, num_samples, input_dim); !ok)
+        return std::unexpected(ok.error());
+    }
     for (const int32_t t : d.tokens_)
       if (t < 0) return diag::feeding::Error("negative token id");
     return d;
@@ -159,8 +240,9 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
   if (!MulU64(input_dim, sizeof(float), &input_bytes) ||
       input_bytes > UINT64_MAX - lbytes ||
       !MulU64(num_samples, input_bytes + lbytes, &payload) ||
-      payload > file_size - kSdsHeaderBytes)
+      payload > file_size - header_bytes)
     return diag::feeding::Error("sample section exceeds file size");
+  if (auto why = exact_fill(payload)) return diag::feeding::Error(*why);
   // On 32-bit hosts size_t is narrower than the u64 the checks above ran
   // in: a corpus that cannot fit the address space must be refused here,
   // not silently truncated by the resize below.
@@ -252,7 +334,11 @@ std::expected<void, std::string> Dataset::SaveToFile(
     f.write(reinterpret_cast<const char*>(src),
             static_cast<std::streamsize>(n));
   };
-  const uint32_t version = input_kind_ == 1 ? 2 : 1;
+  // The lowest version that carries the content: a plain corpus stays
+  // v1 / v2 byte for byte; a tokenizer identity or a mask makes it v3.
+  const uint32_t version = (tokenizer_hash_ != 0 || masked_) ? 3
+                           : input_kind_ == 1                 ? 2
+                                                              : 1;
   write(&kSdsMagic, 4);
   write(&version, 4);
   write(&num_samples_, 8);
@@ -260,10 +346,31 @@ std::expected<void, std::string> Dataset::SaveToFile(
   write(&label_kind_, 4);
   write(&input_kind_, 4);  // header padding in v1 (always 0 there)
   write(&label_dim_, 8);
+  if (version >= 3) {
+    const uint32_t flags = masked_ ? kSdsFlagMasked : 0;
+    const uint32_t reserved0 = 0;
+    const uint64_t reserved1 = 0;
+    write(&tokenizer_hash_, 8);
+    write(&flags, 4);
+    write(&reserved0, 4);
+    write(&reserved1, 8);
+  }
   if (input_kind_ == 1) {
-    // Token records are one contiguous i32 block; labels are derived,
-    // never stored.
-    write(tokens_.data(), tokens_.size() * sizeof(int32_t));
+    if (!masked_) {
+      // Token records are one contiguous i32 block; labels are derived,
+      // never stored.
+      write(tokens_.data(), tokens_.size() * sizeof(int32_t));
+    } else {
+      // Each record: its ids, then its mask padded to 4 bytes.
+      const uint64_t stride = input_dim_ + 1;
+      std::vector<uint8_t> pad(static_cast<size_t>(
+          SdsMaskBytes(input_dim_) - input_dim_));
+      for (uint64_t r = 0; r < num_samples_; ++r) {
+        write(tokens_.data() + r * stride, stride * sizeof(int32_t));
+        write(mask_.data() + r * input_dim_, input_dim_);
+        if (!pad.empty()) write(pad.data(), pad.size());
+      }
+    }
     f.close();
     if (f.fail())
       return diag::feeding::Error("short write to '" + path + "'");
@@ -317,7 +424,15 @@ void Dataset::FillBatch(uint64_t batch, float* input_slot,
       const uint64_t i = order_.empty() ? cursor_ : order_[cursor_];
       const int32_t* rec = tokens_.data() + i * (S + 1);
       std::memcpy(in + r * S, rec, S * sizeof(int32_t));
-      if (lab) std::memcpy(lab + r * S, rec + 1, S * sizeof(int32_t));
+      if (lab && !masked_) {
+        std::memcpy(lab + r * S, rec + 1, S * sizeof(int32_t));
+      } else if (lab) {
+        // A masked-out position stages kSdsIgnoreLabel: the masked
+        // cross-entropy counts only the positions the mask names.
+        const uint8_t* m = mask_.data() + i * S;
+        for (uint64_t j = 0; j < S; ++j)
+          lab[r * S + j] = m[j] ? rec[j + 1] : kSdsIgnoreLabel;
+      }
       cursor_ = cursor_ + 1;
       if (cursor_ == num_samples_) {
         cursor_ = 0;
@@ -454,6 +569,8 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
   val.label_kind_ = label_kind_;
   val.label_dim_ = label_dim_;
   val.input_kind_ = input_kind_;
+  val.tokenizer_hash_ = tokenizer_hash_;
+  val.masked_ = masked_;
   if (input_kind_ == 1) {
     // Token corpora split at RECORD (sequence) granularity: the tail
     // records move wholesale, so no sequence is ever cut in half.
@@ -462,6 +579,12 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
         tokens_.begin() + static_cast<ptrdiff_t>(train_n * rec_ids),
         tokens_.end());
     tokens_.resize(train_n * rec_ids);
+    if (masked_) {
+      val.mask_.assign(
+          mask_.begin() + static_cast<ptrdiff_t>(train_n * input_dim_),
+          mask_.end());
+      mask_.resize(train_n * input_dim_);
+    }
     num_samples_ = train_n;
     cursor_ = 0;
     labels_scanned_ = false;  // the extent was the whole corpus's
@@ -487,10 +610,12 @@ std::optional<double> Dataset::LabelEntropyNats() const {
   // labels positions 1..seq (the shifted view).
   auto each_label = [&](auto&& visit) {
     if (input_kind_ == 1) {
+      // A masked corpus's labels are the target positions alone.
       const uint64_t stride = input_dim_ + 1;
       for (uint64_t r = 0; r < num_samples_; ++r)
         for (uint64_t j = 1; j <= input_dim_; ++j)
-          visit(tokens_[r * stride + j]);
+          if (!masked_ || mask_[r * input_dim_ + (j - 1)])
+            visit(tokens_[r * stride + j]);
     } else {
       for (uint64_t i = 0; i < num_samples_; ++i) {
         int32_t label;

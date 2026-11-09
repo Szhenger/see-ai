@@ -341,6 +341,100 @@ TEST(DatasetTokens, RoundTripsSplitsAndShufflesWholeRecords) {
       EXPECT_EQ(lab[r * 4 + i], in[r * 4 + i + 1]);
 }
 
+TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {
+  // SDS v3 (S2 #148 / S3 #149): the tokenizer identity and a per-position
+  // mask round-trip; a masked position stages the ignore label; the split
+  // moves mask rows with their records; the label entropy counts targets.
+  std::vector<int32_t> tokens;
+  for (int32_t r = 0; r < 4; ++r)
+    for (int32_t j = 0; j <= 4; ++j) tokens.push_back(r * 5 + j);
+  // Record r masks out its first r positions (record 0 keeps all four).
+  std::vector<uint8_t> mask(16, 1);
+  for (int r = 0; r < 4; ++r)
+    for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;
+  ASSERT_OK_AND_ASSIGN(Dataset d, Dataset::FromTokens(tokens, 4, 4, mask,
+                                                      0x1234ABCDu));
+  EXPECT_TRUE(d.masked());
+  EXPECT_EQ(d.tokenizer_hash(), 0x1234ABCDu);
+  ScopedTempDir dir;
+  const std::string path = dir.File("masked.sds");
+  ASSERT_OK(d.SaveToFile(path));
+  ASSERT_OK_AND_ASSIGN(Dataset loaded, Dataset::LoadFromFile(path));
+  EXPECT_TRUE(loaded.masked());
+  EXPECT_EQ(loaded.tokenizer_hash(), 0x1234ABCDu);
+  std::vector<int32_t> in(16), lab(16);
+  loaded.FillBatch(16, reinterpret_cast<float*>(in.data()),
+                   reinterpret_cast<uint8_t*>(lab.data()));
+  for (int r = 0; r < 4; ++r)
+    for (int j = 0; j < 4; ++j)
+      EXPECT_EQ(lab[r * 4 + j],
+                j < r ? seeml::update_rt::kSdsIgnoreLabel : tokens[r * 5 + j + 1]);
+  // 4 + 3 + 2 + 1 = 10 target positions, all distinct ids: ln 10 nats.
+  ASSERT_TRUE(loaded.LabelEntropyNats().has_value());
+  EXPECT_NEAR(*loaded.LabelEntropyNats(), std::log(10.0), 1e-9);
+  ASSERT_OK_AND_ASSIGN(Dataset val, loaded.SplitValidation(0.5));
+  EXPECT_TRUE(val.masked());
+  EXPECT_EQ(val.tokenizer_hash(), 0x1234ABCDu);
+  std::vector<int32_t> vin(8), vlab(8);
+  val.FillBatch(8, reinterpret_cast<float*>(vin.data()),
+                reinterpret_cast<uint8_t*>(vlab.data()));
+  EXPECT_EQ(vlab[0], seeml::update_rt::kSdsIgnoreLabel);  // record 2's first two positions
+  EXPECT_EQ(vlab[1], seeml::update_rt::kSdsIgnoreLabel);
+  EXPECT_EQ(vlab[2], tokens[2 * 5 + 3]);
+  // A plain token corpus saved without a hash or a mask stays v2.
+  ASSERT_OK_AND_ASSIGN(Dataset plain, Dataset::FromTokens(tokens, 4, 4));
+  const std::string plain_path = dir.File("plain.sds");
+  ASSERT_OK(plain.SaveToFile(plain_path));
+  std::ifstream f(plain_path, std::ios::binary);
+  uint32_t words[2] = {0, 0};
+  f.read(reinterpret_cast<char*>(words), sizeof(words));
+  EXPECT_EQ(words[1], 2u);
+}
+
+TEST(DatasetTokens, TheMaskRulesAndTheExactFillAreRefused) {
+  std::vector<int32_t> tokens(2 * 5, 3);
+  std::vector<uint8_t> two(8, 1);
+  two[1] = 2;
+  EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, two),
+                        "not 0 or 1");
+  std::vector<uint8_t> none(8, 1);
+  for (int j = 0; j < 4; ++j) none[4 + j] = 0;
+  EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, none),
+                        "record 1 carries no target position");
+  EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, std::vector<uint8_t>(7, 1)),
+                        "mask buffer size mismatch");
+  // F19: trailing bytes after the sample section are refused, not read
+  // around; a v3 header with an unknown flag, or a reserved word set, too.
+  ASSERT_OK_AND_ASSIGN(Dataset d, Dataset::FromTokens(tokens, 2, 4));
+  ScopedTempDir dir;
+  const std::string path = dir.File("t.sds");
+  ASSERT_OK(d.SaveToFile(path));
+  {
+    std::ofstream f(path, std::ios::binary | std::ios::app);
+    const char extra = 0;
+    f.write(&extra, 1);
+  }
+  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path), "1 trailing byte(s)");
+  std::vector<uint8_t> mask(8, 1);
+  ASSERT_OK_AND_ASSIGN(Dataset masked, Dataset::FromTokens(tokens, 2, 4, mask));
+  ASSERT_OK(masked.SaveToFile(path));
+  {
+    std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+    const uint32_t flags = seeml::update_rt::kSdsFlagMasked | 2u;
+    f.seekp(48);  // the v3 flags word
+    f.write(reinterpret_cast<const char*>(&flags), 4);
+  }
+  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path), "unknown SDS flags");
+  ASSERT_OK(masked.SaveToFile(path));
+  {
+    std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+    const uint32_t reserved = 1;
+    f.seekp(52);  // the v3 reserved word
+    f.write(reinterpret_cast<const char*>(&reserved), 4);
+  }
+  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path), "reserved SDS header words");
+}
+
 TEST(DatasetShuffle, RestoreReplaysAcrossMultipleEpochs) {
   // RestoreServingPos promises an EXACT rewind even after the permutation
   // has been redrawn several times: the replay reconstructs the snapshot's
