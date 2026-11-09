@@ -13,6 +13,7 @@ import glob
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -191,6 +192,57 @@ class SmolLmSectionTest(unittest.TestCase):
         line = [l for l in info.splitlines() if l.startswith("tokenizer hash")][0]
         self.assertEqual(int(line.split()[-1], 16),
                          content_hash.content_hash64(self.section))
+
+
+FRONTIER = os.environ.get("SEEML_FRONTIER_DIR", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(REPO))),
+    "out", "frontier-2026-09-22"))
+COMPILE = os.path.join(BUILD, "seeml-update-compile")
+
+
+@unittest.skipUnless(
+    SMOLLM and have_tokenizers() and os.path.isfile(COMPILE) and
+    os.path.isfile(os.path.join(FRONTIER, "docs_corpus.txt")) and
+    os.path.isfile(os.path.join(FRONTIER, "smollm135.sds")),
+    "tier 2: needs the cached SmolLM-135M checkpoint, `tokenizers`, the built "
+    "compiler and the 2026-09-22 frontier corpus (SEEML_FRONTIER_DIR)")
+class SmolLmDataPathTest(unittest.TestCase):
+    # S2 acceptance: `--data docs_corpus.txt` on SmolLM-135M yields the ids
+    # the exporter's path wrote for the 2026-09-22 frontier row, bit-exact.
+
+    def test_the_compile_time_corpus_is_the_exporters(self):
+        import numpy as np
+        sys.path.insert(0, os.path.join(REPO, "tool"))
+        import export_model as em
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        smf = os.path.join(d, "smollm.smf")
+        em.export_hf_decoder(os.path.dirname(SMOLLM[-1]), smf, seq_len=128)
+        r = subprocess.run(
+            [COMPILE, "--source", smf, "--out", os.path.join(d, "pkg"),
+             "--data", os.path.join(FRONTIER, "docs_corpus.txt"),
+             "--data-batch", "128", "--steps", "2", "--no-embed",
+             "--report", os.path.join(d, "report.json")],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+
+        def ids(path):
+            with open(path, "rb") as f:
+                raw = f.read()
+            _, ver, n, s, _, _, _ = struct.unpack_from("<IIQQIIQ", raw, 0)
+            head = 64 if ver >= 3 else 40
+            return np.frombuffer(raw, "<i4", n * (s + 1), head).reshape(n, s + 1)
+        ours = ids(os.path.join(d, "pkg", "corpus.sds"))
+        theirs = ids(os.path.join(FRONTIER, "smollm135.sds"))
+        self.assertEqual(ours.shape, theirs.shape)
+        self.assertTrue((ours == theirs).all())
+        with open(os.path.join(d, "report.json")) as f:
+            report = json.load(f)
+        self.assertEqual(report["data"]["data_flags"] & 2, 2)
+        self.assertNotEqual(int(report["data"]["corpus_hash"], 16), 0)
+        self.assertEqual(int(report["data"]["tokenizer_hash"], 16),
+                         content_hash.content_hash64(
+                             ts.build_section(os.path.dirname(SMOLLM[-1]))))
 
 
 if __name__ == "__main__":

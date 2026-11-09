@@ -374,6 +374,8 @@ std::expected<IngestResult, std::string> Ingest(
   }
   put(ids.data(), windows * rec * sizeof(int32_t));
   result.corpus_hash = ContentHash64(sds.data(), sds.size());
+  ids.resize(windows * rec);
+  result.ids = std::move(ids);
   return result;
 }
 

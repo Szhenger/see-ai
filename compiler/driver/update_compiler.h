@@ -139,6 +139,13 @@ struct CompiledUpdate {
   // (plan v20). 0 under Precision::kF32.
   uint64_t relaxed_gemms = 0;
   uint64_t relaxed_attention = 0;
+  // The corpus the compile took (S2 #148, UpdateConfig::data_path): the
+  // canonical SDS the plan is pinned to (empty without --data), whether it
+  // was given as an SDS (nothing to write) or tokenized here from raw text
+  // (the CLI writes corpus.sds and its manifest beside the plan).
+  std::vector<uint8_t> corpus_sds;
+  std::string corpus_manifest;
+  bool corpus_from_sds = false;
   // What the compile did, as numbers with units and derivations: the
   // console screens and the report's "screens" are renderings of these.
   CompileScreens screens;

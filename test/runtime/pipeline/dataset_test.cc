@@ -7,11 +7,13 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "runtime/pipeline/dataset.h"
+#include "source/identity/hash.h"
 #include "test/framework/seetest.h"
 #include "test/support/builders.h"
 #include "test/support/scoped_temp_dir.h"
@@ -339,6 +341,32 @@ TEST(DatasetTokens, RoundTripsSplitsAndShufflesWholeRecords) {
   for (int r = 0; r < 6; ++r)
     for (int i = 0; i < 3; ++i)
       EXPECT_EQ(lab[r * 4 + i], in[r * 4 + i + 1]);
+}
+
+TEST(DatasetTokens, LoadRecordsTheFileHashAndTheTargetPositions) {
+  // The corpus identity a v22 plan pins: ContentHash64 of the file, set by
+  // LoadFromFile (0 for a dataset built in memory); and the positions the
+  // loss counts, all of them unmasked, the mask's ones masked.
+  seeml::testing::ScopedTempDir dir;
+  const std::string path = dir.File("c.sds");
+  std::vector<int32_t> ids(3 * 5, 2);
+  auto ds = seeml::update_rt::Dataset::FromTokens(ids, 3, 4);
+  ASSERT_OK(ds);
+  EXPECT_EQ(ds->content_hash(), 0u);
+  EXPECT_EQ(ds->target_positions(), 12u);
+  ASSERT_OK(ds->SaveToFile(path));
+  std::ifstream f(path, std::ios::binary);
+  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+  auto loaded = seeml::update_rt::Dataset::LoadFromFile(path);
+  ASSERT_OK(loaded);
+  EXPECT_EQ(loaded->content_hash(),
+            seeml::update::ContentHash64(bytes.data(), bytes.size()));
+  EXPECT_NE(loaded->content_hash(), 0u);
+  std::vector<uint8_t> mask = {1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1};
+  auto masked = seeml::update_rt::Dataset::FromTokens(ids, 3, 4, mask, 5);
+  ASSERT_OK(masked);
+  EXPECT_EQ(masked->target_positions(), 7u);
 }
 
 TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {

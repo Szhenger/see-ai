@@ -74,6 +74,9 @@ struct IngestManifest {
 struct IngestResult {
   std::vector<uint8_t> sds;   // the canonical corpus (SDS v3 with the
                               // tokenizer hash, or v2 when unbound)
+  std::vector<int32_t> ids;   // the packed ids the records hold (windows ×
+                              // (S + 1)), for a caller that serves them
+                              // without reading the SDS back
   IngestManifest manifest;
   uint64_t corpus_hash = 0;   // ContentHash64 of `sds`
   uint64_t tokenizer_hash = 0;

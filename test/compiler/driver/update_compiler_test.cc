@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -17,6 +18,8 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/egressor/model_writer.h"
 #include "compiler/frontend/ingressor/model_reader.h"
+#include "runtime/pipeline/dataset.h"
+#include "source/identity/hash.h"
 #include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
 #include "source/parallel/parallel_for.h"
@@ -1310,6 +1313,124 @@ TEST(UpdateCompiler, TheTokenizerSectionMustMatchTheEmbeddingAndTheHead) {
   mlp.tokenizer = section_with_vocab(static_cast<uint32_t>(kOutDim));
   EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(mlp),
                         "takes feature rows, not token ids");
+}
+
+TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
+  // S2 #148: --data runs the vendored stages with the model's own section,
+  // writes the canonical corpus, pins the plan to it by hash and fills the
+  // corpus rows; a given SDS is held to the model and pinned as is.
+  seeml::testing::ScopedTempDir dir;
+  auto write = [&](const std::string& name, const std::string& bytes) {
+    const std::string path = dir.File(name);
+    std::ofstream f(path, std::ios::binary);
+    f << bytes;
+    return path;
+  };
+  // A byte vocabulary (id = byte) with one special EOS token (id 256).
+  auto section = [] {
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t v) {
+      for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    u32(0x4B544D53); u32(1); u32(1); u32(2); u32(0); u32(257); u32(0); u32(1);
+    u32(256); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0);
+    for (int v = 0; v < 256; ++v) {
+      b.push_back(1); b.push_back(0); b.push_back(static_cast<uint8_t>(v));
+    }
+    const std::string eos = "<eos>";
+    b.push_back(static_cast<uint8_t>(eos.size())); b.push_back(0);
+    b.insert(b.end(), eos.begin(), eos.end());
+    u32(256);
+    return b;
+  }();
+  const int64_t vocab = 257, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 43);
+  model.tokenizer = section;
+  // 40 bytes, one document: 8 windows of 5 ids, no remainder.
+  const std::string text = "abcdefghij" "klmnopqrst" "uvwxyz0123" "456789ABCD";
+  UpdateConfig cfg = BaseConfig(batch);
+  cfg.default_steps = 8;
+  cfg.data_path = write("corpus.txt", text);
+  auto compiled = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(compiled);
+  const PlanHeader h = HeaderOf(*compiled);
+  EXPECT_NE(h.data_flags & kDataFlagCorpusPinned, 0u);
+  EXPECT_FALSE(compiled->corpus_from_sds);
+  EXPECT_EQ(compiled->corpus_sds.size(), 64u + 8 * 5 * 4);
+  EXPECT_EQ(h.corpus_hash, ContentHash64(compiled->corpus_sds.data(),
+                                         compiled->corpus_sds.size()));
+  EXPECT_EQ(h.tokenizer_hash, model.TokenizerHash());
+  EXPECT_STR_CONTAINS(compiled->corpus_manifest, "\"windows\": 8");
+  const std::string screen = compiled->screens.frontend.Json(0);
+  EXPECT_STR_CONTAINS(screen, "\"corpus_tokens\": 40");
+  EXPECT_STR_CONTAINS(screen, "\"corpus_distinct_ids\": \"40 of 257\"");
+  EXPECT_STR_CONTAINS(screen, "\"corpus_targets\": \"32 of 32\"");
+  // batch 16 rows = 4 sequences per step; 8 records: 2 batches per epoch,
+  // 8 steps cover 4 epochs.
+  EXPECT_STR_CONTAINS(screen, "\"batches_per_epoch\": 2");
+  EXPECT_STR_CONTAINS(screen, "\"epochs_covered\": 4");
+  bool data_phase = false;
+  for (const auto& t : compiled->pass_timings) data_phase |= t.name == "data";
+  EXPECT_TRUE(data_phase);
+
+  // The same corpus given as an SDS: pinned to the same hash, nothing to
+  // write; and the pin differs from a plan compiled without data.
+  const std::string sds_path = write(
+      "corpus.sds", std::string(compiled->corpus_sds.begin(),
+                                compiled->corpus_sds.end()));
+  cfg.data_path = sds_path;
+  auto again = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(again);
+  EXPECT_TRUE(again->corpus_from_sds);
+  EXPECT_EQ(HeaderOf(*again).corpus_hash, h.corpus_hash);
+  cfg.data_path.clear();
+  auto plain = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(plain);
+  EXPECT_EQ(HeaderOf(*plain).corpus_hash, 0u);
+  EXPECT_EQ(HeaderOf(*plain).data_flags & kDataFlagCorpusPinned, 0u);
+
+  // Refusals, by name.
+  cfg.data_path = write("corpus.csv", text);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "unknown data format");
+  cfg.data_path = write("corpus.txt", text);
+  SmfModel sectionless = model;
+  sectionless.tokenizer.clear();
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(sectionless),
+                        "carries no tokenizer section");
+  UpdateConfig mlp_cfg = BaseConfig(kBatch);
+  mlp_cfg.data_path = cfg.data_path;
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(mlp_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "a feature model takes no raw text");
+  // An SDS encoded by another tokenizer, and one carrying a loss mask.
+  std::vector<int32_t> ids(8 * 5, 1);
+  auto foreign = seeml::update_rt::Dataset::FromTokens(ids, 8, seq, {}, 0x999);
+  ASSERT_OK(foreign);
+  ASSERT_OK(foreign->SaveToFile(dir.File("foreign.sds")));
+  cfg.data_path = dir.File("foreign.sds");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "another tokenizer");
+  std::vector<uint8_t> mask(8 * 4, 1);
+  auto masked = seeml::update_rt::Dataset::FromTokens(ids, 8, seq, mask,
+                                                      model.TokenizerHash());
+  ASSERT_OK(masked);
+  ASSERT_OK(masked->SaveToFile(dir.File("masked.sds")));
+  cfg.data_path = dir.File("masked.sds");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "loss mask");
+  // A record wider than the model's seq_len, and an id past the table.
+  auto wide = seeml::update_rt::Dataset::FromTokens(std::vector<int32_t>(8 * 6, 1),
+                                                    8, seq + 1);
+  ASSERT_OK(wide);
+  ASSERT_OK(wide->SaveToFile(dir.File("wide.sds")));
+  cfg.data_path = dir.File("wide.sds");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "-token records");
+  ids[7] = 257;
+  auto oob = seeml::update_rt::Dataset::FromTokens(ids, 8, seq);
+  ASSERT_OK(oob);
+  ASSERT_OK(oob->SaveToFile(dir.File("oob.sds")));
+  cfg.data_path = dir.File("oob.sds");
+  EXPECT_ERROR(UpdateCompiler(cfg).Compile(model));
 }
 
 TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {

@@ -13,7 +13,8 @@ namespace seeml::update {
 namespace {
 
 bool IsFrontendPhase(std::string_view name) {
-  return name == "ingress" || name == "topology" || name == "frontend";
+  return name == "ingress" || name == "topology" || name == "data" ||
+         name == "frontend";
 }
 
 bool IsBackendPhase(std::string_view name) {
@@ -63,6 +64,45 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
   fe.Set("weights_source", acc.weights_mapped
                                ? "mapped from the model file, not counted"
                                : "in the plan");
+  if (f.frontend.corpus) {
+    const CorpusFacts& c = *f.frontend.corpus;
+    const bool text = c.kind != "sds";
+    fe.Set("corpus", std::to_string(c.records) + " records of " +
+                         std::to_string(c.record_width) +
+                         (c.tokens ? " ids" : " features") + " (" + c.kind +
+                         (c.masked ? ", masked)" : ")"));
+    if (text) {
+      fe.Set("corpus_documents", std::to_string(c.documents_in) + " in, " +
+                                     std::to_string(c.documents_kept) +
+                                     " kept");
+      fe.Set("corpus_dropped", std::to_string(c.dropped_empty) + " empty, " +
+                                   std::to_string(c.dropped_duplicate) +
+                                   " duplicate, " +
+                                   std::to_string(c.dropped_degenerate) +
+                                   " degenerate");
+      fe.Set("corpus_sanitized",
+             std::to_string(c.invalid_utf8_bytes) + " invalid UTF-8 byte(s), " +
+                 std::to_string(c.control_chars) + " control char(s), " +
+                 std::to_string(c.bidi_controls) + " bidi control(s)" +
+                 (c.kind == "txt" ? " (counted, kept: one document)" : ""));
+      fe.Set("corpus_remainder", c.remainder_tokens);
+      fe.Set("corpus_straddles", c.straddling_windows);
+    }
+    if (c.tokens) {
+      fe.Set("corpus_tokens", c.tokens);
+      fe.Set("corpus_distinct_ids", std::to_string(c.distinct_ids) + " of " +
+                                        std::to_string(c.vocabulary));
+      fe.Set("corpus_targets", std::to_string(c.target_tokens) + " of " +
+                                   std::to_string(c.total_tokens));
+    }
+    fe.Set("batches_per_epoch", c.batches_per_epoch);
+    fe.Set("epochs_covered", c.epochs_covered);
+    if (c.label_entropy_nats) fe.Set("label_entropy", *c.label_entropy_nats);
+    char hex[32];
+    std::snprintf(hex, sizeof(hex), "%016llx",
+                  static_cast<unsigned long long>(c.corpus_hash));
+    fe.Set("corpus_hash", std::string(hex));
+  }
   fe.Set("footprint_weights", acc.footprint_weights);
   fe.Set("footprint_activations", acc.footprint_activations);
   fe.Set("footprint_deltas", acc.footprint_deltas);

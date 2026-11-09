@@ -890,7 +890,8 @@ class DifferentialSuite(unittest.TestCase):
         # takes a corpus that names no tokenizer (SDS v1 / v2, an unbound
         # v3) or the same one, and refuses one that names another.
         with open(self.plans["dec_f32"][0], "rb") as f:
-            bound = fx.Plan(with_header(f.read(), tokenizer_hash=0xABCD))
+            blob = f.read()
+        bound = fx.Plan(with_header(blob, tokenizer_hash=0xABCD))
         corpus("check_tok.sds", lambda p: em.export_token_sds(records, p)).check(
             bound)
         corpus("check_tok_same.sds", lambda p: em.export_token_sds(
@@ -898,6 +899,22 @@ class DifferentialSuite(unittest.TestCase):
         with self.assertRaisesRegex(fx.PlanError, "another tokenizer"):
             corpus("check_tok_other.sds", lambda p: em.export_token_sds(
                 records, p, tokenizer_hash=0x1234)).check(bound)
+        # The corpus pin (v22): under the flag the corpus file's ContentHash64
+        # must be the header's.
+        from seeml import content_hash
+        pin_path = os.path.join(self.dir, "check_pin.sds")
+        em.export_token_sds(records, pin_path)
+        with open(pin_path, "rb") as f:
+            pin_hash = content_hash.content_hash64(f.read())
+        pinned = fx.Plan(with_header(
+            blob, data_flags=fx.formats.DATA_FLAG_CORPUS_PINNED,
+            corpus_hash=pin_hash))
+        fx.Corpus(np, pin_path).check(pinned)
+        other = fx.Plan(with_header(
+            blob, data_flags=fx.formats.DATA_FLAG_CORPUS_PINNED,
+            corpus_hash=pin_hash ^ 1))
+        with self.assertRaisesRegex(fx.PlanError, "another corpus"):
+            fx.Corpus(np, pin_path).check(other)
         records[1, 2] = vocab
         with self.assertRaisesRegex(fx.PlanError, "token id"):
             corpus("check_tokbad.sds", lambda p: em.export_token_sds(records, p)).check(

@@ -80,7 +80,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from seeml import formats  # noqa: E402
+from seeml import content_hash, formats  # noqa: E402
 
 # --- The .seeu container (source/plan/schema.h, instruction.h) ---------------
 
@@ -546,6 +546,7 @@ class Corpus:
             if flags & formats.SDS_FLAG_MASKED and self.input_kind != 1:
                 raise PlanError(f"{path}: a loss mask needs token records")
         self.masked = bool(flags & formats.SDS_FLAG_MASKED)
+        self._raw, self.content_hash = raw, None
         n, d = self.num_samples, self.input_dim
         if self.input_kind == 1:
             mask_bytes = formats.sds_mask_bytes(d) if self.masked else 0
@@ -664,6 +665,14 @@ class Corpus:
                 self.tokenizer_hash != plan.tokenizer_hash):
             raise PlanError("the dataset was tokenized by another tokenizer "
                             "than the plan's model (tokenizer hash mismatch)")
+        # The corpus pin (v22): ContentHash64 of the file, computed only when
+        # a plan asks (the pure-Python mirror is slow past a few MB).
+        if plan.data_flags & formats.DATA_FLAG_CORPUS_PINNED:
+            if self.content_hash is None:
+                self.content_hash = content_hash.content_hash64(self._raw)
+            if self.content_hash != plan.corpus_hash:
+                raise PlanError("the plan is pinned to another corpus "
+                                "(corpus hash mismatch)")
         plan_masked = bool(plan.data_flags & formats.DATA_FLAG_MASKED_LOSS)
         if self.masked and not plan_masked:
             raise PlanError("the dataset carries a loss mask, but the "

@@ -1,6 +1,7 @@
 #include "runtime/pipeline/dataset.h"
 
 #include "runtime/diagnostics/feeding/error.h"
+#include "source/identity/hash.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,14 @@ bool MulU64(uint64_t a, uint64_t b, uint64_t* out) {
 }
 
 }  // namespace
+
+uint64_t Dataset::target_positions() const {
+  if (input_kind_ != 1) return 0;
+  if (!masked_) return num_samples_ * input_dim_;
+  uint64_t n = 0;
+  for (const uint8_t m : mask_) n += m;
+  return n;
+}
 
 uint64_t Dataset::label_bytes_per_sample() const {
   // Token records derive one class label per POSITION, so a record's label
@@ -116,6 +125,27 @@ std::expected<void, std::string> Dataset::CheckMask(
   }
   return {};
 }
+
+namespace {
+
+/// ContentHash64 of the whole file: the corpus identity a v22 plan pins
+/// (kDataFlagCorpusPinned). A second read of the file, once, at load.
+std::expected<uint64_t, std::string> HashFile(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return diag::feeding::Error("cannot open '" + path + "'");
+  f.seekg(0, std::ios::end);
+  const std::streamoff end = f.tellg();
+  if (end < 0) return diag::feeding::Error("cannot stat '" + path + "'");
+  f.seekg(0);
+  std::vector<uint8_t> bytes(static_cast<size_t>(end));
+  if (!bytes.empty() &&
+      !f.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size())))
+    return diag::feeding::Error("cannot read '" + path + "'");
+  return seeml::update::ContentHash64(bytes.data(), bytes.size());
+}
+
+}  // namespace
 
 std::expected<Dataset, std::string> Dataset::LoadFromFile(
     const std::string& path) {
@@ -230,6 +260,8 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
     }
     for (const int32_t t : d.tokens_)
       if (t < 0) return diag::feeding::Error("negative token id");
+    if (auto h = HashFile(path); !h) return std::unexpected(h.error());
+    else d.content_hash_ = *h;
     return d;
   }
 

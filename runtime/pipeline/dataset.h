@@ -76,6 +76,17 @@ class Dataset {
   /// and whether the records carry a per-position loss mask.
   uint64_t tokenizer_hash() const { return tokenizer_hash_; }
   bool masked() const { return masked_; }
+  /// ContentHash64 of the SDS file this was loaded from (the corpus identity
+  /// a v22 plan pins, kDataFlagCorpusPinned); 0 for a dataset built in memory.
+  uint64_t content_hash() const { return content_hash_; }
+  /// Token corpora: the positions the loss counts — every one (records x
+  /// seq) for an unmasked corpus, the mask's ones for a masked one.
+  uint64_t target_positions() const;
+  /// Token corpora: `fn(id)` for every id the records hold, in order.
+  template <class F>
+  void each_token(F&& fn) const {
+    for (const int32_t id : tokens_) fn(id);
+  }
   void set_tokenizer_hash(uint64_t h) { tokenizer_hash_ = h; }
   /// The identity of the shuffle stream: the folded seed EnableShuffle
   /// started from, 0 when serving is sequential. Two datasets with equal
@@ -176,6 +187,7 @@ class Dataset {
   std::vector<uint8_t> mask_;
   bool masked_ = false;
   uint64_t tokenizer_hash_ = 0;
+  uint64_t content_hash_ = 0;
   uint64_t num_samples_ = 0;
   uint64_t input_dim_ = 0;
   uint32_t label_kind_ = 0;

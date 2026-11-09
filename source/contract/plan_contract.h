@@ -203,6 +203,9 @@ struct CorpusShape {
   // per-position loss mask (labels then stage -1 at ignored positions).
   uint64_t tokenizer_hash = 0;
   bool masked = false;
+  // The corpus identity (ContentHash64 of the SDS file; 0 = built in
+  // memory), checked only when the plan pins one (kDataFlagCorpusPinned).
+  uint64_t corpus_hash = 0;
 };
 
 /// The corpus's shape fits the plan's I/O slots — the feeder contract's
@@ -221,6 +224,13 @@ inline std::optional<std::string> CorpusGeometryViolation(
     return Violation(
         "the dataset was tokenized by another tokenizer than the plan's "
         "model (tokenizer hash mismatch)");
+  // The corpus pin (v22, S2 #148): a plan compiled over a corpus (--data)
+  // runs on that corpus — the records the accountant counted and the split
+  // (S3) was drawn from — and refuses any other, even of the same shape.
+  if ((header.data_flags & kDataFlagCorpusPinned) != 0 &&
+      corpus.corpus_hash != header.corpus_hash)
+    return Violation(
+        "the plan is pinned to another corpus (corpus hash mismatch)");
   // The loss mask (v22): a masked corpus stages -1 labels the masked
   // cross-entropy ignores; a plan compiled for the plain loss would train
   // on them as class -1, and a masked plan over a plain corpus would read

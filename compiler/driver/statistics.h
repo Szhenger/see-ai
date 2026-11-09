@@ -2,6 +2,7 @@
 #define SEEML_COMPILER_DRIVER_STATISTICS_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,10 +63,42 @@ struct AccountantFacts {
   bool weights_mapped = false;
 };
 
+/// The corpus the compile took (S2 #148, `--data`): what came in, what was
+/// kept and why not, and what the plan's step budget covers of it.
+struct CorpusFacts {
+  std::string kind;  // "text", "jsonl" or "sds"
+  // Raw text only: the documents and the sanitizer's counts.
+  uint64_t documents_in = 0;
+  uint64_t documents_kept = 0;
+  uint64_t dropped_empty = 0;
+  uint64_t dropped_duplicate = 0;
+  uint64_t dropped_degenerate = 0;
+  uint64_t invalid_utf8_bytes = 0;
+  uint64_t control_chars = 0;
+  uint64_t bidi_controls = 0;
+  uint64_t remainder_tokens = 0;    // ids the last partial window dropped
+  uint64_t straddling_windows = 0;  // windows holding a document boundary
+  // Every corpus.
+  uint64_t records = 0;        // samples (windows of S + 1 ids, or rows)
+  uint64_t record_width = 0;   // ids per record (S + 1), or features
+  uint64_t tokens = 0;         // ids the records hold (token corpora)
+  uint64_t target_tokens = 0;  // positions the loss counts (all, unmasked)
+  uint64_t total_tokens = 0;   // positions per record × records (S each)
+  uint64_t distinct_ids = 0;   // distinct token ids (token corpora)
+  uint64_t vocabulary = 0;     // the model's, for the ratio
+  double batches_per_epoch = 0.0;  // records ÷ sequences (rows) per step
+  double epochs_covered = 0.0;     // the step budget × that ÷ records
+  std::optional<double> label_entropy_nats;  // the unigram loss floor
+  uint64_t corpus_hash = 0;
+  uint64_t tokenizer_hash = 0;
+  bool masked = false;
+};
+
 struct FrontendStats {
   IngressorFacts ingressor;
   TopologyFacts topology;
   AccountantFacts accountant;
+  std::optional<CorpusFacts> corpus;  // set when the compile took --data
 };
 
 /// What the driver learned while compiling that CompiledUpdate does not

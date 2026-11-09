@@ -120,6 +120,9 @@ void PrintUsage() {
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
                "  [--remat auto|off|on] [--memory-budget-mib N]\n"
                "  [--adapter-only] [--validation-scores shipped|plan]\n"
+               "  [--data corpus.txt|.jsonl|.sds]  the training data: raw text is\n"
+               "                      tokenized with the model's section into\n"
+               "                      <out>/corpus.sds; the plan is pinned to it\n"
                "  [--steps N]\n"
                "  [--grad-accum G]\n"
                "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
@@ -443,6 +446,11 @@ int main(int argc, char** argv) {
   // The memory gate's budget. Without it the gate uses the host's memory,
   // which is fine for a refusal but not for a decision that changes the
   // plan's bytes: --remat auto decides against this budget only.
+  // --data (S2 #148): raw text or a pre-tokenized SDS the frontend holds to
+  // the model and pins the plan to; the canonical corpus and its manifest
+  // are written beside the plan after the compile.
+  const auto data_path = args.TakeValue("--data");
+  if (data_path) config.data_path = *data_path;
   if (auto v = args.TakeValue("--memory-budget-mib")) {
     uint64_t mib = 0;
     if (!ParseU64(*v, &mib) || mib == 0 || mib > (1ull << 40))
@@ -602,6 +610,31 @@ int main(int argc, char** argv) {
 
   std::fprintf(stderr, "seeml-update-compile: emitted %s\n",
                paths->plan_file.c_str());
+  // The canonical corpus (S2 #148): raw text was tokenized here, so the
+  // SDS the plan is pinned to and the manifest of what was dropped are
+  // written beside the plan; a given SDS is the corpus as is.
+  std::string corpus_file;
+  if (data_path) {
+    if (compiled->corpus_from_sds) {
+      corpus_file = *data_path;
+    } else {
+      corpus_file = *out_dir + "/corpus.sds";
+      const std::string manifest_file = *out_dir + "/corpus_manifest.json";
+      std::ofstream c(corpus_file, std::ios::binary | std::ios::trunc);
+      c.write(reinterpret_cast<const char*>(compiled->corpus_sds.data()),
+              static_cast<std::streamsize>(compiled->corpus_sds.size()));
+      c.close();
+      if (c.fail()) return Fail("short write to '" + corpus_file + "'");
+      std::ofstream m(manifest_file, std::ios::binary | std::ios::trunc);
+      m << compiled->corpus_manifest;
+      m.close();
+      if (m.fail()) return Fail("short write to '" + manifest_file + "'");
+      std::fprintf(stderr,
+                   "seeml-update-compile: wrote %s (the canonical corpus the "
+                   "plan is pinned to) and %s\n",
+                   corpus_file.c_str(), manifest_file.c_str());
+    }
+  }
   // The decimal TU of a plan this large is ~4x its bytes of C++ and, once
   // linked, an image the macOS arm64 linker and loader refuse near 1.8 GB
   // (#158); the packer's disk mode is the form for it. A note, not a
@@ -641,6 +674,10 @@ int main(int argc, char** argv) {
         paths->embedded_tu.empty()
             ? "null"
             : "\"" + JsonEscape(paths->embedded_tu) + "\"";
+    // The corpus the plan is pinned to (S2 #148): null without --data.
+    const std::string corpus_json =
+        corpus_file.empty() ? "null"
+                            : "\"" + JsonEscape(corpus_file) + "\"";
     // The exact resident footprint the final gate checked (the arena plus
     // the plan blob), which the step-0 estimate is a lower bound on.
     const uint64_t exact_footprint =
@@ -681,6 +718,9 @@ int main(int argc, char** argv) {
                  "  \"precision\": \"%s\",\n"
                  "  \"relaxed_gemms\": %" PRIu64 ",\n"
                  "  \"relaxed_attention\": %" PRIu64 ",\n"
+                 "  \"data\": {\"corpus\": %s, \"corpus_hash\": \"%016" PRIx64
+                 "\", \"tokenizer_hash\": \"%016" PRIx64
+                 "\", \"data_flags\": %u},\n"
                  "  \"validation_scores\": \"%s\",\n"
                  "  \"attention\": {\"family\": \"%s\", "
                  "\"cached_probs_bytes\": %" PRIu64 "},\n"
@@ -721,6 +761,8 @@ int main(int argc, char** argv) {
                  config.precision == Precision::kCertifiedBf16
                      ? "certified-bf16" : "f32",
                  compiled->relaxed_gemms, compiled->relaxed_attention,
+                 corpus_json.c_str(), plan_header.corpus_hash,
+                 plan_header.tokenizer_hash, plan_header.data_flags,
                  compiled->scores_shipped ? "shipped" : "plan",
                  compiled->attention_tiled ? "tiled" : "cached",
                  compiled->probs_cache_bytes,

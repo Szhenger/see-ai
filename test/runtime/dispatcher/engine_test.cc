@@ -299,6 +299,16 @@ TEST(EngineContract, FeederContractBindsTheTokenizerAndTheMask) {
   corpus.masked = false;
   EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
                       "loss mask the dataset does not carry");
+  // The corpus pin: enforced only under the flag, then exactly.
+  header.data_flags = 0;
+  header.corpus_hash = 0x77;
+  corpus.corpus_hash = 0x78;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  header.data_flags = up::kDataFlagCorpusPinned;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "pinned to another corpus");
+  corpus.corpus_hash = 0x77;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
 }
 
 TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {

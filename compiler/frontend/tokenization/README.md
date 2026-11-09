@@ -35,4 +35,16 @@ header). What this directory does **not** defend against, and says so on
 its screen: well-formed poisoned data — the gate and a held-out set the
 training source cannot influence are that defense.
 
-The code lands with **S2 (#148)**; until then this README is the contract.
+Where it stands (S2 #148, 2026-11-09): the stages are code —
+`source/tokenizer/text_ingest.{h,cc}` (sanitize, deduplicate, encode, pack,
+manifest) over `source/tokenizer/byte_level_bpe.{h,cc}` — and this directory's
+`corpus_ingress.{h,cc}` is the driver: `seeml-update-compile --data corpus.txt |
+corpus.jsonl | corpus.sds` runs them after topology, holds the corpus to the
+model (tokenizer identity, geometry, every id below the table), writes
+`<out>/corpus.sds` + `<out>/corpus_manifest.json` for raw text, pins the plan
+to the corpus by hash (plan v22 `corpus_hash`, `kDataFlagCorpusPinned`; the
+feeder contract refuses any other corpus) and fills the frontend screen's
+corpus rows. Normalization is the one stage with no code: the core refuses
+a tokenizer that needs one (SmolLM / GPT-2-class tokenizers have none). The
+device-side re-run of the stages on raw text is open: the sources are
+vendored into the package, but the emitted runner takes an SDS.

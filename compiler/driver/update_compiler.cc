@@ -20,6 +20,7 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/computation/parser.h"
 #include "compiler/frontend/ingressor/model_reader.h"
+#include "compiler/frontend/tokenization/corpus_ingress.h"
 #include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
@@ -288,6 +289,27 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       !ok)
     return std::unexpected(ok.error());
   phase("topology", source.ops.size());
+
+  // --- The data path (S2 #148): --data runs the vendored stages over the
+  // corpus with the model's own tokenizer section, holds the result to the
+  // model, and pins the plan to the canonical corpus by hash. Before the
+  // accountant: the corpus rows are its.
+  std::optional<tokenization::CorpusIngress> corpus;
+  if (!config_.data_path.empty()) {
+    auto c = tokenization::IngestCorpus(
+        config_.data_path, source, *topology,
+        static_cast<uint64_t>(batch) * config_.grad_accum_steps,
+        config_.default_steps);
+    if (!c) return std::unexpected(c.error());
+    if (c->masked)
+      return generating::Error(
+          generating::kDriver,
+          "the corpus carries a loss mask; the masked cross-entropy (S3 "
+          "#149) is not compiled yet — pass an unmasked corpus");
+    corpus = std::move(*c);
+    facts.frontend.corpus = corpus->facts;
+    phase("data", source.ops.size());
+  }
 
   // The model as read, for the frontend screen (S0 #146). Captured before
   // any pass: the consuming compile releases the weight payloads as plan
@@ -1146,6 +1168,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the same one (or none). The split and mask words stay zero until a
   // compile takes data (S3 #149).
   header.tokenizer_hash = source.TokenizerHash();
+  if (corpus) {
+    header.corpus_hash = corpus->corpus_hash;
+    header.data_flags |= kDataFlagCorpusPinned;
+  }
 
   uint64_t off = AlignUp(sizeof(PlanHeader));
   header.train_instr_offset = off;
@@ -1337,6 +1363,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // source refs (E12), or every weight's (an adapter-only plan).
   result.scores_shipped = !shipped.empty() || config_.adapter_only;
   result.adapter_only = config_.adapter_only;
+  if (corpus) {
+    result.corpus_sds = std::move(corpus->sds);
+    result.corpus_manifest = std::move(corpus->manifest_json);
+    result.corpus_from_sds = corpus->from_sds;
+  }
   if (config_.adapter_only)
     seeml::diag::Note(generating::kDriver,
                       "adapter-only: the plan carries no rodata — " +

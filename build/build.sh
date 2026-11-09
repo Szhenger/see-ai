@@ -46,6 +46,7 @@ compile source/language/model_format.cc model_format.o
 compile compiler/frontend/ingressor/model_reader.cc model_reader.o
 compile compiler/frontend/egressor/model_writer.cc model_writer.o
 compile compiler/frontend/accountant/resource_analyzer.cc resource_analyzer.o
+compile compiler/frontend/tokenization/corpus_ingress.cc corpus_ingress.o
 compile source/parallel/parallel_for.cc       parallel_for.o
 compile source/tokenizer/byte_level_bpe.cc    tokenizer_bpe.o
 compile source/tokenizer/text_ingest.cc       tokenizer_ingest.o
@@ -133,7 +134,7 @@ compile test/support/corpora.cc               fixtures_corpora.o
 compile test/support/probes.cc                fixtures_probes.o
 
 LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
-      build/resource_analyzer.o \
+      build/resource_analyzer.o build/corpus_ingress.o \
       build/value_resolver.o build/sema.o build/parser.o \
       build/pass_manager.o build/conv_lowering.o build/dce.o \
       build/epilogue_fuser.o build/rope_table.o build/chain_fuser.o build/addend_fuser.o build/attention_tiling.o build/rematerializer.o \

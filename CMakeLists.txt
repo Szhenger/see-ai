@@ -100,6 +100,7 @@ add_library(seeml_update STATIC
     compiler/frontend/ingressor/model_reader.cc
     compiler/frontend/egressor/model_writer.cc
     compiler/frontend/accountant/resource_analyzer.cc
+    compiler/frontend/tokenization/corpus_ingress.cc
     compiler/frontend/computation/value_resolver.cc
     compiler/frontend/topology/sema.cc
     compiler/frontend/computation/parser.cc

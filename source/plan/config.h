@@ -185,6 +185,14 @@ struct UpdateConfig {
   // rejected up front when the statically proven lower bound of the training
   // footprint exceeds this many bytes. 0 = detect the host's physical memory.
   uint64_t memory_budget_bytes = 0;
+  // The training data (S2 #148, plan v22): raw text (`.txt` — one document;
+  // `.jsonl` — one {"text": ...} per line) the frontend tokenizes with the
+  // model's own section into a canonical SDS, or a pre-tokenized `.sds` it
+  // holds to the model. The plan is then pinned to that corpus by hash
+  // (kDataFlagCorpusPinned) and the frontend screen carries the corpus
+  // rows. Empty = no data at compile time: the plan takes any corpus of the
+  // right geometry, as every plan did before v22.
+  std::string data_path;
 };
 
 }  // namespace seeml::update

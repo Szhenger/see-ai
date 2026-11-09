@@ -96,6 +96,37 @@ Verified: 31 C++ suites and 190 Python tests green; plan bytes identical to
 main on the 14 fixtures (none carries a section — the first that does will
 hash differently by design, since its header names the tokenizer).
 
+**Step 3, the data path (same day).** `seeml-update-compile --data
+corpus.txt | corpus.jsonl | corpus.sds` (`frontend/tokenization/
+corpus_ingress.{h,cc}`, a `data` phase after topology): raw text runs the
+vendored stages with the model's own section into `<out>/corpus.sds` +
+`<out>/corpus_manifest.json`; a given SDS is held to the model (the
+tokenizer identity per D9, the record width, every id below the table); a
+masked corpus is refused by name until the masked loss lands. The plan is
+pinned to the corpus (`corpus_hash` + `kDataFlagCorpusPinned`): the
+feeder contract refuses any other file ("the plan is pinned to another
+corpus"), `Dataset::content_hash()` is the file's `ContentHash64`, and
+`frontier_exec`'s `Corpus.check` mirrors the rule. The accountant's
+corpus rows (design item 6) are on the frontend screen: records, tokens,
+documents in / kept, dropped per class, sanitizer counts, remainder,
+straddling windows (D8), distinct ids of the vocabulary, loss targets of
+all positions, batches per epoch, epochs the step budget covers, the
+labels' unigram entropy, the corpus hash; the report carries a `data`
+object. **Acceptance 1 holds:** SmolLM-135M exported with its section,
+`--data out/frontier-2026-09-22/docs_corpus.txt` at S = 128 → 501 records
+of 129 ids, 64,660 tokens, 31 remainder, bit-identical to the exporter's
+`smollm135.sds` of 2026-09-22 (`test/tool/tokenizer_test.py
+SmolLmDataPathTest`, tier 2, runs in 2.5 s with the cached checkpoint).
+Acceptance 2: F19 (trailing bytes) and the foreign tokenizer hash are
+refused on both the build host and the device; N01 / F52 (the split) are
+S3's. Acceptance 3 (the F1 row re-run from raw text) waits on S3's split,
+since the frontier harness splits by position today. Open and said in the
+tokenization README: the device-side re-run of the stages on raw text
+(the runner takes an SDS; `byte_level_bpe.cc` is vendored but the emitted
+`build.sh` does not compile it yet); the exporter's text mode folds CRLF
+where the core reads bytes. Verified: 31 C++ suites, 191 Python tests,
+plan identity vs main on the 14 fixtures (none takes `--data`).
+
 ## Acceptance
 
 - `seeml-update-compile --data corpus.txt` on SmolLM-135M produces the same
