@@ -112,6 +112,20 @@ def sds_mask_bytes(seq_len: int) -> int:
     """Bytes of a masked token record's u8 mask[S], padded to 4."""
     return (seq_len + 3) & ~3
 
+# --- SMTK: the SMF tokenizer section (source/tokenizer/tokenizer_format.h) ------
+
+SMTK_MAGIC = 0x4B544D53  # "SMTK"
+SMTK_VERSION = 1
+SMTK_KINDS = {"byte_level_bpe": 1}
+SMTK_PRE_TOKENIZERS = {"gpt2": 1, "digits_then_gpt2": 2}
+SMTK_FLAGS = {"add_prefix_space": 1, "nfc": 2}
+# The fixed head before the chat template: 8 u32, 4 i32, the template length.
+SMTK_HEAD = Layout("SmtkHead", [
+    ("magic", "I"), ("version", "I"), ("kind", "I"), ("pre_tokenizer", "I"),
+    ("flags", "I"), ("vocab_size", "I"), ("num_merges", "I"),
+    ("num_special", "I"), ("eos_id", "i"), ("bos_id", "i"), ("unk_id", "i"),
+    ("pad_id", "i"), ("chat_template_len", "I")])
+
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
@@ -350,6 +364,16 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
     same("sds.header_bytes_v3", SDS_HEADER_BYTES_V3, sds["header_bytes_v3"])
     same("sds.flag_masked", SDS_FLAG_MASKED, sds["flag_masked"])
     same("sds.label_kind_max", SDS_LABEL_KIND_MAX, sds["label_kind_max"])
+    smtk = abi.get("smtk")
+    if smtk is None:
+        bad.append("smtk: not in the manifest")
+    else:
+        same("smtk.magic", SMTK_MAGIC, smtk["magic"])
+        same("smtk.version", SMTK_VERSION, smtk["version"])
+        same("smtk.head_bytes", SMTK_HEAD.size, smtk["head_bytes"])
+        same("smtk.kinds", SMTK_KINDS, smtk["kinds"])
+        same("smtk.pre_tokenizers", SMTK_PRE_TOKENIZERS, smtk["pre_tokenizers"])
+        same("smtk.flags", SMTK_FLAGS, smtk["flags"])
     same("seeu.magic", SEEU_MAGIC, seeu["magic"])
     same("seeu.version", SEEU_VERSION, seeu["version"])
     same("seeu.oldest_readable", SEEU_OLDEST_READABLE,

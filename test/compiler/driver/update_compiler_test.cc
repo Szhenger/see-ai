@@ -801,10 +801,12 @@ TEST(UpdateCompiler, RegatesTheBudgetOnTheExactCompiledFootprint) {
 }
 
 TEST(UpdateCompiler, RejectsModelWithoutInputMetadata) {
+  // Topology's reading of the input (S1 #147): the driver no longer reads
+  // the tensor table ahead of it, so this is topology's diagnostic.
   SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 15);
   model.input_name = "not_a_tensor";
   EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
-                        "lacks input metadata");
+                        "is not a tensor of the model with a shape");
 }
 
 TEST(UpdateCompiler, PropagatesGrafterFailure) {
@@ -1314,6 +1316,32 @@ TEST(UpdateCompiler, TheTokenizerSectionMustMatchTheEmbeddingAndTheHead) {
   mlp.tokenizer = section_with_vocab(static_cast<uint32_t>(kOutDim));
   EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(mlp),
                         "takes feature rows, not token ids");
+  // A head shorter than the fixed 13 words is refused as truncated (the
+  // constant used to say 12, admitting a head without its template length).
+  model.tokenizer = section_with_vocab(16);
+  model.tokenizer.resize(50);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(batch)).Compile(model),
+                        "truncated head");
+  model.tokenizer = section_with_vocab(16);
+  model.tokenizer[4] = 2;  // the version word
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(batch)).Compile(model),
+                        "unsupported version 2");
+  // A teacher reads the student's token ids: one carrying another section
+  // (same vocabulary, other bytes) is refused; the student's own, or none,
+  // is admitted.
+  model.tokenizer = section_with_vocab(16);
+  SmfModel teacher =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 42);
+  UpdateConfig kl = BaseConfig(batch);
+  kl.loss = LossKind::kKLDistill;
+  teacher.tokenizer = section_with_vocab(16);
+  teacher.tokenizer[32] = 0;  // eos_id -1 -> 0: another section, same vocab
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(kl).Compile(model, &teacher),
+                        "tokenizer hash mismatch");
+  teacher.tokenizer = section_with_vocab(16);
+  EXPECT_OK(UpdateCompiler(kl).Compile(model, &teacher));
+  teacher.tokenizer.clear();
+  EXPECT_OK(UpdateCompiler(kl).Compile(model, &teacher));
 }
 
 TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
@@ -1410,6 +1438,13 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   EXPECT_EQ(split_a->plan, split_b->plan);
   EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
                       "\"validation\": \"2 of 8 records held out, seed 3, split ");
+  // The epoch rows count the 6 training records: 1.5 batches per epoch,
+  // 8 steps x 4 sequences / 6 records = 5.333 epochs (not the 2 / 4 of the
+  // whole corpus).
+  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
+                      "\"batches_per_epoch\": 1.5");
+  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
+                      "\"epochs_covered\": 5.333");
   cfg.split_seed = 4;
   auto split_c = UpdateCompiler(cfg).Compile(model);
   ASSERT_OK(split_c);
@@ -1494,6 +1529,61 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   ASSERT_OK(oob->SaveToFile(dir.File("oob.sds")));
   cfg.data_path = dir.File("oob.sds");
   EXPECT_ERROR(UpdateCompiler(cfg).Compile(model));
+
+  // --masked-loss over a corpus that carries no mask would pin the plan to
+  // the one corpus the device must refuse: a compile-time refusal.
+  UpdateConfig masked_plain = cfg;
+  masked_plain.data_path = sds_path;
+  masked_plain.masked_loss = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(masked_plain).Compile(model),
+                        "would refuse its own corpus");
+  // ... and on a feature model no corpus could carry one at all.
+  UpdateConfig masked_feature = BaseConfig(kBatch);
+  masked_feature.masked_loss = true;
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(masked_feature).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "token models alone");
+
+  // A feature model takes its corpus as a pre-tokenized .sds (feature
+  // rows), pinned by the file's hash like a token corpus; the labels the
+  // corpus carries are held to the labels the loss stages, and the device's
+  // own feeder rule runs over the finished header before the plan ships.
+  auto rows = seeml::testing::MakeClassificationData(16, kInDim, 7);
+  ASSERT_OK(rows);
+  ASSERT_OK(rows->SaveToFile(dir.File("rows.sds")));
+  UpdateConfig feature_cfg = BaseConfig(kBatch);
+  feature_cfg.data_path = dir.File("rows.sds");
+  auto pinned = UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3));
+  ASSERT_OK(pinned);
+  {
+    std::ifstream f(dir.File("rows.sds"), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_NE(HeaderOf(*pinned).corpus_hash, 0u);
+    EXPECT_EQ(HeaderOf(*pinned).corpus_hash,
+              ContentHash64(reinterpret_cast<const uint8_t*>(bytes.data()),
+                            bytes.size()));
+    EXPECT_NE(HeaderOf(*pinned).data_flags & kDataFlagCorpusPinned, 0u);
+  }
+  feature_cfg.loss = LossKind::kMse;  // dense targets over class labels
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "carries class-index labels, but the loss stages dense f32 labels");
+  auto dense = seeml::testing::MakeRegressionData(16, kInDim, kOutDim + 1, 7);
+  ASSERT_OK(dense);
+  ASSERT_OK(dense->SaveToFile(dir.File("dense.sds")));
+  feature_cfg.data_path = dir.File("dense.sds");
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "dense labels are 4 wide; the model's output is 3");
+  auto unlabeled = seeml::testing::MakeUnlabeledData(16, kInDim, 7);
+  ASSERT_OK(unlabeled);
+  ASSERT_OK(unlabeled->SaveToFile(dir.File("unlabeled.sds")));
+  feature_cfg.loss = LossKind::kSoftmaxXEnt;
+  feature_cfg.data_path = dir.File("unlabeled.sds");
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "carries no labels, but the loss stages class-index labels");
 }
 
 TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {

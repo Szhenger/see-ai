@@ -6,6 +6,7 @@
     "op_kinds": {"matmul": 0, "add_bias": 1, "relu": 2, "gelu": 3, "silu": 4, "mul": 5, "layer_norm": 6, "add": 7, "rms_norm": 8, "rope": 9, "attention": 10, "embedding": 11}
   },
   "sds": {"magic": 827540563, "version": 3, "min_version": 1, "header_bytes": 40, "header_bytes_v3": 64, "flag_masked": 1, "label_kind_max": 2},
+  "smtk": {"magic": 1263816019, "version": 1, "head_bytes": 52, "kinds": {"byte_level_bpe": 1}, "pre_tokenizers": {"gpt2": 1, "digits_then_gpt2": 2}, "flags": {"add_prefix_space": 1, "nfc": 2}},
   "seeu": {
     "magic": 1430603091, "version": 22, "oldest_readable": 4,
     "rodata_bit": 63, "source_bit": 62, "rodata_alignment": 16384, "rodata_offset_alignment": 16, "gemm_panel_floats": 8192,

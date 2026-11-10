@@ -129,6 +129,13 @@ add_library(seeml_update STATIC
     compiler/backend/packaging/native_emitter.cc
 )
 target_link_libraries(seeml_update PUBLIC seeml_sir seeml_parallel seeml_tokenizer)
+# The data path (S2 #148) reads and holds the corpus through the runtime's
+# own Dataset (runtime/pipeline/dataset.cc, in seeml_update_rt): without
+# this edge seeml-update-compile, which links seeml_update alone, fails to
+# link corpus_ingress.cc's calls (build.sh hides it by linking one blob).
+# PRIVATE: no header of seeml_update exposes the runtime; a static
+# library's private dependency still reaches the executables that link it.
+target_link_libraries(seeml_update PRIVATE seeml_update_rt)
 
 # ==============================================================================
 # Target 3: The Update Runtime (seeml_update_rt)

@@ -13,20 +13,11 @@
 // =============================================================================
 // SDS — SeeAI Dataset format: fixed-shape samples for the AOT training loop.
 //
-// Layout (little-endian):
-//   u32 magic "SDS1"; u32 version (1 or 2)
-//   u64 num_samples; u64 input_dim
-//   u32 label_kind (0 = none, 1 = class index i32, 2 = dense f32)
-//   u32 input_kind (v2: 0 = f32 feature rows, 1 = i32 token records;
-//                   the word was header padding in v1, always 0)
-//   u64 label_dim (dense labels only)
-//   records[num_samples]:
-//     input_kind 0:  f32 input[input_dim], then the label (i32 class,
-//                    f32[label_dim] dense, nothing for kind 0)
-//     input_kind 1:  i32 tokens[input_dim + 1] and NO stored label — the
-//                    record is one sequence; inputs are tokens[0..S) and
-//                    the class labels are the shifted view tokens[1..S],
-//                    derived at serving time (label_kind must be 1)
+// The on-disk layout (versions 1, 2 and 3: the 40-byte header, the v3
+// tail — tokenizer identity, flags, reserved words — and the two record
+// kinds, token records carrying a per-position loss mask under the v3 flag)
+// is stated once, in source/language/dataset_format.h, which this header
+// includes; the Dataset reads it, writes it and serves it.
 //
 // Batches are served sequentially with wraparound, or — with EnableShuffle —
 // through a seeded permutation that is re-drawn every epoch. Both modes are
@@ -75,7 +66,7 @@ class Dataset {
   /// SDS v3: the tokenizer the records were encoded by (0 = none named),
   /// and whether the records carry a per-position loss mask.
   uint64_t tokenizer_hash() const { return tokenizer_hash_; }
-  bool masked() const { return masked_; }
+  bool masked() const { return !mask_.empty(); }
   /// ContentHash64 of the SDS file this was loaded from (the corpus identity
   /// a v22 plan pins, kDataFlagCorpusPinned); 0 for a dataset built in memory.
   uint64_t content_hash() const { return content_hash_; }
@@ -192,10 +183,11 @@ class Dataset {
   // ids each. A separate store — punning i32 bits through float storage
   // would risk NaN-signaling mutation on copies.
   std::vector<int32_t> tokens_;
-  // SDS v3: num_samples x input_dim mask bytes (1 = a target position)
-  // when masked_; the tokenizer identity the records carry.
+  // SDS v3: num_samples x input_dim mask bytes (1 = a target position),
+  // non-empty exactly for a masked corpus (masked() is this vector's
+  // emptiness — no second bit to keep in step); the tokenizer identity the
+  // records carry.
   std::vector<uint8_t> mask_;
-  bool masked_ = false;
   uint64_t tokenizer_hash_ = 0;
   uint64_t content_hash_ = 0;
   uint64_t split_hash_ = 0;

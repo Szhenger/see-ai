@@ -16,13 +16,17 @@ import os
 import struct
 from typing import Any, Dict, List, Optional, Tuple
 
-SMTK_MAGIC = 0x4B544D53  # "SMTK"
-SMTK_VERSION = 1
-KIND_BYTE_LEVEL_BPE = 1
-PRE_GPT2 = 1
-PRE_DIGITS_THEN_GPT2 = 2
-FLAG_ADD_PREFIX_SPACE = 1
-FLAG_NFC = 2
+from . import formats
+
+# The section's constants are formats.py's (held to the C++ header through
+# abi.json); the names here are this module's spelling of them.
+SMTK_MAGIC = formats.SMTK_MAGIC
+SMTK_VERSION = formats.SMTK_VERSION
+KIND_BYTE_LEVEL_BPE = formats.SMTK_KINDS["byte_level_bpe"]
+PRE_GPT2 = formats.SMTK_PRE_TOKENIZERS["gpt2"]
+PRE_DIGITS_THEN_GPT2 = formats.SMTK_PRE_TOKENIZERS["digits_then_gpt2"]
+FLAG_ADD_PREFIX_SPACE = formats.SMTK_FLAGS["add_prefix_space"]
+FLAG_NFC = formats.SMTK_FLAGS["nfc"]
 
 
 class UnsupportedTokenizer(ValueError):
@@ -145,10 +149,16 @@ def build_section(model_dir: str) -> bytes:
     # byte-level; their bytes are the UTF-8 of the string itself.
     added = {a["id"]: a for a in tok.get("added_tokens", [])}
     for a in added.values():
-        if a.get("normalized", False) or a.get("lstrip", False) or a.get("rstrip", False):
+        # The reference extracts every added token whole before the
+        # pre-tokenizer runs; the core matches by longest bytes alone, so
+        # a token whose match depends on normalization, on stripping the
+        # whitespace around it or on a word boundary (single_word) would
+        # be found where the reference does not, or missed.
+        if (a.get("normalized", False) or a.get("lstrip", False) or
+                a.get("rstrip", False) or a.get("single_word", False)):
             raise UnsupportedTokenizer(
                 f"added token {a['content']!r} with normalized / lstrip / "
-                "rstrip is not implemented")
+                "rstrip / single_word is not implemented")
         if a["id"] >= size or by_id[a["id"]] != a["content"]:
             raise UnsupportedTokenizer(
                 f"added token {a['content']!r} is not vocabulary id {a['id']}")
@@ -166,7 +176,10 @@ def build_section(model_dir: str) -> bytes:
         except KeyError:
             raise UnsupportedTokenizer(
                 f"merge {m!r} names a token outside the vocabulary") from None
-    specials = sorted(i for i, a in added.items() if a.get("special", False))
+    # SMTK's special list is the split-first list: EVERY added token, as the
+    # reference's AddedVocabulary extracts them all (its `special` flag
+    # changes no id; it only marks what decoding may skip).
+    specials = sorted(added)
 
     def special_id(name: str) -> int:
         value = config.get(name)
@@ -186,11 +199,10 @@ def build_section(model_dir: str) -> bytes:
     template_bytes = template.encode("utf-8")
 
     out = bytearray()
-    out += struct.pack("<IIIII", SMTK_MAGIC, SMTK_VERSION, KIND_BYTE_LEVEL_BPE,
-                       pre, 0)
-    out += struct.pack("<III", size, len(merges), len(specials))
-    out += struct.pack("<iiii", eos, bos, unk, pad)
-    out += struct.pack("<I", len(template_bytes)) + template_bytes
+    out += formats.SMTK_HEAD.pack(SMTK_MAGIC, SMTK_VERSION, KIND_BYTE_LEVEL_BPE,
+                                  pre, 0, size, len(merges), len(specials),
+                                  eos, bos, unk, pad, len(template_bytes))
+    out += template_bytes
     for blob in token_blobs:
         if len(blob) > 0xFFFF:
             raise UnsupportedTokenizer("a token longer than 65535 bytes")
@@ -204,8 +216,12 @@ def build_section(model_dir: str) -> bytes:
 
 def summarize(section: bytes) -> Dict[str, Any]:
     """The head of a section as a dict (for reports and tests)."""
+    if len(section) < formats.SMTK_HEAD.size:
+        raise UnsupportedTokenizer(
+            f"a {len(section)}-byte section is shorter than the "
+            f"{formats.SMTK_HEAD.size}-byte head")
     (magic, version, kind, pre, flags, size, merges, specials, eos, bos, unk,
-     pad, template_len) = struct.unpack_from("<IIIIIIIIiiiiI", section, 0)
+     pad, template_len) = formats.SMTK_HEAD.unpack_from(section, 0)
     return dict(magic=magic, version=version, kind=kind, pre_tokenizer=pre,
                 flags=flags, vocab_size=size, num_merges=merges,
                 num_special=specials, eos_id=eos, bos_id=bos, unk_id=unk,

@@ -49,11 +49,19 @@ class ByteLevelBpe {
   [[nodiscard]] static std::expected<ByteLevelBpe, std::string> Load(
       std::span<const uint8_t> section);
 
+  // ids_ keys are views into this object's own tokens_: a move keeps the
+  // strings where they are, a copy would leave the views pointing into the
+  // source — so the encoder moves and never copies.
+  ByteLevelBpe(ByteLevelBpe&&) = default;
+  ByteLevelBpe& operator=(ByteLevelBpe&&) = default;
+  ByteLevelBpe(const ByteLevelBpe&) = delete;
+  ByteLevelBpe& operator=(const ByteLevelBpe&) = delete;
+
   const TokenizerInfo& info() const { return info_; }
   /// The token's bytes.
   std::string_view token(uint32_t id) const { return tokens_[id]; }
   /// Whether `id` is a special token.
-  bool is_special(uint32_t id) const;
+  bool is_special(uint32_t id) const { return special_flag_[id] != 0; }
 
   /// Encodes `text` (bytes; valid UTF-8 for the pre-tokenizer's character
   /// classes to mean what they mean) and appends the ids to `out`. A byte
@@ -64,6 +72,16 @@ class ByteLevelBpe {
   [[nodiscard]] std::expected<void, std::string> Encode(
       std::string_view text, std::vector<int32_t>& out) const;
 
+  /// Encodes `text` as Encode does and returns how many of the appended ids
+  /// came from pieces that end at or before byte `boundary` — the ids of a
+  /// prompt rendered in front of its response, encoded as ONE string (the
+  /// pre-tokenizer sees the join, as the reference does). A piece that
+  /// straddles the boundary counts after it: the token holding the
+  /// response's first byte is the response's, the reference's rule for an
+  /// assistant-token mask.
+  size_t EncodeSplit(std::string_view text, size_t boundary,
+                     std::vector<int32_t>& out) const;
+
   /// The pre-tokenizer alone: the byte ranges of `text`'s pieces, in order
   /// (special tokens are pieces of their own). For tests and the screen.
   std::vector<std::pair<size_t, size_t>> PreTokenize(
@@ -73,9 +91,7 @@ class ByteLevelBpe {
   ByteLevelBpe() = default;
 
   // The BPE over one pre-token's bytes.
-  std::expected<void, std::string> EncodePiece(std::string_view piece,
-                                               size_t offset,
-                                               std::vector<int32_t>& out) const;
+  void EncodePiece(std::string_view piece, std::vector<int32_t>& out) const;
   // The GPT-2 pattern over `text`, pieces appended as (begin, end).
   void SplitGpt2(std::string_view text, size_t base,
                  std::vector<std::pair<size_t, size_t>>& pieces) const;
@@ -87,10 +103,19 @@ class ByteLevelBpe {
   // (a << 32 | b) -> rank << 32 | c
   std::unordered_map<uint64_t, uint64_t> merges_;
   std::vector<uint32_t> special_;                       // longest first
+  std::vector<uint8_t> special_flag_;                   // id -> is special
+  bool special_lead_[256] = {};  // a special token starts with this byte
 };
 
 /// ContentHash64 of a section: the tokenizer identity (SDS v3, plan v22).
 uint64_t SectionHash(std::span<const uint8_t> section);
+
+/// Decodes the UTF-8 scalar at `i` into `cp` and returns the index past it,
+/// or 0 when the bytes at `i` are not a well-formed sequence (overlong
+/// forms, surrogates and values past U+10FFFF included). The one
+/// well-formedness rule: the sanitizer removes what it refuses, and the
+/// pre-tokenizer classes what it refuses as an "other" character.
+size_t DecodeUtf8Strict(std::string_view s, size_t i, uint32_t* cp);
 
 }  // namespace seeml::tokenizer
 

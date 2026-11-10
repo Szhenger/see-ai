@@ -1,6 +1,7 @@
 #include "compiler/frontend/computation/parser.h"
 
 #include <bit>
+#include <optional>
 #include <vector>
 
 #include "compiler/diagnostics/parsing/error.h"
@@ -14,14 +15,21 @@ namespace parsing = seeml::diag::parsing;
 
 std::expected<sir::Value*, std::string> BuildForward(
     sir::Block& block, const SmfModel& model, const std::string& prefix,
-    sir::Value* input, int64_t batch, GraphBuild& build) {
+    sir::Value* input, int64_t batch, GraphBuild& build,
+    const sema::Topology* topology) {
   // Topology first, to completion (S1 #147): every op's arity, operand
   // existence and constness, and shape rule are proven over the tensor
   // table before any SIR exists, and the shape of every value is decided
-  // there. What follows is a mechanical translation that reads those
-  // shapes and recomputes none — one shape rule per op kind, in one place.
-  auto topology = sema::VerifyModel(model, batch);
-  if (!topology) return std::unexpected(topology.error());
+  // there — by the caller that holds the Topology, or here. What follows
+  // is a mechanical translation that reads those shapes and recomputes
+  // none — one shape rule per op kind, in one place.
+  std::optional<sema::Topology> verified;
+  if (!topology) {
+    auto t = sema::VerifyModel(model, batch);
+    if (!t) return std::unexpected(t.error());
+    verified = std::move(*t);
+    topology = &*verified;
+  }
   const sema::Topology& topo = *topology;
   auto shape_of = [&](const SmfOp& op) -> const sir::Shape& {
     return topo.shapes.at(op.output);

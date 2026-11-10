@@ -979,29 +979,34 @@ def tokenizer_parity(model_dir: str, smf_path: str, corpus_path: str,
         raise RuntimeError("--tokenizer-parity needs the `tokenizers` "
                            "package (pip install tokenizers)") from e
     import subprocess
-    import tempfile
     ref = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
     with open(corpus_path, "rb") as f:
         raw = f.read()
 
-    def core_ids(blob: bytes):
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
-            tmp.write(blob)
-            tmp_path = tmp.name
-        try:
-            out = subprocess.run([tokenize_tool, smf_path, tmp_path],
-                                 capture_output=True, text=True)
-        finally:
-            os.unlink(tmp_path)
+    def core(*flags):
+        """seeml-tokenize over the corpus file: the whole file as one
+        document (ids one per line), or with --lines every line as its own
+        document (one line of ids per input line). Two spawns for the whole
+        run — each spawn loads the model, every payload included."""
+        out = subprocess.run([tokenize_tool, smf_path, corpus_path, *flags],
+                             capture_output=True, text=True)
         if out.returncode != 0:
             raise ValueError(f"seeml-tokenize failed: {out.stderr.strip()}")
-        return [int(x) for x in out.stdout.split()]
+        return out.stdout
 
     texts = [raw] + [line for line in raw.split(b"\n")]
+    per_line = core("--lines").split("\n")
+    if per_line and per_line[-1] == "":
+        per_line.pop()  # the newline after the last line's ids
+    if len(per_line) != len(texts) - 1:
+        raise ValueError(f"seeml-tokenize --lines printed {len(per_line)} lines "
+                         f"for {len(texts) - 1} input lines")
+    core_ids = [[int(x) for x in core().split()]] + [
+        [int(x) for x in line.split()] for line in per_line]
     total = 0
     for i, blob in enumerate(texts):
         want = ref.encode(blob.decode("utf-8", errors="strict")).ids
-        got = core_ids(blob)
+        got = core_ids[i]
         if want != got:
             where = "the whole file" if i == 0 else f"line {i}"
             first = next((k for k in range(min(len(want), len(got)))

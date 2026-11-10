@@ -73,8 +73,11 @@ one under it, the flag with none); the engine's eval tail, ragged-batch
 mean and accuracy run over target rows alone. A `.jsonl` record may be
 `{"prompt", "response"}`: rendered through ChatML (the section must name
 `<|im_start|>` / `<|im_end|>` as special tokens, which SmolLM's does), the
-two sides encoded separately (the GPT-2 pattern splits at the template's
-`\n`, so the ids equal the joint encoding), the response side the
+rendered record encoded as one string (the pre-tokenizer sees the join, as
+the reference does: a response opening with two or more whitespace
+characters folds the template's `\n` with all but the last of them) with
+the prompt's ids those of the pieces ending at or before the join and a
+straddling piece the response's, the response side the
 targets, the joining EOS a target only after a plain document, windows
 with no target dropped and counted, a masked SDS v3 out; the compile then
 carries the masked objective (`--masked-loss` compiles it for a plan fed a
@@ -93,12 +96,15 @@ runner strings); the masked loss matches the PyTorch reference to 1e-5
 instruction on a masked plan in the frontier matrix (`dec_masked`), while
 plain-text plans are bit-identical to main on the 14 identity fixtures;
 the gate's set is named in the report (`data.val_split_hash`,
-`data.val_frac`, `data.split_seed`) and on the frontend screen. The
-whole-batch eval mean stays the mean of per-batch masked means (each over
-its own target count); the ragged final batch is scored over its real
-target rows. Not here: the F1 frontier row re-run from raw text through
+`data.val_frac`, `data.split_seed`) and on the frontend screen. A masked
+plan's eval mean is always over the set's target rows (each batch's kernel
+mean is over its own target count, so a mean of those would weight batches
+unequally and change with how the records fall into batches); the frontend
+screen's epoch rows count the training records, less the compiled split.
+Not here: the F1 frontier row re-run from raw text through
 the compiled split (S2 acceptance 3), since `tool/frontier_run.py` still
-compiles without `--data` and passes `--val-frac` to the runner; a
+compiles without `--data` (it now passes `--val-frac` only to a runner
+whose plan did not compile its split); a
 compiled-split plan would refuse that flag — the harness is to switch to
 `--data` + `--val-frac` at compile time when the row is next re-run.
 **Run end to end (2026-11-09):** the demo decoder compiled with `--data

@@ -451,8 +451,8 @@ class MetalBackend final : public ExecutorBackend {
   std::map<std::string, ProfRow> prof_;
   std::string prof_pipes_;  // every kernel the current instruction dispatched
   double last_gpu_seconds_ = 0;
-  // Forward and backward passes seen, counted at the loss opcodes (11 / 13
-  // / 15 forward, 12 / 14 / 16 backward): the profile header prints them
+  // Forward and backward passes seen, counted at the loss opcodes (11 / 51
+  // / 13 / 15 forward, 12 / 52 / 14 / 16 backward): the profile header prints them
   // so a reader sees how a run weights the two (F9 #140 — a run with
   // validation on is 7:1 forward).
   uint64_t fwd_passes_ = 0, bwd_passes_ = 0;
@@ -1872,14 +1872,8 @@ std::expected<void, std::string> MetalBackend::Encode(
     case up::OpCode::kSoftmaxXEntMaskedBwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
       a.rows = u32(ins.out[0]); a.cols = u32(ins.out[1]);
-      if (scratch_floats_ < 1) {
-        if (auto r = Flush(); !r) return r;
-        scratch_ = [device_ newBufferWithLength:sizeof(float)
-                                        options:MTLResourceStorageModeShared];
-        if (!scratch_) return std::unexpected("scratch allocation failed");
-        scratch_floats_ = 1;
-        if (auto r = EnsureEncoder(); !r) return r;
-      }
+      // scratch_ holds kScratchFloats floats from creation and only grows,
+      // so scratch[0] for the count is always there.
       Dispatch(kPXentMaskedCount, a, 1, 1, true);
       Dispatch(kPXentMaskedBwd, a, a.rows * a.cols, kElementwiseGroup, true);
       return {};
@@ -1924,10 +1918,12 @@ std::expected<void, std::string> MetalBackend::Execute(
     if (!arena_buf_) return std::unexpected("no plan bound");
     const auto op = static_cast<up::OpCode>(ins.opcode);
     if (profile_) {
-      if (op == up::OpCode::kSoftmaxXEntFwd || op == up::OpCode::kMseFwd ||
-          op == up::OpCode::kKLDistillFwd)
+      if (op == up::OpCode::kSoftmaxXEntFwd ||
+          op == up::OpCode::kSoftmaxXEntMaskedFwd ||
+          op == up::OpCode::kMseFwd || op == up::OpCode::kKLDistillFwd)
         ++fwd_passes_;
       else if (op == up::OpCode::kSoftmaxXEntBwd ||
+               op == up::OpCode::kSoftmaxXEntMaskedBwd ||
                op == up::OpCode::kMseBwd || op == up::OpCode::kKLDistillBwd)
         ++bwd_passes_;
     }

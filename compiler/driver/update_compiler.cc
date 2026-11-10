@@ -242,23 +242,22 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           "allow_zero_lr to ask for it deliberately");
   }
 
-  const SmfTensor* in_tensor = source.FindTensor(source.input_name);
-  if (!in_tensor || in_tensor->dims.empty())
-    return generating::Error(generating::kDriver,
-                             "source model lacks input metadata");
-  const int64_t in_dim = in_tensor->dims.back();
-  // A rank-1 dynamic ({-1}) input declares i32 token ids (SMF v4); sema
-  // enforces that only Embedding consumes it. Otherwise the reader
-  // restricts the dynamic marker to the leading dim, and this is the
-  // driver's own contract too: a non-positive width would flow into the
-  // SIR as a dynamic dim, bind zero-byte slots, and produce a sealed plan
-  // the runtime rejects — a compiler bug surfaced as a validator error.
-  const bool token_input = in_tensor->dims.size() == 1 && in_dim == -1;
-  if (!token_input && in_dim <= 0)
-    return generating::Error(generating::kDriver,
-                             "source model input width must be static and "
-                             "positive");
   const int64_t batch = config_.batch;
+
+  // --- Topology, to completion (S1 #147): the whole model verified and
+  // every value shaped from the tensor table before the accountant walks
+  // it or computation builds it; then what no single model can know — the
+  // teacher against the student, the loss against the input kind, the
+  // adapter filters against the weights, the reserved `t::` namespace.
+  auto topology = sema::VerifyModel(source, batch);
+  if (!topology) return std::unexpected(topology.error());
+  // The input's kind and width are topology's one reading of the tensor
+  // table: a rank-1 dynamic ({-1}) input declares i32 token ids (SMF v4),
+  // otherwise the width is the static, positive last dim (topology refuses
+  // the rest — a non-positive width would flow into the SIR as a dynamic
+  // dim and seal a plan the runtime rejects).
+  const bool token_input = topology->token_input;
+  const int64_t in_dim = topology->input_width;
   if (token_input) {
     if (source.seq_len == 0)
       return generating::Error(generating::kDriver,
@@ -269,14 +268,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           generating::kDriver,
           "the compiled batch must be a whole number of sequences");
   }
-
-  // --- Topology, to completion (S1 #147): the whole model verified and
-  // every value shaped from the tensor table before the accountant walks
-  // it or computation builds it; then what no single model can know — the
-  // teacher against the student, the loss against the input kind, the
-  // adapter filters against the weights, the reserved `t::` namespace.
-  auto topology = sema::VerifyModel(source, batch);
-  if (!topology) return std::unexpected(topology.error());
   std::optional<sema::Topology> teacher_topology;
   if (wants_teacher) {
     auto tt = sema::VerifyModel(*teacher, batch);
@@ -299,6 +290,8 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   if (!config_.data_path.empty()) {
     auto c = tokenization::IngestCorpus(
         config_.data_path, source, *topology,
+        tokenization::LabelsOf(
+            config_.loss, static_cast<uint64_t>(topology->output.dims.at(1))),
         static_cast<uint64_t>(batch) * config_.grad_accum_steps,
         config_.default_steps);
     if (!c) return std::unexpected(c.error());
@@ -320,6 +313,15 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       corpus->facts.split_seed = config_.split_seed;
       corpus->facts.val_split_hash = SplitHash(held);
       corpus->facts.split = true;
+      // The epoch arithmetic is over the records the plan trains on: the
+      // held-out ones are scored, not stepped through. Both rows scale
+      // with the record count (batches per epoch with it, epochs covered
+      // against it).
+      const double train_share =
+          static_cast<double>(corpus->facts.records - held.size()) /
+          static_cast<double>(corpus->facts.records);
+      corpus->facts.batches_per_epoch *= train_share;
+      corpus->facts.epochs_covered /= train_share;
     }
     facts.frontend.corpus = corpus->facts;
     phase("data", source.ops.size());
@@ -332,12 +334,29 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // implied by a corpus that carries a mask. The cross-entropy alone has a
   // masked form; the other objectives take every position.
   const bool masked_loss =
-      config_.masked_loss || (corpus && corpus->masked);
+      config_.masked_loss || (corpus && corpus->shape.masked);
   if (masked_loss && config_.loss != LossKind::kSoftmaxXEnt)
     return generating::Error(
         generating::kDriver,
         "a loss mask applies to the cross-entropy alone (--loss xent): the "
         "distillation and MSE objectives take every position");
+  // A mask marks positions of a token record; a feature corpus carries
+  // none (the loader refuses one), so a masked feature plan could be fed
+  // by no dataset.
+  if (masked_loss && !topology->token_input)
+    return generating::Error(
+        generating::kDriver,
+        "a loss mask applies to token models alone: a feature corpus "
+        "carries no per-position mask");
+  // Asked for over a corpus that carries no mask: the plan would be pinned
+  // to the one corpus the device must then refuse ("takes a loss mask the
+  // dataset does not carry") — unsatisfiable by construction.
+  if (config_.masked_loss && corpus && !corpus->shape.masked)
+    return generating::Error(
+        generating::kDriver,
+        "--masked-loss with a corpus that carries no loss mask: the plan "
+        "would refuse its own corpus; drop --masked-loss, or pass a prompt / "
+        "response corpus (or a masked .sds)");
 
   // The model as read, for the frontend screen (S0 #146). Captured before
   // any pass: the consuming compile releases the weight payloads as plan
@@ -346,11 +365,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     IngressorFacts& ing = facts.frontend.ingressor;
     ing.model_ops = source.ops.size();
     ing.model_tensors = source.tensors.size();
-    for (const SmfTensor& t : source.tensors) {
-      if (!t.is_const) continue;
-      ++ing.weight_tensors;
-      ing.weight_bytes += t.byte_size != 0 ? t.byte_size : t.data.size();
-    }
     ing.token_input = token_input;
     ing.input_width = token_input ? 0 : static_cast<uint64_t>(in_dim);
     ing.seq_len = source.seq_len;
@@ -363,11 +377,17 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     top.attention_ops = topology->attention_ops;
     top.has_teacher = teacher != nullptr;
     if (teacher) top.teacher_ops = teacher->ops.size();
+    // The weight census is the ingress sweep's: one range per constant
+    // tensor, each with its payload bytes — the one statement of what a
+    // weight weighs, for the whole table and for the adapted share.
     const auto adapted =
         sema::AdaptedWeights(source, config_.lora.target_filters);
     top.adapted_tensors = adapted.size();
-    for (const SmfTensor& t : source.tensors)
-      if (adapted.contains(t.name)) top.adapted_bytes += t.byte_size;
+    ing.weight_tensors = ing.ranges.size();
+    for (const WeightRange& w : ing.ranges) {
+      ing.weight_bytes += w.bytes;
+      if (adapted.contains(w.name)) top.adapted_bytes += w.bytes;
+    }
   }
 
   // --- 0. Fail fast: prove the training footprint fits local memory. -------
@@ -463,7 +483,8 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                     : block.addArgument(sir::DataType::F32,
                                         sir::Shape{batch, in_dim});
 
-  auto student_out = BuildForward(block, source, "", build.input, batch, build);
+  auto student_out = BuildForward(block, source, "", build.input, batch, build,
+                                  &*topology);
   if (!student_out) return std::unexpected(student_out.error());
   build.output = *student_out;
   const int64_t out_dim = build.output->shape().dims.at(1);
@@ -476,7 +497,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     // Topology's cross-input check proved the teacher's input and output
     // agree with the student's; the build is a translation.
     auto t_out = BuildForward(block, *teacher, std::string(sema::kTeacherPrefix),
-                              build.input, batch, build);
+                              build.input, batch, build, &*teacher_topology);
     if (!t_out) return std::unexpected(t_out.error());
     teacher_out = *t_out;
   }
@@ -1109,12 +1130,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     // would mix the identical counter, coupling every sample's magnitude
     // to its neighbor's angle (u1_{j+1} == u2_j + 2^-53).
     uint64_t s = seed + 0x9E3779B97F4A7C15ULL * (2 * index + 1);
-    auto next = [&s]() {
-      uint64_t z = (s += 0x9E3779B97F4A7C15ULL);
-      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-      z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-      return z ^ (z >> 31);
-    };
+    auto next = [&s]() { return SplitMix64Next(&s); };  // splitmix64
     // u1 in (0, 1] keeps the log finite; u2 in [0, 1).
     const double u1 = (static_cast<double>(next() >> 11) + 1.0) * 0x1.0p-53;
     const double u2 = static_cast<double>(next() >> 11) * 0x1.0p-53;
@@ -1199,7 +1215,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   header.tokenizer_hash = source.TokenizerHash();
   if (masked_loss) header.data_flags |= kDataFlagMaskedLoss;
   if (corpus) {
-    header.corpus_hash = corpus->corpus_hash;
+    header.corpus_hash = corpus->shape.corpus_hash;
     header.data_flags |= kDataFlagCorpusPinned;
     if (corpus->facts.split) {
       header.split_seed = corpus->facts.split_seed;
@@ -1207,6 +1223,17 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       header.val_split_hash = corpus->facts.val_split_hash;
       header.data_flags |= kDataFlagSplit;
     }
+    // The device's own feeder rule over the header the plan will carry
+    // and the corpus it is pinned to (its split identity being the one
+    // the device recomputes): a plan can never be pinned to a corpus it
+    // would refuse — whatever the stage above missed, this does not.
+    CorpusShape as_fed = corpus->shape;
+    as_fed.split_hash = corpus->facts.split ? corpus->facts.val_split_hash : 0;
+    if (auto why = CorpusGeometryViolation(header, as_fed))
+      return generating::Error(
+          generating::kDriver,
+          "the corpus the plan is pinned to would be refused by the device: " +
+              *why);
   }
 
   uint64_t off = AlignUp(sizeof(PlanHeader));

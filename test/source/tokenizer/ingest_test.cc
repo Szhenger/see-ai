@@ -122,6 +122,17 @@ TEST(Ingest, JsonlDocumentsAreTextOrPromptResponseAndTheRestIsRefusedByLine) {
                         "line 1: malformed string value");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\"\n"),
                         "line 1: truncated object");
+  // One record per line, members comma-separated: a second object on the
+  // line, a stray comma or a missing comma is a refusal, never a record
+  // that silently vanishes from the canonical corpus.
+  EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\"} {\"text\": \"b\"}\n"),
+                        "line 1: content after the object");
+  EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\"}, x\n"),
+                        "line 1: content after the object");
+  EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\" \"x\": 1}\n"),
+                        "line 1: expected ',' or '}'");
+  EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\",}\n"),
+                        "line 1: a ',' with no member after it");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"prompt\": \"a\"}\n"),
                         "line 1: a prompt / response record needs both");
   EXPECT_ERROR_CONTAINS(

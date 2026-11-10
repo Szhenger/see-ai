@@ -35,12 +35,6 @@ constexpr uint64_t kParallelCopyThreshold = 4u << 20;
 // dispatch-bound, small enough that the largest tensor spans many.
 constexpr size_t kParallelCopyGrain = 8u << 20;
 
-// The weight sweep's chunk geometry: the quantization review's
-// (compiler/analysis/statistics/quantization.h, kWeightSweepGrain), so the
-// element a refusal names and the ranges the screen prints are the same at
-// any thread count and the same the review would have seen.
-constexpr size_t kWeightSweepGrain = 65536;
-
 // Overflow-checked u64 multiply for validating file-supplied sizes.
 bool MulU64(uint64_t a, uint64_t b, uint64_t* out) {
   if (b != 0 && a > UINT64_MAX / b) return false;

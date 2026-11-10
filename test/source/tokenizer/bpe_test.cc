@@ -212,4 +212,60 @@ TEST(ByteLevelBpe, SpecialTokensSplitFirstAndMergesApplyByRank) {
   EXPECT_EQ(Ids(u, std::string("a\x04" "b")).size(), 2u);
 }
 
+TEST(ByteLevelBpe, EncodeSplitSeesTheJoinAsOneString) {
+  // A prompt rendered in front of its response is encoded as ONE string:
+  // the GPT-2 pattern's `\s+(?!\S)` folds the template's trailing newline
+  // with all but the last of the response's leading whitespace, as the
+  // reference does, and the folded piece belongs to the response (the
+  // token holding the response's first byte is the response's).
+  Section s = ByteVocab({{"\n", " "}});
+  ASSERT_OK_AND_ASSIGN(ByteLevelBpe t, ByteLevelBpe::Load(s.Bytes()));
+  const std::string prompt = "assistant\n", response = "  yes";
+  const std::string whole = prompt + response;
+  EXPECT_TRUE(Pieces(t, whole) ==
+              std::vector<std::string>({"assistant", "\n ", " yes"}));
+  std::vector<int32_t> ids;
+  const size_t before = t.EncodeSplit(whole, prompt.size(), ids);
+  EXPECT_EQ(before, 9u);  // "assistant"; the "\n " piece straddles the join
+  EXPECT_EQ(ids.size(), 14u);
+  EXPECT_EQ(ids[9], 256);  // the merged "\n "
+  EXPECT_TRUE(ids == Ids(t, whole));
+  // Encoded separately the two sides give one id more — the divergence
+  // the one-string encoding removes.
+  EXPECT_EQ(Ids(t, prompt).size() + Ids(t, response).size(), 15u);
+  // A single leading whitespace character never differs; a boundary at
+  // the text's end counts every id as the prompt's.
+  const std::string one = prompt + " yes";
+  std::vector<int32_t> a, b;
+  EXPECT_EQ(t.EncodeSplit(one, prompt.size(), a), 10u);
+  EXPECT_EQ(t.EncodeSplit(one, one.size(), b), Ids(t, one).size());
+}
+
+TEST(ByteLevelBpe, AStrayByteIsAnOtherCharacterAndLongRunsEncodeFast) {
+  Section s = ByteVocab({{"x", "x"}, {"xx", "xx"}});
+  ASSERT_OK_AND_ASSIGN(ByteLevelBpe t, ByteLevelBpe::Load(s.Bytes()));
+  // A byte that begins no UTF-8 sequence is neither letter, number nor
+  // space, whatever its value: 0xC3 (a letter if read as U+00C3) breaks a
+  // letter run, 0xA0 (White_Space if read as U+00A0) joins the ` ?` other
+  // run rather than the whitespace run.
+  EXPECT_TRUE(Pieces(t, std::string("ab\xC3" "cd")) ==
+              std::vector<std::string>({"ab", "\xC3", "cd"}));
+  EXPECT_TRUE(Pieces(t, std::string(" \xA0" "b")) ==
+              std::vector<std::string>({" \xA0", "b"}));
+  // An overlong encoding is two stray bytes (one run of "others"), not the
+  // letter it spells.
+  EXPECT_TRUE(Pieces(t, std::string("\xC1\xA1" "b")) ==
+              std::vector<std::string>({"\xC1\xA1", "b"}));
+  // The merge loop is O(n log n) per piece: a 40 000-byte run of one letter
+  // is one piece, merged pairwise by rank — every (x,x) at rank 0, leftmost
+  // first, then every (xx,xx) at rank 1 — into 10 000 "xxxx" ids.
+  const std::string run(40000, 'x');
+  const std::vector<int32_t> ids = Ids(t, run);
+  ASSERT_EQ(ids.size(), 10000u);
+  for (int32_t id : ids) EXPECT_EQ(id, 257);
+  // Leftmost-first on equal rank: "xxx" is xx + x, "xxxxx" is xxxx + x.
+  EXPECT_TRUE(Ids(t, "xxx") == std::vector<int32_t>({256, 'x'}));
+  EXPECT_TRUE(Ids(t, "xxxxx") == std::vector<int32_t>({257, 'x'}));
+}
+
 }  // namespace

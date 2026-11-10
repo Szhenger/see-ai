@@ -645,15 +645,29 @@ int main(int argc, char** argv) {
     } else {
       corpus_file = *out_dir + "/corpus.sds";
       const std::string manifest_file = *out_dir + "/corpus_manifest.json";
-      std::ofstream c(corpus_file, std::ios::binary | std::ios::trunc);
-      c.write(reinterpret_cast<const char*>(compiled->corpus_sds.data()),
-              static_cast<std::streamsize>(compiled->corpus_sds.size()));
-      c.close();
-      if (c.fail()) return Fail("short write to '" + corpus_file + "'");
-      std::ofstream m(manifest_file, std::ios::binary | std::ios::trunc);
-      m << compiled->corpus_manifest;
-      m.close();
-      if (m.fail()) return Fail("short write to '" + manifest_file + "'");
+      // Staged and renamed into place (as the runner's --report is): a
+      // write that fails midway leaves no corpus.sds at all, never a
+      // truncated one under the name the plan is pinned to.
+      auto write_staged = [](const std::string& path, const char* data,
+                             size_t size) -> std::optional<std::string> {
+        const std::string staged = path + ".tmp";
+        std::ofstream f(staged, std::ios::binary | std::ios::trunc);
+        f.write(data, static_cast<std::streamsize>(size));
+        f.close();
+        if (f.fail() || std::rename(staged.c_str(), path.c_str()) != 0) {
+          std::remove(staged.c_str());
+          return "short write to '" + path + "'";
+        }
+        return std::nullopt;
+      };
+      if (auto why = write_staged(
+              corpus_file,
+              reinterpret_cast<const char*>(compiled->corpus_sds.data()),
+              compiled->corpus_sds.size()))
+        return Fail(*why);
+      if (auto why = write_staged(manifest_file, compiled->corpus_manifest.data(),
+                                  compiled->corpus_manifest.size()))
+        return Fail(*why);
       std::fprintf(stderr,
                    "seeml-update-compile: wrote %s (the canonical corpus the "
                    "plan is pinned to) and %s\n",

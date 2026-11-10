@@ -97,6 +97,20 @@ class SectionBuilderTest(unittest.TestCase):
         self.assertEqual(head["eos_id"], 0)
         self.assertEqual(head["bos_id"], -1)
         self.assertEqual(head["chat_template_bytes"], len("{{ x }}"))
+        # Every added token is split first, as the reference extracts them
+        # all: a non-special added token (an in-vocabulary string promoted
+        # with normalized False) joins the list; the `special` flag changes
+        # no id. One whose match depends on a word boundary is refused.
+        tok = tiny_tokenizer_json()
+        tok["added_tokens"].append({"id": 258, "content": "the",
+                                    "single_word": False, "lstrip": False,
+                                    "rstrip": False, "normalized": False,
+                                    "special": False})
+        two = ts.summarize(ts.build_section(self.write(tok)))
+        self.assertEqual(two["num_special"], 2)
+        tok["added_tokens"][-1]["single_word"] = True
+        with self.assertRaisesRegex(ts.UnsupportedTokenizer, "single_word"):
+            ts.build_section(self.write(tok))
         # Deterministic: the same files, the same bytes, the same hash.
         self.assertEqual(section, ts.build_section(d))
         self.assertNotEqual(content_hash.content_hash64(section), 0)

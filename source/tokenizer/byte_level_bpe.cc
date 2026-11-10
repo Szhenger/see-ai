@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <queue>
 
 #include "source/identity/hash.h"
 #include "source/tokenizer/unicode_tables.h"
@@ -62,85 +64,94 @@ bool IsLetter(uint32_t cp) { return InRanges(kLetterRanges, cp); }
 bool IsNumber(uint32_t cp) { return InRanges(kNumberRanges, cp); }
 bool IsSpace(uint32_t cp) { return InRanges(kWhiteSpaceRanges, cp); }
 
-/// Decodes the UTF-8 scalar at `i` and returns the index past it. A byte
-/// that does not begin a well-formed sequence decodes as itself (a value
-/// below 256 that is neither letter, number nor space, so an "other"
-/// character) and the walk advances one byte: the reference, fed a string,
-/// only ever sees well-formed input, and the sanitizer removes invalid
-/// bytes before any text reaches the encoder.
+/// What a byte that begins no well-formed UTF-8 sequence decodes as: U+FFFD,
+/// a symbol (category So) that is neither letter, number nor space, so the
+/// byte is an "other" character to the pattern and never joins a letter,
+/// number or whitespace run. The reference, fed a string, only ever sees
+/// well-formed input; the sanitizer removes invalid bytes from a .jsonl
+/// corpus, and a .txt corpus and seeml-tokenize encode the bytes as they
+/// are, so the rule has to hold here too. (The raw byte value would not do:
+/// 0xA0 is White_Space and 0xC0-0xFF are letters in the tables.)
+constexpr uint32_t kInvalidByteClass = 0xFFFD;
+
+/// Decodes the UTF-8 scalar at `i` and returns the index past it, or
+/// kInvalidByteClass and the index one byte on for a byte that begins no
+/// well-formed sequence (DecodeUtf8Strict's rule).
 size_t Decode(std::string_view s, size_t i, uint32_t* cp) {
-  const auto b0 = static_cast<uint8_t>(s[i]);
-  size_t need = 0;
-  uint32_t v = 0;
-  if (b0 < 0x80) {
-    *cp = b0;
-    return i + 1;
-  } else if ((b0 & 0xE0) == 0xC0) {
-    need = 1;
-    v = b0 & 0x1F;
-  } else if ((b0 & 0xF0) == 0xE0) {
-    need = 2;
-    v = b0 & 0x0F;
-  } else if ((b0 & 0xF8) == 0xF0) {
-    need = 3;
-    v = b0 & 0x07;
-  } else {
-    *cp = b0;
-    return i + 1;
-  }
-  if (i + need >= s.size()) {
-    *cp = b0;
-    return i + 1;
-  }
-  for (size_t k = 1; k <= need; ++k) {
-    const auto b = static_cast<uint8_t>(s[i + k]);
-    if ((b & 0xC0) != 0x80) {
-      *cp = b0;
-      return i + 1;
-    }
-    v = (v << 6) | (b & 0x3F);
-  }
-  *cp = v;
-  return i + need + 1;
+  const size_t next = DecodeUtf8Strict(s, i, cp);
+  if (next != 0) return next;
+  *cp = kInvalidByteClass;
+  return i + 1;
 }
 
 }  // namespace
+
+size_t DecodeUtf8Strict(std::string_view s, size_t i, uint32_t* cp) {
+  const auto b0 = static_cast<uint8_t>(s[i]);
+  if (b0 < 0x80) {
+    *cp = b0;
+    return i + 1;
+  }
+  size_t need = 0;
+  uint32_t v = 0, min = 0;
+  if ((b0 & 0xE0) == 0xC0) {
+    need = 1;
+    v = b0 & 0x1F;
+    min = 0x80;
+  } else if ((b0 & 0xF0) == 0xE0) {
+    need = 2;
+    v = b0 & 0x0F;
+    min = 0x800;
+  } else if ((b0 & 0xF8) == 0xF0) {
+    need = 3;
+    v = b0 & 0x07;
+    min = 0x10000;
+  } else {
+    return 0;
+  }
+  if (i + need >= s.size()) return 0;
+  for (size_t k = 1; k <= need; ++k) {
+    const auto b = static_cast<uint8_t>(s[i + k]);
+    if ((b & 0xC0) != 0x80) return 0;
+    v = (v << 6) | (b & 0x3F);
+  }
+  if (v < min || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
+  *cp = v;
+  return i + need + 1;
+}
 
 // --- Load ------------------------------------------------------------------------
 
 std::expected<ByteLevelBpe, std::string> ByteLevelBpe::Load(
     std::span<const uint8_t> section) {
-  Reader r{section};
-  if (r.Read<uint32_t>() != kSmtkMagic) return Refuse("bad magic");
-  const uint32_t version = r.Read<uint32_t>();
-  if (version != kSmtkVersion)
-    return Refuse("unsupported version " + std::to_string(version));
+  // The fixed head through the format's own reader (size, magic, version);
+  // what the head declares is refused here, by name.
+  auto head = ReadSmtkHead(section);
+  if (!head) return Refuse(head.error());
   ByteLevelBpe t;
-  const uint32_t kind = r.Read<uint32_t>();
-  if (kind != static_cast<uint32_t>(TokenizerKind::kByteLevelBpe))
-    return Refuse("unsupported tokenizer kind " + std::to_string(kind) +
+  if (head->kind != static_cast<uint32_t>(TokenizerKind::kByteLevelBpe))
+    return Refuse("unsupported tokenizer kind " + std::to_string(head->kind) +
                   " (only byte-level BPE is implemented)");
   t.info_.kind = TokenizerKind::kByteLevelBpe;
-  const uint32_t pre = r.Read<uint32_t>();
+  const uint32_t pre = head->pre_tokenizer;
   if (pre != static_cast<uint32_t>(PreTokenizer::kGpt2) &&
       pre != static_cast<uint32_t>(PreTokenizer::kDigitsThenGpt2))
     return Refuse("unsupported pre-tokenizer " + std::to_string(pre));
   t.info_.pre_tokenizer = static_cast<PreTokenizer>(pre);
-  const uint32_t flags = r.Read<uint32_t>();
+  const uint32_t flags = head->flags;
   if (flags & ~kSmtkFlagsKnown) return Refuse("unknown flags");
   if (flags & kSmtkFlagAddPrefixSpace)
     return Refuse("add_prefix_space is not implemented");
   if (flags & kSmtkFlagNfc) return Refuse("the NFC normalizer is not implemented");
-  t.info_.vocab_size = r.Read<uint32_t>();
-  t.info_.num_merges = r.Read<uint32_t>();
-  t.info_.num_special = r.Read<uint32_t>();
-  t.info_.eos_id = r.Read<int32_t>();
-  t.info_.bos_id = r.Read<int32_t>();
-  t.info_.unk_id = r.Read<int32_t>();
-  t.info_.pad_id = r.Read<int32_t>();
-  const uint32_t template_len = r.Read<uint32_t>();
-  if (!r.ok) return Refuse("truncated head");
-  t.info_.chat_template = r.ReadBytes(template_len);
+  t.info_.vocab_size = head->vocab_size;
+  t.info_.num_merges = head->num_merges;
+  t.info_.num_special = head->num_special;
+  t.info_.eos_id = head->eos_id;
+  t.info_.bos_id = head->bos_id;
+  t.info_.unk_id = head->unk_id;
+  t.info_.pad_id = head->pad_id;
+  Reader r{section, static_cast<size_t>(kSmtkHeadBytes)};
+  t.info_.chat_template = r.ReadBytes(head->chat_template_len);
   if (!r.ok) return Refuse("truncated chat template");
   if (t.info_.vocab_size == 0) return Refuse("empty vocabulary");
   // Each token is at least three bytes on disk (a length and one byte).
@@ -205,11 +216,14 @@ std::expected<ByteLevelBpe, std::string> ByteLevelBpe::Load(
       return t.tokens_[x].size() > t.tokens_[y].size();
     return x < y;
   });
+  // The per-id flag Encode asks per piece, and the lead bytes the special
+  // scan has to stop at: every other position costs one table load.
+  t.special_flag_.assign(t.tokens_.size(), 0);
+  for (uint32_t id : t.special_) {
+    t.special_flag_[id] = 1;
+    t.special_lead_[static_cast<uint8_t>(t.tokens_[id][0])] = true;
+  }
   return t;
-}
-
-bool ByteLevelBpe::is_special(uint32_t id) const {
-  return std::find(special_.begin(), special_.end(), id) != special_.end();
 }
 
 // --- Pre-tokenization ---------------------------------------------------------------
@@ -261,13 +275,12 @@ void ByteLevelBpe::SplitGpt2(
     // One optional ASCII space, then a run of letters, numbers or
     // "others" (anything that is not whitespace, a letter or a number).
     uint32_t c = cp;
-    size_t run_start = i, after_first = next;
+    size_t after_first = next;
     if (cp == ' ' && next < n) {
       uint32_t c2 = 0;
       const size_t n2 = Decode(text, next, &c2);
       if (!IsSpace(c2)) {  // a letter, a number or an "other" follows
         c = c2;
-        run_start = next;
         after_first = n2;
       }
     }
@@ -288,7 +301,6 @@ void ByteLevelBpe::SplitGpt2(
       pieces.emplace_back(base + start, base + i);
       continue;
     }
-    (void)run_start;
     // Whitespace: the run; when a non-space follows it, all but the last
     // whitespace character (the run must keep at least one), else the run.
     size_t k = i, last_ws_start = i;
@@ -313,6 +325,11 @@ std::vector<std::pair<size_t, size_t>> ByteLevelBpe::PreTokenize(
   std::vector<std::pair<size_t, size_t>> specials;
   size_t i = 0, span_start = 0;
   while (i < text.size()) {
+    // Only a byte some special token starts with is worth the scan.
+    if (!special_lead_[static_cast<uint8_t>(text[i])]) {
+      ++i;
+      continue;
+    }
     bool hit = false;
     for (uint32_t id : special_) {
       const std::string& s = tokens_[id];
@@ -360,8 +377,8 @@ std::vector<std::pair<size_t, size_t>> ByteLevelBpe::PreTokenize(
 
 // --- Encoding ---------------------------------------------------------------------
 
-std::expected<void, std::string> ByteLevelBpe::EncodePiece(
-    std::string_view piece, size_t /*offset*/, std::vector<int32_t>& out) const {
+void ByteLevelBpe::EncodePiece(std::string_view piece,
+                               std::vector<int32_t>& out) const {
   // Initial symbols: one per byte. A byte with no single-byte token is
   // dropped, as the reference drops a character its vocabulary lacks
   // (byte_fallback off, no unknown token); such a byte cannot occur in
@@ -374,36 +391,79 @@ std::expected<void, std::string> ByteLevelBpe::EncodePiece(
   }
   // Merge the lowest-ranked adjacent pair until none applies — the
   // reference's algorithm; an equal rank twice over is the first pair.
-  while (ids.size() >= 2) {
-    uint64_t best = std::numeric_limits<uint64_t>::max();
-    size_t at = 0;
-    for (size_t k = 0; k + 1 < ids.size(); ++k) {
-      auto it = merges_.find((uint64_t{ids[k]} << 32) | ids[k + 1]);
-      if (it != merges_.end() && it->second < best) {
-        best = it->second;
-        at = k;
-      }
-    }
-    if (best == std::numeric_limits<uint64_t>::max()) break;
-    ids[at] = static_cast<uint32_t>(best & 0xFFFFFFFFu);
-    ids.erase(ids.begin() + static_cast<ptrdiff_t>(at) + 1);
+  // The symbols form a doubly linked list and the candidate pairs a
+  // min-heap keyed by (rank, position), so a piece of n bytes costs
+  // O(n log n) however long a run the pattern hands over (a paragraph
+  // without spaces, a line of separators) instead of a rescan of every
+  // pair per merge. A heap entry is stale once either of its symbols was
+  // merged away or the pair at its position changed; it is checked against
+  // the list before it is applied, the standard lazy deletion.
+  const size_t n = ids.size();
+  if (n < 2) {
+    for (uint32_t id : ids) out.push_back(static_cast<int32_t>(id));
+    return;
   }
-  for (uint32_t id : ids) out.push_back(static_cast<int32_t>(id));
-  return {};
+  constexpr size_t kNone = std::numeric_limits<size_t>::max();
+  std::vector<size_t> prev(n), next(n);
+  for (size_t k = 0; k < n; ++k) {
+    prev[k] = k == 0 ? kNone : k - 1;
+    next[k] = k + 1 < n ? k + 1 : kNone;
+  }
+  struct Candidate {
+    uint64_t ranked;  // rank << 32 | merged id, as merges_ stores it
+    size_t at;        // the left symbol's position
+    uint32_t left, right;  // the pair the entry was made for
+    bool operator>(const Candidate& o) const {
+      return ranked != o.ranked ? ranked > o.ranked : at > o.at;
+    }
+  };
+  std::priority_queue<Candidate, std::vector<Candidate>, std::greater<Candidate>>
+      heap;
+  auto offer = [&](size_t at) {
+    const size_t nx = next[at];
+    if (nx == kNone) return;
+    auto it = merges_.find((uint64_t{ids[at]} << 32) | ids[nx]);
+    if (it != merges_.end()) heap.push({it->second, at, ids[at], ids[nx]});
+  };
+  for (size_t k = 0; k + 1 < n; ++k) offer(k);
+  std::vector<bool> alive(n, true);
+  while (!heap.empty()) {
+    const Candidate c = heap.top();
+    heap.pop();
+    const size_t nx = next[c.at];
+    if (!alive[c.at] || nx == kNone || ids[c.at] != c.left || ids[nx] != c.right)
+      continue;  // stale
+    ids[c.at] = static_cast<uint32_t>(c.ranked & 0xFFFFFFFFu);
+    alive[nx] = false;
+    next[c.at] = next[nx];
+    if (next[nx] != kNone) prev[next[nx]] = c.at;
+    if (prev[c.at] != kNone) offer(prev[c.at]);
+    offer(c.at);
+  }
+  for (size_t k = 0; k != kNone; k = next[k])
+    out.push_back(static_cast<int32_t>(ids[k]));
 }
 
 std::expected<void, std::string> ByteLevelBpe::Encode(
     std::string_view text, std::vector<int32_t>& out) const {
+  EncodeSplit(text, text.size(), out);
+  return {};
+}
+
+size_t ByteLevelBpe::EncodeSplit(std::string_view text, size_t boundary,
+                                 std::vector<int32_t>& out) const {
+  const size_t base = out.size();
+  size_t before = 0;
   for (const auto& [b, e] : PreTokenize(text)) {
     const std::string_view piece = text.substr(b, e - b);
     auto it = ids_.find(piece);
-    if (it != ids_.end() && is_special(it->second)) {
+    if (it != ids_.end() && is_special(it->second))
       out.push_back(static_cast<int32_t>(it->second));
-      continue;
-    }
-    if (auto ok = EncodePiece(piece, b, out); !ok) return ok;
+    else
+      EncodePiece(piece, out);
+    if (e <= boundary) before = out.size() - base;
   }
-  return {};
+  return before;
 }
 
 uint64_t SectionHash(std::span<const uint8_t> section) {

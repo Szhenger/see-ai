@@ -2,6 +2,7 @@
 #define SEEML_SOURCE_LANGUAGE_DATASET_FORMAT_H_
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 
 // =============================================================================
@@ -56,6 +57,55 @@ inline constexpr int32_t kSdsIgnoreLabel = -1;
 
 static_assert(std::endian::native == std::endian::little,
               "SDS serialization assumes a little-endian host.");
+
+/// The version a token corpus is written at: v3 when it names its tokenizer
+/// or carries a mask, else the v2 bytes every earlier writer produced.
+inline constexpr uint32_t SdsTokenVersion(uint64_t tokenizer_hash,
+                                          bool masked) {
+  return (tokenizer_hash != 0 || masked) ? 3u : 2u;
+}
+
+/// Writes a token corpus — the header, then `records` records of `seq + 1`
+/// ids each from `ids` and, when `masked`, each record's `seq` mask bytes
+/// (from `mask`, records x seq) padded to 4 — through `put(const void*,
+/// size_t)`: byte for byte the same whether `put` appends to a buffer (the
+/// compiler's ingest, whose bytes the plan is pinned to) or writes a stream
+/// (Dataset::SaveToFile). The one statement of the token record layout.
+template <class Put>
+void WriteSdsTokenCorpus(Put&& put, uint64_t records, uint64_t seq,
+                         uint64_t tokenizer_hash, bool masked,
+                         const int32_t* ids, const uint8_t* mask) {
+  const uint32_t version = SdsTokenVersion(tokenizer_hash, masked);
+  const uint32_t label_kind = 1, input_kind = 1, zero32 = 0;
+  const uint32_t flags = masked ? kSdsFlagMasked : 0;
+  const uint64_t label_dim = 0, zero64 = 0;
+  put(&kSdsMagic, 4);
+  put(&version, 4);
+  put(&records, 8);
+  put(&seq, 8);
+  put(&label_kind, 4);
+  put(&input_kind, 4);
+  put(&label_dim, 8);
+  if (version >= 3) {
+    put(&tokenizer_hash, 8);
+    put(&flags, 4);
+    put(&zero32, 4);
+    put(&zero64, 8);
+  }
+  const uint64_t rec = seq + 1;
+  if (!masked) {
+    // One contiguous i32 block; labels are derived, never stored.
+    put(ids, static_cast<size_t>(records * rec * sizeof(int32_t)));
+    return;
+  }
+  const uint8_t pad[4] = {0, 0, 0, 0};
+  const uint64_t pad_bytes = SdsMaskBytes(seq) - seq;
+  for (uint64_t r = 0; r < records; ++r) {
+    put(ids + r * rec, static_cast<size_t>(rec * sizeof(int32_t)));
+    put(mask + r * seq, static_cast<size_t>(seq));
+    if (pad_bytes != 0) put(pad, static_cast<size_t>(pad_bytes));
+  }
+}
 
 }  // namespace seeml::update
 

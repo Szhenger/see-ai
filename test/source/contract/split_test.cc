@@ -17,13 +17,19 @@ namespace {
 
 using namespace seeml::update;
 
-TEST(Split, TheCountRuleIsThePositionalSplits) {
+TEST(Split, TheCountRuleIsThePositionalSplitsOverTheHeaderFraction) {
   EXPECT_EQ(HeldOutCount(0, 0.5f), 0u);
   EXPECT_EQ(HeldOutCount(1, 0.5f), 0u);
   EXPECT_EQ(HeldOutCount(2, 0.1f), 1u);    // at least one
   EXPECT_EQ(HeldOutCount(2, 0.99f), 1u);   // at most n - 1
   EXPECT_EQ(HeldOutCount(10, 0.3f), 3u);
   EXPECT_EQ(HeldOutCount(501, 0.1f), 50u);
+  // The fraction is the header's f32: 0.7f widens to 0.699999988..., so
+  // ten records hold out 6 here where the runner's positional split of a
+  // parsed double 0.7 holds out 7 — the compiled split is the one the plan
+  // names, and the device recomputes exactly this.
+  EXPECT_EQ(HeldOutCount(10, 0.7f), 6u);
+  EXPECT_EQ(HeldOutCount(10, 0.9f), 8u);
 }
 
 TEST(Split, IndicesAreSortedDistinctInRangeAndDeterministic) {

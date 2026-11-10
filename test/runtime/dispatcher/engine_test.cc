@@ -542,16 +542,24 @@ TEST(CoverageTable, TheMaskedLossFlagAndTheMaskedOpcodesAgree) {
     EXPECT_STR_CONTAINS(loaded.error(), "carries the masked-loss flag");
   }
   {
-    // A masked plan the compiler built loads, and runs a step on a masked
-    // corpus; the same corpus is refused by the plain plan.
-    up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
-    up::UpdateConfig cfg = AccumulatingConfig(kBatch);
+    // A masked plan the compiler built loads with the flag. A mask marks
+    // the positions of a token record, so the plan is a token plan: the
+    // driver refuses --masked-loss on a feature model (no corpus could
+    // feed it — the loader refuses a masked feature SDS).
+    up::SmfModel model = seeml::testing::MakeTinyTokenDecoder(
+        kTokVocab, kTokDim, /*heads=*/2, kTokSeq, /*ffn=*/16, 41);
+    up::UpdateConfig cfg = AccumulatingConfig(kTokBatch);
     cfg.masked_loss = true;
     auto compiled = up::UpdateCompiler(cfg).Compile(model);
     ASSERT_OK(compiled);
     UpdateEngine engine;
     ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
     EXPECT_NE(engine.header().data_flags & up::kDataFlagMaskedLoss, 0u);
+    up::UpdateConfig feature_cfg = AccumulatingConfig(kBatch);
+    feature_cfg.masked_loss = true;
+    EXPECT_ERROR_CONTAINS(
+        up::UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 1)),
+        "token models alone");
   }
 }
 

@@ -952,6 +952,25 @@ class DifferentialSuite(unittest.TestCase):
             fx.Corpus(np, ten_path).check(split_plan)
         with self.assertRaisesRegex(fx.PlanError, "sorted, distinct"):
             fx.Corpus(np, ten_path).split_held_out([5, 1], 1)
+        # corpus_for_plan prepares the corpus as the device does: the
+        # compiled split recomputed (a --val-fraction refused), and the
+        # WHOLE corpus checked — an id out of range in a held-out record
+        # (5) is the feeder's refusal, as UpdateEngine::TrainImpl validates
+        # the validation set too.
+        train2, held2 = fx.corpus_for_plan(np, split_plan, ten_path)
+        self.assertEqual((train2.num_samples, held2.num_samples), (7, 3))
+        self.assertEqual(held2.split_hash, 0xe731eed086e2a95d)
+        with self.assertRaisesRegex(fx.PlanError, "not a runner decision"):
+            fx.corpus_for_plan(np, split_plan, ten_path, 0.25)
+        bad = ten.copy()
+        bad[5, 2] = vocab
+        bad_path = os.path.join(self.dir, "check_split_bad.sds")
+        em.export_token_sds(bad, bad_path)
+        with self.assertRaisesRegex(fx.PlanError, "token id"):
+            fx.corpus_for_plan(np, split_plan, bad_path)
+        # The f32 fraction rule: 0.7 of ten records is 6 (0.7f widens below
+        # 0.7), the count the C++ HeldOutCount and the plan header agree on.
+        self.assertEqual(fx.held_out_count(10, 0.7), 6)
         records[1, 2] = vocab
         with self.assertRaisesRegex(fx.PlanError, "token id"):
             corpus("check_tokbad.sds", lambda p: em.export_token_sds(records, p)).check(

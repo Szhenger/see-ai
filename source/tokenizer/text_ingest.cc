@@ -13,43 +13,6 @@ namespace seeml::tokenizer {
 
 namespace {
 
-/// Decodes the UTF-8 scalar at `i` into `cp`, returning the index past it,
-/// or 0 when the bytes at `i` are not a well-formed sequence (overlong
-/// forms, surrogates and values past U+10FFFF included).
-size_t DecodeStrict(std::string_view s, size_t i, uint32_t* cp) {
-  const auto b0 = static_cast<uint8_t>(s[i]);
-  if (b0 < 0x80) {
-    *cp = b0;
-    return i + 1;
-  }
-  size_t need = 0;
-  uint32_t v = 0, min = 0;
-  if ((b0 & 0xE0) == 0xC0) {
-    need = 1;
-    v = b0 & 0x1F;
-    min = 0x80;
-  } else if ((b0 & 0xF0) == 0xE0) {
-    need = 2;
-    v = b0 & 0x0F;
-    min = 0x800;
-  } else if ((b0 & 0xF8) == 0xF0) {
-    need = 3;
-    v = b0 & 0x07;
-    min = 0x10000;
-  } else {
-    return 0;
-  }
-  if (i + need >= s.size()) return 0;
-  for (size_t k = 1; k <= need; ++k) {
-    const auto b = static_cast<uint8_t>(s[i + k]);
-    if ((b & 0xC0) != 0x80) return 0;
-    v = (v << 6) | (b & 0x3F);
-  }
-  if (v < min || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
-  *cp = v;
-  return i + need + 1;
-}
-
 bool IsControl(uint32_t cp) {
   // Cc minus tab, newline and carriage return.
   if (cp == '\t' || cp == '\n' || cp == '\r') return false;
@@ -184,7 +147,7 @@ std::string Sanitize(std::string_view text, bool count_only,
   size_t i = 0;
   while (i < text.size()) {
     uint32_t cp = 0;
-    const size_t next = DecodeStrict(text, i, &cp);
+    const size_t next = DecodeUtf8Strict(text, i, &cp);
     if (next == 0) {
       ++counts->invalid_utf8_bytes;
       if (count_only) out.push_back(text[i]);
@@ -258,10 +221,24 @@ std::expected<std::vector<Document>, std::string> DocumentsFromJsonl(
           return refuse("nested values are not part of a text record");
         while (i < line.size() && line[i] != ',' && line[i] != '}') ++i;
       }
+      // Members are comma-separated: a value followed by anything but ','
+      // or '}' is a malformed object, not a record to read around.
       i = SkipSpaces(line, i);
-      if (i < line.size() && line[i] == ',') i = SkipSpaces(line, i + 1);
+      if (i >= line.size()) return refuse("truncated object");
+      if (line[i] == ',') {
+        i = SkipSpaces(line, i + 1);
+        if (i >= line.size() || line[i] == '}')
+          return refuse("a ',' with no member after it");
+      } else if (line[i] != '}') {
+        return refuse("expected ',' or '}' after a value");
+      }
     }
     if (i >= line.size()) return refuse("truncated object");
+    // One record per line: anything after the object (a second object, a
+    // stray comma, text) would otherwise vanish from the canonical corpus
+    // without a drop entry in the manifest.
+    i = SkipSpaces(line, i + 1);
+    if (i < line.size()) return refuse("content after the object (one record per line)");
     if (have_text && (have_prompt || have_response))
       return refuse("a record is {\"text\"} or {\"prompt\", \"response\"}, "
                     "not both");
@@ -360,18 +337,19 @@ std::expected<IngestResult, std::string> Ingest(
     std::vector<int32_t> doc_ids;
     size_t prompt_ids = 0;
     if (doc.chat) {
+      // The rendered record is encoded as ONE string, so the pre-tokenizer
+      // sees the join between the template's "assistant\n" and the
+      // response as the reference does (a response that opens with two or
+      // more whitespace characters folds the newline with all but the last
+      // of them); the prompt's ids are those of the pieces that end at or
+      // before the join, a straddling piece being the response's — the
+      // rule an assistant-token mask follows.
       const std::string prompt_side = std::string(kImStart) + "user\n" + clean +
                                       std::string(kImEnd) + "\n" +
                                       std::string(kImStart) + "assistant\n";
-      const std::string response_side =
-          clean_response + std::string(kImEnd) + "\n";
-      if (auto ok = tokenizer.Encode(prompt_side, doc_ids); !ok)
-        return std::unexpected("ingest: document " + std::to_string(d) + ": " +
-                               ok.error());
-      prompt_ids = doc_ids.size();
-      if (auto ok = tokenizer.Encode(response_side, doc_ids); !ok)
-        return std::unexpected("ingest: document " + std::to_string(d) + ": " +
-                               ok.error());
+      const std::string rendered =
+          prompt_side + clean_response + std::string(kImEnd) + "\n";
+      prompt_ids = tokenizer.EncodeSplit(rendered, prompt_side.size(), doc_ids);
       if (doc_ids.size() == prompt_ids) {
         ++m.dropped_degenerate;
         m.drops.push_back({d, "degenerate: no response ids"});
@@ -451,42 +429,20 @@ std::expected<IngestResult, std::string> Ingest(
     m.distinct_ids = distinct.size();
   }
 
-  // The canonical SDS: v3 when the corpus names its tokenizer or carries a
-  // mask, else v2.
+  // The canonical SDS, through the format's one token-corpus writer
+  // (source/language/dataset_format.h): v3 when the corpus names its
+  // tokenizer or carries a mask, else v2 — the bytes the plan is pinned to.
   using namespace seeml::update;
-  const uint32_t version = (tokenizer_hash != 0 || masked) ? 3 : 2;
   std::vector<uint8_t>& sds = result.sds;
+  sds.reserve(static_cast<size_t>(
+      SdsHeaderBytes(SdsTokenVersion(tokenizer_hash, masked)) +
+      m.windows * (rec * sizeof(int32_t) + (masked ? SdsMaskBytes(S) : 0))));
   auto put = [&](const void* p, size_t n) {
     const auto* bytes = static_cast<const uint8_t*>(p);
     sds.insert(sds.end(), bytes, bytes + n);
   };
-  const uint32_t label_kind = 1, input_kind = 1, zero32 = 0;
-  const uint32_t flags = masked ? kSdsFlagMasked : 0;
-  const uint64_t num_samples = m.windows, input_dim = S, label_dim = 0,
-                 zero64 = 0;
-  put(&kSdsMagic, 4);
-  put(&version, 4);
-  put(&num_samples, 8);
-  put(&input_dim, 8);
-  put(&label_kind, 4);
-  put(&input_kind, 4);
-  put(&label_dim, 8);
-  if (version >= 3) {
-    put(&tokenizer_hash, 8);
-    put(&flags, 4);
-    put(&zero32, 4);
-    put(&zero64, 8);
-  }
-  if (!masked) {
-    put(kept_ids.data(), kept_ids.size() * sizeof(int32_t));
-  } else {
-    const uint64_t mask_bytes = SdsMaskBytes(S);
-    for (uint64_t w = 0; w < m.windows; ++w) {
-      put(kept_ids.data() + w * rec, rec * sizeof(int32_t));
-      put(kept_mask.data() + w * S, S);
-      for (uint64_t pad = S; pad < mask_bytes; ++pad) sds.push_back(0);
-    }
-  }
+  WriteSdsTokenCorpus(put, m.windows, S, tokenizer_hash, masked,
+                      kept_ids.data(), kept_mask.data());
   result.corpus_hash = ContentHash64(sds.data(), sds.size());
   result.ids = std::move(kept_ids);
   result.mask = std::move(kept_mask);

@@ -172,6 +172,9 @@ TEST(Dataset, FileRoundTripClassLabels) {
   EXPECT_EQ(loaded.num_samples(), 3u);
   EXPECT_EQ(loaded.input_dim(), 2u);
   EXPECT_EQ(loaded.label_kind(), 1u);
+  // A feature-row file has an identity too: the corpus a v22 plan compiled
+  // over an MLP is pinned to it (the hash used to be the token branch's).
+  EXPECT_NE(loaded.content_hash(), 0u);
 
   // Batches served from the loaded copy are identical to the original's.
   std::vector<float> want_in(6), got_in(6);
@@ -403,6 +406,10 @@ TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {
   ASSERT_OK_AND_ASSIGN(Dataset val, loaded.SplitValidation(0.5));
   EXPECT_TRUE(val.masked());
   EXPECT_EQ(val.tokenizer_hash(), 0x1234ABCDu);
+  // Both halves are the one file a pinned plan names: the engine validates
+  // the validation set too, and the runner's default split is this one.
+  EXPECT_EQ(val.content_hash(), loaded.content_hash());
+  EXPECT_NE(val.content_hash(), 0u);
   std::vector<int32_t> vin(8), vlab(8);
   val.FillBatch(8, reinterpret_cast<float*>(vin.data()),
                 reinterpret_cast<uint8_t*>(vlab.data()));
@@ -535,6 +542,43 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
   EXPECT_ERROR_CONTAINS(again.SplitHeldOut(all, 1), "at least one record");
   again.EnableShuffle(3);
   EXPECT_ERROR_CONTAINS(again.SplitHeldOut({1}, 1), "before enabling shuffle");
+
+  // A masked token corpus: the records and their mask rows move together,
+  // in corpus order, the kept ones compacted in place.
+  std::vector<int32_t> tokens;
+  for (int32_t r = 0; r < 4; ++r)
+    for (int32_t j = 0; j <= 4; ++j) tokens.push_back(r * 5 + j);
+  std::vector<uint8_t> mask(16, 1);
+  for (int r = 0; r < 4; ++r)
+    for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;  // record r masks its first r
+  ASSERT_OK_AND_ASSIGN(Dataset masked, Dataset::FromTokens(tokens, 4, 4, mask, 9));
+  ASSERT_OK_AND_ASSIGN(Dataset held_out, masked.SplitHeldOut({0, 2}, 0x55));
+  EXPECT_EQ(masked.num_samples(), 2u);
+  EXPECT_EQ(held_out.num_samples(), 2u);
+  EXPECT_TRUE(masked.masked());
+  EXPECT_TRUE(held_out.masked());
+  EXPECT_EQ(masked.target_positions(), 3u + 1u);     // records 1 (3) and 3 (1)
+  EXPECT_EQ(held_out.target_positions(), 4u + 2u);   // records 0 (4) and 2 (2)
+  std::vector<int32_t> in(8), lab(8);
+  masked.FillBatch(8, reinterpret_cast<float*>(in.data()),
+                   reinterpret_cast<uint8_t*>(lab.data()));
+  for (int j = 0; j < 4; ++j) {
+    EXPECT_EQ(in[j], tokens[1 * 5 + j]);
+    EXPECT_EQ(in[4 + j], tokens[3 * 5 + j]);
+  }
+  EXPECT_EQ(lab[0], seeml::update_rt::kSdsIgnoreLabel);  // record 1 masks position 0
+  EXPECT_EQ(lab[1], tokens[1 * 5 + 2]);
+  EXPECT_EQ(lab[4 + 2], seeml::update_rt::kSdsIgnoreLabel);  // record 3 masks 0..2
+  EXPECT_EQ(lab[4 + 3], tokens[3 * 5 + 4]);
+  held_out.FillBatch(8, reinterpret_cast<float*>(in.data()),
+                     reinterpret_cast<uint8_t*>(lab.data()));
+  for (int j = 0; j < 4; ++j) {
+    EXPECT_EQ(in[j], tokens[0 * 5 + j]);
+    EXPECT_EQ(in[4 + j], tokens[2 * 5 + j]);
+  }
+  EXPECT_EQ(lab[0], tokens[0 * 5 + 1]);
+  EXPECT_EQ(lab[4 + 1], seeml::update_rt::kSdsIgnoreLabel);  // record 2 masks 0..1
+  EXPECT_EQ(lab[4 + 2], tokens[2 * 5 + 3]);
 }
 
 TEST(DatasetSplit, RejectsDegenerateRequests) {

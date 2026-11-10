@@ -21,6 +21,9 @@ namespace seeml::diag::tokenizing {
 inline constexpr std::string_view kContainer = "SMF";
 /// The ingress feasibility gate (resource_analyzer).
 inline constexpr std::string_view kIngressor = "Ingressor";
+/// The training-data ingress (compiler/frontend/tokenization/): the corpus
+/// `--data` names, read, tokenized and held to the model.
+inline constexpr std::string_view kCorpus = "Corpus";
 
 /// Container-level failure: "SMF: <message>".
 [[nodiscard]] inline std::unexpected<std::string> Error(std::string_view message) {
@@ -48,6 +51,11 @@ inline constexpr std::string_view kIngressor = "Ingressor";
 /// Feasibility failure from the ingress gate: "Ingressor: <message>".
 [[nodiscard]] inline std::unexpected<std::string> IngressError(std::string_view message) {
   return Fail(kIngressor, message);
+}
+
+/// A corpus the data path refuses: "Corpus: <message>".
+[[nodiscard]] inline std::unexpected<std::string> CorpusError(std::string_view message) {
+  return Fail(kCorpus, message);
 }
 
 }  // namespace seeml::diag::tokenizing

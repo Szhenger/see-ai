@@ -587,13 +587,13 @@ std::expected<void, std::string> VerifyCrossInputs(
   // corpus will carry, so it must be the embedding table's rows and the
   // head's width — the ids index the one, the next-token labels the other.
   if (!student.tokenizer.empty()) {
-    if (student.tokenizer.size() < tokenizer::kSmtkHeadBytes)
-      return parsing::Error("the model's tokenizer section is truncated");
-    uint32_t magic = 0, vocab = 0;
-    std::memcpy(&magic, student.tokenizer.data(), sizeof(magic));
-    std::memcpy(&vocab, student.tokenizer.data() + 20, sizeof(vocab));
-    if (magic != tokenizer::kSmtkMagic)
-      return parsing::Error("the model's tokenizer section has a bad magic");
+    // The head is read by the section's own reader (size, magic and
+    // version proven there); the encoder refuses the rest by name when a
+    // compile takes raw text.
+    auto head = tokenizer::ReadSmtkHead(student.tokenizer);
+    if (!head)
+      return parsing::Error("the model's tokenizer section: " + head.error());
+    const uint32_t vocab = head->vocab_size;
     if (!st.token_input)
       return parsing::Error("the model carries a tokenizer section but takes "
                             "feature rows, not token ids");
@@ -615,6 +615,15 @@ std::expected<void, std::string> VerifyCrossInputs(
   if (tt->token_input != st.token_input ||
       (!st.token_input && tt->input_width != st.input_width))
     return parsing::Error("teacher input dimensionality mismatch");
+  // The teacher reads the student's token ids, so a teacher that carries a
+  // tokenizer section must carry the student's: with another one the same
+  // ids name other strings and the distillation target is a distribution
+  // over them. A teacher without a section makes no claim.
+  if (!teacher->tokenizer.empty() && !student.tokenizer.empty() &&
+      teacher->TokenizerHash() != student.TokenizerHash())
+    return parsing::Error(
+        "the teacher's tokenizer section is not the student's (tokenizer "
+        "hash mismatch): the teacher reads the student's token ids");
   // A sequential teacher must agree on seq_len (F02): the causal mask and
   // the rotary positions follow each model's own declaration, so a
   // disagreement is a distillation target computed over other positions —

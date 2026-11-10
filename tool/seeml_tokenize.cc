@@ -4,10 +4,12 @@
 //       the tokenizer section's summary: kind, pre-tokenizer, vocabulary,
 //       merges, special tokens, eos / bos, whether a chat template is
 //       carried, and the section's hash (the identity corpora bind to).
-//   seeml-tokenize model.smf text.txt [--pieces]
+//   seeml-tokenize model.smf text.txt [--pieces | --lines]
 //       the ids of the file's bytes, one per line (the whole file is one
 //       document: no EOS appended, nothing dropped but bytes without a
-//       token); --pieces prints the pre-tokenizer's pieces instead.
+//       token); --pieces prints the pre-tokenizer's pieces instead;
+//       --lines encodes every line of the file as a document of its own
+//       and prints one line of space-separated ids per input line.
 //
 // What this prints is what `seeml-update-compile --data text.txt` encodes
 // and what the device's pipeline re-runs on its own data; the exporter's
@@ -19,6 +21,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "compiler/frontend/ingressor/model_reader.h"
@@ -29,7 +32,7 @@ namespace {
 int Usage() {
   std::fprintf(stderr,
                "usage: seeml-tokenize model.smf --info\n"
-               "       seeml-tokenize model.smf text.txt [--pieces]\n");
+               "       seeml-tokenize model.smf text.txt [--pieces | --lines]\n");
   return 2;
 }
 
@@ -38,13 +41,15 @@ int Usage() {
 int main(int argc, char** argv) {
   if (argc < 3) return Usage();
   const std::string model_path = argv[1];
-  bool info = false, pieces = false;
+  bool info = false, pieces = false, lines = false;
   std::string text_path;
   for (int i = 2; i < argc; ++i) {
     if (std::strcmp(argv[i], "--info") == 0)
       info = true;
     else if (std::strcmp(argv[i], "--pieces") == 0)
       pieces = true;
+    else if (std::strcmp(argv[i], "--lines") == 0)
+      lines = true;
     else if (argv[i][0] == '-' && argv[i][1] != '\0')
       return Usage();
     else if (text_path.empty())
@@ -106,12 +111,39 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
+  std::string out;
+  if (lines) {
+    // Every line of the file as a document of its own — the pieces of
+    // text.split("\n"), the last possibly empty — one line of
+    // space-separated ids per input line (an empty line for no ids), so a
+    // parity run over a corpus of N lines loads the model once, not N
+    // times.
+    std::string_view rest = text;
+    while (true) {
+      const size_t nl = rest.find('\n');
+      const std::string_view line =
+          nl == std::string_view::npos ? rest : rest.substr(0, nl);
+      std::vector<int32_t> ids;
+      if (auto ok = tok->Encode(line, ids); !ok) {
+        std::fprintf(stderr, "seeml-tokenize: %s\n", ok.error().c_str());
+        return 1;
+      }
+      for (size_t i = 0; i < ids.size(); ++i) {
+        if (i) out += ' ';
+        out += std::to_string(ids[i]);
+      }
+      out += '\n';
+      if (nl == std::string_view::npos) break;
+      rest = rest.substr(nl + 1);
+    }
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    return 0;
+  }
   std::vector<int32_t> ids;
   if (auto ok = tok->Encode(text, ids); !ok) {
     std::fprintf(stderr, "seeml-tokenize: %s\n", ok.error().c_str());
     return 1;
   }
-  std::string out;
   out.reserve(ids.size() * 6);
   for (int32_t id : ids) {
     out += std::to_string(id);

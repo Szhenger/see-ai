@@ -473,8 +473,11 @@ class Plan:
         feeder contract holds class labels to (CR2 #143 F07: the engine
         scans all four programs; a softmax in the merge or step program
         narrows the bound too)."""
+        # The plain and the masked forward (11, 51): the engine's
+        # num_classes scan folds both pairs, and a masked plan carries no
+        # opcode 11 at all.
         widths = [i.out[1] for name in SECTIONS
-                  for i in self.sections[name] if i.opcode == 11]
+                  for i in self.sections[name] if i.opcode in (11, 51)]
         return min(widths) if widths else 0
 
     def vocab(self):
@@ -518,7 +521,10 @@ SPLIT_DOMAIN = 0x53504C49545F3031
 def held_out_count(n, frac):
     if n < 2:
         return 0
-    k = int(n * float(frac))
+    # The fraction at the header's f32 precision (val_frac_bits), as C++
+    # HeldOutCount takes it: a raw literal such as 0.7 rounds the same way.
+    frac = struct.unpack("<f", struct.pack("<f", float(frac)))[0]
+    k = int(n * frac)
     k = max(k, 1)
     return min(k, n - 1)
 
@@ -538,12 +544,55 @@ def held_out_indices(n, seed, frac):
 
 
 def split_hash(held):
-    from seeml import content_hash
     return content_hash.content_hash64(struct.pack(f"<{len(held)}Q", *held))
 
 
 def val_frac_of(bits):
     return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+
+def effective_val_fraction(plan, val_fraction, default=0.1):
+    """The fraction a run holds out: the plan's own for a compiled split,
+    else `val_fraction` (None = `default`)."""
+    if plan.data_flags & formats.DATA_FLAG_SPLIT:
+        return val_frac_of(plan.val_frac_bits)
+    return default if val_fraction is None else val_fraction
+
+
+def corpus_for_plan(np, plan, path, val_fraction=None, default=0.1):
+    """(train, validation) for `plan` from the corpus at `path`, prepared as
+    the emitted runner prepares them. A plan that compiled its split
+    (kDataFlagSplit) names the held-out records: the same function of
+    (records, seed, fraction) is recomputed and its hash must be the
+    plan's, and a `val_fraction` is refused as not this run's decision.
+    Otherwise `val_fraction` (None = `default`) splits by position; 0 is no
+    split. The whole corpus is checked against the plan BEFORE it is split
+    — every rule is per header or per record, so one check over the union
+    is the engine's two checks (UpdateEngine::TrainImpl validates the
+    training set and the validation set alike), and the held-out records
+    are bounded as the device bounds them."""
+    corpus = Corpus(np, path)
+    if plan.data_flags & formats.DATA_FLAG_SPLIT:
+        if val_fraction is not None:
+            raise PlanError("the plan compiled its validation split "
+                            f"(seed {plan.split_seed}, fraction "
+                            f"{val_frac_of(plan.val_frac_bits):g}); "
+                            "--val-fraction is not a runner decision")
+        held = held_out_indices(corpus.num_samples, plan.split_seed,
+                                val_frac_of(plan.val_frac_bits))
+        h = split_hash(held) if held else 0
+        if not held or h != plan.val_split_hash:
+            raise PlanError("the corpus does not yield the plan's compiled "
+                            "split (split hash mismatch): the plan was "
+                            "compiled over another corpus")
+        corpus.split_hash = h  # the identity both halves will carry
+        corpus.check(plan)
+        return corpus.split_held_out(held, h)
+    corpus.check(plan)
+    frac = default if val_fraction is None else val_fraction
+    if frac > 0.0:
+        return corpus.split_validation(frac)
+    return corpus, None
 
 
 class Corpus:
@@ -630,21 +679,21 @@ class Corpus:
         self.order, self.cursor, self.state = None, 0, 0
 
     def _view(self, lo, hi):
-        return self._take(range(lo, hi))
+        return self._take(slice(lo, hi))  # a zero-copy view of the records
 
-    def _take(self, indices):
-        """The records at `indices`, in that order, as a new corpus."""
-        np = self.np
+    def _take(self, idx):
+        """The records `idx` selects (a slice, an index array or a boolean
+        mask), in that order, as a new corpus."""
         other = object.__new__(Corpus)
         other.__dict__.update(self.__dict__)
-        idx = np.asarray(list(indices), dtype=np.int64)
-        other.num_samples = int(idx.size)
         if self.input_kind == 1:
             other.tokens = self.tokens[idx]
             if self.mask is not None:
                 other.mask = self.mask[idx]
+            other.num_samples = int(other.tokens.shape[0])
         else:
             other.inputs, other.labels = self.inputs[idx], self.labels[idx]
+            other.num_samples = int(other.inputs.shape[0])
         other.order, other.cursor = None, 0
         return other
 
@@ -652,19 +701,18 @@ class Corpus:
         """(train, validation): the records at `held` (sorted, distinct)
         held out — Dataset::SplitHeldOut; both halves carry `split_hash`,
         the feeder contract's split identity."""
+        np = self.np
         n = self.num_samples
-        held = list(held)
-        if not held or len(held) >= n:
+        held = np.asarray(list(held), dtype=np.int64)
+        if held.size == 0 or held.size >= n:
             raise PlanError("the held-out set must leave at least one record "
                             "on each side")
-        if any(h >= n for h in held) or any(
-                b <= a for a, b in zip(held, held[1:])):
+        if held[0] < 0 or held[-1] >= n or (np.diff(held) <= 0).any():
             raise PlanError("held-out indices are not sorted, distinct and "
                             "below the corpus")
-        mark = [False] * n
-        for h in held:
-            mark[h] = True
-        train = self._take(i for i in range(n) if not mark[i])
+        keep = np.ones(n, dtype=bool)
+        keep[held] = False
+        train = self._take(keep)
         val = self._take(held)
         train.split_hash = val.split_hash = split_hash
         return train, val
@@ -1548,28 +1596,41 @@ def _xent_masked_fwd(m, x, ins, step):
     n, c = ins.out[0], ins.out[1]
     probs = _softmax(x, m.read(ins.src[0], (n, c)))
     labels = m.read(ins.src[1], (n,), "<i4")
-    target = labels >= 0
-    hot = x.one_hot(x.where(target, labels, 0 * labels), c)
+    target, weight, hot, count = _masked_targets(x, labels, c, probs.dtype)
     picked = x.maximum(x.sum(probs * hot, -1), 1e-12)
     logs = x.log(picked)
-    kept = x.where(target, logs, 0.0 * logs)
-    count = x.maximum(x.sum(target.astype(logs.dtype) if hasattr(target, "astype")
-                            else target * 1.0, 0), 1.0)
+    # The ignored slot's zero comes from the finite weight, never from the
+    # row's own log (0 * NaN is NaN, and the device never reads the row).
+    kept = x.where(target, logs, 0.0 * weight)
     m.write(ins.src[3], probs)
-    m.write(ins.src[2], (-x.sum(kept, 0) / count).reshape((1,)))
+    # 0.0 - sum: +0.0 for a batch with no target, as the device writes it.
+    m.write(ins.src[2], ((0.0 - x.sum(kept, 0)) / count).reshape((1,)))
+
+
+def _masked_targets(x, labels, c, dtype):
+    """The masked pair's shared operands: the target rows (label >= 0), the
+    1.0 / 0.0 weight per row, the one-hot over the target rows' labels (an
+    ignored row hits column 0, which the mask then zeroes), and the target
+    count clamped to 1 (a batch with no target divides nothing)."""
+    target = labels >= 0
+    # .astype is numpy's and mlx's; torch spells the same thing * 1.0.
+    weight = (target.astype(dtype) if hasattr(target, "astype")
+              else target * 1.0)
+    hot = x.one_hot(x.where(target, labels, 0 * labels), c)
+    count = x.maximum(x.sum(weight, 0), 1.0)
+    return target, weight, hot, count
 
 
 def _xent_masked_bwd(m, x, ins, step):
     n, c = ins.out[0], ins.out[1]
     labels = m.read(ins.src[1], (n,), "<i4")
-    target = labels >= 0
-    hot = x.one_hot(x.where(target, labels, 0 * labels), c)
     seed = m.read(ins.src[2], (1,))
     probs = m.read(ins.src[0], (n, c))
-    count = x.maximum(x.sum(target.astype(probs.dtype) if hasattr(target, "astype")
-                            else target * 1.0, 0), 1.0)
+    target, _, hot, count = _masked_targets(x, labels, c, probs.dtype)
     d = seed * (probs - hot) / count
-    m.write(ins.src[3], x.where(target.reshape((n, 1)), d, 0.0 * d))
+    # An ignored row's zero comes from the finite one-hot, not from d
+    # (NaN probabilities on an ignored row must not reach the gradient).
+    m.write(ins.src[3], x.where(target.reshape((n, 1)), d, 0.0 * hot))
 
 
 def _mse_fwd(m, x, ins, step):
@@ -2037,13 +2098,17 @@ class Executor:
         engine reports it: the plain mean of the batch losses when the set
         is whole batches, else the mean over REAL rows — the final batch's
         wrapped duplicates excluded exactly for a lone cross-entropy or MSE,
-        by weight for a composite loss (G13, #97)."""
+        by weight for a composite loss (G13, #97). A masked plan's set is
+        always the mean over its TARGET rows (each batch's kernel mean is
+        over its own target count, so a mean of those would depend on how
+        the records fall into batches)."""
         p = self.plan
         rows_per_sample = p.seq_len if p.input_kind == 1 else 1
         per_step = p.batch // rows_per_sample
         batches = max(1, -(-corpus.num_samples // per_step))
         ragged = corpus.num_samples % per_step != 0
-        tail = self._eval_tail() if ragged else None
+        tail = self._eval_tail()
+        per_row = ragged or tail[0] == "xent_masked"
         saved = (corpus.cursor, corpus.order, corpus.state)
         corpus.cursor, total = 0, 0.0
         real_loss, real_rows = 0.0, 0
@@ -2051,14 +2116,14 @@ class Executor:
             self.stage(corpus.batch(p))
             self.execute("eval")
             total += self.mem.loss()
-            if ragged:
+            if per_row:
                 real = min(per_step, corpus.num_samples - b * per_step) * \
                     rows_per_sample
                 loss_here, counted = self._real_row_loss(tail, real)
                 real_loss += loss_here
                 real_rows += counted
         corpus.cursor, corpus.order, corpus.state = saved
-        if ragged:
+        if per_row:
             return real_loss / real_rows if real_rows else 0.0
         return total / batches
 
@@ -2276,9 +2341,11 @@ def cmd_diff(args):
         raise PlanError(f"backend '{args.backend}' is unavailable: {e}")
     if getattr(args, "relaxed", False):
         backend.relaxed_gemms = True
-    corpus = (Corpus(np, args.corpus) if args.corpus
-              else SyntheticCorpus(np, plan, args.seed))
-    corpus.check(plan)
+    # The whole corpus feeds the diff, as before — except that a plan which
+    # compiled its split is fed its training half, the records the device
+    # trains on (the probe sees only the staged batches, never the file).
+    corpus = (corpus_for_plan(np, plan, args.corpus, default=0.0)[0]
+              if args.corpus else SyntheticCorpus(np, plan, args.seed))
     ex = Executor(plan, backend, args.source)
     probe = Probe(args.probe, args.plan, args.cpp_backend, args.threads,
                   args.source)
@@ -2384,29 +2451,7 @@ def cmd_run(args):
         raise PlanError(f"backend '{args.backend}' is unavailable: {e}")
     if getattr(args, "relaxed", False):
         backend.relaxed_gemms = True
-    corpus = Corpus(np, args.corpus)
-    val = None
-    if plan.data_flags & formats.DATA_FLAG_SPLIT:
-        # The plan compiled its split: recompute it, as the device does,
-        # and refuse a --val-fraction (not this run's decision).
-        if args.val_fraction is not None:
-            raise PlanError("the plan compiled its validation split "
-                            f"(seed {plan.split_seed}, fraction "
-                            f"{val_frac_of(plan.val_frac_bits):g}); "
-                            "--val-fraction is not a runner decision")
-        held = held_out_indices(corpus.num_samples, plan.split_seed,
-                                val_frac_of(plan.val_frac_bits))
-        h = split_hash(held) if held else 0
-        if not held or h != plan.val_split_hash:
-            raise PlanError("the corpus does not yield the plan's compiled "
-                            "split (split hash mismatch): the plan was "
-                            "compiled over another corpus")
-        corpus, val = corpus.split_held_out(held, h)
-    else:
-        frac = 0.1 if args.val_fraction is None else args.val_fraction
-        if frac > 0.0:
-            corpus, val = corpus.split_validation(frac)
-    corpus.check(plan)
+    corpus, val = corpus_for_plan(np, plan, args.corpus, args.val_fraction)
     if not args.no_shuffle:
         corpus.enable_shuffle(args.seed)
     ex = Executor(plan, backend, args.source)
@@ -2495,9 +2540,7 @@ def cmd_price(args):
 
     def corpus_factory():
         if args.corpus:
-            corpus = Corpus(np, args.corpus)
-            corpus.check(plan)
-            return corpus
+            return corpus_for_plan(np, plan, args.corpus, default=0.0)[0]
         return SyntheticCorpus(np, plan, args.seed)
 
     frontier = {}

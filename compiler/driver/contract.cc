@@ -21,6 +21,7 @@ namespace generating = seeml::diag::generating;
 /// message that cannot be attributed to one of these escaped the partition.
 constexpr std::string_view kRegisteredUnits[] = {
     diag::tokenizing::kContainer,      diag::tokenizing::kIngressor,
+    diag::tokenizing::kCorpus,
     diag::parsing::kUnit,              diag::passing::kPassManager,
     diag::passing::kConvLowering,      diag::updating::kAutodiff,
     diag::updating::kLoraGrafter,      diag::updating::kMergeBuilder,

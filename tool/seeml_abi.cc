@@ -27,6 +27,7 @@
 #include "source/plan/opcode_names.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/screens.h"
+#include "source/tokenizer/tokenizer_format.h"
 #include "tool/probe_trace.h"
 
 namespace {
@@ -137,6 +138,20 @@ int main(int argc, char**) {
               static_cast<unsigned long long>(rt::kSdsHeaderBytes),
               static_cast<unsigned long long>(rt::kSdsHeaderBytesV3),
               rt::kSdsFlagMasked, rt::kSdsLabelKindMax);
+  // The SMF tokenizer section (S2 #148): the one byte layout the Python
+  // plane writes and the core reads, so its head is held to the header by
+  // the same seam as the containers.
+  namespace tk = seeml::tokenizer;
+  std::printf("  \"smtk\": {\"magic\": %u, \"version\": %u, "
+              "\"head_bytes\": %llu, \"kinds\": {\"byte_level_bpe\": %u}, "
+              "\"pre_tokenizers\": {\"gpt2\": %u, \"digits_then_gpt2\": %u}, "
+              "\"flags\": {\"add_prefix_space\": %u, \"nfc\": %u}},\n",
+              tk::kSmtkMagic, tk::kSmtkVersion,
+              static_cast<unsigned long long>(tk::kSmtkHeadBytes),
+              static_cast<unsigned>(tk::TokenizerKind::kByteLevelBpe),
+              static_cast<unsigned>(tk::PreTokenizer::kGpt2),
+              static_cast<unsigned>(tk::PreTokenizer::kDigitsThenGpt2),
+              tk::kSmtkFlagAddPrefixSpace, tk::kSmtkFlagNfc);
 
   std::printf("  \"seeu\": {\n    \"magic\": %u, \"version\": %u, "
               "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "

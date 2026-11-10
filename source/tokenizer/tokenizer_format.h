@@ -3,6 +3,10 @@
 
 #include <bit>
 #include <cstdint>
+#include <cstring>
+#include <expected>
+#include <span>
+#include <string>
 
 // =============================================================================
 // SMTK — the SMF tokenizer section (S2 #148). The bytes an SMF v7 file
@@ -28,7 +32,8 @@
 //   merges[num_merges]:   u32 a, u32 b, u32 c      in rank order; c is the
 //                         id whose bytes are a's followed by b's
 //   special[num_special]: u32 id                   split before the pattern,
-//                         longest match first
+//                         longest match first — every added token of the
+//                         checkpoint, as the reference extracts them all
 //
 // The core's tokenizer (byte_level_bpe.h) decodes this and refuses, by
 // name, every construct it does not implement; the exporter refuses to
@@ -49,11 +54,45 @@ inline constexpr uint32_t kSmtkFlagAddPrefixSpace = 1u << 0;
 inline constexpr uint32_t kSmtkFlagNfc = 1u << 1;
 inline constexpr uint32_t kSmtkFlagsKnown = kSmtkFlagAddPrefixSpace | kSmtkFlagNfc;
 
-// The fixed-width head before the chat template: 7 u32 + 4 i32 + 1 u32.
-inline constexpr uint64_t kSmtkHeadBytes = 4 * 12;
-
 static_assert(std::endian::native == std::endian::little,
               "the tokenizer section is read by memcpy of host integers");
+
+/// The fixed-width head before the chat template, as laid out above: 8 u32,
+/// 4 i32 and the template length — the one statement of the head that the
+/// encoder's loader and topology's section check both read.
+struct SmtkHead {
+  uint32_t magic = 0;
+  uint32_t version = 0;
+  uint32_t kind = 0;
+  uint32_t pre_tokenizer = 0;
+  uint32_t flags = 0;
+  uint32_t vocab_size = 0;
+  uint32_t num_merges = 0;
+  uint32_t num_special = 0;
+  int32_t eos_id = -1;
+  int32_t bos_id = -1;
+  int32_t unk_id = -1;
+  int32_t pad_id = -1;
+  uint32_t chat_template_len = 0;
+};
+static_assert(sizeof(SmtkHead) == 4 * 13, "the SMTK head is 13 words");
+inline constexpr uint64_t kSmtkHeadBytes = sizeof(SmtkHead);
+
+/// Reads the head of a section: its size, magic and version are proven
+/// here; the kind, pre-tokenizer and flags are the encoder's to refuse by
+/// name. The error carries no unit prefix — the caller's is the one shown.
+inline std::expected<SmtkHead, std::string> ReadSmtkHead(
+    std::span<const uint8_t> section) {
+  if (section.size() < kSmtkHeadBytes)
+    return std::unexpected("truncated head");
+  SmtkHead head;
+  std::memcpy(&head, section.data(), sizeof(head));
+  if (head.magic != kSmtkMagic) return std::unexpected("bad magic");
+  if (head.version != kSmtkVersion)
+    return std::unexpected("unsupported version " +
+                           std::to_string(head.version));
+  return head;
+}
 
 }  // namespace seeml::tokenizer
 

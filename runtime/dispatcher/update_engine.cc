@@ -800,8 +800,14 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
   // then taken over the real rows alone (G13, #97) — exactly, from the
   // row-separable loss's own operands, or by real-row weight for a
   // composite loss. A set of whole batches keeps the plain mean of the
-  // batch losses, bit for bit.
+  // batch losses, bit for bit — except under the masked loss (S3 #149),
+  // whose batch means are each over that batch's own target count: a mean
+  // of those would weight a batch of ten targets like one of a hundred and
+  // change with how the records fall into batches, so a masked plan's set
+  // is always scored over its target rows, as PyTorch's ignore_index mean
+  // over the set is.
   const bool ragged = data.num_samples() % samples_per_step != 0;
+  const bool per_row = ragged || eval_tail_.kind == EvalTail::kXentMasked;
   double real_row_loss = 0.0;   // sum of per-row losses over real rows
   uint64_t real_rows = 0;
   {
@@ -814,7 +820,7 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
         return std::unexpected(r.error());
       }
       total += LossValue();
-      if (ragged) {
+      if (per_row) {
         const uint64_t served_samples = b * samples_per_step;
         const uint64_t real_here =
             std::min<uint64_t>(samples_per_step,
@@ -875,9 +881,9 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
   data.RestoreServingPos(entry_pos);
   EvalMetrics m;
   m.loss = static_cast<float>(
-      ragged ? (real_rows ? real_row_loss / static_cast<double>(real_rows)
-                          : 0.0)
-             : total / static_cast<double>(batches));
+      per_row ? (real_rows ? real_row_loss / static_cast<double>(real_rows)
+                           : 0.0)
+              : total / static_cast<double>(batches));
   if (track_accuracy && counted > 0) {
     m.accuracy = static_cast<float>(static_cast<double>(correct) /
                                     static_cast<double>(counted));

@@ -40,6 +40,15 @@ namespace seeml::update {
 [[nodiscard]] std::expected<std::vector<SmfModel>, std::string> LoadSmfMany(
     std::span<const std::string> paths);
 
+/// Elements per chunk when sweeping a frozen weight blob: the ingress sweep
+/// (SweepWeights), the quantization review's max-abs scan and the backend's
+/// int8 pack all walk a tensor in this geometry, so the element a refusal
+/// names, the ranges the screen prints and the scale the review derives are
+/// the same at any thread count and the same across the three. Weight
+/// tensors reach tens of megabytes; the sweeps are elementwise over disjoint
+/// ranges, so they parallelize with bit-identical results.
+inline constexpr size_t kWeightSweepGrain = 65536;
+
 /// One constant tensor's value range, from the ingress sweep.
 struct WeightRange {
   std::string name;

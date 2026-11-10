@@ -1,6 +1,8 @@
 #include "runtime/pipeline/dataset.h"
 
 #include "runtime/diagnostics/feeding/error.h"
+#include "runtime/storage/durable_io.h"
+#include "source/contract/split.h"
 #include "source/identity/hash.h"
 
 #include <algorithm>
@@ -27,7 +29,7 @@ bool MulU64(uint64_t a, uint64_t b, uint64_t* out) {
 
 uint64_t Dataset::target_positions() const {
   if (input_kind_ != 1) return 0;
-  if (!masked_) return num_samples_ * input_dim_;
+  if (mask_.empty()) return num_samples_ * input_dim_;
   uint64_t n = 0;
   for (const uint8_t m : mask_) n += m;
   return n;
@@ -71,7 +73,6 @@ std::expected<Dataset, std::string> Dataset::FromTokens(
     if (auto ok = CheckMask(mask, num_records, seq); !ok)
       return std::unexpected(ok.error());
     d.mask_ = std::move(mask);
-    d.masked_ = true;
   }
   return d;
 }
@@ -127,27 +128,6 @@ std::expected<void, std::string> Dataset::CheckMask(
   return {};
 }
 
-namespace {
-
-/// ContentHash64 of the whole file: the corpus identity a v22 plan pins
-/// (kDataFlagCorpusPinned). A second read of the file, once, at load.
-std::expected<uint64_t, std::string> HashFile(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f) return diag::feeding::Error("cannot open '" + path + "'");
-  f.seekg(0, std::ios::end);
-  const std::streamoff end = f.tellg();
-  if (end < 0) return diag::feeding::Error("cannot stat '" + path + "'");
-  f.seekg(0);
-  std::vector<uint8_t> bytes(static_cast<size_t>(end));
-  if (!bytes.empty() &&
-      !f.read(reinterpret_cast<char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size())))
-    return diag::feeding::Error("cannot read '" + path + "'");
-  return seeml::update::ContentHash64(bytes.data(), bytes.size());
-}
-
-}  // namespace
-
 std::expected<Dataset, std::string> Dataset::LoadFromFile(
     const std::string& path) {
   std::ifstream f(path, std::ios::binary);
@@ -164,6 +144,16 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
   auto read = [&](void* dst, size_t n) {
     f.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
     return static_cast<bool>(f);
+  };
+  // The corpus identity a v22 plan pins (kDataFlagCorpusPinned):
+  // ContentHash64 of the whole file, for feature rows and token records
+  // alike, streamed one chunk at a time by the runtime's file hasher once
+  // the records are in — the file is read twice, never held twice.
+  auto finish = [&](Dataset& d) -> std::expected<Dataset, std::string> {
+    auto h = HashFileContent(path);
+    if (!h) return diag::feeding::Error("cannot hash '" + path + "'");
+    d.content_hash_ = *h;
+    return std::move(d);
   };
 
   uint32_t magic = 0, version = 0, label_kind = 0, input_kind = 0;
@@ -191,7 +181,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
 
   Dataset d;
   d.tokenizer_hash_ = tokenizer_hash;
-  d.masked_ = (flags & kSdsFlagMasked) != 0;
+  const bool masked = (flags & kSdsFlagMasked) != 0;  // mask_ is read below
   d.num_samples_ = num_samples;
   d.input_dim_ = input_dim;
   d.label_kind_ = label_kind;
@@ -209,7 +199,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
   // next-token label discipline.
   if (input_kind > 1 || (version < 2 && input_kind != 0))
     return diag::feeding::Error("unknown input kind");
-  if (d.masked_ && input_kind != 1)
+  if (masked && input_kind != 1)
     return diag::feeding::Error("a loss mask needs token records");
   // The sample section fills the file exactly (CR2's F19): trailing bytes
   // are not a corpus the writer meant, so they are refused, not ignored.
@@ -229,7 +219,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
           "label_dim 0)");
     // Records are (seq + 1) contiguous i32 ids with no stored label, and
     // under the mask flag a u8 mask[seq] padded to 4 bytes after them.
-    const uint64_t mask_bytes = d.masked_ ? SdsMaskBytes(input_dim) : 0;
+    const uint64_t mask_bytes = masked ? SdsMaskBytes(input_dim) : 0;
     uint64_t record_ids = 0, payload = 0;
     if (input_dim >= UINT64_MAX ||
         !MulU64(input_dim + 1, sizeof(int32_t), &record_ids) ||
@@ -242,7 +232,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
       return diag::feeding::Error("dataset too large for this host");
     const uint64_t record_bytes = record_ids + mask_bytes;
     d.tokens_.resize(num_samples * (input_dim + 1));
-    if (!d.masked_) {
+    if (!masked) {
       if (!read(d.tokens_.data(), static_cast<size_t>(payload)))
         return diag::feeding::Error("truncated inputs");
     } else {
@@ -261,9 +251,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
     }
     for (const int32_t t : d.tokens_)
       if (t < 0) return diag::feeding::Error("negative token id");
-    if (auto h = HashFile(path); !h) return std::unexpected(h.error());
-    else d.content_hash_ = *h;
-    return d;
+    return finish(d);
   }
 
   // Overflow-safe sizing, cross-checked against the actual file size before
@@ -291,7 +279,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
     // per sample.
     if (!read(d.inputs_.data(), num_samples * input_bytes))
       return diag::feeding::Error("truncated inputs");
-    return d;
+    return finish(d);
   }
 
   // Interleaved records: stream fixed chunks of whole records through a
@@ -315,7 +303,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
     }
     i += n;
   }
-  return d;
+  return finish(d);
 }
 
 std::expected<void, std::string> Dataset::ValidateClassLabels(
@@ -367,11 +355,21 @@ std::expected<void, std::string> Dataset::SaveToFile(
     f.write(reinterpret_cast<const char*>(src),
             static_cast<std::streamsize>(n));
   };
-  // The lowest version that carries the content: a plain corpus stays
-  // v1 / v2 byte for byte; a tokenizer identity or a mask makes it v3.
-  const uint32_t version = (tokenizer_hash_ != 0 || masked_) ? 3
-                           : input_kind_ == 1                 ? 2
-                                                              : 1;
+  if (input_kind_ == 1) {
+    // The format's one token-corpus writer (source/language/
+    // dataset_format.h): the same bytes the compiler's ingest produces,
+    // so a corpus saved here hashes as the plan pinned it.
+    seeml::update::WriteSdsTokenCorpus(write, num_samples_, input_dim_,
+                                       tokenizer_hash_, masked(),
+                                       tokens_.data(), mask_.data());
+    f.close();
+    if (f.fail())
+      return diag::feeding::Error("short write to '" + path + "'");
+    return {};
+  }
+  // Feature rows: the lowest version that carries the content — v1 byte
+  // for byte unless the corpus names a tokenizer (then the v3 header).
+  const uint32_t version = tokenizer_hash_ != 0 ? 3 : 1;
   write(&kSdsMagic, 4);
   write(&version, 4);
   write(&num_samples_, 8);
@@ -380,34 +378,13 @@ std::expected<void, std::string> Dataset::SaveToFile(
   write(&input_kind_, 4);  // header padding in v1 (always 0 there)
   write(&label_dim_, 8);
   if (version >= 3) {
-    const uint32_t flags = masked_ ? kSdsFlagMasked : 0;
+    const uint32_t flags = 0;
     const uint32_t reserved0 = 0;
     const uint64_t reserved1 = 0;
     write(&tokenizer_hash_, 8);
     write(&flags, 4);
     write(&reserved0, 4);
     write(&reserved1, 8);
-  }
-  if (input_kind_ == 1) {
-    if (!masked_) {
-      // Token records are one contiguous i32 block; labels are derived,
-      // never stored.
-      write(tokens_.data(), tokens_.size() * sizeof(int32_t));
-    } else {
-      // Each record: its ids, then its mask padded to 4 bytes.
-      const uint64_t stride = input_dim_ + 1;
-      std::vector<uint8_t> pad(static_cast<size_t>(
-          SdsMaskBytes(input_dim_) - input_dim_));
-      for (uint64_t r = 0; r < num_samples_; ++r) {
-        write(tokens_.data() + r * stride, stride * sizeof(int32_t));
-        write(mask_.data() + r * input_dim_, input_dim_);
-        if (!pad.empty()) write(pad.data(), pad.size());
-      }
-    }
-    f.close();
-    if (f.fail())
-      return diag::feeding::Error("short write to '" + path + "'");
-    return {};
   }
   const uint64_t lbytes = label_bytes_per_sample();
   if (lbytes == 0) {
@@ -457,7 +434,7 @@ void Dataset::FillBatch(uint64_t batch, float* input_slot,
       const uint64_t i = order_.empty() ? cursor_ : order_[cursor_];
       const int32_t* rec = tokens_.data() + i * (S + 1);
       std::memcpy(in + r * S, rec, S * sizeof(int32_t));
-      if (lab && !masked_) {
+      if (lab && mask_.empty()) {
         std::memcpy(lab + r * S, rec + 1, S * sizeof(int32_t));
       } else if (lab) {
         // A masked-out position stages kSdsIgnoreLabel: the masked
@@ -513,25 +490,19 @@ void Dataset::FillBatch(uint64_t batch, float* input_slot,
   }
 }
 
-namespace {
-
-// splitmix64: tiny, deterministic, and high-quality enough for shuffling.
-// Avoids dragging <random> (and its per-platform distribution differences)
-// into the device runtime — the permutation must be reproducible everywhere.
-uint64_t SplitMix64(uint64_t* state) {
-  uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
-  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-  return z ^ (z >> 31);
-}
-
-}  // namespace
+// The shuffle's generator is splitmix64 — tiny, deterministic, and
+// high-quality enough for shuffling, with no <random> (and its per-platform
+// distribution differences) in the device runtime: the permutation must be
+// reproducible everywhere. It is the one statement in source/contract/split.h
+// that the compiled held-out split (S3 #149) also draws from, in its own
+// seed domain.
+using seeml::update::SplitMix64Next;
 
 void Dataset::EnableShuffle(uint64_t seed) {
   // Fold the seed through one splitmix step so seed 0 is a valid choice
   // (shuffle_state_ == 0 means "shuffling off").
   shuffle_state_ = seed;
-  shuffle_state_ = SplitMix64(&shuffle_state_) | 1ULL;
+  shuffle_state_ = SplitMix64Next(&shuffle_state_) | 1ULL;
   shuffle_origin_ = shuffle_state_;
   epoch_ = 0;
   order_.resize(num_samples_);
@@ -576,7 +547,7 @@ void Dataset::Reshuffle() {
   for (uint64_t i = 0; i < num_samples_; ++i) order_[i] = i;
   // Fisher–Yates with an unbiased-enough bound (num_samples << 2^64).
   for (uint64_t i = num_samples_ - 1; i > 0; --i) {
-    const uint64_t j = SplitMix64(&shuffle_state_) % (i + 1);
+    const uint64_t j = SplitMix64Next(&shuffle_state_) % (i + 1);
     std::swap(order_[i], order_[j]);
   }
 }
@@ -603,7 +574,9 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
   val.label_dim_ = label_dim_;
   val.input_kind_ = input_kind_;
   val.tokenizer_hash_ = tokenizer_hash_;
-  val.masked_ = masked_;
+  // Both halves are the one file the plan may be pinned to: the engine
+  // validates the validation set as it validates the training set.
+  val.content_hash_ = content_hash_;
   if (input_kind_ == 1) {
     // Token corpora split at RECORD (sequence) granularity: the tail
     // records move wholesale, so no sequence is ever cut in half.
@@ -612,7 +585,7 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
         tokens_.begin() + static_cast<ptrdiff_t>(train_n * rec_ids),
         tokens_.end());
     tokens_.resize(train_n * rec_ids);
-    if (masked_) {
+    if (!mask_.empty()) {
       val.mask_.assign(
           mask_.begin() + static_cast<ptrdiff_t>(train_n * input_dim_),
           mask_.end());
@@ -661,32 +634,38 @@ std::expected<Dataset, std::string> Dataset::SplitHeldOut(
   val.input_kind_ = input_kind_;
   val.tokenizer_hash_ = tokenizer_hash_;
   val.content_hash_ = content_hash_;
-  val.masked_ = masked_;
   val.split_hash_ = split_hash;
   split_hash_ = split_hash;
 
-  // One pass over the records: each goes to the side the index list says,
-  // in order, so both halves keep the corpus's record order.
+  // One pass over the records: the held-out ones are copied out in order
+  // and the kept ones compacted forward in place (`held` is sorted and
+  // distinct), so both halves keep the corpus's record order and the corpus
+  // never holds a second copy of its training side — the extra memory is
+  // the validation set's, as in SplitValidation.
   auto partition = [&](auto& mine, auto& theirs, uint64_t stride) {
     using V = std::remove_reference_t<decltype(mine)>;
-    V keep, out;
-    keep.reserve(train_n * stride);
+    V out;
     out.reserve(val_n * stride);
     size_t h = 0;
+    uint64_t kept = 0;  // the slot the next kept record moves to
     for (uint64_t r = 0; r < num_samples_; ++r) {
-      const bool held_out = h < held.size() && held[h] == r;
-      if (held_out) ++h;
-      auto& dst = held_out ? out : keep;
-      dst.insert(dst.end(),
-                 mine.begin() + static_cast<ptrdiff_t>(r * stride),
-                 mine.begin() + static_cast<ptrdiff_t>((r + 1) * stride));
+      const auto src = mine.begin() + static_cast<ptrdiff_t>(r * stride);
+      const auto end = src + static_cast<ptrdiff_t>(stride);
+      if (h < held.size() && held[h] == r) {
+        out.insert(out.end(), src, end);
+        ++h;
+        continue;
+      }
+      if (kept != r)  // a forward move: the slot lies before the record
+        std::copy(src, end, mine.begin() + static_cast<ptrdiff_t>(kept * stride));
+      ++kept;
     }
-    mine = std::move(keep);
+    mine.resize(kept * stride);
     theirs = std::move(out);
   };
   if (input_kind_ == 1) {
     partition(tokens_, val.tokens_, input_dim_ + 1);
-    if (masked_) partition(mask_, val.mask_, input_dim_);
+    if (!mask_.empty()) partition(mask_, val.mask_, input_dim_);
   } else {
     partition(inputs_, val.inputs_, input_dim_);
     if (lbytes) partition(labels_, val.labels_, lbytes);
@@ -708,7 +687,7 @@ std::optional<double> Dataset::LabelEntropyNats() const {
       const uint64_t stride = input_dim_ + 1;
       for (uint64_t r = 0; r < num_samples_; ++r)
         for (uint64_t j = 1; j <= input_dim_; ++j)
-          if (!masked_ || mask_[r * input_dim_ + (j - 1)])
+          if (mask_.empty() || mask_[r * input_dim_ + (j - 1)])
             visit(tokens_[r * stride + j]);
     } else {
       for (uint64_t i = 0; i < num_samples_; ++i) {

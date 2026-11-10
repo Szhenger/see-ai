@@ -42,7 +42,12 @@ inline uint64_t SplitMix64Next(uint64_t* state) {
 inline constexpr uint64_t kSplitDomain = 0x53504C49545F3031ULL;  // "SPLIT_01"
 
 /// Records held out of n at fraction frac: floor(n * frac), at least one,
-/// at most n - 1 (the rule Dataset::SplitValidation applied by position).
+/// at most n - 1 — Dataset::SplitValidation's rule, over the f32 fraction
+/// the plan header carries (val_frac_bits). The positional split takes the
+/// runner's parsed double, so for a fraction that is not exact in f32
+/// (0.7, 0.3, ...) the two counts can differ by one on the same corpus;
+/// the compiled split is the one the plan names, and the device recomputes
+/// exactly this function.
 inline uint64_t HeldOutCount(uint64_t n, float frac) {
   if (n < 2) return 0;
   uint64_t k = static_cast<uint64_t>(static_cast<double>(n) *
@@ -82,17 +87,9 @@ inline uint64_t SplitHash(const std::vector<uint64_t>& held) {
                        held.size() * sizeof(uint64_t));
 }
 
-inline uint32_t ValFracBits(float frac) {
-  uint32_t bits = 0;
-  std::memcpy(&bits, &frac, sizeof(bits));
-  return bits;
-}
+inline uint32_t ValFracBits(float frac) { return std::bit_cast<uint32_t>(frac); }
 
-inline float ValFracOf(uint32_t bits) {
-  float frac = 0.0f;
-  std::memcpy(&frac, &bits, sizeof(frac));
-  return frac;
-}
+inline float ValFracOf(uint32_t bits) { return std::bit_cast<float>(bits); }
 
 }  // namespace seeml::update
 

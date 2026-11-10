@@ -615,12 +615,30 @@ def _timed(cmd, env=None):
     return done.returncode, out, float(real.group(1)) if real else wall, rss
 
 
+def plan_compiled_its_split(package):
+    """Whether the package's plan names its own validation split (v22
+    kDataFlagSplit): the emitted runner then recomputes it and refuses a
+    --val-frac as not the runner's decision."""
+    from seeml import formats
+    plan = os.path.join(package, "update_plan.seeu")
+    if not os.path.exists(plan):
+        return False
+    with open(plan, "rb") as f:
+        head = f.read(formats.PLAN_HEADER.size)
+    if len(head) < formats.PLAN_HEADER.size:
+        return False
+    h = dict(zip(formats.PLAN_HEADER.names, formats.PLAN_HEADER.unpack_from(head, 0)))
+    return bool(h["data_flags"] & formats.DATA_FLAG_SPLIT)
+
+
 def cmd_seeml(args):
     binary = os.path.join(args.package, "model_update")
     if not os.access(binary, os.X_OK):
         raise SystemExit(f"frontier_run: no model_update in {args.package} (pack_update.py --build first)")
     out_dir = os.path.dirname(os.path.abspath(args.report)) or "."
     env = {"SEEML_THREADS": str(args.threads)}
+    # A plan that compiled its split decides the held-out set itself.
+    val_args = [] if plan_compiled_its_split(args.package) else ["--val-frac", str(args.val_frac)]
 
     def run(steps, tag):
         model_out = os.path.join(out_dir, f"{tag}.smf")
@@ -631,7 +649,7 @@ def cmd_seeml(args):
         meter = energy_meter().start()  # the whole run; the lo/hi slope removes the lifecycle
         rc, out, wall, rss = _timed(
             [binary, "--model", args.model, "--data", args.data, "--out", model_out,
-             "--val-frac", str(args.val_frac), "--seed", str(args.seed), "--steps", str(steps),
+             *val_args, "--seed", str(args.seed), "--steps", str(steps),
              "--eval-every", "0", "--backend", args.backend, "--report", rep], env)
         energy = meter.stop()
         report = json.load(open(rep)) if os.path.exists(rep) else {}

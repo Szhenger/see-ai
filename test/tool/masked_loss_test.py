@@ -87,6 +87,33 @@ class MaskedLossTest(unittest.TestCase):
         self.assertEqual(lm, lp)
         np.testing.assert_array_equal(dm, dp)
 
+    def test_an_ignored_row_is_never_read(self):
+        # The device's rule (loss.cc, k_xent_masked_*): an ignored row's
+        # logits are not read for the loss and its gradient row is zero —
+        # so inf / NaN logits on a prompt position change nothing, where
+        # 0 * NaN would have poisoned the oracle's loss and gradient.
+        poisoned = self.logits.copy()
+        poisoned[1, 0] = np.inf    # row 1 is ignored
+        poisoned[4, :] = np.nan    # so is row 4
+        self.logits = poisoned
+        loss, d = self.run_pair(fx._xent_masked_fwd, fx._xent_masked_bwd,
+                                self.labels)
+        keep = self.labels >= 0
+        self.assertTrue(np.isfinite(loss))
+        self.assertTrue(np.isfinite(d[keep]).all())
+        self.assertTrue((d[~keep] == 0).all())
+        m = FakeMemory(self.x, {"logits": self.logits[keep],
+                                "labels": self.labels[keep], "seed": self.seed})
+        k = int(keep.sum())
+        fx._xent_fwd(m, self.x, Ins(["logits", "labels", "loss", "probs"],
+                                    [k, self.c]), 0)
+        self.assertAlmostEqual(loss, float(m.t["loss"].reshape(-1)[0]), 12)
+        # A batch with no target: +0.0 as the device writes it, not -0.0.
+        none = np.full(self.n, -1, "<i4")
+        loss0, _ = self.run_pair(fx._xent_masked_fwd, fx._xent_masked_bwd, none)
+        self.assertEqual(loss0, 0.0)
+        self.assertFalse(np.signbit(loss0))
+
     def test_the_masked_pair_matches_pytorch_ignore_index(self):
         try:
             import torch
