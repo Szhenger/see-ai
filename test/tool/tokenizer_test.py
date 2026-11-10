@@ -203,7 +203,8 @@ class SmolLmSectionTest(unittest.TestCase):
         self.assertGreater(ids, 500)
         info = subprocess.run([TOKENIZE, smf, "--info"], capture_output=True,
                               text=True, check=True).stdout
-        line = [l for l in info.splitlines() if l.startswith("tokenizer hash")][0]
+        line = [row for row in info.splitlines()
+                if row.startswith("tokenizer hash")][0]
         self.assertEqual(int(line.split()[-1], 16),
                          content_hash.content_hash64(self.section))
 

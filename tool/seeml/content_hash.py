@@ -31,17 +31,17 @@ def _mix_word(state: int, word: int) -> int:
 
 def striped_fnv1a64(data: bytes) -> int:
     """StripedFnv1a64: the 8-lane interleaved kernel over one span."""
-    lanes = [(FNV_OFFSET_BASIS ^ ((0x9E3779B97F4A7C15 * (l + 1)) & _MASK))
-             for l in range(CONTENT_HASH_LANES)]
+    lanes = [(FNV_OFFSET_BASIS ^ ((0x9E3779B97F4A7C15 * (lane + 1)) & _MASK))
+             for lane in range(CONTENT_HASH_LANES)]
     n = len(data)
     full = n - n % CONTENT_HASH_LANES
-    for l in range(CONTENT_HASH_LANES):
-        h = lanes[l]
-        for b in data[l:full:CONTENT_HASH_LANES]:
+    for lane in range(CONTENT_HASH_LANES):
+        h = lanes[lane]
+        for b in data[lane:full:CONTENT_HASH_LANES]:
             h = ((h ^ b) * FNV_PRIME) & _MASK
-        lanes[l] = h
-    for l, i in enumerate(range(full, n)):
-        lanes[l] = ((lanes[l] ^ data[i]) * FNV_PRIME) & _MASK
+        lanes[lane] = h
+    for lane, i in enumerate(range(full, n)):
+        lanes[lane] = ((lanes[lane] ^ data[i]) * FNV_PRIME) & _MASK
     h = FNV_OFFSET_BASIS
     for lane in lanes:
         h = _mix_word(h, lane)
