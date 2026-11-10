@@ -2383,6 +2383,93 @@ kernel void k_xent_bwd(KSIG, uint g [[thread_position_in_grid]]) {
   if ((int)c == labels[n]) d -= scale;
   WF(3)[g] = d;
 }
+// The masked pair (S3 #149): a label < 0 marks a row the loss ignores. The
+// row kernel writes every row's probabilities (the accuracy tail reads
+// them) and leaves -log p[label] in scratch for a target row, 0 for an
+// ignored one; the finish kernel counts the target rows as it folds and
+// divides by the count (0 when there is none) — the CPU kernel's
+// expressions in the CPU's order.
+kernel void k_xent_masked_fwd(KSIG, device float* scratch [[buffer(3)]],
+                              uint g [[thread_position_in_grid]],
+                              uint lane [[thread_index_in_simdgroup]]) {
+  const uint r = g >> 5;
+  if (r >= p.rows) return;
+  const uint cols = p.cols;
+  device const float* x = RF(0) + (ulong)r * cols;
+  device const int* labels = (device const int*)(RBASE(1) + p.off[1]);
+  device float* pr = WF(3) + (ulong)r * cols;
+  const int label = labels[r];
+  float m = -INFINITY;
+  for (uint c = lane; c < cols; c += 32u) m = max(m, x[c]);
+  m = max(m, simd_shuffle_xor(m, 16u));
+  m = max(m, simd_shuffle_xor(m, 8u));
+  m = max(m, simd_shuffle_xor(m, 4u));
+  m = max(m, simd_shuffle_xor(m, 2u));
+  m = max(m, simd_shuffle_xor(m, 1u));
+  float sum = 0.0f, pl = 0.0f;
+  for (uint c = lane; c < cols; c += 32u) {
+    const float e = exp(x[c] - m);
+    pr[c] = e;
+    sum += e;
+    if (label >= 0 && c == (uint)label) pl = e;
+  }
+  sum = simd_sum_tree(sum);
+  const float inv = 1.0f / sum;
+  for (uint c = lane; c < cols; c += 32u) pr[c] *= inv;
+  pl = simd_sum_tree(pl * inv);
+  if (lane == 0u) {
+    if (label < 0) {
+      scratch[r] = 0.0f;
+    } else {
+      const float safe = isnan(pl) ? pl : max(pl, 1e-12f);
+      scratch[r] = -log(safe);
+    }
+  }
+}
+kernel void k_xent_masked_finish(KSIG, device float* scratch [[buffer(3)]],
+                                 uint t [[thread_position_in_grid]]) {
+  if (t != 0) return;
+  device const int* labels = (device const int*)(RBASE(1) + p.off[1]);
+  float sum = 0.0f, comp = 0.0f;
+  uint count = 0u;
+  for (uint r = 0; r < p.rows; ++r) {
+    if (labels[r] < 0) continue;
+    ++count;
+    const float y = scratch[r] - comp;
+    const float next = sum + y;
+    comp = (next - sum) - y;
+    sum = next;
+  }
+  WF(2)[0] = count ? sum / (float)count : 0.0f;
+}
+// The target count, for the backward: one thread, into scratch[0].
+kernel void k_xent_masked_count(KSIG, device float* scratch [[buffer(3)]],
+                                uint t [[thread_position_in_grid]]) {
+  if (t != 0) return;
+  device const int* labels = (device const int*)(RBASE(1) + p.off[1]);
+  uint count = 0u;
+  for (uint r = 0; r < p.rows; ++r) count += labels[r] >= 0 ? 1u : 0u;
+  scratch[0] = (float)count;
+}
+// dlogits = (seed / T) * probs, minus seed / T at the label, on the target
+// rows; 0 on an ignored row. Slots: 0 probs, 1 labels, 2 seed, 3 dlogits.
+kernel void k_xent_masked_bwd(KSIG, device float* scratch [[buffer(3)]],
+                              uint g [[thread_position_in_grid]]) {
+  const ulong total = (ulong)p.rows * p.cols;
+  if (g >= total) return;
+  const uint n = g / p.cols, c = g - n * p.cols;
+  device const int* labels = (device const int*)(RBASE(1) + p.off[1]);
+  const int label = labels[n];
+  if (label < 0) {
+    WF(3)[g] = 0.0f;
+    return;
+  }
+  const float count = scratch[0];
+  const float scale = count > 0.0f ? RF(2)[0] / count : 0.0f;
+  float d = scale * RF(0)[g];
+  if ((int)c == label) d -= scale;
+  WF(3)[g] = d;
+}
 )msl";
 
 // =============================================================================

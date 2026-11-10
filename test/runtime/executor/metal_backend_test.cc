@@ -982,6 +982,53 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
                     std::bit_cast<uint32_t>(grad->cpu[dlogits + i]);
     EXPECT_EQ(mismatched, size_t{0});
   }
+  // The masked pair (S3 #149): every third row ignored, one shape with no
+  // target at all; the GPU's loss, probabilities and gradient hold the
+  // plain pair's bounds, and the ignored rows' gradient is exactly zero on
+  // both backends.
+  for (const Shape s : {Shape{6, 301}, Shape{64, 1000}, Shape{3, 17}}) {
+    const size_t nc = size_t{s.n} * s.c;
+    size_t off = 0;
+    auto slot = [&](size_t n) { const size_t o = off; off += (n + 15) & ~size_t{15}; return o; };
+    const size_t logits = slot(nc), probs = slot(nc), dlogits = slot(nc);
+    const size_t labels = slot(s.n), seed = slot(1), loss = slot(1);
+    std::vector<float> arena(off, 0.0f);
+    std::mt19937_64 rng(s.c + 1);
+    std::normal_distribution<float> normal(0.0f, 3.0f);
+    for (size_t i = 0; i < nc; ++i) arena[logits + i] = normal(rng);
+    const bool none = s.n == 3;
+    for (uint32_t n = 0; n < s.n; ++n)
+      arena[labels + n] = std::bit_cast<float>(
+          none || n % 3 == 1 ? int32_t{-1}
+                             : static_cast<int32_t>((n * 7919u + 13u) % s.c));
+    arena[seed] = 0.5f;
+    auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
+    UpdateInstruction fwd, bwd;
+    fwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntMaskedFwd);
+    fwd.in[0] = ref(logits); fwd.in[1] = ref(labels); fwd.in[2] = ref(loss); fwd.in[3] = ref(probs);
+    fwd.out[0] = s.n; fwd.out[1] = s.c;
+    bwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntMaskedBwd);
+    bwd.in[0] = ref(probs); bwd.in[1] = ref(labels); bwd.in[2] = ref(seed); bwd.in[3] = ref(dlogits);
+    bwd.out[0] = s.n; bwd.out[1] = s.c;
+    auto twin = RunTwin({fwd, bwd}, arena, {});
+    ASSERT_OK(twin);
+    ExpectRangeClose("masked xent probs", *twin, probs, nc, 1e-4, 1e-9);
+    ExpectRangeClose("masked xent loss", *twin, loss, 1, 1e-5, 1e-7);
+    ExpectRangeClose("masked xent dlogits", *twin, dlogits, nc, 1e-4, 1e-9);
+    if (none) {
+      EXPECT_EQ(twin->gpu[loss], 0.0f);
+      EXPECT_EQ(twin->cpu[loss], 0.0f);
+    } else {
+      EXPECT_GT(twin->cpu[loss], 0.0f);
+    }
+    for (uint32_t n = 0; n < s.n; ++n) {
+      if (!(none || n % 3 == 1)) continue;
+      for (uint32_t c = 0; c < s.c; ++c) {
+        EXPECT_EQ(twin->gpu[dlogits + size_t{n} * s.c + c], 0.0f);
+        EXPECT_EQ(twin->cpu[dlogits + size_t{n} * s.c + c], 0.0f);
+      }
+    }
+  }
   // A NaN logit poisons the loss on both backends (the engine's finite-loss
   // guard depends on it): no fmax scrubbing on the GPU either.
   {

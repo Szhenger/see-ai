@@ -60,6 +60,10 @@ std::expected<void, std::string> VerifyExecutorContract(
     return diag::executing::Error(
         "rodata section handed to the executor contract disagrees with the "
         "header");
+  // The masked loss (S3 #149): the masked opcodes appear exactly when the
+  // header carries kDataFlagMaskedLoss — the flag is what lets the feeder
+  // stage -1 labels, and a plain kernel would index a row with -1.
+  bool saw_masked = false;
   for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program) {
       // The eval program may read the source model file from v17; every
@@ -125,8 +129,21 @@ std::expected<void, std::string> VerifyExecutorContract(
       // indices — an out-of-bounds write through the backward kernel, from
       // a plan that passed every range check. Bind all three here.
       const auto op = static_cast<up::OpCode>(ins.opcode);
+      const bool masked_op = op == up::OpCode::kSoftmaxXEntMaskedFwd ||
+                             op == up::OpCode::kSoftmaxXEntMaskedBwd;
+      if (masked_op) {
+        if ((header.data_flags & up::kDataFlagMaskedLoss) == 0)
+          return diag::executing::Error(
+              "masked cross-entropy in a plan without the masked-loss flag");
+        saw_masked = true;
+      } else if ((op == up::OpCode::kSoftmaxXEntFwd ||
+                  op == up::OpCode::kSoftmaxXEntBwd) &&
+                 (header.data_flags & up::kDataFlagMaskedLoss) != 0) {
+        return diag::executing::Error(
+            "plain cross-entropy in a plan that carries the masked-loss flag");
+      }
       if (op == up::OpCode::kSoftmaxXEntFwd ||
-          op == up::OpCode::kSoftmaxXEntBwd) {
+          op == up::OpCode::kSoftmaxXEntBwd || masked_op) {
         if (header.label_kind != 1)
           return diag::executing::Error(
               "softmax cross-entropy in a plan without class labels");
@@ -176,6 +193,10 @@ std::expected<void, std::string> VerifyExecutorContract(
       }
     }
 
+  if ((header.data_flags & up::kDataFlagMaskedLoss) != 0 && !saw_masked)
+    return diag::executing::Error(
+        "plan carries the masked-loss flag but no masked cross-entropy");
+
   // The emit table's arena side is fixed at compile time; its file side is
   // validated against the actual model at commit. Commit reads the delta
   // through a float*, so the arena offset must be element-aligned too.
@@ -196,7 +217,9 @@ std::expected<void, std::string> VerifyFeederContract(
   // value half reads the records.
   const up::CorpusShape shape{data.input_kind(), data.input_dim(),
                               data.label_kind(),
-                              data.label_bytes_per_sample()};
+                              data.label_bytes_per_sample(),
+                              data.tokenizer_hash(), data.masked(),
+                              data.content_hash(), data.split_hash()};
   if (auto why = up::CorpusGeometryViolation(header, shape))
     return diag::executing::Error(*why);
   if (header.input_kind == 1) {

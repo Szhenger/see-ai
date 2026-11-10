@@ -164,6 +164,17 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
   model.input_name = r.ReadStr();
   model.output_name = r.ReadStr();
   if (version >= 3) model.seq_len = r.Read<uint64_t>();
+  // v7: the tokenizer section's placement; proven like a payload below.
+  uint64_t tokenizer_offset = 0, tokenizer_size = 0;
+  if (version >= 7) {
+    tokenizer_offset = r.Read<uint64_t>();
+    tokenizer_size = r.Read<uint64_t>();
+    if (!r.ok) return tokenizing::FileError("truncated file", path);
+    if (tokenizer_offset > bytes.size() ||
+        tokenizer_size > bytes.size() - tokenizer_offset)
+      return tokenizing::FileError("tokenizer section exceeds file size in",
+                                   path);
+  }
   // Counts are validated implicitly by the bounded Reader; reserving to the
   // declared sizes (capped against what the file could physically contain,
   // so a hostile header cannot demand gigabytes) avoids re-growth during the
@@ -291,6 +302,58 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
 
   if (!r.ok) return tokenizing::FileError("truncated file", path);
 
+  // Payload placement (S1 #147, F04). The range check above proved every
+  // payload lies inside the file; here each one must also start on the
+  // documented boundary, at or after the end of the metadata just parsed
+  // (the header, the tensor table and the op list), and no two payloads
+  // may overlap. A payload inside the metadata would read structure as
+  // weights, and two tensors sharing bytes would be committed twice onto
+  // one range: the emit table patches each tensor at its own offset.
+  {
+    const uint64_t metadata_end = r.pos;
+    struct Range {
+      uint64_t offset, size;
+      std::string_view name;  // a tensor's, or the tokenizer section's
+      bool tensor;
+    };
+    std::vector<Range> ranges;
+    ranges.reserve(const_tensors.size() + 1);
+    for (size_t idx : const_tensors) {
+      const SmfTensor& t = model.tensors[idx];
+      ranges.push_back({t.data_offset, t.byte_size, t.name, true});
+    }
+    if (tokenizer_size != 0)
+      ranges.push_back({tokenizer_offset, tokenizer_size,
+                        "the tokenizer section", false});
+    std::sort(ranges.begin(), ranges.end(),
+              [](const Range& a, const Range& b) { return a.offset < b.offset; });
+    auto refuse = [&](const Range& x, const std::string& what) {
+      return x.tensor ? tokenizing::TensorError(x.name, what)
+                      : tokenizing::Error(std::string(x.name) + " " + what +
+                                          " in '" + path + "'");
+    };
+    uint64_t prev_end = 0;
+    const Range* prev = nullptr;
+    for (const Range& x : ranges) {
+      if (x.offset % kSmfPayloadAlignment != 0)
+        return refuse(x, "payload is not " +
+                             std::to_string(kSmfPayloadAlignment) +
+                             "-byte aligned");
+      if (x.offset < metadata_end)
+        return refuse(x, "payload overlaps the file's metadata");
+      if (prev && x.offset < prev_end)
+        return refuse(x, prev->tensor
+                             ? "payload overlaps tensor '" +
+                                   std::string(prev->name) + "'"
+                             : "payload overlaps the tokenizer section");
+      prev = &x;
+      prev_end = x.offset + x.size;  // in-file: cannot overflow
+    }
+  }
+  if (tokenizer_size != 0)
+    model.tokenizer.assign(bytes.data() + tokenizer_offset,
+                           bytes.data() + tokenizer_offset + tokenizer_size);
+
   // Materialize the validated constant payloads. The copy is partitioned
   // over the payload BYTES, not the tensor list (E2, #81): a model is
   // typically dominated by one tensor — an embedding table — and a
@@ -331,6 +394,56 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
 
   model.content_hash = ContentHash64(bytes.data(), bytes.size());
   return model;
+}
+
+std::expected<WeightSweep, std::string> SweepWeights(const SmfModel& model,
+                                                     std::string_view role) {
+  // One pass over every constant payload, in the quantization review's
+  // chunk geometry, doing two things at once: refusing the first
+  // non-finite element (CR1 #142 F12 / F34 — a NaN weight passed the
+  // review's max-abs scan, std::max skipping NaN, and reached the int8
+  // pack's cast, undefined behavior) and recording each tensor's value
+  // range for the frontend screen. The per-chunk minima and maxima are
+  // folded in chunk order, so the ranges are the same at any thread count.
+  WeightSweep sweep;
+  sweep.ranges.reserve(model.tensors.size());
+  for (const SmfTensor& t : model.tensors) {
+    if (!t.is_const) continue;
+    const size_t count = t.data.size() / sizeof(float);
+    const float* data = reinterpret_cast<const float*>(t.data.data());
+    size_t first[kMaxParallelChunks];
+    float lo[kMaxParallelChunks], hi[kMaxParallelChunks];
+    for (size_t& f : first) f = SIZE_MAX;
+    ParallelFor(count, kWeightSweepGrain, [&](size_t b, size_t e, size_t c) {
+      float cl = data[b], ch = data[b];
+      for (size_t i = b; i < e; ++i) {
+        const float v = data[i];
+        if (!std::isfinite(v)) {
+          first[c] = i;
+          return;
+        }
+        cl = std::min(cl, v);
+        ch = std::max(ch, v);
+      }
+      lo[c] = cl;
+      hi[c] = ch;
+    });
+    const size_t chunks = ParallelChunkCount(count, kWeightSweepGrain);
+    WeightRange range{t.name, t.byte_size != 0 ? t.byte_size : t.data.size(),
+                      0.0f, 0.0f};
+    for (size_t c = 0; c < chunks; ++c) {
+      if (first[c] != SIZE_MAX)
+        return tokenizing::IngressError(
+            std::string(role) + " tensor '" + t.name +
+            "' carries a non-finite value at element " +
+            std::to_string(first[c]) +
+            ": NaN and Inf are refused before any pass runs");
+      range.min = c == 0 ? lo[c] : std::min(range.min, lo[c]);
+      range.max = c == 0 ? hi[c] : std::max(range.max, hi[c]);
+    }
+    sweep.ranges.push_back(std::move(range));
+  }
+  return sweep;
 }
 
 std::expected<std::vector<SmfModel>, std::string> LoadSmfMany(

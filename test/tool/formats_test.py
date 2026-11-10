@@ -50,10 +50,12 @@ class ManifestAgreement(unittest.TestCase):
         self.assertEqual(formats.check_against(formats.load_abi()), [])
 
     def test_the_known_sizes(self):
-        self.assertEqual(formats.PLAN_HEADER.size, 280)
+        self.assertEqual(formats.PLAN_HEADER.size, 320)  # v22: 280 + the data contract
         self.assertEqual(formats.INSTRUCTION.size, 64)
         self.assertEqual(formats.EMIT_ENTRY.size, 24)
         self.assertEqual(formats.SDS_HEADER.size, 40)
+        self.assertEqual(formats.SDS_HEADER_BYTES_V3, 64)
+        self.assertEqual(formats.SMTK_HEAD.size, 52)  # 8 u32 + 4 i32 + 1 u32
         self.assertEqual(formats.CKPT_HEADER.size, 40)
 
     def test_every_kind_of_drift_is_named(self):
@@ -75,6 +77,11 @@ class ManifestAgreement(unittest.TestCase):
         moved_bit = copy.deepcopy(abi)
         moved_bit["seeu"]["source_bit"] = 61  # the v17 address space
         cases.append((moved_bit, "seeu.source_bit"))
+        # The SMTK head (the drift that admitted a 48-byte head went uncaught
+        # because the section was outside the seam).
+        shrunk = copy.deepcopy(abi)
+        shrunk["smtk"]["head_bytes"] -= 4
+        cases.append((shrunk, "smtk.head_bytes"))
         for doctored, where in cases:
             problems = formats.check_against(doctored)
             self.assertEqual(len(problems), 1, problems)

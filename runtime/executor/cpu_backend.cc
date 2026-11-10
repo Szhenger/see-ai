@@ -433,6 +433,18 @@ std::expected<void, std::string> CpuBackend::Execute(
                         ReadPtr(ins.in[2]), WritePtr(ins.in[3]), ins.out[0],
                         ins.out[1]);
       break;
+    case up::OpCode::kSoftmaxXEntMaskedFwd:
+      k::SoftmaxXEntMaskedFwd(
+          ReadPtr(ins.in[0]),
+          reinterpret_cast<const int32_t*>(ReadPtr(ins.in[1])),
+          WritePtr(ins.in[2]), WritePtr(ins.in[3]), ins.out[0], ins.out[1]);
+      break;
+    case up::OpCode::kSoftmaxXEntMaskedBwd:
+      k::SoftmaxXEntMaskedBwd(
+          ReadPtr(ins.in[0]),
+          reinterpret_cast<const int32_t*>(ReadPtr(ins.in[1])),
+          ReadPtr(ins.in[2]), WritePtr(ins.in[3]), ins.out[0], ins.out[1]);
+      break;
     case up::OpCode::kMseFwd:
       k::MseFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                 ins.out[0]);

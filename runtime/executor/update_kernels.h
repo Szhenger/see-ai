@@ -219,6 +219,15 @@ void SoftmaxXEntFwd(const float* logits, const int32_t* labels, float* loss,
 // dlogits = seed * (probs - onehot(labels)) / N
 void SoftmaxXEntBwd(const float* probs, const int32_t* labels,
                     const float* seed, float* dlogits, size_t N, size_t C);
+// The masked pair (S3 #149): a label < 0 marks a row the loss ignores.
+// loss = -(1/T) sum_{n: label_n >= 0} log softmax(logits)_n[label_n], T the
+// target rows (0 when T = 0); probs cached for every row. dlogits =
+// seed * (probs - onehot) / T on target rows, 0 on ignored rows.
+void SoftmaxXEntMaskedFwd(const float* logits, const int32_t* labels,
+                          float* loss, float* probs, size_t N, size_t C);
+void SoftmaxXEntMaskedBwd(const float* probs, const int32_t* labels,
+                          const float* seed, float* dlogits, size_t N,
+                          size_t C);
 
 // loss = (1/n) sum (pred - target)^2;  dpred = seed * 2 (pred - target) / n
 void MseFwd(const float* pred, const float* target, float* loss, size_t n);

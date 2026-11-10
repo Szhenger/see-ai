@@ -8,23 +8,16 @@
 #include <string>
 #include <vector>
 
+#include "source/language/dataset_format.h"
+
 // =============================================================================
 // SDS — SeeAI Dataset format: fixed-shape samples for the AOT training loop.
 //
-// Layout (little-endian):
-//   u32 magic "SDS1"; u32 version (1 or 2)
-//   u64 num_samples; u64 input_dim
-//   u32 label_kind (0 = none, 1 = class index i32, 2 = dense f32)
-//   u32 input_kind (v2: 0 = f32 feature rows, 1 = i32 token records;
-//                   the word was header padding in v1, always 0)
-//   u64 label_dim (dense labels only)
-//   records[num_samples]:
-//     input_kind 0:  f32 input[input_dim], then the label (i32 class,
-//                    f32[label_dim] dense, nothing for kind 0)
-//     input_kind 1:  i32 tokens[input_dim + 1] and NO stored label — the
-//                    record is one sequence; inputs are tokens[0..S) and
-//                    the class labels are the shifted view tokens[1..S],
-//                    derived at serving time (label_kind must be 1)
+// The on-disk layout (versions 1, 2 and 3: the 40-byte header, the v3
+// tail — tokenizer identity, flags, reserved words — and the two record
+// kinds, token records carrying a per-position loss mask under the v3 flag)
+// is stated once, in source/language/dataset_format.h, which this header
+// includes; the Dataset reads it, writes it and serves it.
 //
 // Batches are served sequentially with wraparound, or — with EnableShuffle —
 // through a seeded permutation that is re-drawn every epoch. Both modes are
@@ -34,20 +27,20 @@
 
 namespace seeml::update_rt {
 
-inline constexpr uint32_t kSdsMagic = 0x31534453;  // "SDS1" little-endian
-// The readable version window and the fixed header length, named (P6, #86)
-// so the ABI manifest publishes them and the Python writer is checked
-// against them; v1 = f32 feature rows, v2 = adds i32 token records.
-inline constexpr uint32_t kSdsVersion = 2;
-inline constexpr uint32_t kSdsMinVersion = 1;
-inline constexpr uint64_t kSdsHeaderBytes = 40;
-// label_kind: 0 none, 1 class index (i32), 2 dense f32[label_dim].
-inline constexpr uint32_t kSdsLabelKindMax = 2;
-
-// SDS is read/written by memcpy of host integers; the documented on-disk
-// contract is little-endian. Big-endian hosts need byte-swapping I/O.
-static_assert(std::endian::native == std::endian::little,
-              "SDS serialization assumes a little-endian host.");
+// The on-disk constants are the format's own statement
+// (source/language/dataset_format.h), shared with the compiler's data
+// path; the names stay available here for the runtime and its tests.
+using seeml::update::kSdsFlagMasked;
+using seeml::update::kSdsFlagsMask;
+using seeml::update::kSdsHeaderBytes;
+using seeml::update::kSdsHeaderBytesV3;
+using seeml::update::kSdsIgnoreLabel;
+using seeml::update::kSdsLabelKindMax;
+using seeml::update::kSdsMagic;
+using seeml::update::kSdsMinVersion;
+using seeml::update::kSdsVersion;
+using seeml::update::SdsHeaderBytes;
+using seeml::update::SdsMaskBytes;
 
 class Dataset {
  public:
@@ -66,9 +59,26 @@ class Dataset {
   /// record's tokens[0..seq); the next-token class labels are the shifted
   /// view tokens[1..seq] — derived, never stored.
   [[nodiscard]] static std::expected<Dataset, std::string> FromTokens(
-      std::vector<int32_t> tokens, uint64_t num_records, uint64_t seq);
+      std::vector<int32_t> tokens, uint64_t num_records, uint64_t seq,
+      std::vector<uint8_t> mask = {}, uint64_t tokenizer_hash = 0);
 
   uint64_t num_samples() const { return num_samples_; }
+  /// SDS v3: the tokenizer the records were encoded by (0 = none named),
+  /// and whether the records carry a per-position loss mask.
+  uint64_t tokenizer_hash() const { return tokenizer_hash_; }
+  bool masked() const { return !mask_.empty(); }
+  /// ContentHash64 of the SDS file this was loaded from (the corpus identity
+  /// a v22 plan pins, kDataFlagCorpusPinned); 0 for a dataset built in memory.
+  uint64_t content_hash() const { return content_hash_; }
+  /// Token corpora: the positions the loss counts — every one (records x
+  /// seq) for an unmasked corpus, the mask's ones for a masked one.
+  uint64_t target_positions() const;
+  /// Token corpora: `fn(id)` for every id the records hold, in order.
+  template <class F>
+  void each_token(F&& fn) const {
+    for (const int32_t id : tokens_) fn(id);
+  }
+  void set_tokenizer_hash(uint64_t h) { tokenizer_hash_ = h; }
   /// The identity of the shuffle stream: the folded seed EnableShuffle
   /// started from, 0 when serving is sequential. Two datasets with equal
   /// origins (and sizes) serve the same permutations — what a checkpoint
@@ -141,6 +151,16 @@ class Dataset {
   /// held-out validation set, removing them from this dataset. Deterministic:
   /// the same file and fraction always produce the same split. At least one
   /// sample stays on each side.
+  /// Splits off the records at `held` (sorted ascending, distinct, each
+  /// below num_samples, at least one left on each side) as the validation
+  /// set — the compiled split (S3 #149): the indices come from
+  /// HeldOutIndices(num_samples, seed, frac) and `split_hash` is their
+  /// SplitHash, recorded on both halves for the feeder contract. Before any
+  /// shuffling.
+  [[nodiscard]] std::expected<Dataset, std::string> SplitHeldOut(
+      const std::vector<uint64_t>& held, uint64_t split_hash);
+  uint64_t split_hash() const { return split_hash_; }
+
   [[nodiscard]] std::expected<Dataset, std::string> SplitValidation(
       double fraction);
 
@@ -152,6 +172,10 @@ class Dataset {
   Dataset() = default;
 
   void Reshuffle();
+  /// The mask rule shared by FromTokens and LoadFromFile: bytes 0 or 1,
+  /// every record with at least one target.
+  [[nodiscard]] static std::expected<void, std::string> CheckMask(
+      const std::vector<uint8_t>& mask, uint64_t num_records, uint64_t seq);
 
   std::vector<float> inputs_;   // num_samples * input_dim (input_kind 0)
   std::vector<uint8_t> labels_; // num_samples * label_bytes_per_sample
@@ -159,6 +183,14 @@ class Dataset {
   // ids each. A separate store — punning i32 bits through float storage
   // would risk NaN-signaling mutation on copies.
   std::vector<int32_t> tokens_;
+  // SDS v3: num_samples x input_dim mask bytes (1 = a target position),
+  // non-empty exactly for a masked corpus (masked() is this vector's
+  // emptiness — no second bit to keep in step); the tokenizer identity the
+  // records carry.
+  std::vector<uint8_t> mask_;
+  uint64_t tokenizer_hash_ = 0;
+  uint64_t content_hash_ = 0;
+  uint64_t split_hash_ = 0;
   uint64_t num_samples_ = 0;
   uint64_t input_dim_ = 0;
   uint32_t label_kind_ = 0;

@@ -43,6 +43,56 @@ inline constexpr StatRow kFrontendRows[] = {
      "rows of the embedding table", screens_detail::kO},
     {"teacher_ops", "teacher operators", StatKind::kCount, "ops",
      "operators of the distillation teacher", screens_detail::kO},
+    {"adapted_tensors", "adapted weights", StatKind::kCount, "",
+     "frozen weights LoRA will adapt: read only as a MatMul's weight"},
+    {"adapted_bytes", "adapted payload", StatKind::kBytes, "B",
+     "those tensors' f32 bytes", screens_detail::kV},
+    {"activations", "activations", StatKind::kCount, "",
+     "forward values the graph computes at this batch", screens_detail::kV},
+    {"activation_bytes", "activation payload", StatKind::kBytes, "B",
+     "their f32 bytes, every value kept", screens_detail::kV},
+    {"weights_source", "frozen weights live", StatKind::kText, "",
+     "in the plan, or mapped from the model file (adapter-only)"},
+    // The corpus (S2 #148, --data): present only when the compile took data.
+    {"corpus", "corpus", StatKind::kText, "",
+     "records and their width, and what --data named (text, jsonl, sds)",
+     screens_detail::kO},
+    {"corpus_documents", "documents", StatKind::kText, "",
+     "documents read and kept (raw text)", screens_detail::kO},
+    {"corpus_dropped", "dropped", StatKind::kText, "",
+     "documents dropped: empty, exact duplicates, degenerate (raw text)",
+     screens_detail::kO},
+    {"corpus_sanitized", "sanitized", StatKind::kText, "",
+     "bytes and characters the sanitizer removed or counted (raw text)",
+     screens_detail::kO | screens_detail::kV},
+    {"corpus_tokens", "corpus tokens", StatKind::kCount, "tokens",
+     "ids the records hold", screens_detail::kO},
+    {"corpus_remainder", "remainder", StatKind::kCount, "tokens",
+     "ids the last partial window dropped (raw text)",
+     screens_detail::kO | screens_detail::kV},
+    {"corpus_straddles", "straddling windows", StatKind::kCount, "",
+     "records that span a document boundary (no segment mask yet)",
+     screens_detail::kO},
+    {"corpus_distinct_ids", "distinct ids", StatKind::kText, "",
+     "distinct token ids the corpus uses, of the vocabulary",
+     screens_detail::kO},
+    {"corpus_targets", "loss targets", StatKind::kText, "",
+     "positions the loss counts, of all positions", screens_detail::kO},
+    {"batches_per_epoch", "batches per epoch", StatKind::kReal, "",
+     "training records (less a compiled split) ÷ sequences per optimizer step",
+     screens_detail::kO, 2},
+    {"epochs_covered", "epochs covered", StatKind::kReal, "",
+     "the step budget × sequences per step ÷ training records",
+     screens_detail::kO, 3},
+    {"label_entropy", "label entropy", StatKind::kReal, "nats",
+     "the labels' unigram entropy: the input-blind loss floor",
+     screens_detail::kO, 4},
+    {"corpus_hash", "corpus hash", StatKind::kText, "",
+     "ContentHash64 of the canonical SDS the plan is pinned to",
+     screens_detail::kO},
+    {"validation", "validation", StatKind::kText, "",
+     "the compiled held-out split: records, seed, the indices' hash",
+     screens_detail::kO},
     {"footprint_weights", "step-0 weights", StatKind::kBytes, "B",
      "frozen weights at the base's storage", screens_detail::kV},
     {"footprint_activations", "step-0 activations", StatKind::kBytes, "B",
@@ -53,14 +103,32 @@ inline constexpr StatRow kFrontendRows[] = {
      "attention probability caches, or tiled stats rows", screens_detail::kV},
     {"footprint_total", "step-0 bound", StatKind::kBytes, "B",
      "the accountant's lower bound the early gate proved fits"},
+    {"bound_ratio", "bound ÷ exact", StatKind::kReal, "",
+     "the step-0 bound ÷ arena + plan: the accountant's honesty, ≤ 1", 0, 4},
     {"memory_budget", "memory budget", StatKind::kBytes, "B",
      "the configured budget, else this host's memory", screens_detail::kX},
     {"frontend_ms", "frontend time", StatKind::kReal, "ms",
-     "ingest checks and the forward SIR, wall time",
+     "ingress, topology, the accountant and the forward SIR, wall time",
      screens_detail::kV | screens_detail::kX, 3},
 };
+inline constexpr StatColumn kTensorColumns[] = {
+    {"name", StatKind::kText, ""},
+    {"bytes", StatKind::kBytes, "B"},
+    // The fixtures' weights are drawn by the standard library's normal
+    // distribution, whose algorithm differs between libc++ and libstdc++:
+    // the values are the file's, not the toolchain's, so they stay out of
+    // the golden blocks.
+    {"min", StatKind::kReal, "", screens_detail::kX, 6},
+    {"max", StatKind::kReal, "", screens_detail::kX, 6},
+};
+inline constexpr StatTable kFrontendTables[] = {
+    {"tensors", "frozen weights",
+     "each constant tensor: its payload and its value range, from the "
+     "ingress sweep",
+     kTensorColumns},
+};
 inline constexpr ScreenSpec kFrontendScreen = {
-    "frontend", "the model the compiler read", kFrontendRows};
+    "frontend", "the model the compiler read", kFrontendRows, kFrontendTables};
 
 // --- analysis: what the passes did ------------------------------------------------
 
@@ -146,8 +214,6 @@ inline constexpr StatRow kBackendRows[] = {
     {"plan_bytes", "plan file", StatKind::kBytes, "B", "the sealed .seeu"},
     {"device_bytes", "arena + plan", StatKind::kBytes, "B",
      "what the device holds: the arena and the mapped plan"},
-    {"bound_ratio", "bound ÷ exact", StatKind::kReal, "",
-     "the step-0 bound ÷ arena + plan", 0, 4},
     {"gemm_flops", "GEMM work", StatKind::kCount, "FLOP",
      "per step: 2·M·N·K over the train GEMMs, times G"},
     {"attention_flops", "attention work", StatKind::kCount, "FLOP",

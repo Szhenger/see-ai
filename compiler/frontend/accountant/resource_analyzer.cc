@@ -17,6 +17,7 @@
 #endif
 
 #include "compiler/diagnostics/tokenizing/error.h"
+#include "compiler/frontend/topology/sema.h"
 
 namespace seeml::update {
 
@@ -51,37 +52,10 @@ TrainingFootprint& TrainingFootprint::operator+=(const TrainingFootprint& o) {
 
 namespace {
 
-/// The LoRA grafter's eligibility rule, read off the SMF op list: a constant
-/// 2-D tensor consumed only as the weight (second) operand of two-input
-/// MatMuls whose operands differ, and named by one of `target_filters`
-/// (empty = all). Shared by the delta estimate and the activation bound,
-/// which both turn on which products the grafter will adapt.
-std::unordered_set<std::string_view> AdaptedWeights(
-    const SmfModel& model, std::span<const std::string> target_filters) {
-  std::unordered_map<std::string_view, bool> weight_only;  // name -> eligible
-  for (const SmfOp& op : model.ops) {
-    const bool matmul = op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
-    for (size_t i = 0; i < op.inputs.size(); ++i) {
-      const bool as_weight = matmul && i == 1 && op.inputs[0] != op.inputs[1];
-      auto [it, fresh] = weight_only.try_emplace(op.inputs[i], as_weight);
-      if (!fresh) it->second = it->second && as_weight;
-    }
-  }
-  std::unordered_set<std::string_view> adapted;
-  for (const SmfTensor& t : model.tensors) {
-    if (!t.is_const || t.dims.size() != 2) continue;
-    auto it = weight_only.find(t.name);
-    if (it == weight_only.end() || !it->second) continue;
-    if (!target_filters.empty()) {
-      bool matched = false;
-      for (const std::string& f : target_filters)
-        if (t.name.find(f) != std::string::npos) matched = true;
-      if (!matched) continue;
-    }
-    adapted.insert(t.name);
-  }
-  return adapted;
-}
+// The LoRA grafter's eligibility rule is topology's one reading of it
+// (sema::AdaptedWeights); the delta estimate and the activation bound
+// below both turn on which products the grafter will adapt.
+using sema::AdaptedWeights;
 
 /// Shared walk behind both estimators. `sum_activations` selects the
 /// training model (the forward values the backward reads are all alive

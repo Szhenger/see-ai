@@ -147,7 +147,7 @@ TEST(CompileScreens, TheNumbersAreThePlansOwn) {
   EXPECT_EQ(T(s.analysis, "narrow_weights"), std::string("none: f32"));
   // The report object carries the tables too.
   const std::string json = s.analysis.Json(0);
-  EXPECT_STR_CONTAINS(json, "\"passes\": [{\"name\": \"finite-sweep\"");
+  EXPECT_STR_CONTAINS(json, "\"passes\": [{\"name\": \"ingress\"");
   EXPECT_STR_CONTAINS(json, "\"adapter_sites\": [{\"weight\": ");
 }
 

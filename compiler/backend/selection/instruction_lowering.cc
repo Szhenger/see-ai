@@ -392,6 +392,22 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
       ins.in[3] = ref(op->result(1));    // probs cache
       ins.out[0] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(0));
       ins.out[1] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(1));
+    } else if (m == "sc_high.softmax_xent_masked") {
+      set(OpCode::kSoftmaxXEntMaskedFwd);
+      ins.in[0] = ref(op->operand(0));   // logits
+      ins.in[1] = ref(op->operand(1));   // labels (i32; -1 = ignored)
+      ins.in[2] = ref(op->result(0));    // loss
+      ins.in[3] = ref(op->result(1));    // probs cache
+      ins.out[0] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(0));
+      ins.out[1] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(1));
+    } else if (m == "sc_low.softmax_xent_masked_grad") {
+      set(OpCode::kSoftmaxXEntMaskedBwd);
+      ins.in[0] = ref(op->operand(0));   // probs
+      ins.in[1] = ref(op->operand(1));   // labels
+      ins.in[2] = ref(op->operand(2));   // seed
+      ins.in[3] = ref(op->result(0));    // dlogits
+      ins.out[0] = static_cast<uint64_t>(op->result(0)->shape().dims.at(0));
+      ins.out[1] = static_cast<uint64_t>(op->result(0)->shape().dims.at(1));
     } else if (m == "sc_low.softmax_xent_grad") {
       set(OpCode::kSoftmaxXEntBwd);
       ins.in[0] = ref(op->operand(0));   // probs

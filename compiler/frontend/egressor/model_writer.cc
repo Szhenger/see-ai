@@ -84,14 +84,22 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   // place (CR4 #145 F05: a failed save used to leave new offsets paired
   // with the old hash).
   std::vector<std::pair<uint64_t, uint64_t>> layout(model.tensors.size());
+  // The lowest version that carries the model: v7 only with a tokenizer
+  // section, so a model without one is the v6 file it always was.
+  const uint32_t version = model.tokenizer.empty() ? 6 : 7;
+  uint64_t tokenizer_offset = 0;
   auto serialize_meta = [&](Writer& w) {
     w.Write<uint32_t>(kSmfMagic);
-    w.Write<uint32_t>(kSmfVersion);
+    w.Write<uint32_t>(version);
     w.Write<uint32_t>(static_cast<uint32_t>(model.tensors.size()));
     w.Write<uint32_t>(static_cast<uint32_t>(model.ops.size()));
     w.WriteStr(model.input_name);
     w.WriteStr(model.output_name);
     w.Write<uint64_t>(model.seq_len);
+    if (version >= 7) {
+      w.Write<uint64_t>(tokenizer_offset);
+      w.Write<uint64_t>(static_cast<uint64_t>(model.tokenizer.size()));
+    }
     for (size_t i = 0; i < model.tensors.size(); ++i) {
       const auto& t = model.tensors[i];
       w.WriteStr(t.name);
@@ -117,6 +125,10 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   serialize_meta(probe);
 
   uint64_t cursor = AlignUp(probe.buf.size(), kDataAlignment);
+  if (!model.tokenizer.empty()) {
+    tokenizer_offset = cursor;
+    cursor = AlignUp(cursor + model.tokenizer.size(), kDataAlignment);
+  }
   for (size_t i = 0; i < model.tensors.size(); ++i) {
     const auto& t = model.tensors[i];
     if (!t.is_const) continue;
@@ -133,6 +145,10 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   Writer w;
   w.buf.reserve(cursor);
   serialize_meta(w);
+  if (!model.tokenizer.empty()) {
+    w.buf.resize(static_cast<size_t>(tokenizer_offset), 0);  // the gap only
+    w.buf.insert(w.buf.end(), model.tokenizer.begin(), model.tokenizer.end());
+  }
   // Append, don't resize-then-overwrite: only the alignment gaps are zero
   // bytes; zero-filling the whole data section first wrote every payload
   // byte twice (E2, #81). The reservation above means no append reallocates.

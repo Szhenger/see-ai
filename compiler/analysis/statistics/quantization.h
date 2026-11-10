@@ -6,6 +6,7 @@
 #include <unordered_set>
 
 #include "compiler/frontend/computation/graph_build.h"
+#include "compiler/frontend/ingressor/model_reader.h"
 #include "compiler/frontend/representation/sir.h"
 
 // =============================================================================
@@ -20,11 +21,9 @@
 
 namespace seeml::update {
 
-/// Elements per chunk when sweeping a frozen weight blob. Weight tensors
-/// reach tens of megabytes; the sweeps are elementwise over disjoint ranges,
-/// so they parallelize with bit-identical results. Shared with the backend's
-/// int8 pack so both sides of the decision sweep with the same geometry.
-inline constexpr size_t kWeightSweepGrain = 65536;
+// The sweep geometry (kWeightSweepGrain) is the ingressor's statement
+// (compiler/frontend/ingressor/model_reader.h): the review, the backend's
+// int8 pack and the ingress sweep all chunk a tensor the same way.
 
 /// Reviews every frozen sc_mem.weight and selects those safe to quantize:
 /// weights consumed exclusively as the weight operand of matmul kernels

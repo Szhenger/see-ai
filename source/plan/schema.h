@@ -136,7 +136,30 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // refuses a source ref as a destination, the header's I/O slots refuse
 // one, and BindSourceModel checks the file covers every program's extent.
 // No header change; rejected below v21 outside the eval program.
-inline constexpr uint32_t kSeeuVersion = 21;
+// v22: the data contract (S2 #148 / S3 #149) — the header grows from 280
+// to 320 bytes, into the padding every plan since G1b-2 has carried before
+// its first 64-aligned section (no section offset moves): the tokenizer
+// identity the corpus must match (`tokenizer_hash`, the ContentHash64 of
+// the SMF tokenizer section; 0 = unbound), the canonical corpus's hash as
+// provenance (`corpus_hash`, enforced only when `kDataFlagCorpusPinned`),
+// the held-out split as a function the device recomputes — `split_seed`,
+// the fraction's f32 bits (`val_frac_bits`) and the hash over the sorted
+// held-out record indices (`val_split_hash`) under `kDataFlagSplit` — and
+// `data_flags`, where `kDataFlagMaskedLoss` says the labels carry -1 for
+// positions the loss ignores (the masked cross-entropy opcodes). Every
+// field is zero below v22, which the load contract proves; a v21 runtime
+// never reads them, and a v22 runtime reads a v21 plan's zero padding as
+// "feature absent". The readable floor stays at v4.
+inline constexpr uint32_t kSeeuVersion = 22;
+
+// The version that grew the header with the data contract.
+inline constexpr uint32_t kSeeuDataContractVersion = 22;
+// PlanHeader::data_flags bits.
+inline constexpr uint32_t kDataFlagMaskedLoss = 1u << 0;    // labels carry -1 = ignore
+inline constexpr uint32_t kDataFlagCorpusPinned = 1u << 1;  // corpus_hash is enforced
+inline constexpr uint32_t kDataFlagSplit = 1u << 2;         // a compiled held-out split
+inline constexpr uint32_t kDataFlagsMask =
+    kDataFlagMaskedLoss | kDataFlagCorpusPinned | kDataFlagSplit;
 
 // The version that admitted source refs in every program (adapter-only).
 inline constexpr uint32_t kSeeuSourceWeightsVersion = 21;
@@ -329,6 +352,14 @@ struct PlanHeader {
   // --- v9: the optimizer (step) program, present iff grad_accum_steps > 1.
   uint64_t step_instr_offset = 0;
   uint64_t step_instr_count = 0;
+
+  // --- v22: the data contract (S2 #148 / S3 #149); all zero below v22.
+  uint64_t tokenizer_hash = 0;  // the SMF tokenizer section's hash; 0 = unbound
+  uint64_t corpus_hash = 0;     // the canonical corpus compiled over (provenance)
+  uint64_t split_seed = 0;      // the held-out partition's seed
+  uint64_t val_split_hash = 0;  // hash over the sorted held-out record indices
+  uint32_t val_frac_bits = 0;   // f32 bits of the held-out fraction
+  uint32_t data_flags = 0;      // kDataFlag*
 };
 
 /// Maps a trained weight delta in the arena to the byte range it updates
@@ -345,13 +376,16 @@ struct EmitEntry {
 #pragma pack(pop)
 
 // The header layout is the compiler↔runtime ABI. Additive version bumps
-// carve new fields out of `reserved` or pad words and MUST NOT change this
-// size — v7/v9 carved reserved[4] into input_kind / grad_accum_steps /
-// seq_len / step_instr_offset+count and v11 carved the two pad words into
-// the GEMM tiles; each is byte-exact only if this holds. As of v11 no spare
-// word remains: the next additive field needs a v12 with a larger header
-// and a raised readable floor. Compiler-enforce it rather than argue it.
-static_assert(sizeof(PlanHeader) == 280, "PlanHeader layout is part of the ABI.");
+// carve new fields out of `reserved` or pad words and MUST NOT change the
+// offset of any existing field — v7/v9 carved reserved[4] into input_kind /
+// grad_accum_steps / seq_len / step_instr_offset+count and v11 carved the
+// two pad words into the GEMM tiles. v22 grew the header from 280 to 320
+// bytes: the first section of every plan starts at AlignUp(header, 64) =
+// 320, so the forty bytes were zero padding in every earlier plan, which
+// is exactly what a v22 reader takes them for. The next growth past 320
+// moves every section and is a layout change, not an additive one.
+// Compiler-enforce it rather than argue it.
+static_assert(sizeof(PlanHeader) == 320, "PlanHeader layout is part of the ABI.");
 static_assert(sizeof(EmitEntry) == 24, "EmitEntry layout is part of the ABI.");
 
 }  // namespace seeml::update

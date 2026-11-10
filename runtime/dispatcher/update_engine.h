@@ -483,12 +483,13 @@ class UpdateEngine {
   // classes) or MSE (a = pred, b = target, width = elements per row),
   // by real-row weight for a composite loss.
   struct EvalTail {
-    enum Kind { kWeighted, kXent, kMse } kind = kWeighted;
+    enum Kind { kWeighted, kXent, kMse, kXentMasked } kind = kWeighted;
     uint64_t a = seeml::update::kNullRef;
     uint64_t b = seeml::update::kNullRef;
     uint64_t width = 0;
   } eval_tail_;
-  double RealRowLoss(uint64_t real, const uint8_t* label_slot) const;
+  double RealRowLoss(uint64_t real, const uint8_t* label_slot,
+                     uint64_t* counted) const;
   uint64_t eval_probs_ref_ = seeml::update::kNullRef;
   uint64_t eval_softmax_rows_ = 0;
   uint64_t eval_softmax_cols_ = 0;

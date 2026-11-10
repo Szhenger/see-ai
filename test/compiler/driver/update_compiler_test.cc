@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -17,6 +18,9 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/egressor/model_writer.h"
 #include "compiler/frontend/ingressor/model_reader.h"
+#include "runtime/pipeline/dataset.h"
+#include "source/contract/split.h"
+#include "source/identity/hash.h"
 #include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
 #include "source/parallel/parallel_for.h"
@@ -797,10 +801,12 @@ TEST(UpdateCompiler, RegatesTheBudgetOnTheExactCompiledFootprint) {
 }
 
 TEST(UpdateCompiler, RejectsModelWithoutInputMetadata) {
+  // Topology's reading of the input (S1 #147): the driver no longer reads
+  // the tensor table ahead of it, so this is topology's diagnostic.
   SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 15);
   model.input_name = "not_a_tensor";
   EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
-                        "lacks input metadata");
+                        "is not a tensor of the model with a shape");
 }
 
 TEST(UpdateCompiler, PropagatesGrafterFailure) {
@@ -1211,6 +1217,373 @@ TEST(UpdateCompiler, AttentionAutoDecidesAgainstAConfiguredBudgetOnly) {
     EXPECT_TRUE(tiled->attention_tiled);
   else
     EXPECT_STR_CONTAINS(tiled.error(), "cannot run locally");
+}
+
+TEST(UpdateCompiler, TopologyRefusesWhatTheReviewFoundMissing) {
+  // S1 #147: the cross-input checks that had no home while shape checks ran
+  // inside the build loop — each a compile-time refusal naming the rule.
+  // F06: the teacher's `t::` namespace is reserved.
+  {
+    SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 21);
+    for (SmfTensor& t : model.tensors)
+      if (t.name == "w1") t.name = "t::w1";
+    for (SmfOp& op : model.ops)
+      for (std::string& in : op.inputs)
+        if (in == "w1") in = "t::w1";
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
+                          "reserved namespace 't::'");
+  }
+  // F68: the output's rows are the batch — a MatMul over a constant LHS
+  // has its own row count, and the loss would read labels past the slot.
+  {
+    SmfModel model;
+    model.input_name = "x";
+    model.output_name = "logits";
+    model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+    model.tensors.push_back({.name = "c",
+                             .dims = {5, 4},
+                             .is_const = true,
+                             .data = seeml::testing::AsPayload(
+                                 std::vector<float>(20, 0.5f))});
+    model.tensors.back().byte_size = 80;
+    model.tensors.push_back({.name = "w",
+                             .dims = {4, 3},
+                             .is_const = true,
+                             .data = seeml::testing::AsPayload(
+                                 std::vector<float>(12, 0.25f))});
+    model.tensors.back().byte_size = 48;
+    model.ops.push_back({SmfOpKind::kMatMul, "mm", {"c", "w"}, "logits"});
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
+                          "has 5 rows, but the compiled batch is 4");
+  }
+  // N19: a token model's labels are next-token classes; MSE has no
+  // dataset that could satisfy its contract.
+  {
+    SmfModel model =
+        seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+    UpdateConfig config = BaseConfig(16);
+    config.loss = LossKind::kMse;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                          "--loss mse needs dense f32 labels");
+  }
+  // F02: a sequential teacher must agree on seq_len — the causal mask and
+  // the rotary positions follow each model's own declaration.
+  {
+    SmfModel student = seeml::testing::MakeTinyDecoder(8, 2, 4, 12, 3, 9);
+    SmfModel teacher = seeml::testing::MakeTinyDecoder(8, 2, 2, 12, 3, 10);
+    UpdateConfig config = BaseConfig(4);
+    config.loss = LossKind::kKLDistill;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(student, &teacher),
+                          "teacher seq_len 2 disagrees with the student's 4");
+  }
+}
+
+TEST(UpdateCompiler, TheTokenizerSectionMustMatchTheEmbeddingAndTheHead) {
+  // S1 / S2: an SMF v7 tokenizer section's vocabulary is the id space the
+  // corpus carries — the embedding table's rows and the head's width.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  auto section_with_vocab = [](uint32_t v) {
+    // The SMTK head alone (kSmtkHeadBytes): magic, version 1, kind 1,
+    // pre-tokenizer 1, flags 0, vocab, 0 merges, 0 special, -1 x 4, no
+    // template. Topology reads the head; the encoder is not instantiated.
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t x) {
+      for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
+    };
+    u32(0x4B544D53); u32(1); u32(1); u32(1); u32(0); u32(v); u32(0); u32(0);
+    u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu);
+    u32(0);
+    return b;
+  };
+  model.tokenizer = section_with_vocab(16);
+  auto bound = UpdateCompiler(BaseConfig(batch)).Compile(model);
+  ASSERT_OK(bound);
+  // The plan is bound to the section: its header carries the hash the
+  // corpus must name (v22), and a model without a section binds to none.
+  EXPECT_EQ(HeaderOf(*bound).tokenizer_hash, model.TokenizerHash());
+  EXPECT_NE(HeaderOf(*bound).tokenizer_hash, 0u);
+  model.tokenizer.clear();
+  auto unbound = UpdateCompiler(BaseConfig(batch)).Compile(model);
+  ASSERT_OK(unbound);
+  EXPECT_EQ(HeaderOf(*unbound).tokenizer_hash, 0u);
+  model.tokenizer = section_with_vocab(17);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(batch)).Compile(model),
+                        "vocabulary (17 tokens) is not the embedding table's "
+                        "rows (16)");
+  SmfModel mlp = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  mlp.tokenizer = section_with_vocab(static_cast<uint32_t>(kOutDim));
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(mlp),
+                        "takes feature rows, not token ids");
+  // A head shorter than the fixed 13 words is refused as truncated (the
+  // constant used to say 12, admitting a head without its template length).
+  model.tokenizer = section_with_vocab(16);
+  model.tokenizer.resize(50);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(batch)).Compile(model),
+                        "truncated head");
+  model.tokenizer = section_with_vocab(16);
+  model.tokenizer[4] = 2;  // the version word
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(batch)).Compile(model),
+                        "unsupported version 2");
+  // A teacher reads the student's token ids: one carrying another section
+  // (same vocabulary, other bytes) is refused; the student's own, or none,
+  // is admitted.
+  model.tokenizer = section_with_vocab(16);
+  SmfModel teacher =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 42);
+  UpdateConfig kl = BaseConfig(batch);
+  kl.loss = LossKind::kKLDistill;
+  teacher.tokenizer = section_with_vocab(16);
+  teacher.tokenizer[32] = 0;  // eos_id -1 -> 0: another section, same vocab
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(kl).Compile(model, &teacher),
+                        "tokenizer hash mismatch");
+  teacher.tokenizer = section_with_vocab(16);
+  EXPECT_OK(UpdateCompiler(kl).Compile(model, &teacher));
+  teacher.tokenizer.clear();
+  EXPECT_OK(UpdateCompiler(kl).Compile(model, &teacher));
+}
+
+TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
+  // S2 #148: --data runs the vendored stages with the model's own section,
+  // writes the canonical corpus, pins the plan to it by hash and fills the
+  // corpus rows; a given SDS is held to the model and pinned as is.
+  seeml::testing::ScopedTempDir dir;
+  auto write = [&](const std::string& name, const std::string& bytes) {
+    const std::string path = dir.File(name);
+    std::ofstream f(path, std::ios::binary);
+    f << bytes;
+    return path;
+  };
+  // A byte vocabulary (id = byte) with one special EOS token (id 256).
+  auto section = [] {
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t v) {
+      for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    u32(0x4B544D53); u32(1); u32(1); u32(2); u32(0); u32(257); u32(0); u32(1);
+    u32(256); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0);
+    for (int v = 0; v < 256; ++v) {
+      b.push_back(1); b.push_back(0); b.push_back(static_cast<uint8_t>(v));
+    }
+    const std::string eos = "<eos>";
+    b.push_back(static_cast<uint8_t>(eos.size())); b.push_back(0);
+    b.insert(b.end(), eos.begin(), eos.end());
+    u32(256);
+    return b;
+  }();
+  const int64_t vocab = 257, dim = 8, heads = 2, seq = 4, ffn = 16, batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 43);
+  model.tokenizer = section;
+  // 40 bytes, one document: 8 windows of 5 ids, no remainder.
+  const std::string text = "abcdefghij" "klmnopqrst" "uvwxyz0123" "456789ABCD";
+  UpdateConfig cfg = BaseConfig(batch);
+  cfg.default_steps = 8;
+  cfg.data_path = write("corpus.txt", text);
+  auto compiled = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(compiled);
+  const PlanHeader h = HeaderOf(*compiled);
+  EXPECT_NE(h.data_flags & kDataFlagCorpusPinned, 0u);
+  EXPECT_FALSE(compiled->corpus_from_sds);
+  EXPECT_EQ(compiled->corpus_sds.size(), 64u + 8 * 5 * 4);
+  EXPECT_EQ(h.corpus_hash, ContentHash64(compiled->corpus_sds.data(),
+                                         compiled->corpus_sds.size()));
+  EXPECT_EQ(h.tokenizer_hash, model.TokenizerHash());
+  EXPECT_STR_CONTAINS(compiled->corpus_manifest, "\"windows\": 8");
+  const std::string screen = compiled->screens.frontend.Json(0);
+  EXPECT_STR_CONTAINS(screen, "\"corpus_tokens\": 40");
+  EXPECT_STR_CONTAINS(screen, "\"corpus_distinct_ids\": \"40 of 257\"");
+  EXPECT_STR_CONTAINS(screen, "\"corpus_targets\": \"32 of 32\"");
+  // batch 16 rows = 4 sequences per step; 8 records: 2 batches per epoch,
+  // 8 steps cover 4 epochs.
+  EXPECT_STR_CONTAINS(screen, "\"batches_per_epoch\": 2");
+  EXPECT_STR_CONTAINS(screen, "\"epochs_covered\": 4");
+  bool data_phase = false;
+  for (const auto& t : compiled->pass_timings) data_phase |= t.name == "data";
+  EXPECT_TRUE(data_phase);
+
+  // The same corpus given as an SDS: pinned to the same hash, nothing to
+  // write; and the pin differs from a plan compiled without data.
+  const std::string sds_path = write(
+      "corpus.sds", std::string(compiled->corpus_sds.begin(),
+                                compiled->corpus_sds.end()));
+  cfg.data_path = sds_path;
+  auto again = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(again);
+  EXPECT_TRUE(again->corpus_from_sds);
+  EXPECT_EQ(HeaderOf(*again).corpus_hash, h.corpus_hash);
+  cfg.data_path.clear();
+  auto plain = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(plain);
+  EXPECT_EQ(HeaderOf(*plain).corpus_hash, 0u);
+  EXPECT_EQ(HeaderOf(*plain).data_flags & kDataFlagCorpusPinned, 0u);
+
+  // The compiled split (S3 #149): two compiles of the same corpus and seed
+  // name the same held-out set; the header carries seed, fraction and the
+  // indices' hash; a split without a corpus is refused.
+  cfg.data_path = sds_path;
+  cfg.val_frac = 0.25f;
+  cfg.split_seed = 3;
+  auto split_a = UpdateCompiler(cfg).Compile(model);
+  auto split_b = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(split_a);
+  ASSERT_OK(split_b);
+  const PlanHeader hs = HeaderOf(*split_a);
+  EXPECT_NE(hs.data_flags & kDataFlagSplit, 0u);
+  EXPECT_EQ(hs.split_seed, 3u);
+  EXPECT_EQ(hs.val_frac_bits, ValFracBits(0.25f));
+  EXPECT_EQ(hs.val_split_hash, SplitHash(HeldOutIndices(8, 3, 0.25f)));
+  EXPECT_EQ(hs.val_split_hash, HeaderOf(*split_b).val_split_hash);
+  EXPECT_EQ(split_a->plan, split_b->plan);
+  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
+                      "\"validation\": \"2 of 8 records held out, seed 3, split ");
+  // The epoch rows count the 6 training records: 1.5 batches per epoch,
+  // 8 steps x 4 sequences / 6 records = 5.333 epochs (not the 2 / 4 of the
+  // whole corpus).
+  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
+                      "\"batches_per_epoch\": 1.5");
+  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
+                      "\"epochs_covered\": 5.333");
+  cfg.split_seed = 4;
+  auto split_c = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(split_c);
+  EXPECT_NE(HeaderOf(*split_c).val_split_hash, hs.val_split_hash);
+  cfg.data_path.clear();
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "needs the corpus");
+  cfg.data_path = sds_path;
+  cfg.val_frac = 1.5f;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "val_frac must lie");
+  cfg.val_frac = 0.0f;
+  cfg.split_seed = 0;
+
+  // Refusals, by name.
+  cfg.data_path = write("corpus.csv", text);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "unknown data format");
+  cfg.data_path = write("corpus.txt", text);
+  SmfModel sectionless = model;
+  sectionless.tokenizer.clear();
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(sectionless),
+                        "carries no tokenizer section");
+  UpdateConfig mlp_cfg = BaseConfig(kBatch);
+  mlp_cfg.data_path = cfg.data_path;
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(mlp_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "a feature model takes no raw text");
+  // An SDS encoded by another tokenizer, and one carrying a loss mask.
+  std::vector<int32_t> ids(8 * 5, 1);
+  auto foreign = seeml::update_rt::Dataset::FromTokens(ids, 8, seq, {}, 0x999);
+  ASSERT_OK(foreign);
+  ASSERT_OK(foreign->SaveToFile(dir.File("foreign.sds")));
+  cfg.data_path = dir.File("foreign.sds");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "another tokenizer");
+  std::vector<uint8_t> mask(8 * 4, 1);
+  auto masked = seeml::update_rt::Dataset::FromTokens(ids, 8, seq, mask,
+                                                      model.TokenizerHash());
+  ASSERT_OK(masked);
+  ASSERT_OK(masked->SaveToFile(dir.File("masked.sds")));
+  cfg.data_path = dir.File("masked.sds");
+  // A masked corpus compiles the masked cross-entropy (S3 #149): the flag
+  // in the header, opcodes 51 / 52 in place of 11 / 12 in every program,
+  // and the loss objective is the cross-entropy alone.
+  auto masked_plan = UpdateCompiler(cfg).Compile(model);
+  ASSERT_OK(masked_plan);
+  EXPECT_NE(HeaderOf(*masked_plan).data_flags & kDataFlagMaskedLoss, 0u);
+  {
+    const auto all = TrainProgramOf(*masked_plan);
+    EXPECT_EQ(CountOpcode(all, OpCode::kSoftmaxXEntFwd), 0u);
+    EXPECT_EQ(CountOpcode(all, OpCode::kSoftmaxXEntBwd), 0u);
+    EXPECT_GT(CountOpcode(all, OpCode::kSoftmaxXEntMaskedFwd), 0u);
+    EXPECT_GT(CountOpcode(all, OpCode::kSoftmaxXEntMaskedBwd), 0u);
+  }
+  EXPECT_STR_CONTAINS(masked_plan->screens.frontend.Json(0),
+                      "\"corpus_targets\": \"32 of 32\"");
+  // The mask is the cross-entropy's alone: a feature model under MSE (which
+  // topology admits) with --masked-loss is refused by the driver.
+  UpdateConfig mse_masked = BaseConfig(kBatch);
+  mse_masked.masked_loss = true;
+  mse_masked.loss = LossKind::kMse;
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(mse_masked).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "cross-entropy alone");
+  // --masked-loss without data: the flag and the masked opcodes, no pin.
+  UpdateConfig flagged_cfg = cfg;
+  flagged_cfg.data_path.clear();
+  flagged_cfg.masked_loss = true;
+  auto flagged = UpdateCompiler(flagged_cfg).Compile(model);
+  ASSERT_OK(flagged);
+  EXPECT_NE(HeaderOf(*flagged).data_flags & kDataFlagMaskedLoss, 0u);
+  EXPECT_EQ(HeaderOf(*flagged).data_flags & kDataFlagCorpusPinned, 0u);
+  // A record wider than the model's seq_len, and an id past the table.
+  auto wide = seeml::update_rt::Dataset::FromTokens(std::vector<int32_t>(8 * 6, 1),
+                                                    8, seq + 1);
+  ASSERT_OK(wide);
+  ASSERT_OK(wide->SaveToFile(dir.File("wide.sds")));
+  cfg.data_path = dir.File("wide.sds");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "-token records");
+  ids[7] = 257;
+  auto oob = seeml::update_rt::Dataset::FromTokens(ids, 8, seq);
+  ASSERT_OK(oob);
+  ASSERT_OK(oob->SaveToFile(dir.File("oob.sds")));
+  cfg.data_path = dir.File("oob.sds");
+  EXPECT_ERROR(UpdateCompiler(cfg).Compile(model));
+
+  // --masked-loss over a corpus that carries no mask would pin the plan to
+  // the one corpus the device must refuse: a compile-time refusal.
+  UpdateConfig masked_plain = cfg;
+  masked_plain.data_path = sds_path;
+  masked_plain.masked_loss = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(masked_plain).Compile(model),
+                        "would refuse its own corpus");
+  // ... and on a feature model no corpus could carry one at all.
+  UpdateConfig masked_feature = BaseConfig(kBatch);
+  masked_feature.masked_loss = true;
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(masked_feature).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "token models alone");
+
+  // A feature model takes its corpus as a pre-tokenized .sds (feature
+  // rows), pinned by the file's hash like a token corpus; the labels the
+  // corpus carries are held to the labels the loss stages, and the device's
+  // own feeder rule runs over the finished header before the plan ships.
+  auto rows = seeml::testing::MakeClassificationData(16, kInDim, 7);
+  ASSERT_OK(rows);
+  ASSERT_OK(rows->SaveToFile(dir.File("rows.sds")));
+  UpdateConfig feature_cfg = BaseConfig(kBatch);
+  feature_cfg.data_path = dir.File("rows.sds");
+  auto pinned = UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3));
+  ASSERT_OK(pinned);
+  {
+    std::ifstream f(dir.File("rows.sds"), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_NE(HeaderOf(*pinned).corpus_hash, 0u);
+    EXPECT_EQ(HeaderOf(*pinned).corpus_hash,
+              ContentHash64(reinterpret_cast<const uint8_t*>(bytes.data()),
+                            bytes.size()));
+    EXPECT_NE(HeaderOf(*pinned).data_flags & kDataFlagCorpusPinned, 0u);
+  }
+  feature_cfg.loss = LossKind::kMse;  // dense targets over class labels
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "carries class-index labels, but the loss stages dense f32 labels");
+  auto dense = seeml::testing::MakeRegressionData(16, kInDim, kOutDim + 1, 7);
+  ASSERT_OK(dense);
+  ASSERT_OK(dense->SaveToFile(dir.File("dense.sds")));
+  feature_cfg.data_path = dir.File("dense.sds");
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "dense labels are 4 wide; the model's output is 3");
+  auto unlabeled = seeml::testing::MakeUnlabeledData(16, kInDim, 7);
+  ASSERT_OK(unlabeled);
+  ASSERT_OK(unlabeled->SaveToFile(dir.File("unlabeled.sds")));
+  feature_cfg.loss = LossKind::kSoftmaxXEnt;
+  feature_cfg.data_path = dir.File("unlabeled.sds");
+  EXPECT_ERROR_CONTAINS(
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+      "carries no labels, but the loss stages class-index labels");
 }
 
 TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {

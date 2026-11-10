@@ -4,6 +4,7 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "source/language/model_format.h"
@@ -38,6 +39,38 @@ namespace seeml::update {
 /// failure, the error of the first failing path (by input order) is returned.
 [[nodiscard]] std::expected<std::vector<SmfModel>, std::string> LoadSmfMany(
     std::span<const std::string> paths);
+
+/// Elements per chunk when sweeping a frozen weight blob: the ingress sweep
+/// (SweepWeights), the quantization review's max-abs scan and the backend's
+/// int8 pack all walk a tensor in this geometry, so the element a refusal
+/// names, the ranges the screen prints and the scale the review derives are
+/// the same at any thread count and the same across the three. Weight
+/// tensors reach tens of megabytes; the sweeps are elementwise over disjoint
+/// ranges, so they parallelize with bit-identical results.
+inline constexpr size_t kWeightSweepGrain = 65536;
+
+/// One constant tensor's value range, from the ingress sweep.
+struct WeightRange {
+  std::string name;
+  uint64_t bytes = 0;
+  float min = 0.0f;
+  float max = 0.0f;
+};
+
+/// What the ingress sweep over the weights found: one range per constant
+/// tensor, in the model's tensor order.
+struct WeightSweep {
+  std::vector<WeightRange> ranges;
+};
+
+/// The ingressor's value check (S1 #147; CR1 #142 F12 / F34): every element
+/// of every constant tensor is finite, or the model is refused by `role`
+/// ("student", "teacher"), tensor and element before any pass runs. The
+/// same pass records each tensor's range for the frontend screen. Called
+/// by the driver on every model it compiles — loaded from a file or built
+/// in memory — once.
+[[nodiscard]] std::expected<WeightSweep, std::string> SweepWeights(
+    const SmfModel& model, std::string_view role);
 
 }  // namespace seeml::update
 

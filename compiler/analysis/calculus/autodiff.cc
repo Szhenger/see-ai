@@ -341,6 +341,25 @@ const std::unordered_map<std::string_view, VjpRule>& VjpRegistry() {
          return true;
        }},
 
+      // The masked cross-entropy (S3 #149): the same rule over the target
+      // rows; the kernel zeroes the ignored rows' gradient and divides by
+      // the target count.
+      {"sc_high.softmax_xent_masked",
+       [](sir::Operation* op, AdContext& ctx) {
+         sir::Value* logits = op->operand(0);
+         sir::Value* labels = op->operand(1);
+         sir::Value* probs = op->result(1);
+         sir::Value* seed = ctx.GradOf(op->result(0));
+         if (!ctx.Needs(logits)) return true;
+         sir::Value* dl = Emit1(
+             ctx, "sc_low.softmax_xent_masked_grad", {probs, labels, seed},
+             std::string(logits->id()) + ".d" +
+                 std::to_string(ctx.fresh_counter++),
+             logits->shape());
+         ctx.Accumulate(logits, dl);
+         return true;
+       }},
+
       // loss = mean((pred - target)^2): dpred = seed * 2(pred - target)/count
       {"sc_high.mse",
        [](sir::Operation* op, AdContext& ctx) {

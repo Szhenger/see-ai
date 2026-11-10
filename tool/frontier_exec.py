@@ -80,7 +80,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from seeml import formats  # noqa: E402
+from seeml import content_hash, formats  # noqa: E402
 
 # --- The .seeu container (source/plan/schema.h, instruction.h) ---------------
 
@@ -251,6 +251,24 @@ def header_violation(h, plan_size):
         return "plan label slot out of bounds"
     if not slot_ok(h.loss_ref, 4):
         return "plan loss slot out of bounds"
+    # The data contract (v22, kSeeuDataContractVersion): zero below it;
+    # no unknown flag; a split carries a finite fraction in (0, 1) and only
+    # a split carries split fields; a pinned corpus names its hash.
+    tail = (h.tokenizer_hash or h.corpus_hash or h.split_seed or
+            h.val_split_hash or h.val_frac_bits or h.data_flags)
+    if h.version < formats.SEEU_DATA_CONTRACT_VERSION and tail:
+        return ("plan carries data-contract fields below "
+                f"v{formats.SEEU_DATA_CONTRACT_VERSION}")
+    if h.data_flags & ~formats.DATA_FLAGS_MASK:
+        return "plan data_flags carries unknown bits"
+    if h.data_flags & formats.DATA_FLAG_SPLIT:
+        frac = struct.unpack("<f", struct.pack("<I", h.val_frac_bits))[0]
+        if not (math.isfinite(frac) and 0.0 < frac < 1.0):
+            return "plan header val_frac is not a finite value in its range"
+    elif h.val_frac_bits or h.split_seed or h.val_split_hash:
+        return "plan carries split fields without the split flag"
+    if h.data_flags & formats.DATA_FLAG_CORPUS_PINNED and not h.corpus_hash:
+        return "plan pins a corpus without its hash"
     return None
 
 
@@ -455,8 +473,11 @@ class Plan:
         feeder contract holds class labels to (CR2 #143 F07: the engine
         scans all four programs; a softmax in the merge or step program
         narrows the bound too)."""
+        # The plain and the masked forward (11, 51): the engine's
+        # num_classes scan folds both pairs, and a masked plan carries no
+        # opcode 11 at all.
         widths = [i.out[1] for name in SECTIONS
-                  for i in self.sections[name] if i.opcode == 11]
+                  for i in self.sections[name] if i.opcode in (11, 51)]
         return min(widths) if widths else 0
 
     def vocab(self):
@@ -491,6 +512,89 @@ def _splitmix64(state):
     return state, z ^ (z >> 31)
 
 
+# The compiled held-out split (source/contract/split.h), mirrored word for
+# word: Fisher-Yates over [0, n) from splitmix64 seeded in the split's own
+# domain, the first HeldOutCount positions held out, sorted.
+SPLIT_DOMAIN = 0x53504C49545F3031
+
+
+def held_out_count(n, frac):
+    if n < 2:
+        return 0
+    # The fraction at the header's f32 precision (val_frac_bits), as C++
+    # HeldOutCount takes it: a raw literal such as 0.7 rounds the same way.
+    frac = struct.unpack("<f", struct.pack("<f", float(frac)))[0]
+    k = int(n * frac)
+    k = max(k, 1)
+    return min(k, n - 1)
+
+
+def held_out_indices(n, seed, frac):
+    k = held_out_count(n, frac)
+    if k == 0:
+        return []
+    perm = list(range(n))
+    state, z = _splitmix64((seed ^ SPLIT_DOMAIN) & _MASK64)
+    state = z | 1
+    for i in range(n - 1, 0, -1):
+        state, z = _splitmix64(state)
+        j = z % (i + 1)
+        perm[i], perm[j] = perm[j], perm[i]
+    return sorted(perm[:k])
+
+
+def split_hash(held):
+    return content_hash.content_hash64(struct.pack(f"<{len(held)}Q", *held))
+
+
+def val_frac_of(bits):
+    return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+
+def effective_val_fraction(plan, val_fraction, default=0.1):
+    """The fraction a run holds out: the plan's own for a compiled split,
+    else `val_fraction` (None = `default`)."""
+    if plan.data_flags & formats.DATA_FLAG_SPLIT:
+        return val_frac_of(plan.val_frac_bits)
+    return default if val_fraction is None else val_fraction
+
+
+def corpus_for_plan(np, plan, path, val_fraction=None, default=0.1):
+    """(train, validation) for `plan` from the corpus at `path`, prepared as
+    the emitted runner prepares them. A plan that compiled its split
+    (kDataFlagSplit) names the held-out records: the same function of
+    (records, seed, fraction) is recomputed and its hash must be the
+    plan's, and a `val_fraction` is refused as not this run's decision.
+    Otherwise `val_fraction` (None = `default`) splits by position; 0 is no
+    split. The whole corpus is checked against the plan BEFORE it is split
+    — every rule is per header or per record, so one check over the union
+    is the engine's two checks (UpdateEngine::TrainImpl validates the
+    training set and the validation set alike), and the held-out records
+    are bounded as the device bounds them."""
+    corpus = Corpus(np, path)
+    if plan.data_flags & formats.DATA_FLAG_SPLIT:
+        if val_fraction is not None:
+            raise PlanError("the plan compiled its validation split "
+                            f"(seed {plan.split_seed}, fraction "
+                            f"{val_frac_of(plan.val_frac_bits):g}); "
+                            "--val-fraction is not a runner decision")
+        held = held_out_indices(corpus.num_samples, plan.split_seed,
+                                val_frac_of(plan.val_frac_bits))
+        h = split_hash(held) if held else 0
+        if not held or h != plan.val_split_hash:
+            raise PlanError("the corpus does not yield the plan's compiled "
+                            "split (split hash mismatch): the plan was "
+                            "compiled over another corpus")
+        corpus.split_hash = h  # the identity both halves will carry
+        corpus.check(plan)
+        return corpus.split_held_out(held, h)
+    corpus.check(plan)
+    frac = default if val_fraction is None else val_fraction
+    if frac > 0.0:
+        return corpus.split_validation(frac)
+    return corpus, None
+
+
 class Corpus:
     """An .sds corpus served exactly as the C++ feeder serves it: a
     positional tail split, then a fresh Fisher-Yates permutation per epoch
@@ -509,40 +613,109 @@ class Corpus:
          self.input_kind, self.label_dim) = formats.SDS_HEADER.unpack_from(raw)
         if magic != SDS_MAGIC or not (
                 formats.SDS_MIN_VERSION <= version <= formats.SDS_VERSION):
-            raise PlanError(f"{path}: not an SDS v1/v2 corpus")
+            raise PlanError(f"{path}: not an SDS v1/v2/v3 corpus")
+        # v3 (S2 #148 / S3 #149): the tokenizer identity and the flags —
+        # a per-position loss mask on token records — mirroring
+        # Dataset::LoadFromFile's rules in its words.
+        head = formats.sds_header_bytes(version)
+        self.tokenizer_hash, flags = 0, 0
+        if version >= 3:
+            if len(raw) < head:
+                raise PlanError(f"{path}: truncated (no SDS v3 header)")
+            (self.tokenizer_hash, flags, reserved0,
+             reserved1) = formats.SDS_HEADER_V3_TAIL.unpack_from(raw, _SDS_HEAD)
+            if reserved0 or reserved1:
+                raise PlanError(f"{path}: reserved SDS header words are not "
+                                "zero")
+            if flags & ~formats.SDS_FLAG_MASKED:
+                raise PlanError(f"{path}: unknown SDS flags")
+            if flags & formats.SDS_FLAG_MASKED and self.input_kind != 1:
+                raise PlanError(f"{path}: a loss mask needs token records")
+        self.masked = bool(flags & formats.SDS_FLAG_MASKED)
+        self._raw, self.content_hash, self.split_hash = raw, None, 0
         n, d = self.num_samples, self.input_dim
         if self.input_kind == 1:
-            self.record = (d + 1) * 4
-            if len(raw) - _SDS_HEAD < n * self.record:
+            mask_bytes = formats.sds_mask_bytes(d) if self.masked else 0
+            self.record = (d + 1) * 4 + mask_bytes
+            if len(raw) - head < n * self.record:
                 raise PlanError(f"{path}: truncated records")
-            self.tokens = np.frombuffer(raw, "<i4", n * (d + 1),
-                                        _SDS_HEAD).reshape(
-                n, d + 1)
+            if len(raw) - head != n * self.record:
+                raise PlanError(f"{path}: dataset payload does not fill the "
+                                f"file: {len(raw) - head - n * self.record} "
+                                "trailing byte(s)")
+            rows = np.frombuffer(raw, np.uint8, n * self.record,
+                                 head).reshape(n, self.record)
+            self.tokens = np.ascontiguousarray(
+                rows[:, :(d + 1) * 4]).view("<i4").reshape(n, d + 1)
+            if self.masked:
+                self.mask = np.ascontiguousarray(
+                    rows[:, (d + 1) * 4:(d + 1) * 4 + d])
+                if not np.isin(self.mask, (0, 1)).all():
+                    raise PlanError(f"{path}: a loss mask byte is not 0 or 1")
+                if not self.mask.any(axis=1).all():
+                    bad = int(np.flatnonzero(~self.mask.any(axis=1))[0])
+                    raise PlanError(f"{path}: record {bad} carries no target "
+                                    "position")
+            else:
+                self.mask = None
         else:
             self.label_nbytes = {0: 0, 1: 4, 2: 4 * self.label_dim}.get(
                 self.label_kind)
             if self.label_nbytes is None:
                 raise PlanError(f"{path}: unknown label kind")
             self.record = d * 4 + self.label_nbytes
-            if len(raw) - _SDS_HEAD < n * self.record:
+            if len(raw) - head < n * self.record:
                 raise PlanError(f"{path}: truncated records")
+            if len(raw) - head != n * self.record:
+                raise PlanError(f"{path}: dataset payload does not fill the "
+                                f"file: {len(raw) - head - n * self.record} "
+                                "trailing byte(s)")
             rows = np.frombuffer(raw, np.uint8, n * self.record,
-                                 _SDS_HEAD).reshape(
+                                 head).reshape(
                 n, self.record)
             self.inputs = np.ascontiguousarray(rows[:, :d * 4])
             self.labels = np.ascontiguousarray(rows[:, d * 4:])
+            self.mask = None
         self.order, self.cursor, self.state = None, 0, 0
 
     def _view(self, lo, hi):
+        return self._take(slice(lo, hi))  # a zero-copy view of the records
+
+    def _take(self, idx):
+        """The records `idx` selects (a slice, an index array or a boolean
+        mask), in that order, as a new corpus."""
         other = object.__new__(Corpus)
         other.__dict__.update(self.__dict__)
-        other.num_samples = hi - lo
         if self.input_kind == 1:
-            other.tokens = self.tokens[lo:hi]
+            other.tokens = self.tokens[idx]
+            if self.mask is not None:
+                other.mask = self.mask[idx]
+            other.num_samples = int(other.tokens.shape[0])
         else:
-            other.inputs, other.labels = self.inputs[lo:hi], self.labels[lo:hi]
+            other.inputs, other.labels = self.inputs[idx], self.labels[idx]
+            other.num_samples = int(other.inputs.shape[0])
         other.order, other.cursor = None, 0
         return other
+
+    def split_held_out(self, held, split_hash):
+        """(train, validation): the records at `held` (sorted, distinct)
+        held out — Dataset::SplitHeldOut; both halves carry `split_hash`,
+        the feeder contract's split identity."""
+        np = self.np
+        n = self.num_samples
+        held = np.asarray(list(held), dtype=np.int64)
+        if held.size == 0 or held.size >= n:
+            raise PlanError("the held-out set must leave at least one record "
+                            "on each side")
+        if held[0] < 0 or held[-1] >= n or (np.diff(held) <= 0).any():
+            raise PlanError("held-out indices are not sorted, distinct and "
+                            "below the corpus")
+        keep = np.ones(n, dtype=bool)
+        keep[held] = False
+        train = self._take(keep)
+        val = self._take(held)
+        train.split_hash = val.split_hash = split_hash
+        return train, val
 
     def split_validation(self, fraction):
         """(train, validation): the tail `fraction` of the samples is held
@@ -579,8 +752,14 @@ class Corpus:
         if self.input_kind == 1:
             ids = [self._next() for _ in range(plan.batch // self.input_dim)]
             recs = self.tokens[ids]
+            labels = np.ascontiguousarray(recs[:, 1:])
+            if self.mask is not None:
+                # A masked position stages the label -1, which the masked
+                # cross-entropy ignores (Dataset::FillBatch).
+                labels = np.where(self.mask[ids] != 0, labels,
+                                  np.int32(-1)).astype("<i4")
             return (np.ascontiguousarray(recs[:, :-1]).tobytes(),
-                    np.ascontiguousarray(recs[:, 1:]).tobytes())
+                    labels.tobytes())
         ids = [self._next() for _ in range(plan.batch)]
         return self.inputs[ids].tobytes(), self.labels[ids].tobytes()
 
@@ -592,6 +771,33 @@ class Corpus:
         that width, as next-token labels). The C++ feeder refuses before a
         step; so does this side, before a diff that would blame a kernel
         for what the corpus did."""
+        # The tokenizer identity and the loss mask (v22) come first, as in
+        # CorpusGeometryViolation.
+        if (plan.tokenizer_hash and self.tokenizer_hash and
+                self.tokenizer_hash != plan.tokenizer_hash):
+            raise PlanError("the dataset was tokenized by another tokenizer "
+                            "than the plan's model (tokenizer hash mismatch)")
+        # The corpus pin (v22): ContentHash64 of the file, computed only when
+        # a plan asks (the pure-Python mirror is slow past a few MB).
+        if plan.data_flags & formats.DATA_FLAG_CORPUS_PINNED:
+            if self.content_hash is None:
+                self.content_hash = content_hash.content_hash64(self._raw)
+            if self.content_hash != plan.corpus_hash:
+                raise PlanError("the plan is pinned to another corpus "
+                                "(corpus hash mismatch)")
+        # The compiled split (v22): the set fed must be the corpus less the
+        # held-out records the compile named (split_held_out recorded it).
+        if plan.data_flags & formats.DATA_FLAG_SPLIT:
+            if self.split_hash != plan.val_split_hash:
+                raise PlanError("the corpus was not split as the plan "
+                                "compiled it (split hash mismatch)")
+        plan_masked = bool(plan.data_flags & formats.DATA_FLAG_MASKED_LOSS)
+        if self.masked and not plan_masked:
+            raise PlanError("the dataset carries a loss mask, but the "
+                            "compiled plan takes every position as a target")
+        if plan_masked and not self.masked:
+            raise PlanError("the compiled plan takes a loss mask the dataset "
+                            "does not carry")
         if plan.input_kind == 1:
             if self.input_kind != 1:
                 raise PlanError("the compiled plan takes token ids, but the "
@@ -1382,6 +1588,51 @@ def _xent_bwd(m, x, ins, step):
     m.write(ins.src[3], seed * (m.read(ins.src[0], (n, c)) - hot) / n)
 
 
+def _xent_masked_fwd(m, x, ins, step):
+    # The masked cross-entropy (S3 #149, opcode 51): a label of -1 marks a
+    # position the loss ignores; the mean runs over the target rows alone
+    # (0 when a batch has none), the probabilities are written for every
+    # row (the accuracy tail reads them).
+    n, c = ins.out[0], ins.out[1]
+    probs = _softmax(x, m.read(ins.src[0], (n, c)))
+    labels = m.read(ins.src[1], (n,), "<i4")
+    target, weight, hot, count = _masked_targets(x, labels, c, probs.dtype)
+    picked = x.maximum(x.sum(probs * hot, -1), 1e-12)
+    logs = x.log(picked)
+    # The ignored slot's zero comes from the finite weight, never from the
+    # row's own log (0 * NaN is NaN, and the device never reads the row).
+    kept = x.where(target, logs, 0.0 * weight)
+    m.write(ins.src[3], probs)
+    # 0.0 - sum: +0.0 for a batch with no target, as the device writes it.
+    m.write(ins.src[2], ((0.0 - x.sum(kept, 0)) / count).reshape((1,)))
+
+
+def _masked_targets(x, labels, c, dtype):
+    """The masked pair's shared operands: the target rows (label >= 0), the
+    1.0 / 0.0 weight per row, the one-hot over the target rows' labels (an
+    ignored row hits column 0, which the mask then zeroes), and the target
+    count clamped to 1 (a batch with no target divides nothing)."""
+    target = labels >= 0
+    # .astype is numpy's and mlx's; torch spells the same thing * 1.0.
+    weight = (target.astype(dtype) if hasattr(target, "astype")
+              else target * 1.0)
+    hot = x.one_hot(x.where(target, labels, 0 * labels), c)
+    count = x.maximum(x.sum(weight, 0), 1.0)
+    return target, weight, hot, count
+
+
+def _xent_masked_bwd(m, x, ins, step):
+    n, c = ins.out[0], ins.out[1]
+    labels = m.read(ins.src[1], (n,), "<i4")
+    seed = m.read(ins.src[2], (1,))
+    probs = m.read(ins.src[0], (n, c))
+    target, _, hot, count = _masked_targets(x, labels, c, probs.dtype)
+    d = seed * (probs - hot) / count
+    # An ignored row's zero comes from the finite one-hot, not from d
+    # (NaN probabilities on an ignored row must not reach the gradient).
+    m.write(ins.src[3], x.where(target.reshape((n, 1)), d, 0.0 * hot))
+
+
 def _mse_fwd(m, x, ins, step):
     n = (ins.out[0],)
     d = m.read(ins.src[0], n) - m.read(ins.src[1], n)
@@ -1721,7 +1972,7 @@ INTERPRETER = {
     47: _attn_fwd_tiled, 48: _attn_bwd_tiled("dq"), 49: _attn_bwd_tiled("dk"),
     50: _attn_bwd_tiled("dv"),
     43: _gemm_nn("<u2"), 44: _gemm_nt("<u2"), 45: _rope_table,
-    46: _fused_map,
+    46: _fused_map, 51: _xent_masked_fwd, 52: _xent_masked_bwd,
 }
 assert sorted(INTERPRETER) == sorted(OPCODES)
 
@@ -1803,26 +2054,33 @@ class Executor:
             if ins.opcode == 11 and ins.src[2] == p.loss_ref and \
                     ins.out[0] == p.batch:
                 return ("xent", ins.src[3], ins.src[1], ins.out[1])
+            if ins.opcode == 51 and ins.src[2] == p.loss_ref and \
+                    ins.out[0] == p.batch:
+                return ("xent_masked", ins.src[3], ins.src[1], ins.out[1])
             if ins.opcode == 13 and ins.src[2] == p.loss_ref and \
                     p.batch and ins.out[0] % p.batch == 0:
                 return ("mse", ins.src[0], ins.src[1], ins.out[0] // p.batch)
         return ("weighted",)
 
     def _real_row_loss(self, tail, real):
-        """The engine's RealRowLoss: the sum of per-row losses over the
-        batch's first `real` rows, in double, with the kernels' own row
-        expressions."""
-        if tail[0] == "xent":
+        """The engine's RealRowLoss: (the sum of per-row losses over the
+        batch's first `real` rows, the rows that count), in double, with
+        the kernels' own row expressions. A masked loss counts the target
+        rows alone."""
+        if tail[0] in ("xent", "xent_masked"):
             _, probs_ref, labels_ref, classes = tail
             probs = self.x.to_numpy(self.mem.read(
                 probs_ref, (self.plan.batch, classes)))
             labels = self.x.to_numpy(self.mem.read(
                 labels_ref, (self.plan.batch,), "<i4"))
-            total = 0.0
+            total, counted = 0.0, 0
             for r in range(real):
+                if int(labels[r]) < 0:
+                    continue
                 pr = float(probs[r, int(labels[r])])
                 total -= math.log(pr if pr != pr else max(pr, f32(1e-12)))
-            return total
+                counted += 1
+            return total, counted
         if tail[0] == "mse":
             _, pred_ref, target_ref, width = tail
             n = self.plan.batch * width
@@ -1832,21 +2090,25 @@ class Executor:
             for i in range(real * width):
                 d = float(pred[i]) - float(target[i])
                 total += d * d
-            return total / width
-        return self.mem.loss() * real
+            return total / width, real
+        return self.mem.loss() * real, real
 
     def evaluate(self, corpus):
         """Eval-program loss over one pass in compiled-batch chunks, as the
         engine reports it: the plain mean of the batch losses when the set
         is whole batches, else the mean over REAL rows — the final batch's
         wrapped duplicates excluded exactly for a lone cross-entropy or MSE,
-        by weight for a composite loss (G13, #97)."""
+        by weight for a composite loss (G13, #97). A masked plan's set is
+        always the mean over its TARGET rows (each batch's kernel mean is
+        over its own target count, so a mean of those would depend on how
+        the records fall into batches)."""
         p = self.plan
         rows_per_sample = p.seq_len if p.input_kind == 1 else 1
         per_step = p.batch // rows_per_sample
         batches = max(1, -(-corpus.num_samples // per_step))
         ragged = corpus.num_samples % per_step != 0
-        tail = self._eval_tail() if ragged else None
+        tail = self._eval_tail()
+        per_row = ragged or tail[0] == "xent_masked"
         saved = (corpus.cursor, corpus.order, corpus.state)
         corpus.cursor, total = 0, 0.0
         real_loss, real_rows = 0.0, 0
@@ -1854,13 +2116,16 @@ class Executor:
             self.stage(corpus.batch(p))
             self.execute("eval")
             total += self.mem.loss()
-            if ragged:
+            if per_row:
                 real = min(per_step, corpus.num_samples - b * per_step) * \
                     rows_per_sample
-                real_loss += self._real_row_loss(tail, real)
-                real_rows += real
+                loss_here, counted = self._real_row_loss(tail, real)
+                real_loss += loss_here
+                real_rows += counted
         corpus.cursor, corpus.order, corpus.state = saved
-        return real_loss / real_rows if ragged else total / batches
+        if per_row:
+            return real_loss / real_rows if real_rows else 0.0
+        return total / batches
 
 
 # --- diff: the oracle ------------------------------------------------------------
@@ -2076,9 +2341,11 @@ def cmd_diff(args):
         raise PlanError(f"backend '{args.backend}' is unavailable: {e}")
     if getattr(args, "relaxed", False):
         backend.relaxed_gemms = True
-    corpus = (Corpus(np, args.corpus) if args.corpus
-              else SyntheticCorpus(np, plan, args.seed))
-    corpus.check(plan)
+    # The whole corpus feeds the diff, as before — except that a plan which
+    # compiled its split is fed its training half, the records the device
+    # trains on (the probe sees only the staged batches, never the file).
+    corpus = (corpus_for_plan(np, plan, args.corpus, default=0.0)[0]
+              if args.corpus else SyntheticCorpus(np, plan, args.seed))
     ex = Executor(plan, backend, args.source)
     probe = Probe(args.probe, args.plan, args.cpp_backend, args.threads,
                   args.source)
@@ -2184,11 +2451,7 @@ def cmd_run(args):
         raise PlanError(f"backend '{args.backend}' is unavailable: {e}")
     if getattr(args, "relaxed", False):
         backend.relaxed_gemms = True
-    corpus = Corpus(np, args.corpus)
-    corpus.check(plan)
-    val = None
-    if args.val_fraction > 0.0:
-        corpus, val = corpus.split_validation(args.val_fraction)
+    corpus, val = corpus_for_plan(np, plan, args.corpus, args.val_fraction)
     if not args.no_shuffle:
         corpus.enable_shuffle(args.seed)
     ex = Executor(plan, backend, args.source)
@@ -2277,9 +2540,7 @@ def cmd_price(args):
 
     def corpus_factory():
         if args.corpus:
-            corpus = Corpus(np, args.corpus)
-            corpus.check(plan)
-            return corpus
+            return corpus_for_plan(np, plan, args.corpus, default=0.0)[0]
         return SyntheticCorpus(np, plan, args.seed)
 
     frontier = {}
@@ -2450,7 +2711,9 @@ def build_parser():
     run.add_argument("--steps", type=int, default=0,
                      help="optimizer steps (default: the plan's)")
     run.add_argument("--backend", default="numpy")
-    run.add_argument("--val-fraction", type=float, default=0.1)
+    run.add_argument("--val-fraction", type=float, default=None,
+                     help="held out by position (default 0.1); refused for "
+                          "a plan that compiled its split")
     run.add_argument("--no-shuffle", action="store_true")
     run.add_argument("--log-every", type=int, default=100)
     run.set_defaults(fn=cmd_run)

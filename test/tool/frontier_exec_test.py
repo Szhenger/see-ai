@@ -183,7 +183,18 @@ class ReaderTest(unittest.TestCase):
              "plan label slot out of bounds"),
             (good, dict(loss_ref=fx.NULL_REF), "plan loss slot out of bounds"),
             (good, dict(loss_ref=s | 68), "plan loss slot out of bounds"),
-            (good, dict(loss_ref=70), "plan loss slot out of bounds"))
+            (good, dict(loss_ref=70), "plan loss slot out of bounds"),
+            # The data contract (v22).
+            (good, dict(version=21, tokenizer_hash=1),
+             "plan carries data-contract fields below v22"),
+            (good, dict(data_flags=8), "plan data_flags carries unknown bits"),
+            (good, dict(data_flags=4),
+             "plan header val_frac is not a finite value in its range"),
+            (good, dict(data_flags=4, val_frac_bits=0x3F800000),  # 1.0
+             "plan header val_frac is not a finite value in its range"),
+            (good, dict(split_seed=5),
+             "plan carries split fields without the split flag"),
+            (good, dict(data_flags=2), "plan pins a corpus without its hash"))
         for base, fields, message in cases:
             with self.subTest(**{k: repr(v) for k, v in fields.items()}):
                 with self.assertRaisesRegex(fx.PlanError, re.escape(message)):
@@ -732,6 +743,14 @@ def _write_models(out_dir):
         em.export_sds(x, None, os.path.join(out_dir, "none.sds"))
         em._demo_decoder(out_dir, vocab=40, dim=24, heads=4, seq=6,
                          blocks_n=2, samples=48, seed=1)
+        # A masked token corpus (SDS v3, S3 #149): the decoder's geometry,
+        # every record with at least one target, a prompt-shaped mask.
+        rng = np.random.default_rng(5)
+        ids = rng.integers(0, 40, (48, 7)).astype("<i4")
+        mask = (rng.random((48, 6)) < 0.6).astype(np.uint8)
+        mask[:, -1] = 1
+        em.export_token_sds(ids, os.path.join(out_dir, "decoder_masked.sds"),
+                            mask=mask)
         os.makedirs(os.path.join(out_dir, "eps6"), exist_ok=True)
         em._demo_decoder(os.path.join(out_dir, "eps6"), vocab=40, dim=24,
                          heads=4, seq=6, blocks_n=2, samples=48, seed=1,
@@ -775,6 +794,10 @@ MATRIX = [
     # probability recomputed by the backward passes.
     ("dec_tiled", "decoder.smf", "decoder_corpus.sds", 12,
      ["--attention", "tiled", "--lora-rank", "4"]),
+    # The masked cross-entropy (S3 #149, plan v22): compiled over a masked
+    # corpus by --data, which also pins the plan to it.
+    ("dec_masked", "decoder.smf", "decoder_masked.sds", 12,
+     ["--data", "decoder_masked.sds", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
 # placeholder, kCopy a utility no pass selects, and kReduceRows the bias
@@ -796,8 +819,8 @@ class DifferentialSuite(unittest.TestCase):
         cls.plans = {}
         for name, model, corpus, batch, flags in MATRIX:
             out = os.path.join(cls.dir, name)
-            flags = [os.path.join(cls.dir, f) if f.endswith(".smf") else f
-                     for f in flags]
+            flags = [os.path.join(cls.dir, f)
+                     if f.endswith((".smf", ".sds")) else f for f in flags]
             done = subprocess.run(
                 [COMPILER, "--source", os.path.join(cls.dir, model), "--out",
                  out, "--data-batch", str(batch), "--no-embed"] + flags,
@@ -875,6 +898,79 @@ class DifferentialSuite(unittest.TestCase):
         records = np.zeros((3, s + 1), "<i4")
         corpus("check_tok.sds", lambda p: em.export_token_sds(records, p)).check(
             token_plan)
+        # The tokenizer identity (v22, S2 #148): a plan bound to a section
+        # takes a corpus that names no tokenizer (SDS v1 / v2, an unbound
+        # v3) or the same one, and refuses one that names another.
+        with open(self.plans["dec_f32"][0], "rb") as f:
+            blob = f.read()
+        bound = fx.Plan(with_header(blob, tokenizer_hash=0xABCD))
+        corpus("check_tok.sds", lambda p: em.export_token_sds(records, p)).check(
+            bound)
+        corpus("check_tok_same.sds", lambda p: em.export_token_sds(
+            records, p, tokenizer_hash=0xABCD)).check(bound)
+        with self.assertRaisesRegex(fx.PlanError, "another tokenizer"):
+            corpus("check_tok_other.sds", lambda p: em.export_token_sds(
+                records, p, tokenizer_hash=0x1234)).check(bound)
+        # The corpus pin (v22): under the flag the corpus file's ContentHash64
+        # must be the header's.
+        from seeml import content_hash
+        pin_path = os.path.join(self.dir, "check_pin.sds")
+        em.export_token_sds(records, pin_path)
+        with open(pin_path, "rb") as f:
+            pin_hash = content_hash.content_hash64(f.read())
+        pinned = fx.Plan(with_header(
+            blob, data_flags=fx.formats.DATA_FLAG_CORPUS_PINNED,
+            corpus_hash=pin_hash))
+        fx.Corpus(np, pin_path).check(pinned)
+        other = fx.Plan(with_header(
+            blob, data_flags=fx.formats.DATA_FLAG_CORPUS_PINNED,
+            corpus_hash=pin_hash ^ 1))
+        with self.assertRaisesRegex(fx.PlanError, "another corpus"):
+            fx.Corpus(np, pin_path).check(other)
+        # The compiled split (v22, S3 #149): the literal fixture the C++
+        # split_test pins (n = 10, seed = 1, 30 %), the hash over the
+        # indices, the partition, and the contract rule.
+        self.assertEqual(fx.held_out_indices(10, 1, 0.3), [1, 5, 7])
+        self.assertEqual(fx.split_hash([1, 5, 7]), 0xe731eed086e2a95d)
+        self.assertEqual(fx.held_out_count(501, 0.1), 50)
+        self.assertEqual(fx.held_out_indices(1, 0, 0.5), [])
+        ten = np.arange(10 * (s + 1), dtype="<i4").reshape(10, s + 1) % vocab
+        ten_path = os.path.join(self.dir, "check_split.sds")
+        em.export_token_sds(ten, ten_path)
+        full = fx.Corpus(np, ten_path)
+        train, held = full.split_held_out([1, 5, 7], 0xe731eed086e2a95d)
+        self.assertEqual((train.num_samples, held.num_samples), (7, 3))
+        self.assertTrue((held.tokens == ten[[1, 5, 7]]).all())
+        self.assertTrue((train.tokens == ten[[0, 2, 3, 4, 6, 8, 9]]).all())
+        split_plan = fx.Plan(with_header(
+            blob, data_flags=fx.formats.DATA_FLAG_SPLIT, split_seed=1,
+            val_frac_bits=struct.unpack("<I", struct.pack("<f", 0.3))[0],
+            val_split_hash=0xe731eed086e2a95d))
+        train.check(split_plan)
+        held.check(split_plan)
+        with self.assertRaisesRegex(fx.PlanError, "not split as the plan"):
+            fx.Corpus(np, ten_path).check(split_plan)
+        with self.assertRaisesRegex(fx.PlanError, "sorted, distinct"):
+            fx.Corpus(np, ten_path).split_held_out([5, 1], 1)
+        # corpus_for_plan prepares the corpus as the device does: the
+        # compiled split recomputed (a --val-fraction refused), and the
+        # WHOLE corpus checked — an id out of range in a held-out record
+        # (5) is the feeder's refusal, as UpdateEngine::TrainImpl validates
+        # the validation set too.
+        train2, held2 = fx.corpus_for_plan(np, split_plan, ten_path)
+        self.assertEqual((train2.num_samples, held2.num_samples), (7, 3))
+        self.assertEqual(held2.split_hash, 0xe731eed086e2a95d)
+        with self.assertRaisesRegex(fx.PlanError, "not a runner decision"):
+            fx.corpus_for_plan(np, split_plan, ten_path, 0.25)
+        bad = ten.copy()
+        bad[5, 2] = vocab
+        bad_path = os.path.join(self.dir, "check_split_bad.sds")
+        em.export_token_sds(bad, bad_path)
+        with self.assertRaisesRegex(fx.PlanError, "token id"):
+            fx.corpus_for_plan(np, split_plan, bad_path)
+        # The f32 fraction rule: 0.7 of ten records is 6 (0.7f widens below
+        # 0.7), the count the C++ HeldOutCount and the plan header agree on.
+        self.assertEqual(fx.held_out_count(10, 0.7), 6)
         records[1, 2] = vocab
         with self.assertRaisesRegex(fx.PlanError, "token id"):
             corpus("check_tokbad.sds", lambda p: em.export_token_sds(records, p)).check(

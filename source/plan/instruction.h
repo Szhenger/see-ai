@@ -188,6 +188,15 @@ enum class OpCode : uint16_t {
   kAttnDQTiled = 48,
   kAttnDKTiled = 49,
   kAttnDVTiled = 50,
+  // The masked cross-entropy (S3 #149, plan v22 kDataFlagMaskedLoss): the
+  // operands of 11 / 12, with a label of -1 (kSdsIgnoreLabel) marking a
+  // position the loss ignores. The mean runs over the target rows alone
+  // (0 for a batch with none), the probabilities are written for every
+  // row, and an ignored row's gradient is zero. A plan carries these
+  // exactly when its header carries the flag; a plain plan never meets a
+  // -1 label (the feeder contract refuses a masked corpus for it).
+  kSoftmaxXEntMaskedFwd = 51,  // in: logits, labels(i32), loss, probs; out[0..1]=N,C
+  kSoftmaxXEntMaskedBwd = 52,  // in: probs, labels, seed, dlogits;     out[0..1]=N,C
 };
 
 inline constexpr uint64_t kAttnStatsWidth = 4;

@@ -14,6 +14,7 @@
 
 #include "compiler/driver/update_compiler.h"
 #include "runtime/dispatcher/contract.h"
+#include "source/contract/plan_contract.h"
 #include "runtime/dispatcher/update_engine.h"
 #include "source/identity/hash.h"
 #include "source/plan/update_types.h"
@@ -220,6 +221,106 @@ TEST(EngineContract, PlanContractProvesTheGemmTileFields) {
   EXPECT_OK(VerifyPlanContract(header, kPlanSize));
 }
 
+TEST(EngineContract, PlanContractProvesTheDataContractWords) {
+  // v22 (S2 #148 / S3 #149): the forty bytes past the v21 header are the
+  // data contract — zero below v22, no unknown flag, a split only with a
+  // fraction in (0, 1) and split fields only under the flag, a pin only
+  // with its hash.
+  namespace up = seeml::update;
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.batch = 4;
+  header.input_floats = 16;
+  header.arena_size = 4096;
+  header.input_ref = up::MakeArenaRef(0);
+  header.loss_ref = up::MakeArenaRef(256);
+  constexpr uint64_t kPlanSize = 65536;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+  header.tokenizer_hash = 0x1234;
+  header.corpus_hash = 0x5678;
+  header.data_flags = up::kDataFlagCorpusPinned | up::kDataFlagSplit;
+  header.split_seed = 7;
+  header.val_frac_bits = std::bit_cast<uint32_t>(0.1f);
+  header.val_split_hash = 99;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+  header.version = up::kSeeuDataContractVersion - 1;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "data-contract fields below v22");
+  header.version = up::kSeeuVersion;
+  header.data_flags |= 1u << 7;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "unknown bits");
+  header.data_flags = up::kDataFlagCorpusPinned | up::kDataFlagSplit;
+  header.val_frac_bits = std::bit_cast<uint32_t>(1.0f);
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "val_frac is not a finite value in its range");
+  header.val_frac_bits = std::bit_cast<uint32_t>(0.1f);
+  header.data_flags = up::kDataFlagCorpusPinned;  // split fields, no flag
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "split fields without the split flag");
+  header.split_seed = 0;
+  header.val_frac_bits = 0;
+  header.val_split_hash = 0;
+  header.corpus_hash = 0;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "pins a corpus without its hash");
+  header.data_flags = 0;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+}
+
+TEST(EngineContract, FeederContractBindsTheTokenizerAndTheMask) {
+  // A plan bound to a tokenizer runs only on a corpus encoded by it; a
+  // masked corpus needs a plan that takes the mask, and the reverse.
+  namespace up = seeml::update;
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.input_kind = 1;
+  header.seq_len = 4;
+  header.batch = 8;
+  header.input_floats = 8;
+  header.label_kind = 1;
+  header.label_bytes = 32;
+  up::CorpusShape corpus{1, 4, 1, 16, 0, false};
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  // A corpus that names no tokenizer makes no claim; one that names
+  // another is refused; the same one passes.
+  header.tokenizer_hash = 0xABCD;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  corpus.tokenizer_hash = 0x1234;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "another tokenizer");
+  corpus.tokenizer_hash = 0xABCD;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  corpus.masked = true;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "carries a loss mask");
+  header.data_flags = up::kDataFlagMaskedLoss;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  corpus.masked = false;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "loss mask the dataset does not carry");
+  // The corpus pin: enforced only under the flag, then exactly.
+  header.data_flags = 0;
+  header.corpus_hash = 0x77;
+  corpus.corpus_hash = 0x78;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  header.data_flags = up::kDataFlagCorpusPinned;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "pinned to another corpus");
+  corpus.corpus_hash = 0x77;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  // The compiled split: the fed set must carry the plan's split hash.
+  header.data_flags = up::kDataFlagSplit;
+  header.val_split_hash = 0x99;
+  EXPECT_STR_CONTAINS(up::CorpusGeometryViolation(header, corpus).value_or(""),
+                      "not split as the plan compiled it");
+  corpus.split_hash = 0x99;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+  header.data_flags = 0;
+  corpus.split_hash = 0x98;
+  EXPECT_FALSE(up::CorpusGeometryViolation(header, corpus).has_value());
+}
+
 TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
   // Regression: kEmbedFwd gathers table[tokens[t]] — a data-dependent
   // offset. Its token operand MUST be the staged input slot (like the
@@ -398,6 +499,67 @@ TEST(CoverageTable, TheClassWidthScanCoversEveryProgram) {
                 loaded.has_value() ? "NOT checked" : loaded.error().c_str());
     ASSERT_FALSE(loaded.has_value());
     EXPECT_STR_CONTAINS(loaded.error(), "class widths");
+  }
+}
+
+TEST(CoverageTable, TheMaskedLossFlagAndTheMaskedOpcodesAgree) {
+  // S3 #149: the masked cross-entropy appears exactly when the header
+  // carries kDataFlagMaskedLoss — a masked opcode without the flag, a
+  // plain one under it, and the flag with no masked opcode are refused,
+  // in every program.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  for (int p = 0; p < kPrograms; ++p) {
+    OpenPlan open(plan);
+    ASSERT_TRUE(open.Count(p) > 0);
+    const uint64_t logits = open.Scratch(kBatch * 3 * 4, 0);
+    const uint64_t loss = open.Scratch(16, 1);
+    const uint64_t probs = open.Scratch(kBatch * 3 * 4, 2);
+    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX && probs != UINT64_MAX);
+    up::UpdateInstruction sm{};
+    sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedFwd);
+    sm.in[0] = up::MakeArenaRef(logits);
+    sm.in[1] = open.h.label_ref;
+    sm.in[2] = up::MakeArenaRef(loss);
+    sm.in[3] = up::MakeArenaRef(probs);
+    sm.out[0] = open.h.batch;
+    sm.out[1] = 3;
+    open.Replace(p, 0, sm);
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto loaded = engine.LoadFromMemory(edited.data(), edited.size());
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), "without the masked-loss flag");
+  }
+  {
+    // The flag alone: the plain cross-entropy the plan carries is refused.
+    OpenPlan open(plan);
+    open.h.data_flags |= up::kDataFlagMaskedLoss;
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    const auto loaded = engine.LoadFromMemory(edited.data(), edited.size());
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), "carries the masked-loss flag");
+  }
+  {
+    // A masked plan the compiler built loads with the flag. A mask marks
+    // the positions of a token record, so the plan is a token plan: the
+    // driver refuses --masked-loss on a feature model (no corpus could
+    // feed it — the loader refuses a masked feature SDS).
+    up::SmfModel model = seeml::testing::MakeTinyTokenDecoder(
+        kTokVocab, kTokDim, /*heads=*/2, kTokSeq, /*ffn=*/16, 41);
+    up::UpdateConfig cfg = AccumulatingConfig(kTokBatch);
+    cfg.masked_loss = true;
+    auto compiled = up::UpdateCompiler(cfg).Compile(model);
+    ASSERT_OK(compiled);
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
+    EXPECT_NE(engine.header().data_flags & up::kDataFlagMaskedLoss, 0u);
+    up::UpdateConfig feature_cfg = AccumulatingConfig(kBatch);
+    feature_cfg.masked_loss = true;
+    EXPECT_ERROR_CONTAINS(
+        up::UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 1)),
+        "token models alone");
   }
 }
 

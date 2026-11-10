@@ -71,6 +71,60 @@ void SoftmaxXEntBwd(const float* probs, const int32_t* labels,
                   });
 }
 
+void SoftmaxXEntMaskedFwd(const float* logits, const int32_t* labels,
+                          float* loss, float* probs, size_t N, size_t C) {
+  const size_t grain = RowGrain(C, kGrainMath);
+  double partials[up::kMaxParallelChunks] = {};
+  uint64_t targets[up::kMaxParallelChunks] = {};
+  up::ParallelFor(N, grain, [&](size_t r0, size_t r1, size_t chunk) {
+    double total = 0.0;
+    uint64_t t = 0;
+    for (size_t n = r0; n < r1; ++n) {
+      // Every row's probabilities (the accuracy tail reads them); the
+      // loss over the target rows alone, with the plain kernel's row
+      // expression and NaN rule.
+      RowSoftmax(logits + n * C, probs + n * C, C, 1.0f);
+      if (labels[n] < 0) continue;
+      const float p = probs[n * C + static_cast<size_t>(labels[n])];
+      const double safe = std::isnan(p)
+                              ? static_cast<double>(p)
+                              : static_cast<double>(std::fmax(p, 1e-12f));
+      total -= std::log(safe);
+      ++t;
+    }
+    partials[chunk] = total;
+    targets[chunk] = t;
+  });
+  double total = 0.0;
+  uint64_t T = 0;
+  const size_t chunks = up::ParallelChunkCount(N, grain);
+  for (size_t c = 0; c < chunks; ++c) {
+    total += partials[c];
+    T += targets[c];
+  }
+  *loss = T ? static_cast<float>(total / static_cast<double>(T)) : 0.0f;
+}
+
+void SoftmaxXEntMaskedBwd(const float* probs, const int32_t* labels,
+                          const float* seed, float* dlogits, size_t N,
+                          size_t C) {
+  uint64_t T = 0;
+  for (size_t n = 0; n < N; ++n) T += labels[n] >= 0;
+  const float scale = T ? *seed / static_cast<float>(T) : 0.0f;
+  up::ParallelFor(N, RowGrain(C, kGrainCheap),
+                  [&](size_t r0, size_t r1, size_t) {
+                    for (size_t n = r0; n < r1; ++n) {
+                      if (labels[n] < 0) {
+                        for (size_t c = 0; c < C; ++c) dlogits[n * C + c] = 0.0f;
+                        continue;
+                      }
+                      for (size_t c = 0; c < C; ++c)
+                        dlogits[n * C + c] = scale * probs[n * C + c];
+                      dlogits[n * C + static_cast<size_t>(labels[n])] -= scale;
+                    }
+                  });
+}
+
 void MseFwd(const float* pred, const float* target, float* loss, size_t n) {
   const size_t grain = kGrainCheap;
   double partials[up::kMaxParallelChunks] = {};

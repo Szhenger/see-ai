@@ -128,6 +128,9 @@ BF16_UNIT_ROUNDOFF = 2.0 ** -9  # bfloat16, round to nearest
 # float32 accumulations already and are not sites.
 SITES = {
     10: "reduce.rows", 11: "softmax_xent.fwd", 13: "mse.fwd",
+    # The masked cross-entropy (S3 #149) folds its target rows in float64
+    # as the plain one does; its backward, like 12, only scales.
+    51: "softmax_xent_masked.fwd",
     15: "kl_distill.fwd", 26: "layer_norm.fwd", 27: "layer_norm.bwd",
     28: "clip.norm", 31: "rms_norm.fwd", 32: "rms_norm.bwd",
     35: "attn.fwd", 36: "attn.dp", 38: "softmax_rows.bwd",
@@ -389,11 +392,11 @@ def cmd_certify(args):
               if args.source else None)
 
     def feed():
-        corpus = fx.Corpus(np, args.corpus)
-        corpus.check(plan)
-        val = None
-        if args.val_fraction > 0.0:
-            corpus, val = corpus.split_validation(args.val_fraction)
+        # As the device prepares the corpus: a compiled split recomputed
+        # from the plan (a --val-fraction is then refused), else the
+        # positional split; the whole corpus checked before the split.
+        corpus, val = fx.corpus_for_plan(np, plan, args.corpus,
+                                         args.val_fraction)
         corpus.enable_shuffle(args.seed)
         return corpus, val
 
@@ -495,7 +498,10 @@ def cmd_certify(args):
                      "bf16_unit_roundoff": BF16_UNIT_ROUNDOFF,
                      "sites": enforced},
         "evidence": {"steps": args.steps, "seed": args.seed,
-                     "val_fraction": args.val_fraction,
+                     "val_fraction": fx.effective_val_fraction(
+                         plan, args.val_fraction),
+                     "split": ("compiled" if plan.data_flags &
+                               fx.formats.DATA_FLAG_SPLIT else "positional"),
                      "sites": {k: sites[k] for k in sorted(sites)},
                      "free_run": free_run},
         "tolerances": {"site_rel": site_tol,
@@ -757,7 +763,9 @@ def build_parser():
     c.add_argument("--steps", type=int, default=20)
     c.add_argument("--lanes", type=int, default=8)
     c.add_argument("--seed", type=int, default=0)
-    c.add_argument("--val-fraction", type=float, default=0.1)
+    c.add_argument("--val-fraction", type=float, default=None,
+                   help="held out by position (default 0.1); refused for a "
+                        "plan that compiled its split")
     # The tolerance defaults depend on the plan's contract family
     # (FAMILY_DEFAULTS), so they are resolved once the plan is read.
     c.add_argument("--max-site-error", type=float, default=None,

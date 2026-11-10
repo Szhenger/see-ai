@@ -1,6 +1,7 @@
 #ifndef SEEML_SOURCE_CONTRACT_PLAN_CONTRACT_H_
 #define SEEML_SOURCE_CONTRACT_PLAN_CONTRACT_H_
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -161,6 +162,33 @@ inline std::optional<std::string> PlanHeaderViolation(
       !RangeOk(RefOffset(header.loss_ref), sizeof(float),
                header.arena_size))
     return contract_detail::Violation("plan loss slot out of bounds");
+
+  // The data contract (v22, S2 #148 / S3 #149): below v22 the words are
+  // padding and must be zero; above, the flags carry no unknown bit, a
+  // split carries a finite fraction in (0, 1) and only a split carries
+  // split fields, and a pinned corpus names its hash.
+  const bool data_tail = header.tokenizer_hash != 0 || header.corpus_hash != 0 ||
+                         header.split_seed != 0 ||
+                         header.val_split_hash != 0 ||
+                         header.val_frac_bits != 0 || header.data_flags != 0;
+  if (header.version < kSeeuDataContractVersion && data_tail)
+    return contract_detail::Violation(
+        "plan carries data-contract fields below v" +
+        std::to_string(kSeeuDataContractVersion));
+  if (header.data_flags & ~kDataFlagsMask)
+    return contract_detail::Violation("plan data_flags carries unknown bits");
+  if (header.data_flags & kDataFlagSplit) {
+    const float frac = std::bit_cast<float>(header.val_frac_bits);
+    if (!std::isfinite(frac) || !(frac > 0.0f) || !(frac < 1.0f))
+      return contract_detail::Violation(
+          "plan header val_frac is not a finite value in its range");
+  } else if (header.val_frac_bits != 0 || header.split_seed != 0 ||
+             header.val_split_hash != 0) {
+    return contract_detail::Violation(
+        "plan carries split fields without the split flag");
+  }
+  if ((header.data_flags & kDataFlagCorpusPinned) && header.corpus_hash == 0)
+    return contract_detail::Violation("plan pins a corpus without its hash");
   return std::nullopt;
 }
 
@@ -170,6 +198,18 @@ struct CorpusShape {
   uint64_t input_dim = 0;   // features per row, or tokens per record
   uint32_t label_kind = 0;  // 0 none, 1 class index, 2 dense vector
   uint64_t label_bytes_per_sample = 0;
+  // SDS v3 (S2 #148 / S3 #149): the tokenizer the records were encoded by
+  // (0 = the corpus names none), and whether each record carries a
+  // per-position loss mask (labels then stage -1 at ignored positions).
+  uint64_t tokenizer_hash = 0;
+  bool masked = false;
+  // The corpus identity (ContentHash64 of the SDS file; 0 = built in
+  // memory), checked only when the plan pins one (kDataFlagCorpusPinned).
+  uint64_t corpus_hash = 0;
+  // The split identity (SplitHash of the held-out indices the corpus was
+  // partitioned by, source/contract/split.h; 0 = not split, or split by
+  // position), checked only when the plan compiled one (kDataFlagSplit).
+  uint64_t split_hash = 0;
 };
 
 /// The corpus's shape fits the plan's I/O slots — the feeder contract's
@@ -178,6 +218,45 @@ struct CorpusShape {
 inline std::optional<std::string> CorpusGeometryViolation(
     const PlanHeader& header, const CorpusShape& corpus) {
   using contract_detail::Violation;
+  // The tokenizer identity (v22): a plan bound to a tokenizer section runs
+  // only on a corpus encoded by that section — the same vocabulary, merges
+  // and special tokens, or the ids mean other strings. A corpus that names
+  // no tokenizer (SDS v1 / v2, or an unbound v3) makes no claim and is
+  // taken on its geometry alone; one that names another is refused.
+  if (header.tokenizer_hash != 0 && corpus.tokenizer_hash != 0 &&
+      corpus.tokenizer_hash != header.tokenizer_hash)
+    return Violation(
+        "the dataset was tokenized by another tokenizer than the plan's "
+        "model (tokenizer hash mismatch)");
+  // The corpus pin (v22, S2 #148): a plan compiled over a corpus (--data)
+  // runs on that corpus — the records the accountant counted and the split
+  // (S3) was drawn from — and refuses any other, even of the same shape.
+  if ((header.data_flags & kDataFlagCorpusPinned) != 0 &&
+      corpus.corpus_hash != header.corpus_hash)
+    return Violation(
+        "the plan is pinned to another corpus (corpus hash mismatch)");
+  // The compiled split (v22, S3 #149): the training set the plan is fed
+  // must be the corpus less the held-out records the compile named — the
+  // same function of (records, seed, fraction), recomputed and hashed on
+  // the device — so the gate scores the set the compile decided, not one
+  // the data source chose.
+  if ((header.data_flags & kDataFlagSplit) != 0 &&
+      corpus.split_hash != header.val_split_hash)
+    return Violation(
+        "the corpus was not split as the plan compiled it (split hash "
+        "mismatch)");
+  // The loss mask (v22): a masked corpus stages -1 labels the masked
+  // cross-entropy ignores; a plan compiled for the plain loss would train
+  // on them as class -1, and a masked plan over a plain corpus would read
+  // every position as a target the compile did not price.
+  const bool plan_masked = (header.data_flags & kDataFlagMaskedLoss) != 0;
+  if (corpus.masked && !plan_masked)
+    return Violation(
+        "the dataset carries a loss mask, but the compiled plan takes every "
+        "position as a target");
+  if (plan_masked && !corpus.masked)
+    return Violation(
+        "the compiled plan takes a loss mask the dataset does not carry");
   if (header.input_kind == 1) {
     // Token plan: the corpus must be token records of exactly seq_len ids
     // (staging serves batch / seq_len whole records into batch i32 rows).

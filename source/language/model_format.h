@@ -74,10 +74,23 @@ inline constexpr uint32_t kSmfMagic = 0x31464D53;  // "SMF1" little-endian
 // kRmsNorm the f32 bits of the normalization epsilon (0 = 1e-5, the value
 // every earlier file meant); 0 elsewhere. Qwen2-class models (1e-6) used to
 // fine-tune against a forward that was not their own.
-// Readers accept v1..v6; the C++ writer emits v6, the Python exporter the
-// lowest version that carries the model.
-inline constexpr uint32_t kSmfVersion = 6;
+// v7 (S2 #148) adds, after seq_len, two u64 words: the absolute offset and
+// the byte size of the tokenizer section — an opaque, 64-aligned blob laid
+// out like a payload (after the metadata, overlapping nothing) whose
+// contents `source/tokenizer/` defines; 0 / 0 = the model carries no
+// tokenizer. Its ContentHash64 is the tokenizer identity every corpus is
+// bound to (SDS v3, plan v22).
+// Readers accept v1..v7; both writers emit the lowest version that
+// carries the model (v7 only with a tokenizer section).
+inline constexpr uint32_t kSmfVersion = 7;
 inline constexpr uint32_t kSmfMinVersion = 1;
+
+// Every constant tensor's payload starts on this boundary (a cache line),
+// at or after the end of the metadata, and no two payloads overlap: both
+// writers lay files out this way, and the ingressor proves it on load
+// (S1 #147, F04) — a payload inside the header or inside another tensor
+// would otherwise compile and commit over bytes the plan never meant.
+inline constexpr uint64_t kSmfPayloadAlignment = 64;
 
 // SMF is read/written by memcpy of host integers; the documented on-disk
 // contract is little-endian. Big-endian hosts need byte-swapping I/O.
@@ -236,7 +249,13 @@ struct SmfModel {
   // built against.
   uint64_t content_hash = 0;
 
+  // v7: the tokenizer section's bytes (empty = none). Opaque here; the
+  // tokenizer subsystem decodes it, and TokenizerHash() is its identity.
+  std::vector<uint8_t> tokenizer;
+
   const SmfTensor* FindTensor(std::string_view name) const;
+  /// ContentHash64 of the tokenizer section; 0 when the model has none.
+  uint64_t TokenizerHash() const;
 };
 
 }  // namespace seeml::update

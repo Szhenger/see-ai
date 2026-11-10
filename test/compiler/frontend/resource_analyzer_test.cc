@@ -7,8 +7,11 @@
 
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
+#include "compiler/frontend/egressor/model_writer.h"
+#include "compiler/frontend/ingressor/model_reader.h"
 #include "test/framework/seetest.h"
 #include "test/support/builders.h"
+#include "test/support/scoped_temp_dir.h"
 
 namespace {
 
@@ -289,7 +292,37 @@ TEST(ResourceAnalyzer, TheEstimateNeverExceedsTheExactFootprint) {
                          c.remat = RematKind::kOff;
                          c.attention = AttentionKind::kTiled;
                        }));
-  for (const CompiledUpdate* c : {&plain, &remat, &int8, &tiled}) {
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate bf16, compiled_with([](UpdateConfig& c) {
+                         c.remat = RematKind::kOff;
+                         c.bf16_base = true;
+                       }));
+  // Distillation: the teacher's frozen forward joins the bound at its peak.
+  SmfModel teacher =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 43);
+  UpdateConfig kl = base;
+  kl.loss = LossKind::kKLDistill;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate distilled,
+                       UpdateCompiler(kl).Compile(model, &teacher));
+  // Adapter-only (S1 #147, the review's B1): the plan carries no weights,
+  // the device maps them from the file, so the bound counts none — until
+  // 2026-11-09 it charged them all and read 1.31x the exact footprint.
+  seeml::testing::ScopedTempDir dir;
+  const std::string path = dir.File("model.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel saved, LoadSmf(path));
+  UpdateConfig adapter_only = base;
+  adapter_only.adapter_only = true;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate adapter,
+                       UpdateCompiler(adapter_only).Compile(saved));
+  EXPECT_EQ(adapter.estimate_weight_bytes, 0u);
+  // The MLP canary, under its own batch.
+  UpdateConfig mlp_config = seeml::testing::BaseConfig(4);
+  mlp_config.memory_budget_bytes = 256ull << 20;
+  ASSERT_OK_AND_ASSIGN(
+      CompiledUpdate mlp,
+      UpdateCompiler(mlp_config).Compile(seeml::testing::MakeMlp(6, 10, 3, 1)));
+  for (const CompiledUpdate* c :
+       {&plain, &remat, &int8, &tiled, &bf16, &distilled, &adapter, &mlp}) {
     EXPECT_GT(c->estimate_bytes, 0u);
     EXPECT_LE(c->estimate_bytes, c->arena_size + c->plan.size());
   }

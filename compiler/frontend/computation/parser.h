@@ -19,6 +19,10 @@
 
 namespace seeml::update {
 
+namespace sema {
+struct Topology;
+}
+
 /// Appends `model`'s forward graph to `block`, resolving tensors to SIR
 /// values (materializing frozen sc_mem.weight ops on demand) and returning
 /// the model's output value. `prefix` namespaces the emitted value ids.
@@ -29,9 +33,16 @@ namespace seeml::update {
 /// that consumes it writes the value's use-list (see the SIR threading
 /// model). The student + teacher builds share one input and one block, so
 /// they run sequentially by design.
+///
+/// `topology` is the model's verified Topology (sema::VerifyModel at this
+/// batch) when the caller already holds it — the driver, which verifies
+/// every model once before anything is built — else the build verifies the
+/// model itself first: topology runs to completion before computation in
+/// either case, and once.
 [[nodiscard]] std::expected<seeml::sir::Value*, std::string> BuildForward(
     seeml::sir::Block& block, const SmfModel& model, const std::string& prefix,
-    seeml::sir::Value* input, int64_t batch, GraphBuild& build);
+    seeml::sir::Value* input, int64_t batch, GraphBuild& build,
+    const sema::Topology* topology = nullptr);
 
 }  // namespace seeml::update
 

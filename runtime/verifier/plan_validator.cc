@@ -278,6 +278,13 @@ std::expected<void, std::string> ValidateInstructionImpl(
         "tiled attention opcode " + std::to_string(ins.opcode) +
         " in a pre-v" + std::to_string(up::kSeeuTiledAttentionVersion) +
         " plan");
+  if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedFwd) ||
+       ins.opcode == static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedBwd)) &&
+      plan_version < up::kSeeuDataContractVersion)
+    return diag::validating::Error(
+        "masked cross-entropy opcode " + std::to_string(ins.opcode) +
+        " in a pre-v" + std::to_string(up::kSeeuDataContractVersion) +
+        " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kAccumulate) &&
       plan_version < up::kSeeuGradAccumVersion)
     return diag::validating::Error(
@@ -446,12 +453,14 @@ std::expected<void, std::string> ValidateInstructionImpl(
         return fail();
       return disjoint();
     case up::OpCode::kSoftmaxXEntFwd:
+    case up::OpCode::kSoftmaxXEntMaskedFwd:
       if (!MulOk(d0, d1, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], d0, false) ||
           !ref_ok(ins.in[2], 1, true) || !ref_ok(ins.in[3], nc, true))
         return fail();
       return disjoint();
     case up::OpCode::kSoftmaxXEntBwd:
+    case up::OpCode::kSoftmaxXEntMaskedBwd:
       if (!MulOk(d0, d1, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], d0, false) ||
           !ref_ok(ins.in[2], 1, false) || !ref_ok(ins.in[3], nc, true))
