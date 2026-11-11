@@ -13,7 +13,7 @@ Here, then, is the plan of attack, which the rest of this document walks through
 ```
 SMF ingest ──▶ feasibility gate ──▶ forward SIR (+ frozen teacher)
            ──▶ loss grafting
-           ──▶ pass phase A: conv-lowering, lora-graft     (PassManager)
+           ──▶ pass phase A: attention, lora-graft, rope    (PassManager)
            ──▶ primal snapshot (becomes the eval program)
            ──▶ pass phase B: autodiff, optimizer synthesis (PassManager)
            ──▶ merge program (Δ = (α/r)·A@B)
@@ -110,18 +110,6 @@ This is the heart of the compiler, and the most mathematical part of SeeAI. Ever
 A **pass** is a named graph-to-graph transformation. `PassManager` (`analysis/pass_manager.cc`) runs them in registration order, and after *every single pass* re-runs `Block::verify()`. Why so paranoid? Attribution. If a pass corrupts the graph, the error message names *that pass*, at the moment of the crime — not some innocent later stage that happened to trip over the wreckage. A pass's own error, meanwhile, propagates verbatim. (Cheap insurance: verification is linear in the graph, and graphs here are small.)
 
 The manager also **times every pass** (the pass plus its verify), and the driver times the phases between them — frontend, merge-and-review, arena binding, lowering, the persistent image, assembly, the seal. They travel in `CompiledUpdate::pass_timings` and in the compile report's `"passes"` array, so a compile-side performance claim is a measurement anyone can repeat (E5, #84). On an 800 MB decoder (Apple M5) the whole graph pipeline — 1,417 ops through eight passes — is under 4 ms; the compile is assembly (133 ms) and the seal's hash (32 ms), i.e. bytes, which is why E2 went after copies and not passes. Three companions from the same hygiene batch: **DCE marks, then compacts once** — a backward sweep over private use counts finds whole dead chains, and `Block::removeOps` unlinks them and compacts the op list in one pass, where one `removeOp` per dead op was O(removed × ops), a quadratic cliff the first time a pass dead-codes a real fraction of the graph; the **SIR dump is opt-in** (`UpdateConfig::dump_sir`, `--dump-sir out.txt`) instead of streamed and retained by every compile; and the dump changes no byte of the plan.
-
-### Conv lowering: convolution is just matrix multiplication wearing a trench coat
-
-`ConvLowering` rewrites any `sc_high.conv2d` into the **im2col** form. The insight, which is worth internalizing once in your life: a convolution slides a small filter over an image, computing a dot product at each position. If you *unroll* every filter-sized patch of the input into a row of a big matrix (that's "im2col" — image to columns), and flatten the filters into a second matrix, then the entire convolution collapses into one matrix multiplication:
-
-```
-cols = im2col(x)              [N·OH·OW, Cin·KH·KW]
-wmat = filter_matrix(filter)  [Cin·KH·KW, Cout]
-y    = col2im(cols @ wmat)    back to [N, Cout, OH, OW]
-```
-
-You pay memory (patches get duplicated) to buy the one operation the rest of the system already knows how to execute, differentiate, and tile: **GEMM** — *general matrix multiply*, the standard name for the workhorse operation `C = A@B`. Grouped and dilated convolutions don't fit this simple form, so the pass *rejects* them with a clear diagnostic rather than silently mis-lowering — a design rule you'll see everywhere in SeeAI.
 
 ### LoRA grafting: the linear algebra of small updates
 
@@ -342,7 +330,7 @@ Two emitters close out the backend. The plan itself is assembled by the driver (
 
 Measured on an 800 MB decoder (Apple M5, peak memory footprint ÷ model size): `--no-embed` 4.54× → **1.20×**, `--quantize-base` 2.93× → **1.20×**, with the decimal TU 10.34× → **1.20×**; wall time 2.8 → 1.2 s, 0.9 → 0.6 s and 11.9 → 7.6 s; every `.seeu`, embedded TU and `build.sh` byte-identical across a ten-plan fixture set (every loss, storage precision, teacher and accumulation form).
 
-`kernel_emitter.cc` generates Metal GEMM kernel *source* (forward, both backward transposes, and the merge's scaled accumulate) from a `GpuTiling` clamped out of the host tiling into `{8, 16, 24, 32}` per dimension. Each kernel stages A- and B-tiles cooperatively into threadgroup memory, barriers, and accumulates with `fma` — the GPU expression of exactly the same blocking idea as above. It is text generation only, compiled by whoever integrates it.
+The GPU half of the tiling is data in the same description: `GpuTilingFromHost` (`host_arch.h`) clamps the host tiling into threadgroup limits. The Metal source generator that once lived here as `kernel_emitter.cc` shipped nothing after the runtime took ownership of the kernel library; it is test support now (`test/support/metal_gemm_source`), feeding only the G1a hardware harness (S6 #152).
 
 ## Diagnostics: errors as a designed surface
 
@@ -352,7 +340,7 @@ Every compiler diagnostic is one line, `"<unit>: <message>"`, and errors travel 
 |---|---|---|
 | `tokenizing/` | SMF byte-stream decode/encode | `SMF`, `Ingressor` |
 | `parsing/` | SMF graph → forward SIR | `Parser` |
-| `passing/` | pass orchestration + lowering legality | `PassManager`, `ConvLowering` |
+| `passing/` | pass orchestration | `PassManager` |
 | `updating/` | the analytic methods | `TrainableAutodiff`, `LoraGrafter`, `MergeBuilder`, `OptimizerSynthesizer`, `GemmEpilogueFuser` |
 | `architecting/` | local device analysis and the tuner's table | `HostArch`, `KernelPolicy` |
 | `generating/` | code generation + the driver | `UpdateCompiler`, `ArenaBinder`, `InstructionLowering`, `NativeEmitter` |

@@ -105,13 +105,14 @@ add_library(seeml_update STATIC
     compiler/frontend/topology/sema.cc
     compiler/frontend/computation/parser.cc
     compiler/analysis/pass_manager.cc
-    compiler/analysis/algebra/conv_lowering.cc
     compiler/analysis/topology/dce.cc
     compiler/analysis/algebra/epilogue_fuser.cc
     compiler/analysis/algebra/rope_table.cc
     compiler/analysis/algebra/chain_fuser.cc
     compiler/analysis/algebra/addend_fuser.cc
-    compiler/analysis/algebra/rematerializer.cc
+    compiler/analysis/calculus/rematerializer.cc
+    compiler/analysis/statistics/precision.cc
+    compiler/analysis/optimization/schedule.cc
     compiler/analysis/statistics/attention_tiling.cc
     compiler/analysis/algebra/lora_grafter.cc
     compiler/analysis/algebra/merge_builder.cc

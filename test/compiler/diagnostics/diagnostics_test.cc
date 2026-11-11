@@ -71,9 +71,6 @@ TEST(Passing, AttributesCorruptionToTheOffendingPass) {
                                                   "duplicate value id 7")),
             "PassManager: SIR invariants violated after pass 'lora-graft': "
             "duplicate value id 7");
-  EXPECT_EQ(Msg(diag::passing::LoweringError(
-                "conv0", "lacks stride/pad geometry attributes")),
-            "ConvLowering: 'conv0' lacks stride/pad geometry attributes");
 }
 
 // =============================================================================

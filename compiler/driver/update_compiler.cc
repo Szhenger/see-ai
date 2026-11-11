@@ -285,39 +285,10 @@ Status Compilation::ValidateConfig() {
         "gemm_tile_k " + std::to_string(config_.gemm_tile_k) +
             " is not a multiple of the kernel's 4-wide unroll");
 
-  // The schedule triple (E8, #91). Each of these used to compile and then
-  // misbehave silently at run time: a zero budget is a plan with nothing to
-  // default to; a warmup that swallows the budget leaves no horizon, so
-  // every later step ran at the floor; warmup under a constant schedule was
-  // ignored; and a zero floor trains the schedule's final step — and any
-  // step past a horizon — at LR 0, moving nothing but AdamW's moments.
-  {
-    const OptimizerSpec& o = config_.optimizer;
-    const bool cosine = o.lr_schedule == LrSchedule::kCosineWithWarmup;
-    if (config_.default_steps == 0)
-      return generating::Error(generating::kDriver,
-                               "the step budget must be positive");
-    if (!cosine && o.warmup_steps != 0)
-      return generating::Error(
-          generating::kDriver,
-          "warmup applies to the cosine schedule only; under the constant "
-          "schedule it would be silently ignored");
-    if (cosine && o.warmup_steps >= config_.default_steps)
-      return generating::Error(
-          generating::kDriver,
-          "warmup (" + std::to_string(o.warmup_steps) +
-              " steps) must be shorter than the step budget (" +
-              std::to_string(config_.default_steps) + ")");
-    if (cosine && !(o.min_lr_factor >= 0.0f && o.min_lr_factor <= 1.0f))
-      return generating::Error(generating::kDriver,
-                               "min_lr_factor must lie in [0, 1]");
-    if (cosine && o.min_lr_factor == 0.0f && !o.allow_zero_lr)
-      return generating::Error(
-          generating::kDriver,
-          "a cosine floor of 0 trains the schedule's last step at a learning "
-          "rate of zero; set min_lr_factor > 0 (the default is 0.1) or "
-          "allow_zero_lr to ask for it deliberately");
-  }
+  // The schedule triple (E8, #91): optimization's rule
+  // (analysis/optimization/schedule.h).
+  if (auto ok = VerifySchedule(config_.optimizer, config_.default_steps); !ok)
+    return std::unexpected(ok.error());
   return {};
 }
 
@@ -702,14 +673,13 @@ Status Compilation::GraftLoss() {
 }
 
 Status Compilation::StructuralPasses() {
-  // --- 3. Structural passes (phase A): convolution lowering, then LoRA
-  // grafting — everything that must precede the primal snapshot. The pass
+  // --- 3. Structural passes (phase A): the attention decision, LoRA
+  // grafting, the RoPE table — everything that must precede the primal
+  // snapshot. The pass
   // manager re-verifies the block after each pass, so a corrupting rewrite
   // is reported against its author.
   {
     PassManager pm;
-    pm.Add("conv-lowering",
-           [](sir::Block& b) { return ConvLowering().Run(b); });
     // Attention memory (E11, plan v15): before the snapshot, so the eval
     // program runs the same family, and before autodiff, whose VJP rule
     // reads the decision off the op.
@@ -778,7 +748,7 @@ Status Compilation::CalculusPasses() {
   {
     PassManager pm;
     pm.Add("autodiff", [&](sir::Block& b) -> std::expected<void, std::string> {
-      auto grads = TrainableAutodiff(1.0f / static_cast<float>(accum))
+      auto grads = TrainableAutodiff(AccumulationSeed(accum))
                        .Run(b, loss, trainables);
       if (!grads) return std::unexpected(grads.error());
       param_grads = std::move(*grads);
@@ -1078,34 +1048,14 @@ Status Compilation::LowerTrain() {
                                bf16_weights, binding->quant_column_scales);
   if (!train_instrs) return std::unexpected(train_instrs.error());
 
-  // --- Relaxed arithmetic (plan v18, F2 / F4). -------------------------------
-  // Under --precision certified-bf16 every frozen-weight GEMM of the train
-  // stream (and so of the step program split from it below) — a product
-  // whose B operand is rodata: the base and teacher weights in f32, int8 or
-  // bf16, NN forward and NT dX — carries kFlagRelaxed. The adapter GEMMs
-  // (A and B live in the arena) and everything else stay exact, as does
-  // the eval program lowered separately below: the gate scores what ships
-  // in reference arithmetic. The bit is a permission the backend may
-  // decline; what it permits is bounded by the certificate the package
-  // must carry. Plan v20 (F3 #131): the tiled attention instructions of the
-  // train stream carry it too — the backend may run their blocks' products
-  // on matrix tiles in another f32 summation order; the certificate prices
-  // their attn.*.tiled sites.
+  // --- Relaxed arithmetic (plan v18, F2 / F4; v20, F3): which instructions
+  // carry kFlagRelaxed is the precision assignment's decision
+  // (analysis/statistics/precision.h); the eval program lowered separately
+  // below stays exact.
   if (config_.precision == Precision::kCertifiedBf16) {
-    for (UpdateInstruction& ins : *train_instrs) {
-      const auto op = static_cast<OpCode>(ins.opcode);
-      const bool frozen_gemm =
-          (op == OpCode::kGemmNN || op == OpCode::kGemmNT ||
-           op == OpCode::kGemmNNQ8 || op == OpCode::kGemmNTQ8 ||
-           op == OpCode::kGemmNNBF16 || op == OpCode::kGemmNTBF16) &&
-          IsRodataRef(ins.in[1]);
-      const bool tiled_attention =
-          op == OpCode::kAttnFwdTiled || op == OpCode::kAttnDQTiled ||
-          op == OpCode::kAttnDKTiled || op == OpCode::kAttnDVTiled;
-      if (!frozen_gemm && !tiled_attention) continue;
-      ins.flags |= kFlagRelaxed;
-      ++(frozen_gemm ? relaxed_gemms : relaxed_attention);
-    }
+    const RelaxedCounts relaxed = AssignRelaxedPrecision(*train_instrs);
+    relaxed_gemms = relaxed.gemms;
+    relaxed_attention = relaxed.attention;
     seeml::diag::Note(generating::kDriver,
                       "relaxed arithmetic: " + std::to_string(relaxed_gemms) +
                           " frozen-weight GEMM(s) and " +
@@ -1257,15 +1207,12 @@ Status Compilation::FillHeader() {
   accumulator_bytes = 0;
   for (const ParamInit& pi : binding->params)
     if (pi.value->id().ends_with(".grad_acc")) accumulator_bytes += pi.bytes;
-  header.lr_schedule = static_cast<uint32_t>(config_.optimizer.lr_schedule);
-  // The floor and warmup are the cosine schedule's; a constant-schedule
-  // plan records neither (validated above to carry no warmup), so such
-  // plans are byte-identical to the ones compiled before the floor's
-  // default moved from 0 to 0.1.
-  const bool cosine =
-      config_.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup;
-  header.warmup_steps = cosine ? config_.optimizer.warmup_steps : 0;
-  header.min_lr_factor = cosine ? config_.optimizer.min_lr_factor : 0.0f;
+  // The schedule words: the floor and warmup are the cosine schedule's
+  // (analysis/optimization/schedule.h).
+  const ScheduleWords schedule = ScheduleWordsOf(config_.optimizer);
+  header.lr_schedule = schedule.lr_schedule;
+  header.warmup_steps = schedule.warmup_steps;
+  header.min_lr_factor = schedule.min_lr_factor;
   header.clip_norm = config_.optimizer.clip_norm;
   header.source_model_hash = source.content_hash;
   // The data contract (v22, S2 #148): a model carrying a tokenizer section

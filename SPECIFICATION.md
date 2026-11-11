@@ -59,7 +59,7 @@ non-Apple translation unit references a Metal symbol). MSL kernels are
 **not** checked in as `.metal` files: the backend's kernel library is a C++
 string literal owned by the runtime (`runtime/executor/metal_kernels.h`, so
 CPU and GPU kernel semantics are versioned together), the harness's four
-GEMMs are emitted by `compiler/backend/architecture/kernel_emitter.cc`, and both
+GEMMs come from `test/support/metal_gemm_source.cc`, and both
 are JIT-compiled at runtime via `newLibraryWithSource:options:error:` — no
 Metal toolchain is needed to build anything.
 
@@ -212,11 +212,13 @@ Layout is subsystems-by-role: `frontend/` → `analysis/` → `backend/` →
   the verified SIR graph (`parser`, `value_resolver`).
 - **Analysis.** A `pass_manager` at the subsystem root that re-verifies
   invariants between passes; the directories are named for the field of
-  mathematics that studies what they do. `algebra/`: `conv_lowering` (conv2d
-  → im2col + GEMM rewrite; grouped/dilated forms rejected), `epilogue_fuser`
+  mathematics that studies what they do. `algebra/`: `epilogue_fuser`
   / `addend_fuser` / `chain_fuser`, `lora_grafter` (adapter insertion),
   `merge_builder` (the delta-materialization program), `rope_table`.
-  `calculus/`: `autodiff` (reverse-mode differentiation over SIR).
+  `calculus/`: `autodiff` (reverse-mode differentiation over SIR) and the
+  `rematerializer`. `optimization/`: optimizer synthesis and the `schedule`
+  rules. Precision assignment (`statistics/precision`) decides the relaxed
+  instructions.
   `statistics/`: the `quantization` review (int8 frozen base) and
   `attention_tiling` (the attention family from the step-0 footprint).
   `topology/`: `dce`. `optimization/`: `optimizer` synthesis (SGD/AdamW as
@@ -228,9 +230,12 @@ Layout is subsystems-by-role: `frontend/` → `analysis/` → `backend/` →
   the offline tuner (`tool/autotune.py`) wrote — a strict purpose-built JSON
   reader — and resolves the CPU GEMM tiles the driver writes into the plan
   header (v11): `--gemm-tiles`, then the table, then the runtime defaults;
-  `architecture/kernel_emitter` emits MSL kernel source for the Metal GEMM
-  harness test and the architecture suite (S6 decides its retirement). `allocation/arena_binder` binds every tensor to a compile-time
-  arena layout; `selection/instruction_lowering` lowers SIR to the fixed
+  the GPU half of the tiling (`GpuTilingFromHost`) is data in `host_arch`
+  (the kernel emitter retired with S6; its source generator is test
+  support). `allocation/arena_binder` binds every tensor to a compile-time
+  arena layout; `assembly/plan_assembly` seeds the persistent image, builds
+  the emit table, lays the sections out, assembles the blob and seals it
+  (out of the driver since S6); `selection/instruction_lowering` lowers SIR to the fixed
   ~35-opcode instruction ISA; `packaging/native_emitter` emits the
   self-contained package. Plan assembly (persistent image, sections, seal)
   is still sequenced inside the driver.

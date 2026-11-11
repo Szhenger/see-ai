@@ -23,7 +23,6 @@
 namespace seeml::diag::passing {
 
 inline constexpr std::string_view kPassManager = "PassManager";
-inline constexpr std::string_view kConvLowering = "ConvLowering";
 
 /// Post-pass verification failure, attributed to the offending pass:
 /// "PassManager: SIR invariants violated after pass '<pass>': <why>".
@@ -36,15 +35,6 @@ inline constexpr std::string_view kConvLowering = "ConvLowering";
       .append("': ")
       .append(why);
   return Fail(kPassManager, m);
-}
-
-/// Lowering legality failure: "ConvLowering: '<op>' <what>".
-[[nodiscard]] inline std::unexpected<std::string> LoweringError(std::string_view op,
-                                                                std::string_view what) {
-  std::string m;
-  m.reserve(op.size() + what.size() + 3);
-  m.append("'").append(op).append("' ").append(what);
-  return Fail(kConvLowering, m);
 }
 
 /// Progress note after a pass runs clean:

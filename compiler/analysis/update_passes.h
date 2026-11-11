@@ -16,11 +16,10 @@
 //                  Δ = (α/r)·A@B via sc_low.gemm_acc), GemmEpilogueFuser /
 //                  GemmAddendFuser / ElementwiseChainFuser (chains folded
 //                  where the use-lists prove no other reader), RopeTable,
-//                  ConvLowering (conv2d -> im2col-GEMM form),
+//   calculus/      TrainableAutodiff (reverse-mode AD pruned to the
+//                  trainable set, the seed a parameter),
 //                  Rematerializer (cheap forward values re-emitted before
 //                  their backward readers; roadmap 2b)
-//   calculus/      TrainableAutodiff (reverse-mode AD pruned to the
-//                  trainable set)
 //   statistics/    decisions from measured numbers: SelectQuantizedWeights
 //                  (which frozen weights pack as int8 rodata, at what
 //                  scale), AttentionTiling (the attention family from the
@@ -42,13 +41,14 @@
 #include "compiler/analysis/statistics/attention_tiling.h"  // IWYU pragma: export
 #include "compiler/analysis/algebra/chain_fuser.h"    // IWYU pragma: export
 #include "compiler/analysis/algebra/rope_table.h"     // IWYU pragma: export
-#include "compiler/analysis/algebra/rematerializer.h"  // IWYU pragma: export
+#include "compiler/analysis/calculus/rematerializer.h"  // IWYU pragma: export
 #include "compiler/analysis/algebra/lora_grafter.h"   // IWYU pragma: export
 #include "compiler/analysis/algebra/merge_builder.h"  // IWYU pragma: export
 #include "compiler/analysis/calculus/autodiff.h"      // IWYU pragma: export
 #include "compiler/analysis/optimization/optimizer.h"     // IWYU pragma: export
+#include "compiler/analysis/optimization/schedule.h"      // IWYU pragma: export
+#include "compiler/analysis/statistics/precision.h"   // IWYU pragma: export
 #include "compiler/analysis/statistics/quantization.h"  // IWYU pragma: export
-#include "compiler/analysis/algebra/conv_lowering.h"  // IWYU pragma: export
 #include "compiler/analysis/topology/dce.h"            // IWYU pragma: export
 #include "compiler/analysis/pass_manager.h"   // IWYU pragma: export
 
