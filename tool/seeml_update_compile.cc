@@ -97,6 +97,8 @@
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "source/contract/split.h"
 #include "source/identity/version.h"
+#include "source/recipe/recipe.h"
+#include "source/recipe/recipe_file.h"
 
 namespace {
 
@@ -110,6 +112,8 @@ int Fail(const std::string& msg) {
 void PrintUsage() {
   std::fprintf(stderr,
                "usage: seeml-update-compile --source model.smf --out dir/\n"
+               "  [--recipe recipe.json]  the fields below as one JSON object;\n"
+               "                      a flag overrides the field it names\n"
                "  [--data-batch N] [--loss xent|mse|kl|xent+kl]\n"
                "  [--teacher t.smf] [--distill-weight W] [--temperature T]\n"
                "  [--lora-rank R] [--lora-alpha A] [--lora-seed S]\n"
@@ -201,38 +205,6 @@ class Args {
   std::optional<std::string> missing_value_;
 };
 
-bool ParseI64(const std::string& s, int64_t* out) {
-  errno = 0;
-  char* end = nullptr;
-  const long long v = std::strtoll(s.c_str(), &end, 10);
-  if (errno != 0 || end == s.c_str() || *end != '\0') return false;
-  *out = v;
-  return true;
-}
-
-bool ParseU64(const std::string& s, uint64_t* out) {
-  errno = 0;
-  char* end = nullptr;
-  if (!s.empty() && s[0] == '-') return false;
-  const unsigned long long v = std::strtoull(s.c_str(), &end, 10);
-  if (errno != 0 || end == s.c_str() || *end != '\0') return false;
-  *out = v;
-  return true;
-}
-
-// Finite only: strtof accepts "nan", "inf" and "infinity", and every range
-// check below is a comparison a NaN silently passes, so a `--lr nan` would
-// otherwise bake NaN into the plan header and poison the first step.
-bool ParseF32(const std::string& s, float* out) {
-  errno = 0;
-  char* end = nullptr;
-  const float v = std::strtof(s.c_str(), &end);
-  if (errno != 0 || end == s.c_str() || *end != '\0' || !std::isfinite(v))
-    return false;
-  *out = v;
-  return true;
-}
-
 std::string JsonEscape(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);  // most names escape nothing
@@ -295,197 +267,42 @@ int main(int argc, char** argv) {
 
   UpdateConfig config;
 
-  // --- Numeric / enum flags, all strictly parsed. -----------------------------
-  if (auto v = args.TakeValue("--data-batch")) {
-    if (!ParseI64(*v, &config.batch) || config.batch <= 0)
-      return Fail("--data-batch must be a positive integer, got '" + *v + "'");
+  // --- The recipe (S4 #150): a recipe file's fields, overridden by the
+  // flags that name the same fields, applied by the one function that holds
+  // every value to its bound and the fields to each other
+  // (source/recipe/recipe.h). No flag is parsed by hand here.
+  recipe::Values recipe_values;
+  const auto recipe_path = args.TakeValue("--recipe");
+  if (recipe_path) {
+    std::ifstream f(*recipe_path, std::ios::binary);
+    if (!f) return Fail("cannot open recipe '" + *recipe_path + "'");
+    std::stringstream text;
+    text << f.rdbuf();
+    auto parsed = recipe::ParseRecipeFile(text.str());
+    if (!parsed) return Fail(*recipe_path + ": " + parsed.error());
+    recipe_values = std::move(*parsed);
   }
-  if (auto v = args.TakeValue("--steps")) {
-    if (!ParseU64(*v, &config.default_steps) || config.default_steps == 0)
-      return Fail("--steps must be a positive integer, got '" + *v + "'");
+  for (const recipe::Field& field : recipe::kFields) {
+    if (field.kind == recipe::Kind::kBool) {
+      if (args.Take(field.flag)) recipe_values[field.name] = "true";
+    } else if (auto v = args.TakeValue(field.flag)) {
+      recipe_values[field.name] = *v;
+    }
   }
-  if (auto v = args.TakeValue("--grad-accum")) {
-    uint64_t g = 0;
-    if (!ParseU64(*v, &g) || g < 1 || g > 0xFFFFFFFFull)
-      return Fail("--grad-accum must be a positive integer, got '" + *v + "'");
-    config.grad_accum_steps = static_cast<uint32_t>(g);
-  }
-  if (auto v = args.TakeValue("--loss")) {
-    if (*v == "xent") config.loss = LossKind::kSoftmaxXEnt;
-    else if (*v == "mse") config.loss = LossKind::kMse;
-    else if (*v == "kl") config.loss = LossKind::kKLDistill;
-    else if (*v == "xent+kl") config.loss = LossKind::kXEntPlusKL;
-    else return Fail("unknown --loss '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--distill-weight")) {
-    if (!ParseF32(*v, &config.distill_weight) || config.distill_weight < 0.0f ||
-        config.distill_weight > 1.0f)
-      return Fail("--distill-weight must be in [0, 1], got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--temperature")) {
-    // Bounded at both ends (CR1 #142 N26): the validator and the compiler
-    // refuse what lies outside, so the flag says so first.
-    if (!ParseF32(*v, &config.temperature) ||
-        config.temperature < kKlTemperatureMin ||
-        config.temperature > kKlTemperatureMax)
-      return Fail(std::string("--temperature must be a finite value in ") +
-                  kKlTemperatureRangeText + ", got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--lora-rank")) {
-    if (!ParseI64(*v, &config.lora.rank) || config.lora.rank <= 0)
-      return Fail("--lora-rank must be a positive integer, got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--lora-alpha")) {
-    if (!ParseF32(*v, &config.lora.alpha) || config.lora.alpha <= 0.0f)
-      return Fail("--lora-alpha must be positive, got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--lora-seed")) {
-    if (!ParseU64(*v, &config.lora.seed))
-      return Fail("--lora-seed must be a non-negative integer, got '" + *v +
-                  "'");
-  }
-  if (auto v = args.TakeValue("--targets")) {
-    std::stringstream ss(*v);
-    std::string item;
-    while (std::getline(ss, item, ','))
-      if (!item.empty()) config.lora.target_filters.push_back(item);
-  }
-  if (auto v = args.TakeValue("--optimizer")) {
-    if (*v == "adamw") config.optimizer.kind = OptimizerKind::kAdamW;
-    else if (*v == "sgd") config.optimizer.kind = OptimizerKind::kSgd;
-    else return Fail("unknown --optimizer '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--lr")) {
-    if (!ParseF32(*v, &config.optimizer.lr) || config.optimizer.lr <= 0.0f)
-      return Fail("--lr must be positive, got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--weight-decay")) {
-    if (!ParseF32(*v, &config.optimizer.weight_decay) ||
-        config.optimizer.weight_decay < 0.0f)
-      return Fail("--weight-decay must be non-negative, got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--clip-norm")) {
-    if (!ParseF32(*v, &config.optimizer.clip_norm) ||
-        config.optimizer.clip_norm < 0.0f)
-      return Fail("--clip-norm must be non-negative, got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--lr-schedule")) {
-    if (*v == "const") config.optimizer.lr_schedule = LrSchedule::kConstant;
-    else if (*v == "cosine")
-      config.optimizer.lr_schedule = LrSchedule::kCosineWithWarmup;
-    else return Fail("unknown --lr-schedule '" + *v + "'");
-  }
-  // The cosine schedule's two knobs are errors under `const` (E8, #91): a
-  // flag that cannot apply is never silently ignored — the header's rule.
-  const bool cosine =
-      config.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup;
-  if (auto v = args.TakeValue("--warmup")) {
-    if (!cosine)
-      return Fail("--warmup applies to --lr-schedule cosine only");
-    if (!ParseU64(*v, &config.optimizer.warmup_steps))
-      return Fail("--warmup must be a non-negative integer, got '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--min-lr-factor")) {
-    if (!cosine)
-      return Fail("--min-lr-factor applies to --lr-schedule cosine only");
-    if (!ParseF32(*v, &config.optimizer.min_lr_factor) ||
-        config.optimizer.min_lr_factor < 0.0f ||
-        config.optimizer.min_lr_factor > 1.0f)
-      return Fail("--min-lr-factor must be in [0, 1], got '" + *v + "'");
-  }
-  config.optimizer.allow_zero_lr = args.Take("--allow-zero-lr");
-  if (config.optimizer.allow_zero_lr && !cosine)
-    return Fail("--allow-zero-lr applies to --lr-schedule cosine only");
-  config.quantize_base = args.Take("--quantize-base");
-  config.bf16_base = args.Take("--bf16-base");
-  // Arithmetic (v18, F2 / F4): the relaxed GEMM family is a permission the
-  // compiler grants per instruction; the package then needs a certificate.
-  if (auto v = args.TakeValue("--precision")) {
-    if (*v == "f32") config.precision = Precision::kF32;
-    else if (*v == "certified-bf16")
-      config.precision = Precision::kCertifiedBf16;
-    else
-      return Fail("unknown --precision '" + *v +
-                  "' (f32 or certified-bf16)");
-  }
-  // Attention memory (E11, plan v15): auto tiles when the probability
-  // caches of all layers would exceed the budget; the two families compute
-  // the same bits, so this is a memory decision alone.
-  if (auto v = args.TakeValue("--attention")) {
-    if (*v == "auto") config.attention = AttentionKind::kAuto;
-    else if (*v == "cached") config.attention = AttentionKind::kCached;
-    else if (*v == "tiled") config.attention = AttentionKind::kTiled;
-    else return Fail("unknown --attention '" + *v + "'");
-  }
-  if (auto v = args.TakeValue("--attention-cache-budget-mib")) {
-    uint64_t mib = 0;
-    if (!ParseU64(*v, &mib) || mib > (1ull << 40))
-      return Fail("--attention-cache-budget-mib must be a whole number of "
-                  "MiB, got '" + *v + "'");
-    if (config.attention != AttentionKind::kAuto)
-      return Fail("--attention-cache-budget-mib applies to --attention auto only");
-    config.attention_cache_budget_bytes = mib << 20;
-  }
-  // Rematerialization (roadmap 2b, F5 #133): the same bits either way, so
-  // this too is a memory decision alone — auto takes it on the bound arena.
-  if (auto v = args.TakeValue("--remat")) {
-    if (*v == "auto") config.remat = RematKind::kAuto;
-    else if (*v == "off") config.remat = RematKind::kOff;
-    else if (*v == "on") config.remat = RematKind::kOn;
-    else return Fail("unknown --remat '" + *v + "' (auto, off or on)");
-  }
-  // The adapter-only package (F6 #134, plan v21): the frozen weights stay
-  // in the source model file, read there at run time; the plan carries no
-  // rodata. The driver refuses the narrow bases, the relaxed kernels and an
-  // in-memory model with it.
-  if (args.Take("--adapter-only")) config.adapter_only = true;
-  // Where a narrow-base plan's eval program reads the frozen weights (E12):
-  // the shipped f32 file (the default where the model came from a file) or
-  // the plan's own narrow copies — a proxy, for a device that cannot hold
-  // the file beside the arena. The report records which.
-  if (auto v = args.TakeValue("--validation-scores")) {
-    if (*v == "shipped") config.eval_on_plan = false;
-    else if (*v == "plan") config.eval_on_plan = true;
-    else return Fail("unknown --validation-scores '" + *v +
-                     "' (shipped or plan)");
-  }
-  // The memory gate's budget. Without it the gate uses the host's memory,
-  // which is fine for a refusal but not for a decision that changes the
-  // plan's bytes: --remat auto decides against this budget only.
   // --data (S2 #148): raw text or a pre-tokenized SDS the frontend holds to
   // the model and pins the plan to; the canonical corpus and its manifest
   // are written beside the plan after the compile.
   const auto data_path = args.TakeValue("--data");
   if (data_path) config.data_path = *data_path;
-  // --val-frac / --split-seed (S3 #149): the held-out split is compiled —
-  // drawn here from the corpus, named in the plan, recomputed on the
-  // device — so it needs --data.
-  if (auto v = args.TakeValue("--val-frac")) {
-    if (!ParseF32(*v, &config.val_frac) || !(config.val_frac > 0.0f) ||
-        !(config.val_frac < 1.0f))
-      return Fail("--val-frac must lie in (0, 1), got '" + *v + "'");
-    if (!data_path)
-      return Fail("--val-frac compiles the validation split from the corpus: "
-                  "pass --data too");
-  }
-  config.masked_loss = args.Take("--masked-loss");
-  if (auto v = args.TakeValue("--split-seed")) {
-    if (!ParseU64(*v, &config.split_seed))
-      return Fail("--split-seed must be a non-negative integer, got '" + *v +
-                  "'");
-    if (config.val_frac == 0.0f)
-      return Fail("--split-seed needs --val-frac");
-  }
-  if (auto v = args.TakeValue("--memory-budget-mib")) {
-    uint64_t mib = 0;
-    if (!ParseU64(*v, &mib) || mib == 0 || mib > (1ull << 40))
-      return Fail("--memory-budget-mib must be a positive whole number of "
-                  "MiB, got '" + *v + "'");
-    config.memory_budget_bytes = mib << 20;
-  }
-  if (config.quantize_base && config.bf16_base)
-    return Fail("--quantize-base and --bf16-base are mutually exclusive "
-                "(one storage precision per weight)");
+  const auto teacher_path = args.TakeValue("--teacher");
+  if (const auto& m = args.MissingValue())
+    return Fail(*m + " requires a value");
+  if (auto ok = recipe::Apply(
+          recipe_values,
+          {.teacher = teacher_path.has_value(), .data = data_path.has_value()},
+          &config);
+      !ok)
+    return Fail(ok.error());
   config.fuse_epilogues = !args.Take("--no-fuse-epilogue");
   // Debug: the final SIR, rendered only when a destination is named.
   const auto dump_sir_path = args.TakeValue("--dump-sir");
@@ -505,7 +322,6 @@ int main(int argc, char** argv) {
   policy_request.table_path = args.TakeValue("--kernel-policy");
   policy_request.target_host = args.TakeValue("--target-host");
 
-  const auto teacher_path = args.TakeValue("--teacher");
   const auto report_path = args.TakeValue("--report");
   const bool no_embed = args.Take("--no-embed");
   // The statistics screens (S0 #146) are the default output; --verbose
@@ -730,6 +546,7 @@ int main(int argc, char** argv) {
                  "  \"plan_version\": %u,\n"
                  "  \"plan_hash\": \"%016" PRIx64 "\",\n"
                  "  \"source_model_hash\": \"%016" PRIx64 "\",\n"
+                 "  \"recipe_hash\": \"%016" PRIx64 "\",\n"
                  "  \"host_arch\": {\"isa\": \"%s\", \"cpu_model\": \"%s\", "
                  "\"physical_cores\": %zu, \"l1d_bytes\": %" PRIu64
                  ", \"l2_bytes\": %" PRIu64 ", \"simd_width_f32\": %zu},\n"
@@ -771,6 +588,7 @@ int main(int argc, char** argv) {
                  kSeemlVersion, JsonEscape(paths->plan_file).c_str(),
                  compiled->plan.size(), plan_header.version,
                  plan_header.plan_hash, plan_header.source_model_hash,
+                 recipe::RecipeHash(config),
                  std::string(host_arch.isa).c_str(),
                  JsonEscape(host_arch.cpu_model).c_str(),
                  host_arch.physical_cores, host_arch.l1d_bytes,

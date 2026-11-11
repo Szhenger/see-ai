@@ -268,6 +268,7 @@ endfunction()
 
 seeml_add_test(seeml_hash_test              test/source/identity/hash_test.cc)
 seeml_add_test(seeml_split_test             test/source/contract/split_test.cc)
+seeml_add_test(seeml_recipe_test            test/source/recipe/recipe_test.cc)
 seeml_add_test(seeml_parallel_for_test      test/source/parallel/parallel_for_test.cc)
 seeml_add_test(seeml_screen_test            test/source/statistics/screen_test.cc)
 seeml_add_test(seeml_bpe_test               test/source/tokenizer/bpe_test.cc)

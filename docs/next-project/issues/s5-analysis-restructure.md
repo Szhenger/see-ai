@@ -40,6 +40,27 @@ the relaxed family all do). Design: [`docs/next-project/seeai.md`](https://githu
 The LoRA lowering itself is F7 (#138) and is not restated here; F7 lands in
 `algebra/`.
 
+## Status 2026-11-11
+
+The moves of design item 1 are complete on `claude/v100b-s4s5s6` (step 2 of
+the S4/S5/S6 plan), every plan bit-identical. The five directories already
+existed; what was left moved: conv lowering is deleted with its pass, its
+diagnostics unit and its tests (the frontend's conv2d / im2col operator
+builders stay — frontend scope — and nothing lowers them now); the
+rematerializer is in `calculus/`; the `kFlagRelaxed` assignment is
+`statistics/precision` (`AssignRelaxedPrecision`), out of the driver; the
+schedule triple, the header's schedule words and the accumulation seed are
+`optimization/schedule` (`VerifySchedule`, `ScheduleWordsOf`,
+`AccumulationSeed` — the 1/G handed into autodiff as a parameter). The moved
+diagnostics keep their wording and their `UpdateCompiler` unit. Verified:
+plan content identical to main 523e4fc on 17 fixtures (the 14 of S1 plus the
+pinned, split and masked `--data` variants); the only golden change is the
+pass list losing `conv-lowering`. Open: the reduction-order ledger (item 2 —
+it is stored in the plan, so it lands with the v23 metadata section), the
+analysis screen's new rows (item 3), the attention segment mask, 8-bit
+moments, and the defaults flip (item 4: its own PR, with F1 rows measured on
+AC power).
+
 ## Acceptance
 
 - Every fixture compiles to a bit-identical plan before and after the move

@@ -27,6 +27,7 @@
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
 #include "source/identity/hash.h"
+#include "source/recipe/recipe.h"
 #include "source/parallel/parallel_for.h"
 
 namespace seeml::update {
@@ -188,6 +189,10 @@ struct Compilation {
 Status Compilation::ValidateConfig() {
   wants_teacher = config_.loss == LossKind::kKLDistill ||
                              config_.loss == LossKind::kXEntPlusKL;
+  // The recipe's bounds a config built in code must hold too (S4 #150,
+  // review N18): an unbounded rank overflowed into an invalid plan.
+  if (auto why = recipe::ConfigViolation(config_))
+    return generating::Error(generating::kDriver, "config " + *why);
   // CR1 #142: every float the config carries is finite and within the
   // range the CLI accepts — the library path enforced nothing, so a NaN
   // learning rate compiled into the plan header and a NaN temperature into

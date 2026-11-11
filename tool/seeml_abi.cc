@@ -26,6 +26,7 @@
 #include "source/language/model_format.h"
 #include "source/plan/opcode_names.h"
 #include "source/plan/update_types.h"
+#include "source/recipe/recipe.h"
 #include "source/statistics/screens.h"
 #include "source/tokenizer/tokenizer_format.h"
 #include "tool/probe_trace.h"
@@ -232,6 +233,33 @@ int main(int argc, char**) {
 
   std::printf("  \"probe_trace\": {\"magic\": %u, \"version\": %u},\n",
               seeml::tool::kProbeTraceMagic, seeml::tool::kProbeTraceVersion);
+
+  // The recipe schema (S4 #150): every field's name, flag, kind and bound,
+  // printed from the table the compiler applies and the runner's rules are
+  // written against — the published contract of a recipe file.
+  std::printf("  \"recipe\": {\"lora_rank_max\": %llu, \"fields\": [",
+              static_cast<unsigned long long>(up::recipe::kLoraRankMax));
+  bool first_field = true;
+  for (const up::recipe::Field& f : up::recipe::kFields) {
+    std::printf("%s\n    {\"name\": \"%s\", \"flag\": \"%s\", \"kind\": \"%s\"",
+                first_field ? "" : ",", f.name, f.flag,
+                up::recipe::KindName(f.kind));
+    first_field = false;
+    if (f.kind == up::recipe::Kind::kUInt)
+      std::printf(", \"min\": %llu, \"max\": %llu",
+                  static_cast<unsigned long long>(f.umin),
+                  static_cast<unsigned long long>(f.umax));
+    if (f.kind == up::recipe::Kind::kFloat)
+      std::printf(", \"min\": %s, \"max\": %s, \"min_open\": %s, "
+                  "\"max_open\": %s",
+                  up::recipe::Number(f.fmin).c_str(),
+                  up::recipe::Number(f.fmax).c_str(),
+                  f.min_open ? "true" : "false", f.max_open ? "true" : "false");
+    if (f.kind == up::recipe::Kind::kEnum)
+      std::printf(", \"choices\": \"%s\"", f.choices);
+    std::printf("}");
+  }
+  std::printf("\n  ]},\n");
 
   // The statistics screens (S0 #146): each screen's rows and detail tables
   // — key, kind, unit and flags — printed from the very tables the console,

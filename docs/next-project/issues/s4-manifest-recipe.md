@@ -35,6 +35,45 @@ without a split (N24). The exporter's output is trusted as-is. Design: [`docs/ne
    file hash, tokenizer parity report, logits-parity figure — and records
    them; a missing report is a refusal, not a warning.
 
+## Status 2026-11-11
+
+Design item 1 landed on `claude/v100b-s4s5s6` (step 3 of the S4/S5/S6 plan);
+items 2 and 3 wait on the one format bump the plan gives all three issues.
+**The recipe** is one table, `source/recipe/recipe.h`: thirty fields, each
+with its file key, its flag, a kind and — for every numeric one — a bound.
+`recipe::Apply` is the only place a value is parsed: completely
+(`ParseU64Strict` takes digits alone, so `" -1"` is refused where `strtoull`
+skipped the space and negated the rest — F56), against its bound, then
+against the other fields. Every refusal names the flag, the field and the
+bound: `--lora-rank (recipe field lora_rank) must be an integer in [1, 4096],
+got '5000'` (N18); `--temperature` / `--distill-weight` / `--teacher` without
+a distillation loss (N15); the temperature's f32 range (N26); `--targets`
+naming nothing (N27); the cosine schedule's knobs under `const`, warmup not
+shorter than steps, a split without the corpus. `seeml-update-compile` no
+longer parses a recipe flag by hand: it loops over the table, and
+`--recipe recipe.json` supplies the same fields as one flat JSON object
+(`source/recipe/recipe_file.h`, a strict reader: unknown, duplicate,
+mistyped or nested keys refused by name) which flags override. The resolved
+recipe — every field, defaults included, floats as their f32 bits — hashes
+to `recipe_hash` in `--report`; a recipe file and its flags compile the same
+plan byte for byte with the same hash (`test/tool/recipe_test.py`). A config
+built in code is held to the bounds whose violation emitted an invalid plan
+(`recipe::ConfigViolation`, in the driver). `seeml-abi` publishes the table
+as `abi.json`'s `recipe` block. **The runner** validates its flags with the
+same rules (`source/recipe/run_flags.h`, vendored): its integers are digits
+alone (F63), a fresh run's `--steps` inside the compiled warmup is refused
+(N20), as are `--checkpoint-every` without `--checkpoint` and `--eval-every`
+without a validation split (N24) — each exercised through an emitted
+runner. Acceptance 1 holds on both planes. Not here: the recipe hash, the
+held-out corpus hash and the exporter's parity figures are not in the plan
+yet (item 2: the header is full at 320 bytes, so they land with the v23
+metadata section), the runtime screen does not print the four hashes, and
+the exporter's output is still trusted (item 3). Acceptance 3 is read, per
+the plan, as "the recipe-file compile is byte-identical to the flags
+compile": the 2026-09-22 plan predates v22 and its bytes cannot be
+reproduced. The debug toggles (`--no-fuse-*`, `--no-rope-table`), the kernel
+tiles and the paths (`--data`, `--teacher`) are not recipe fields.
+
 ## Acceptance
 
 - Every N15/N18/N20/N24/N26/N27/F56/F63 input is refused with a diagnostic

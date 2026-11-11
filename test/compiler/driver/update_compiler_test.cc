@@ -1586,6 +1586,20 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
       "carries no labels, but the loss stages class-index labels");
 }
 
+TEST(UpdateCompiler, TheRecipesBoundsHoldForAConfigBuiltInCode) {
+  // S4 #150, review N18: the rank was unbounded on the library path too,
+  // and K x r overflowing the arena arithmetic emitted an invalid plan.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  UpdateConfig wide = BaseConfig(kBatch);
+  wide.lora.rank = 4097;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(wide).Compile(model),
+                        "config lora rank 4097 is outside [1, 4096]");
+  UpdateConfig empty = BaseConfig(kBatch);
+  empty.lora.target_filters = {""};
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(empty).Compile(model),
+                        "config an adapter target filter is empty");
+}
+
 TEST(UpdateCompiler, ANonFiniteWeightIsRefusedBeforeAnyPass) {
   // CR1 #142 F12 / F34: a NaN weight passed the quantization review (max
   // skips NaN) and reached the int8 pack's cast — undefined behavior. The
