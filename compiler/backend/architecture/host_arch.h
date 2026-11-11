@@ -86,6 +86,20 @@ GemmTiling SuggestGemmTiling(const HostArchInfo& arch);
 [[nodiscard]] std::expected<void, std::string> ValidateGemmTiling(
     const GemmTiling& tiling, const HostArchInfo& arch);
 
+/// The GPU half of the tiling (S6 #152; it lived in the retired kernel
+/// emitter): the threadgroup tile geometry a GPU GEMM uses — a threadgroup
+/// covers tile_m x tile_n outputs and marches over K in tile_k-deep panels
+/// staged through threadgroup memory.
+struct GpuTiling {
+  size_t tile_m = 16;
+  size_t tile_n = 16;
+  size_t tile_k = 16;
+};
+
+/// Deterministic mapping from the host tiling: each dimension clamped to
+/// [8, 32] and rounded down to a multiple of 8 (SIMD-group friendly).
+GpuTiling GpuTilingFromHost(const GemmTiling& host);
+
 }  // namespace seeml::update
 
 #endif  // SEEML_COMPILER_BACKEND_ARCHITECTURE_HOST_ARCH_H_

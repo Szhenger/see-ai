@@ -121,8 +121,8 @@ add_library(seeml_update STATIC
     compiler/backend/architecture/host_arch.cc
     compiler/backend/architecture/kernel_policy_table.cc
     compiler/backend/allocation/arena_binder.cc
+    compiler/backend/assembly/plan_assembly.cc
     compiler/backend/selection/instruction_lowering.cc
-    compiler/backend/architecture/kernel_emitter.cc
     compiler/driver/contract.cc
     compiler/driver/update_compiler.cc
     compiler/driver/statistics.cc
@@ -238,6 +238,7 @@ add_library(seeml_testing STATIC
     test/support/models.cc
     test/support/corpora.cc
     test/support/probes.cc
+    test/support/metal_gemm_source.cc
 )
 target_link_libraries(seeml_testing PUBLIC seeml_update seeml_update_rt)
 # The emitter suite vendors runtime sources out of the repository checkout.

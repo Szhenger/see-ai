@@ -70,8 +70,8 @@ compile compiler/analysis/statistics/quantization.cc quantization.o
 compile compiler/backend/architecture/host_arch.cc host_arch.o
 compile compiler/backend/architecture/kernel_policy_table.cc kernel_policy_table.o
 compile compiler/backend/allocation/arena_binder.cc arena_binder.o
+compile compiler/backend/assembly/plan_assembly.cc plan_assembly.o
 compile compiler/backend/selection/instruction_lowering.cc instruction_lowering.o
-compile compiler/backend/architecture/kernel_emitter.cc kernel_emitter.o
 compile compiler/driver/contract.cc           driver_contract.o
 compile compiler/driver/update_compiler.cc    update_compiler.o
 compile compiler/driver/statistics.cc         driver_statistics.o
@@ -132,6 +132,7 @@ compile test/support/scoped_temp_dir.cc       scoped_temp_dir.o
 compile test/support/models.cc                fixtures_models.o
 compile test/support/corpora.cc               fixtures_corpora.o
 compile test/support/probes.cc                fixtures_probes.o
+compile test/support/metal_gemm_source.cc     metal_gemm_source.o
 
 LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
       build/resource_analyzer.o build/corpus_ingress.o \
@@ -143,7 +144,7 @@ LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
       build/quantization.o \
       build/arena_binder.o build/instruction_lowering.o \
       build/host_arch.o build/kernel_policy_table.o \
-      build/kernel_emitter.o \
+      build/plan_assembly.o \
       build/driver_contract.o build/update_compiler.o build/driver_statistics.o \
       build/native_emitter.o \
       build/sir_type.o build/sir_value.o build/sir_operation.o \
@@ -161,7 +162,8 @@ LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
       build/parallel_for.o build/tokenizer_bpe.o build/tokenizer_ingest.o"
 TESTING="build/seetest_registry.o build/seetest_main.o \
          build/scoped_temp_dir.o build/fixtures_models.o \
-         build/fixtures_corpora.o build/fixtures_probes.o"
+         build/fixtures_corpora.o build/fixtures_probes.o \
+         build/metal_gemm_source.o"
 
 echo "  LINK seeml-update-compile"
 eval "$CXX -pthread build/seeml_update_compile.o $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o build/seeml-update-compile"

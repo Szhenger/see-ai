@@ -295,4 +295,14 @@ std::expected<void, std::string> ValidateGemmTiling(const GemmTiling& tiling,
   return {};
 }
 
+GpuTiling GpuTilingFromHost(const GemmTiling& host) {
+  auto clamp = [](size_t v) {
+    const size_t clamped = std::clamp<size_t>(v, 8, 32);
+    return clamped - clamped % 8;
+  };
+  return {.tile_m = clamp(host.mc),
+          .tile_n = clamp(host.nc),
+          .tile_k = clamp(host.kc)};
+}
+
 }  // namespace seeml::update
