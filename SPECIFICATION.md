@@ -216,13 +216,12 @@ Layout is subsystems-by-role: `frontend/` → `analysis/` → `backend/` →
   / `addend_fuser` / `chain_fuser`, `lora_grafter` (adapter insertion),
   `merge_builder` (the delta-materialization program), `rope_table`.
   `calculus/`: `autodiff` (reverse-mode differentiation over SIR) and the
-  `rematerializer`. `optimization/`: optimizer synthesis and the `schedule`
-  rules. Precision assignment (`statistics/precision`) decides the relaxed
-  instructions.
-  `statistics/`: the `quantization` review (int8 frozen base) and
-  `attention_tiling` (the attention family from the step-0 footprint).
+  `rematerializer`.
+  `statistics/`: the `quantization` review (int8 frozen base),
+  `attention_tiling` (the attention family from the step-0 footprint) and
+  `precision` (which train instructions are relaxed).
   `topology/`: `dce`. `optimization/`: `optimizer` synthesis (SGD/AdamW as
-  instructions).
+  instructions) and the `schedule` rules.
 - **Backend.** `architecture/host_arch` detects cache sizes, core counts
   and the CPU model (§2), forms the host key a kernel-policy table is keyed
   on, and derives the analytic GEMM tiling (a measured arm, not a
@@ -237,8 +236,7 @@ Layout is subsystems-by-role: `frontend/` → `analysis/` → `backend/` →
   the emit table, lays the sections out, assembles the blob and seals it
   (out of the driver since S6); `selection/instruction_lowering` lowers SIR to the fixed
   ~35-opcode instruction ISA; `packaging/native_emitter` emits the
-  self-contained package. Plan assembly (persistent image, sections, seal)
-  is still sequenced inside the driver.
+  self-contained package.
 - **Driver.** `update_compiler.cc` orchestrates the phases under explicit
   checked contracts (`contract.cc`).
 - **Diagnostics.** Six header-only process modules (`tokenizing`, `parsing`,

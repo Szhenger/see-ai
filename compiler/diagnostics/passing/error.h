@@ -11,10 +11,9 @@
 #include "compiler/diagnostics/diagnostic.h"
 
 // =============================================================================
-// passing/ — errors formed while orchestrating and lowering SIR in the
-// analysis subsystem, outside the analytic methods themselves
-// (compiler/analysis/): the pass manager's invariant gate and the
-// legality checks of structural lowerings such as im2col conv rewriting.
+// passing/ — errors formed while orchestrating SIR passes in the analysis
+// subsystem, outside the analytic methods themselves (compiler/analysis/):
+// the pass manager's invariant gate.
 // Failure discipline: a pass's own error is propagated verbatim (tests match
 // it exactly); corruption found *after* a pass is attributed to that pass by
 // name so the offender is never ambiguous.

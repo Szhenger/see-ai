@@ -169,16 +169,21 @@ inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
 
 /// A finite decimal float, consumed completely, with no leading whitespace:
 /// strtod accepts "nan", "inf" and " 1", and every range check is a
-/// comparison a NaN silently passes.
+/// comparison a NaN silently passes. The decimal alphabet is checked first,
+/// because strtod also takes a hex float ("0x1p-3"), skips every isspace()
+/// prefix ("\r1", "\v1"), and stops at an embedded NUL as if the text ended
+/// there.
 inline bool ParseF64Strict(std::string_view s, double* out) {
-  if (s.empty() || s.front() == ' ' || s.front() == '\t' ||
-      s.front() == '\n' || s.front() == '+')
-    return false;
+  if (s.empty() || s.front() == '+') return false;
+  for (const char c : s)
+    if (!((c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' ||
+          c == '+' || c == '-'))
+      return false;
   const std::string text(s);
   errno = 0;
   char* end = nullptr;
   const double v = std::strtod(text.c_str(), &end);
-  if (errno != 0 || end == text.c_str() || *end != '\0' || !std::isfinite(v))
+  if (errno != 0 || end != text.c_str() + text.size() || !std::isfinite(v))
     return false;
   *out = v;
   return true;
@@ -247,6 +252,13 @@ inline std::expected<void, std::string> CheckValue(const Field& f,
       // though as doubles the text is the smaller of the two.
       if (!ParseF64Strict(v, d)) return Refuse(f, v);
       const float x = static_cast<float>(*d);
+      // A nonzero text that is zero or subnormal as that f32 underflowed
+      // (strtof's ERANGE, which the hand-parsed flags refused): "1e-60"
+      // would otherwise pass a closed lower bound of 0 as exactly 0 —
+      // clip_norm off, weight_decay none — which is not what was written.
+      if (std::isfinite(x) && *d != 0.0 && !std::isnormal(x))
+        return std::unexpected(Refuse(f, v).error() +
+                               ": it underflows the f32 the plan stores");
       const float lo = static_cast<float>(f.fmin);
       const float hi = static_cast<float>(f.fmax);
       if (!std::isfinite(x) || (f.min_open ? !(x > lo) : !(x >= lo)) ||
@@ -352,6 +364,11 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "split_seed") c.split_seed = u;
     else if (n == "masked_loss") c.masked_loss = on;
     else if (n == "memory_budget_mib") c.memory_budget_bytes = u << 20;
+    else
+      // A field in the table with no branch above would be validated and
+      // then dropped — the silent ignore the recipe exists to forbid.
+      return std::unexpected("recipe field '" + name +
+                             "' is in the table but Apply does not apply it");
   }
 
   // --- Cross-field rules: a field that cannot apply is never silently

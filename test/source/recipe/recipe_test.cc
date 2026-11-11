@@ -33,8 +33,13 @@ TEST(Recipe, IntegersAreDigitsAlone) {
   EXPECT_TRUE(recipe::ParseU64Strict("18446744073709551615", &v));
   EXPECT_EQ(v, ~uint64_t{0});
   double d = 0;
-  for (const char* bad : {"nan", "inf", "-inf", " 1", "+1", "1x", "", "1e999"})
+  // strtod alone takes a hex float and skips every isspace() prefix.
+  for (const char* bad : {"nan", "inf", "-inf", "infinity", " 1", "+1", "1x",
+                          "", "1e999", "0x1p-3", "0x10", "\r1", "\v1", "\f1",
+                          "1 "})
     EXPECT_FALSE(recipe::ParseF64Strict(bad, &d));
+  // An embedded NUL is not the end of the text.
+  EXPECT_FALSE(recipe::ParseF64Strict(std::string_view("1\0" "2", 3), &d));
   EXPECT_TRUE(recipe::ParseF64Strict("-2.5e-1", &d));
   EXPECT_EQ(d, -0.25);
 }
@@ -68,6 +73,13 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
       {"quantize_base", "yes", "must be true or false"},
       {"grad_accum", "4294967296", "--grad-accum (recipe field grad_accum)"},
       {"memory_budget_mib", "0", "--memory-budget-mib"},
+      // A nonzero text that underflows f32 is not the 0 a closed bound
+      // admits (clip off, no decay): strtof's ERANGE refused it.
+      {"clip_norm", "1e-60",
+       "--clip-norm (recipe field clip_norm) must be a finite number in "
+       "[0, 1e+06], got '1e-60': it underflows the f32 the plan stores"},
+      {"weight_decay", "1e-60", "it underflows the f32 the plan stores"},
+      {"weight_decay", "1e-40", "it underflows the f32 the plan stores"},
   };
   for (const Case& c : cases) {
     UpdateConfig config;
@@ -81,6 +93,30 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
   UpdateConfig config;
   EXPECT_ERROR_CONTAINS(Apply({{"learning_rate", "1"}}, {}, &config),
                         "unknown recipe field 'learning_rate'");
+  // A written zero is the zero the bound admits.
+  EXPECT_OK(Apply({{"clip_norm", "0"}, {"weight_decay", "0.0"}}, {}, &config));
+  EXPECT_EQ(config.optimizer.clip_norm, 0.0f);
+  // Every field of the table has a branch in Apply: none is validated and
+  // then dropped. (A value inside each bound reaches the branch; a
+  // cross-field refusal after it is another rule's.)
+  for (const recipe::Field& f : recipe::kFields) {
+    std::string value;
+    switch (f.kind) {
+      case recipe::Kind::kUInt: value = std::to_string(f.umin); break;
+      case recipe::Kind::kFloat:
+        value = recipe::Number((f.fmin + f.fmax) / 2);
+        break;
+      case recipe::Kind::kEnum:
+        value = std::string(f.choices).substr(0, std::string(f.choices).find('|'));
+        break;
+      case recipe::Kind::kBool: value = "true"; break;
+      case recipe::Kind::kList: value = "w"; break;
+    }
+    UpdateConfig each;
+    auto applied = Apply({{f.name, value}}, {.teacher = true, .data = true}, &each);
+    if (!applied)
+      EXPECT_TRUE(applied.error().find("does not apply it") == std::string::npos);
+  }
   // The f32 bound itself is admitted ("0.001" is 1e-3f).
   EXPECT_OK(Apply({{"temperature", "0.001"}, {"loss", "kl"}},
                   {.teacher = true}, &config));

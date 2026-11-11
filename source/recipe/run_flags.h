@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 
+#include "source/plan/config.h"  // LrSchedule
 #include "source/plan/schema.h"
 
 // =============================================================================
@@ -21,6 +22,9 @@ namespace seeml::update::recipe {
 struct RunFlags {
   bool steps_given = false;
   uint64_t steps = 0;             // 0 = the plan's compiled default
+  // A checkpoint is there to resume from — not the bare --resume flag: with
+  // no checkpoint the engine starts a fresh run, and the fresh run's rule
+  // applies to it.
   bool resume = false;
   bool has_checkpoint_path = false;
   bool checkpoint_every_given = false;

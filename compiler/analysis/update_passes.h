@@ -15,7 +15,7 @@
 //                  C' = X@W + (α/r)·(X@A)@B), MergeBuilder (fused
 //                  Δ = (α/r)·A@B via sc_low.gemm_acc), GemmEpilogueFuser /
 //                  GemmAddendFuser / ElementwiseChainFuser (chains folded
-//                  where the use-lists prove no other reader), RopeTable,
+//                  where the use-lists prove no other reader), RopeTable
 //   calculus/      TrainableAutodiff (reverse-mode AD pruned to the
 //                  trainable set, the seed a parameter),
 //                  Rematerializer (cheap forward values re-emitted before

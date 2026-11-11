@@ -330,12 +330,10 @@ int main(int argc, char** argv) {
   if (auto v = args.TakeValue("--peak-gflops")) {
     // Parsed as the double it is stored as (and as the runner parses its
     // own --peak-gflops): through an f32, 1000.1 would reach the report
-    // and the baked runner constant as 1000.0999755859375.
-    errno = 0;
-    char* end = nullptr;
-    const double peak = std::strtod(v->c_str(), &end);
-    if (errno != 0 || end == v->c_str() || *end != '\0' ||
-        !std::isfinite(peak) || !(peak > 0.0))
+    // and the baked runner constant as 1000.0999755859375. Strictly, as
+    // every recipe float is: no whitespace, no hex, nothing non-finite.
+    double peak = 0.0;
+    if (!recipe::ParseF64Strict(*v, &peak) || !(peak > 0.0))
       return Fail("--peak-gflops must be a positive number, got '" + *v +
                   "'");
     config.peak_gflops = peak;
