@@ -6,6 +6,7 @@
 // runner's flag rules.
 // =============================================================================
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -120,6 +121,12 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
   // The f32 bound itself is admitted ("0.001" is 1e-3f).
   EXPECT_OK(Apply({{"temperature", "0.001"}, {"loss", "kl"}},
                   {.teacher = true}, &config));
+  // The f32 stored is the text's own nearest one, not the nearest double's
+  // narrowed, which rounds twice: this text sits just above the midpoint of
+  // 1.0f and the next float, and its nearest double is that midpoint.
+  UpdateConfig near_tie;
+  EXPECT_OK(Apply({{"lr", "1.0000000596046448"}}, {}, &near_tie));
+  EXPECT_EQ(near_tie.optimizer.lr, std::nextafter(1.0f, 2.0f));
 }
 
 TEST(Recipe, FieldsAreHeldToEachOther) {
@@ -241,6 +248,13 @@ TEST(Recipe, TheFileIsAFlatStrictObjectAndResolvesAsTheFlagsDo) {
       {"{\"lr\": 1} x", "content after the closing '}'"},
       {"{\"lr\": 1", "expected ',' or '}'"},
       {"{\"lr\" 1}", "expected ':' after 'lr'"},
+      // A JSON string the reader does not decode is refused as that — a
+      // serializer writes \uXXXX for every non-ASCII character by default —
+      // not as a value of the wrong type.
+      {"{\"targets\": [\"w\\u0031\"]}",
+       "field 'targets' uses a string escape this reader does not take"},
+      {"{\"loss\": \"x\\rent\"}", "field 'loss' uses a string escape"},
+      {"{\"lo\\u0073s\": \"xent\"}", "a field name uses a string escape"},
   };
   for (const Bad& b : bad)
     EXPECT_ERROR_CONTAINS(recipe::ParseRecipeFile(b.text), b.says);

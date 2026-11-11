@@ -29,17 +29,18 @@ compiler/
     representation/       SIR itself (façade: sir.h; shared)
   analysis/               forward SIR -> complete training program
     pass_manager.{h,cc}   runs the passes, re-verifies after each
-    algebra/              LoRA grafting, merge program, the fusers, RoPE table, conv lowering
-    calculus/             autodiff
-    statistics/           int8 quantization selection, attention-family decision
+    algebra/              LoRA grafting, merge program, the fusers, RoPE table
+    calculus/             autodiff, rematerialization
+    statistics/           int8 quantization selection, attention-family decision, relaxed-precision assignment
     topology/             dead-code elimination
-    optimization/         optimizer synthesis
+    optimization/         optimizer synthesis, the schedule rules and the accumulation seed
   backend/                training program -> .seeu plan + native package
-    architecture/         host cache/ISA detection, GEMM tiling, kernel-policy table, Metal kernel source
+    architecture/         host cache/ISA detection, GEMM tiling (CPU, and the GPU clamp), kernel-policy table
     allocation/           arena binding
     selection/            instruction lowering
+    assembly/             the persistent image, the emit table, the section layout, the blob and its seal
     packaging/            the self-contained native package
-  driver/                 orchestrates the process, verifies every boundary (plan assembly still lives here — S6 moves it)
+  driver/                 orchestrates the process as stages, verifies every boundary
   diagnostics/            errors, partitioned by process
     tokenizing/ parsing/ passing/ updating/ architecting/ generating/
 ```
@@ -60,7 +61,8 @@ grafted onto the frozen weights, the backward pass and optimizer are
 synthesized as more SIR (a program differentiating a program), and the
 merge program is written. **`backend/`** is code generation: it lays out
 one arena with no lifetime collisions, lowers SIR to the fixed 64-byte
-instruction stream, and packages the result. **`driver/`** owns the
+instruction stream, assembles and seals the plan, and packages the result.
+**`driver/`** owns the
 *process* — it sequences the stages and, at every seam, re-proves that each
 subsystem produced what the next one assumes. **`diagnostics/`** gives every
 error a single-line, unit-attributed home.

@@ -22,9 +22,9 @@ namespace seeml::update::recipe {
 struct RunFlags {
   bool steps_given = false;
   uint64_t steps = 0;             // 0 = the plan's compiled default
-  // A checkpoint is there to resume from — not the bare --resume flag: with
-  // no checkpoint the engine starts a fresh run, and the fresh run's rule
-  // applies to it.
+  // A checkpoint is there to resume from, and it is this plan's — not the
+  // bare --resume flag: with no checkpoint, or one bound to another plan,
+  // the engine starts a fresh run, and the fresh run's rule applies to it.
   bool resume = false;
   bool has_checkpoint_path = false;
   bool checkpoint_every_given = false;
@@ -39,8 +39,11 @@ inline std::optional<std::string> RunFlagsViolation(const PlanHeader& header,
                                                     const RunFlags& f) {
   // Review N20: a fresh run's --steps is the schedule's horizon; inside
   // the compiled warmup the cosine phase has no steps at all and the run
-  // ends mid-ramp. (A resume's --steps counts further steps of a horizon
-  // the first run fixed, so the rule is the fresh run's.)
+  // ends mid-ramp. The rule is the fresh run's. (A resume's --steps counts
+  // further steps, and the engine then anneals over the resumed step plus
+  // that count — TrainOptions::horizon_steps — so a resume early in the
+  // ramp with a small count can still end inside it; that sum is not held
+  // here.)
   if (f.steps_given && !f.resume && f.steps != 0 &&
       header.lr_schedule == static_cast<uint32_t>(LrSchedule::kCosineWithWarmup) &&
       f.steps <= header.warmup_steps)

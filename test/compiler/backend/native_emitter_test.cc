@@ -394,8 +394,11 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     // plan loads; a resume is a checkpoint that is there (a bare --resume
     // starts a fresh run), and the floats are as strict as the integers.
     EXPECT_STR_CONTAINS(main_tu, "RunFlagsViolation(hdr, flags)");
+    // ... and one bound to this plan: the engine refuses another plan's
+    // checkpoint and starts fresh, so the fresh run's rule holds there too.
     EXPECT_STR_CONTAINS(main_tu,
-                        "flags.resume = resumed_from && resumed_from->step > 0;");
+                        "flags.resume = resumed_from && resumed_from->step > 0 &&");
+    EXPECT_STR_CONTAINS(main_tu, "resumed_from->plan_hash == hdr.plan_hash;");
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseF64Strict(s, out)");
     // CR4 #145, the storage role's rows: only for a run that saved a
     // checkpoint, the bytes and the fsyncs as means over its checkpoints.

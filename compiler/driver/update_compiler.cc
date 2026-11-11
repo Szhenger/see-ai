@@ -137,7 +137,7 @@ struct Compilation {
         consume(consume_models) {}
 
   // The config alone: every float finite and in range, the adapter-only
-// preconditions, the kernel tile, the schedule triple.
+  // preconditions, the kernel tile, the schedule triple.
   Status ValidateConfig();
   // The weights cross into the compiler finite; the sweep records ranges.
   Status Ingress();
@@ -194,10 +194,12 @@ Status Compilation::ValidateConfig() {
   if (auto why = recipe::ConfigViolation(config_))
     return generating::Error(generating::kDriver, "config " + *why);
   // CR1 #142: every float the config carries is finite and within the
-  // range the CLI accepts — the library path enforced nothing, so a NaN
-  // learning rate compiled into the plan header and a NaN temperature into
-  // the KL words, and passed every comparison downstream. The runtime's
-  // load contract and the validator apply the same bounds.
+  // range the runtime's load contract and the validator apply — the library
+  // path enforced nothing, so a NaN learning rate compiled into the plan
+  // header and a NaN temperature into the KL words, and passed every
+  // comparison downstream. (The recipe's table, source/recipe/recipe.h, is
+  // narrower: its upper bounds on lr, weight decay, the clip, alpha and the
+  // distillation weight are the command line's and are not held here.)
   {
     const OptimizerSpec& o = config_.optimizer;
     struct Rule {
@@ -511,7 +513,7 @@ Status Compilation::ProveFootprint() {
   footprint.delta_bytes =
       EstimateLoraDeltaBytes(source, config_.lora.target_filters);
   // The attention decision (E11, plan v15), made on the footprint by
-  // DecideAttention (above) — the cache budget, and the memory budget when
+  // DecideAttention (below) — the cache budget, and the memory budget when
   // one is configured; never the compiling host's memory. --attention
   // forces either.
   attention = DecideAttention(footprint, config_);
@@ -933,9 +935,9 @@ Status Compilation::BindArenas() {
   pinned.insert(loss);
   for (const auto& [p, g] : param_grads) pinned.insert(g);
 
-  // An adapter-only plan (F6 #134, v21; its preconditions were checked at
-  // the top of this function) binds every frozen weight to a source ref
-  // and lays out no rodata.
+  // An adapter-only plan (F6 #134, v21; its preconditions were checked by
+  // ValidateConfig) binds every frozen weight to a source ref and lays out
+  // no rodata.
   auto bound = BindArena(block, build, pinned, quant_scales, bf16_weights,
                          config_.adapter_only);
   if (!bound) return std::unexpected(bound.error());

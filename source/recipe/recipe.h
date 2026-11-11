@@ -238,7 +238,8 @@ inline bool InChoices(const Field& f, std::string_view v) {
 }
 
 /// One value held to its field's kind and bound. `u` / `d` receive the
-/// parsed number for the numeric kinds.
+/// parsed number for the numeric kinds; a float field's `d` is the f32 the
+/// config stores, widened, so narrowing it back is exact.
 inline std::expected<void, std::string> CheckValue(const Field& f,
                                                    std::string_view v,
                                                    uint64_t* u, double* d) {
@@ -251,12 +252,21 @@ inline std::expected<void, std::string> CheckValue(const Field& f,
       // Held as the f32 the config stores: "0.001" is the f32 bound 1e-3f,
       // though as doubles the text is the smaller of the two.
       if (!ParseF64Strict(v, d)) return Refuse(f, v);
-      const float x = static_cast<float>(*d);
+      const bool nonzero = *d != 0.0;
+      // The f32 is the text's own nearest one (strtof, as the hand-parsed
+      // flags read it), not the nearest double's narrowed: a text within
+      // half a double ulp of the midpoint of two floats would round twice
+      // and land on the other one — "1.0000000596046448" is 0x3f800001,
+      // and 0x3f800000 through the double. ParseF64Strict has held the text
+      // to a complete decimal, so strtof consumes all of it; an overflow
+      // comes back infinite and the bound below refuses it.
+      const float x = std::strtof(std::string(v).c_str(), nullptr);
+      *d = x;
       // A nonzero text that is zero or subnormal as that f32 underflowed
       // (strtof's ERANGE, which the hand-parsed flags refused): "1e-60"
       // would otherwise pass a closed lower bound of 0 as exactly 0 —
       // clip_norm off, weight_decay none — which is not what was written.
-      if (std::isfinite(x) && *d != 0.0 && !std::isnormal(x))
+      if (std::isfinite(x) && nonzero && !std::isnormal(x))
         return std::unexpected(Refuse(f, v).error() +
                                ": it underflows the f32 the plan stores");
       const float lo = static_cast<float>(f.fmin);

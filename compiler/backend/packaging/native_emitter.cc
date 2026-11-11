@@ -401,7 +401,8 @@ int main(int argc, char** argv) {
                          : ExecutableDir(argv[0]) + "/" + kPlanFileName;
   // The checkpoint flags, read here so the usage rules below can hold them
   // to the plan before anything loads. A resume is a checkpoint that is
-  // there to resume: with --resume and no readable checkpoint the engine
+  // there to resume: with --resume and no readable checkpoint — or one
+  // bound to another plan, which the engine's load refuses — the engine
   // starts a fresh run ("no checkpoint resumed"), and the fresh run's rules
   // apply to it. Peeked once; the seed / split refusal below reads the same
   // record.
@@ -467,7 +468,11 @@ int main(int argc, char** argv) {
     seeml::update::recipe::RunFlags flags;
     flags.steps_given = Has(argc, argv, "--steps");
     flags.steps = steps;
-    flags.resume = resumed_from && resumed_from->step > 0;
+    // The checkpoint the engine will resume is one bound to THIS plan: a
+    // stale file left by another (a recompiled package's) is refused by its
+    // load as "a different plan" and the run starts fresh.
+    flags.resume = resumed_from && resumed_from->step > 0 &&
+                   resumed_from->plan_hash == hdr.plan_hash;
     flags.has_checkpoint_path = !checkpoint_path.empty();
     flags.checkpoint_every_given = Has(argc, argv, "--checkpoint-every");
     flags.checkpoint_every = checkpoint_every;

@@ -4,6 +4,11 @@
 //   seeml-update-compile
 //       --source  model.smf            the on-device model to update
 //       --out     out_dir/             emission directory
+//       [--recipe recipe.json]         the recipe's fields (source/recipe/
+//                                      recipe.h: every flag below that
+//                                      configures the fine-tune) as one flat
+//                                      JSON object; a flag overrides the
+//                                      field it names
 //       [--data-batch 32]              compiled batch size
 //       [--loss xent|mse|kl|xent+kl]   training objective (default xent)
 //       [--teacher open_model.smf]     open-weights teacher (kl / xent+kl)

@@ -42,6 +42,9 @@ struct Cursor {
     }
     return false;
   }
+  /// String() stopped at an escape it does not take: the text IS a JSON
+  /// string, so the refusal must say that and not "takes a string".
+  bool bad_escape = false;
   /// A JSON string with the escapes a name or a path needs; \u is refused
   /// (no recipe value needs one, and half-decoding one would be worse).
   bool String(std::string* out) {
@@ -56,7 +59,10 @@ struct Cursor {
         if (e == '"' || e == '\\' || e == '/') c = e;
         else if (e == 'n') c = '\n';
         else if (e == 't') c = '\t';
-        else return false;
+        else {
+          bad_escape = true;
+          return false;
+        }
       } else if (static_cast<unsigned char>(c) < 0x20) {
         return false;
       }
@@ -89,18 +95,28 @@ inline std::expected<Values, std::string> ParseRecipeFile(
   auto bad = [](const std::string& what) {
     return std::unexpected("recipe file: " + what);
   };
+  // A valid JSON string the reader does not decode (\uXXXX, which a
+  // serializer writes for every non-ASCII character by default; \b \f \r):
+  // refused as that, not as a value of the wrong type.
+  static constexpr const char* kEscapes =
+      "a string escape this reader does not take (\\\" \\\\ \\/ \\n \\t are "
+      "taken; write any other character itself)";
   if (!c.Eat('{')) return bad("not a JSON object");
   Values values;
   if (!c.Eat('}')) {
     while (true) {
       std::string key;
-      if (!c.String(&key)) return bad("expected a field name in quotes");
+      if (!c.String(&key))
+        return c.bad_escape
+                   ? bad(std::string("a field name uses ") + kEscapes)
+                   : bad("expected a field name in quotes");
       const Field* f = FindField(key);
       if (!f) return bad("unknown field '" + key + "'");
       if (values.contains(key)) return bad("field '" + key + "' appears twice");
       if (!c.Eat(':')) return bad("expected ':' after '" + key + "'");
       auto wrong = [&](const char* want) {
-        return bad("field '" + key + "' takes " + want);
+        return c.bad_escape ? bad("field '" + key + "' uses " + kEscapes)
+                            : bad("field '" + key + "' takes " + want);
       };
       std::string value;
       c.Skip();

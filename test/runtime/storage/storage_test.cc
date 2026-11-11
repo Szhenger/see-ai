@@ -295,9 +295,13 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
   EXPECT_EQ(got.best_accuracy, 0.875f);
   EXPECT_EQ(got.stale_evals, 3u);
   EXPECT_TRUE(got.best_payload == best);
+  EXPECT_EQ(got.plan_hash, kPlanHash);
 
   ASSERT_OK_AND_ASSIGN(CheckpointRecord peek,
                        PeekCheckpointRecord(dir.File("v5.ckpt")));
+  // The plan the file is bound to: a driver tells a checkpoint the engine
+  // will resume from one it will refuse as another plan's.
+  EXPECT_EQ(peek.plan_hash, kPlanHash);
   EXPECT_TRUE(peek.has_binding);
   EXPECT_EQ(peek.shuffle_origin, 0x1234u);
   EXPECT_EQ(peek.train_samples, 100u);

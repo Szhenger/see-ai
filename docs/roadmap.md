@@ -263,6 +263,12 @@ target:
 CNN target exists within two quarters — unreachable subsystems rot, and the
 review exists to prevent exactly that.
 
+**Status 2026-11-11 (S5 #151).** Most of (B) is done: `ConvLowering`, its
+pass, its tests and the `passing/` unit entry are deleted. The `conv2d` /
+`im2col` operator builders and their frontend tests remain (frontend scope),
+and nothing lowers them; under (A), step 5's filter matrix would have to be
+materialized again.
+
 ---
 
 ## Project 4 — Transformer-scale coverage
