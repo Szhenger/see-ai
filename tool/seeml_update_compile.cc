@@ -80,9 +80,7 @@
 // update_plan.seeu beside itself at start-up (#158).
 // =============================================================================
 
-#include <cerrno>
 #include <cinttypes>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

@@ -399,6 +399,10 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     EXPECT_STR_CONTAINS(main_tu,
                         "flags.resume = resumed_from && resumed_from->step > 0 &&");
     EXPECT_STR_CONTAINS(main_tu, "resumed_from->plan_hash == hdr.plan_hash;");
+    // ... which is also the only checkpoint the seed / split refusal reads:
+    // another plan's binds this run to nothing (test/tool/recipe_test.py
+    // runs both through a built runner).
+    EXPECT_STR_CONTAINS(main_tu, "if (!flags.resume) resumed_from.reset();");
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseF64Strict(s, out)");
     // CR4 #145, the storage role's rows: only for a run that saved a
     // checkpoint, the bytes and the fsyncs as means over its checkpoints.

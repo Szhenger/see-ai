@@ -8,7 +8,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <string>
+#include <vector>
 
 #include "source/recipe/recipe.h"
 #include "source/recipe/recipe_file.h"
@@ -97,6 +99,17 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
   // A written zero is the zero the bound admits.
   EXPECT_OK(Apply({{"clip_norm", "0"}, {"weight_decay", "0.0"}}, {}, &config));
   EXPECT_EQ(config.optimizer.clip_norm, 0.0f);
+  // ... and so is a written "-0": one zero, not the -0.0f whose bits were
+  // another plan hash and another recipe hash for the same recipe.
+  UpdateConfig negative_zero;
+  EXPECT_OK(Apply({{"clip_norm", "-0"}, {"weight_decay", "-0.0"}}, {},
+                  &negative_zero));
+  EXPECT_FALSE(std::signbit(negative_zero.optimizer.clip_norm));
+  EXPECT_FALSE(std::signbit(negative_zero.optimizer.weight_decay));
+  EXPECT_EQ(recipe::RecipeHash(negative_zero), recipe::RecipeHash(config));
+  // An open bound at zero still refuses it.
+  EXPECT_ERROR_CONTAINS(Apply({{"lr", "-0"}}, {}, &negative_zero),
+                        "must be a finite number in (0, 10]");
   // Every field of the table has a branch in Apply: none is validated and
   // then dropped. (A value inside each bound reaches the branch; a
   // cross-field refusal after it is another rule's.)
@@ -193,6 +206,19 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
   EXPECT_OK(Apply({{"val_frac", "0.25"}, {"split_seed", "3"}}, {.data = true},
                   &c));
   EXPECT_EQ(c.split_seed, 3u);
+  // A refused recipe leaves the config as it was — whichever rule refuses,
+  // a value's own or a cross-field one: nothing is half-applied (the
+  // filters cleared before "names nothing" would read as "adapt them all").
+  UpdateConfig kept;
+  kept.lora.target_filters = {"wq"};
+  const std::string before = recipe::ResolvedText(kept);
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"lora_rank", "4"}, {"targets", ","}}, {}, &kept),
+      "must name at least one weight");
+  EXPECT_EQ(recipe::ResolvedText(kept), before);
+  EXPECT_ERROR_CONTAINS(Apply({{"lora_rank", "4"}, {"warmup", "3"}}, {}, &kept),
+                        "applies to lr_schedule cosine only");
+  EXPECT_EQ(recipe::ResolvedText(kept), before);
   // The library path's bounds.
   UpdateConfig lib;
   EXPECT_FALSE(recipe::ConfigViolation(lib).has_value());
@@ -255,14 +281,121 @@ TEST(Recipe, TheFileIsAFlatStrictObjectAndResolvesAsTheFlagsDo) {
        "field 'targets' uses a string escape this reader does not take"},
       {"{\"loss\": \"x\\rent\"}", "field 'loss' uses a string escape"},
       {"{\"lo\\u0073s\": \"xent\"}", "a field name uses a string escape"},
+      // A number is JSON's number: the strict scalar parsers alone would
+      // take these ("010" as ten), and no other reader of the file would.
+      {"{\"steps\": 010}", "field 'steps' takes a JSON number"},
+      {"{\"lr\": .5}", "field 'lr' takes a JSON number"},
+      {"{\"lr\": 1.}", "field 'lr' takes a JSON number"},
+      {"{\"lr\": 1e}", "field 'lr' takes a JSON number"},
+      {"{\"lr\": NaN}", "field 'lr' takes a JSON number"},
+      {"{\"lr\": -Infinity}", "field 'lr' takes a JSON number"},
+      {"{\"lora_seed\": -}", "field 'lora_seed' takes a JSON number"},
   };
   for (const Bad& b : bad)
     EXPECT_ERROR_CONTAINS(recipe::ParseRecipeFile(b.text), b.says);
+  // Every JSON spelling is read; the bound is still Apply's.
+  auto spelled = recipe::ParseRecipeFile(
+      "{\"lr\": 5E-1, \"clip_norm\": -0, \"weight_decay\": 0.0e+0, "
+      "\"steps\": 10, \"lora_rank\": -1}");
+  ASSERT_OK(spelled);
+  EXPECT_EQ(spelled->at("lr"), "5E-1");
+  EXPECT_EQ(spelled->at("lora_rank"), "-1");
   // A value the file admits by type is still held to its bound by Apply.
   auto wide = recipe::ParseRecipeFile("{\"lora_rank\": 5000}");
   ASSERT_OK(wide);
   UpdateConfig c;
   EXPECT_ERROR_CONTAINS(Apply(*wide, {}, &c), "[1, 4096]");
+}
+
+std::vector<std::string> Lines(const std::string& text) {
+  std::vector<std::string> lines;
+  size_t at = 0;
+  while (at < text.size()) {
+    const size_t end = text.find('\n', at);
+    lines.push_back(text.substr(at, end - at));
+    at = end == std::string::npos ? text.size() : end + 1;
+  }
+  return lines;
+}
+
+TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
+  // The table, Apply's branches and the resolved text are three lists tied
+  // by a field's name alone; a count is all the compiler checks. Here they
+  // are held to each other: the text names the table's fields in the
+  // table's order, and a field applied moves exactly its own line — a
+  // branch writing another field's member, or a line reading one, moves
+  // the wrong line or none.
+  const std::vector<std::string> defaults =
+      Lines(recipe::ResolvedText(UpdateConfig{}));
+  ASSERT_EQ(defaults.size(), std::size(recipe::kFields));
+  for (size_t i = 0; i < defaults.size(); ++i)
+    EXPECT_TRUE(defaults[i].starts_with(std::string(recipe::kFields[i].name) +
+                                        "="));
+
+  // A distillation loss is what admits a teacher, and needs one.
+  auto inputs_of = [](const Values& v) {
+    const auto loss = v.find("loss");
+    return Inputs{.teacher = loss != v.end() && loss->second != "xent" &&
+                             loss->second != "mse",
+                  .data = true};
+  };
+  for (size_t i = 0; i < std::size(recipe::kFields); ++i) {
+    const recipe::Field& f = recipe::kFields[i];
+    const std::string name = f.name;
+    // The fields this one needs beside it, in both recipes compared.
+    Values with;
+    if (name == "distill_weight") with["loss"] = "xent+kl";
+    if (name == "temperature") with["loss"] = "kl";
+    if (name == "warmup" || name == "min_lr_factor" || name == "allow_zero_lr")
+      with["lr_schedule"] = "cosine";
+    if (name == "split_seed") with["val_frac"] = "0.5";
+    // A value inside the bound that is not the default.
+    std::string value;
+    switch (f.kind) {
+      case recipe::Kind::kUInt: value = "7"; break;
+      case recipe::Kind::kFloat:
+        value = recipe::Number(f.fmin + (f.fmax - f.fmin) / 4);
+        break;
+      case recipe::Kind::kEnum: {
+        const std::string choices = f.choices;
+        value = choices.substr(choices.rfind('|') + 1);
+        break;
+      }
+      case recipe::Kind::kBool: value = "true"; break;
+      case recipe::Kind::kList: value = "w"; break;
+    }
+    Values moved = with;
+    moved[name] = value;
+    UpdateConfig base, applied;
+    ASSERT_OK(Apply(with, inputs_of(with), &base));
+    ASSERT_OK(Apply(moved, inputs_of(moved), &applied));
+    const std::vector<std::string> a = Lines(recipe::ResolvedText(base));
+    const std::vector<std::string> b = Lines(recipe::ResolvedText(applied));
+    ASSERT_EQ(a.size(), b.size());
+    for (size_t j = 0; j < a.size(); ++j) {
+      if ((a[j] != b[j]) != (j == i))
+        ADD_FAILURE("applying '" + name + "' = '" + value + "': line '" +
+                    a[j] + "' became '" + b[j] + "'");
+    }
+  }
+
+  // The filters are a set (any match adapts a weight): their order and a
+  // repeat compile the same plan, and are the same recipe.
+  UpdateConfig ordered, shuffled;
+  ASSERT_OK(Apply({{"targets", "wq,wv"}}, {}, &ordered));
+  ASSERT_OK(Apply({{"targets", "wv,wq,wv"}}, {}, &shuffled));
+  EXPECT_EQ(shuffled.lora.target_filters.size(), 3u);  // the config is as written
+  EXPECT_EQ(recipe::ResolvedText(ordered), recipe::ResolvedText(shuffled));
+  EXPECT_STR_CONTAINS(recipe::ResolvedText(shuffled), "targets=wq,wv\n");
+
+  // A budget set in code need not be whole MiB; the bytes below one are in
+  // the text, so budgets that differ never share a hash.
+  UpdateConfig whole, ragged;
+  whole.memory_budget_bytes = uint64_t{3} << 20;
+  ragged.memory_budget_bytes = (uint64_t{3} << 20) + 1;
+  EXPECT_STR_CONTAINS(recipe::ResolvedText(whole), "memory_budget_mib=3\n");
+  EXPECT_STR_CONTAINS(recipe::ResolvedText(ragged), "memory_budget_mib=3+1B\n");
+  EXPECT_NE(recipe::RecipeHash(whole), recipe::RecipeHash(ragged));
 }
 
 TEST(Recipe, TheRunnersFlagsAreHeldToThePlan) {

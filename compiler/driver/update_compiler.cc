@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <sstream>
 #include <unordered_map>
@@ -26,9 +25,7 @@
 #include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
-#include "source/identity/hash.h"
 #include "source/recipe/recipe.h"
-#include "source/parallel/parallel_for.h"
 
 namespace seeml::update {
 

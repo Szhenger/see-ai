@@ -5,7 +5,7 @@
 #include <cstring>
 
 #include "compiler/diagnostics/generating/error.h"
-#include "source/contract/split.h"
+#include "source/contract/split.h"  // SplitMix64Next
 #include "source/identity/hash.h"
 #include "source/parallel/parallel_for.h"
 

@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.join(REPO, "tool"))
 
 BUILD = os.environ.get("SEEML_BUILD_DIR", os.path.join(REPO, "build"))
 COMPILER = os.path.join(BUILD, "seeml-update-compile")
+CXX = (os.environ.get("CXX") or shutil.which("c++") or shutil.which("clang++")
+       or shutil.which("g++"))
 try:
     import numpy as np  # noqa: F401
     HAVE_NUMPY = True
@@ -84,6 +86,19 @@ class RecipeCliTest(unittest.TestCase):
                             ra["recipe_hash"])
         self.assertNotEqual(self.plan(out_c), self.plan(out_a))
 
+    def test_a_written_negative_zero_is_the_plans_one_zero(self):
+        # "-0" passes a bound closed at 0; stored as -0.0f it was other
+        # header bits — another plan and another recipe hash — for the
+        # recipe "0" writes.
+        a, out_a = self.compile("zero", "--data-batch", "12", "--clip-norm", "0")
+        self.assertEqual(a.returncode, 0, a.stderr[-1500:])
+        b, out_b = self.compile("negative_zero", "--data-batch", "12",
+                                "--clip-norm", "-0")
+        self.assertEqual(b.returncode, 0, b.stderr[-1500:])
+        self.assertEqual(self.plan(out_a), self.plan(out_b))
+        self.assertEqual(self.report("zero")["recipe_hash"],
+                         self.report("negative_zero")["recipe_hash"])
+
     def test_every_reviewed_input_is_refused_naming_its_field(self):
         teacher = self.model  # any model file: the rule fires before loading
         cases = [
@@ -118,6 +133,9 @@ class RecipeCliTest(unittest.TestCase):
             ('{"lora_rank": 9999}', "must be an integer in [1, 4096]"),
             ('{"steps": 3, "steps": 4}', "field 'steps' appears twice"),
             ('[]', "not a JSON object"),
+            # Not JSON's number: json.loads refuses both, and so does this.
+            ('{"steps": 010}', "field 'steps' takes a JSON number"),
+            ('{"lr": .5}', "field 'lr' takes a JSON number"),
         ]
         for text, says in cases:
             with self.subTest(text=text):
@@ -144,6 +162,99 @@ class RecipeCliTest(unittest.TestCase):
                                text=True).stderr
         for f in fields.values():
             self.assertIn(f["flag"], usage, f["name"])
+
+
+@unittest.skipUnless(os.path.isfile(COMPILER) and HAVE_NUMPY and CXX is not None,
+                     "needs the built seeml-update-compile, NumPy and a C++ "
+                     "compiler")
+class RunnerFlagsTest(unittest.TestCase):
+    """The emitted runner's flag rules through a built model_update: the
+    emitter suite reads them in the generated source; here they run."""
+
+    @classmethod
+    def setUpClass(cls):
+        import export_model as em
+        cls.dir = tempfile.mkdtemp(prefix="seeml-recipe-runner-")
+        em._demo_decoder(cls.dir, vocab=40, dim=24, heads=4, seq=6,
+                         blocks_n=2, samples=48, seed=1)
+        cls.model = os.path.join(cls.dir, "decoder.smf")
+        cls.corpus = os.path.join(cls.dir, "decoder_corpus.sds")
+        pkg = os.path.join(cls.dir, "pkg")
+        r = subprocess.run(
+            [COMPILER, "--source", cls.model, "--out", pkg, "--data-batch",
+             "12", "--lr-schedule", "cosine", "--warmup", "3", "--steps", "8",
+             "--build"], capture_output=True, text=True,
+            env=dict(os.environ, CXX=CXX))
+        if r.returncode != 0:
+            shutil.rmtree(cls.dir, True)
+            raise AssertionError("the package did not build: " + r.stderr[-2000:])
+        cls.runner = os.path.join(pkg, "model_update")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, True)
+
+    def update(self, *args):
+        return subprocess.run(
+            [self.runner, "--model", self.model, "--data", self.corpus,
+             "--out", os.path.join(self.dir, "updated.smf"), *args],
+            capture_output=True, text=True)
+
+    def test_a_flag_that_cannot_apply_is_a_usage_error(self):
+        cases = [
+            (["--steps", "3"],
+             "--steps 3 must exceed the plan's compiled warmup (3 steps)"),
+            (["--checkpoint-every", "2"], "--checkpoint-every needs --checkpoint"),
+            (["--val-frac", "0", "--eval-every", "2"],
+             "--eval-every needs a validation split"),
+            (["--steps", " 7"], "invalid numeric argument"),
+        ]
+        for args, says in cases:
+            with self.subTest(args=" ".join(args)):
+                r = self.update(*args)
+                self.assertEqual(r.returncode, 2, r.stderr[-1500:])
+                self.assertIn(says, r.stderr)
+
+    def test_only_a_checkpoint_of_this_plan_is_a_resume(self):
+        ckpt = os.path.join(self.dir, "run.ckpt")
+        first = self.update("--checkpoint", ckpt, "--checkpoint-every", "2",
+                            "--seed", "1", "--steps", "6", "--force")
+        self.assertEqual(first.returncode, 0, first.stderr[-1500:])
+        with open(ckpt, "rb") as f:
+            own = f.read()
+        # This plan's checkpoint is a resume, bound to the first run's seed.
+        r = self.update("--checkpoint", ckpt, "--resume", "--seed", "2",
+                        "--force")
+        self.assertEqual(r.returncode, 2, r.stderr[-1500:])
+        self.assertIn("--resume refused", r.stderr)
+        # The same record bound to another plan (the SEKP header's plan-hash
+        # word, bytes 8..15) is one the engine's load refuses before it
+        # starts fresh: it binds this run to nothing, so another seed is no
+        # usage error ...
+        stale = os.path.join(self.dir, "stale.ckpt")
+        other = bytearray(own)
+        other[8] ^= 0xFF
+        with open(stale, "wb") as f:
+            f.write(other)
+        r = self.update("--checkpoint", stale, "--resume", "--seed", "2",
+                        "--force")
+        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
+        self.assertIn("no checkpoint resumed", r.stderr)
+        self.assertNotIn("--resume refused", r.stderr)
+        # ... and the fresh run's --steps rule is the one that holds.
+        with open(stale, "wb") as f:
+            f.write(other)
+        r = self.update("--checkpoint", stale, "--resume", "--seed", "2",
+                        "--steps", "3")
+        self.assertEqual(r.returncode, 2, r.stderr[-1500:])
+        self.assertIn("must exceed the plan's compiled warmup", r.stderr)
+        # A resume's --steps counts further steps: the rule is not its.
+        with open(ckpt, "wb") as f:
+            f.write(own)
+        r = self.update("--checkpoint", ckpt, "--resume", "--seed", "1",
+                        "--steps", "2", "--force")
+        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
+        self.assertNotIn("no checkpoint resumed", r.stderr)
 
 
 if __name__ == "__main__":

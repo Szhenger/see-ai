@@ -484,6 +484,13 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "model_update: %s\n", why->c_str());
       return 2;
     }
+    // A checkpoint the engine will not resume binds this run to nothing.
+    // The seed / split refusal below is a resume's: held against a stale
+    // file — another plan's, which the engine's load refuses before it
+    // starts fresh — it would exit 2 over "a different --seed" for a
+    // checkpoint that never constrained this run, and only when the seeds
+    // happen to differ.
+    if (!flags.resume) resumed_from.reset();
   }
 
   seeml::update_rt::UpdateEngine engine;
@@ -612,7 +619,9 @@ int main(int argc, char** argv) {
   // A resume is bound to the first run's shuffle seed and split (SEKP v5):
   // a different one would train on that run's validation rows. Refused
   // here as the usage error it is, before the engine loads anything; the
-  // engine refuses again for callers that skip this check.
+  // engine refuses again for callers that skip this check. (resumed_from
+  // is set only for a checkpoint of this plan past step 0 — the engine's
+  // own condition for holding the binding.)
   if (resumed_from && resumed_from->has_binding &&
       (resumed_from->shuffle_origin != dataset->shuffle_origin() ||
        resumed_from->train_samples != dataset->num_samples() ||

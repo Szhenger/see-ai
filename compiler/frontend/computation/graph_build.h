@@ -13,8 +13,8 @@ namespace seeml::update {
 struct GraphBuild {
   seeml::sir::Value* input = nullptr;   // shared batch input block argument
   // Network output (logits). Valid only until the first rewriting pass:
-  // LoRA grafting redirects consumers to an adapted value and conv lowering
-  // may destroy the value outright, and neither updates this field. The
+  // the rewriting passes redirect consumers to another value (LoRA grafting,
+  // to the adapted one) or destroy values, and none updates this field. The
   // driver nulls it once the loss is grafted so a stale read fails loudly.
   seeml::sir::Value* output = nullptr;
   // Frozen weight values -> their SMF tensor (for rodata packing + commit).

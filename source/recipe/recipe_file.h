@@ -16,10 +16,11 @@
 //    "quantize_base": true}
 //
 // A purpose-built strict reader, not a JSON library: an unknown key, a
-// duplicate key, a value of the wrong JSON type for its field, a nested
-// value, or anything after the object is refused, naming the key. Values are
-// returned as text for recipe::Apply, which holds each to its bound — the
-// one place a bound is stated.
+// duplicate key, a value of the wrong JSON type for its field, a number
+// JSON does not spell that way, a nested value, or anything after the
+// object is refused, naming the key. Values are returned as text for
+// recipe::Apply, which holds each to its bound — the one place a bound is
+// stated.
 // =============================================================================
 
 namespace seeml::update::recipe {
@@ -83,6 +84,33 @@ struct Cursor {
   }
 };
 
+/// The JSON number grammar, -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?,
+/// which the strict scalar parsers are wider than: they take "010" (ten
+/// here, eight to a reader with octal), ".5" and "1." — spellings every
+/// JSON parser refuses, so a file holding one is a recipe to this reader
+/// alone.
+inline bool IsJsonNumber(std::string_view t) {
+  size_t i = 0;
+  auto digits = [&] {
+    const size_t from = i;
+    while (i < t.size() && t[i] >= '0' && t[i] <= '9') ++i;
+    return i > from;
+  };
+  if (i < t.size() && t[i] == '-') ++i;
+  if (i < t.size() && t[i] == '0') ++i;
+  else if (!digits()) return false;
+  if (i < t.size() && t[i] == '.') {
+    ++i;
+    if (!digits()) return false;
+  }
+  if (i < t.size() && (t[i] == 'e' || t[i] == 'E')) {
+    ++i;
+    if (i < t.size() && (t[i] == '+' || t[i] == '-')) ++i;
+    if (!digits()) return false;
+  }
+  return i == t.size();
+}
+
 }  // namespace file_detail
 
 /// Parses a recipe file's text into field values. Each value's JSON type
@@ -130,6 +158,13 @@ inline std::expected<Values, std::string> ParseRecipeFile(
           if (value.empty() || value == "true" || value == "false" ||
               value == "null")
             return wrong("a number");
+          // A JSON number, as any other reader of the file would hold it
+          // to; its bound is Apply's ("nan" and "Infinity" are not JSON
+          // either, and are refused here by the same rule).
+          if (!file_detail::IsJsonNumber(value))
+            return bad("field '" + key + "' takes a JSON number (no leading "
+                       "'+', '.' or zero, digits after a '.'), got '" + value +
+                       "'");
           break;
         case Kind::kBool:
           value = std::string(c.Token());

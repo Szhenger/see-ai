@@ -44,9 +44,10 @@ the S4/S5/S6 plan), every plan bit-identical. `backend/assembly/
 plan_assembly.{h,cc}` holds what the driver did inline — the seeded
 persistent image, the emit table, the section layout, the blob and its seal
 — as five pure functions. `CompileImpl`, 1,390 lines, is now one
-`Compilation` (what the stages hand each other) and 24 stage methods run in
-order; the longest is under 140 lines and no driver function exceeds 150
-except `FillCompileScreens` (192 lines of row assignments, left for the
+`Compilation` (what the stages hand each other) and 24 methods — 20 stages
+run in order, and beside them the header fill, the merge binding, the train
+resolver and `Run`; the longest is under 140 lines and no driver function
+exceeds 150 except `FillCompileScreens` (192 lines of row assignments, left for the
 screen work of item 4). One ordering difference: the config rules all run
 before the weight sweep, which used to sit between two groups of them.
 `kernel_emitter.{h,cc}` is retired: the GPU tiling clamp is architecture

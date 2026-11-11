@@ -111,16 +111,18 @@ against frontier LoRA practice: AdamW already; learning rate 1e-3 constant →
 
 | phase | does | today |
 |---|---|---|
-| **architecture** | target description (ISA, SIMD, cores, caches, host key; a GPU half: device family, cores, Metal 4 capability, peak); analytic tiling; reads the measured kernel-policy table | `architecture/host_arch.cc`, `kernel_policy_table.cc`, `kernel_emitter.cc` |
+| **architecture** | target description (ISA, SIMD, cores, caches, host key; a GPU half: device family, cores, Metal 4 capability, peak); analytic tiling; reads the measured kernel-policy table | `architecture/host_arch.cc` (with the GPU tiling clamp, `GpuTilingFromHost`, since S6, 2026-11-11), `kernel_policy_table.cc` |
 | **allocation** | arena binder: three segments, SSA liveness, first-fit, rodata layout | `allocation/arena_binder.cc` |
 | **selection** | SIR op → one 64-byte instruction; ISA loses MSE and conv, gains masked xent and the attention segment operand | `selection/instruction_lowering.cc` |
 | **scheduling** (candidate) | instruction order for the target; earns a directory only if F8 (#139) measures the step time outside kernels as real; schedule before allocate | none — F8 measured it on 2026-10-15: the CPU is 0.6 % ahead of the GPU per step, so ordering recovers nothing; F7 step 1 (2026-10-19) then pinned the serial encoder's gap at about 3 µs per dispatch, ≈4 % of the step, below the 10 % line; the lever on the GPU is bytes per kernel, not dispatch count; scheduling stays a function inside selection — decided |
-| **assembly** | plan layout: header with the identity manifest, kernel policy and reduction-order ledger; streams; rodata written once; seeded persistent image; emit table; seal | the driver's persist-init / assemble / seal phases (misfiled) |
+| **assembly** | plan layout: header with the identity manifest, kernel policy and reduction-order ledger; streams; rodata written once; seeded persistent image; emit table; seal | `assembly/plan_assembly.cc` (out of the driver since S6, 2026-11-11: the persistent image, the emit table, the layout, the blob, the seal; the header's words are still the driver's, and the manifest and ledger wait on v23) |
 | **packaging** | the self-contained package: embedded plan (or, above the linker's and loader's limit, the plan beside the binary, #158), generated main, vendored runtime **plus the shared `source/` contract check, sanitizer and tokenizer**, build script | `packaging/native_emitter.cc`; Python twin `tool/pack_update.py` |
 
 `tuner/` folds into architecture; `kernel_emitter.cc` (tests only since the
 runtime owns the kernel library) retires or moves its GPU tiling clamp under
-architecture. The compiler emits data, the runtime executes code: a kernel
+architecture (S6, 2026-11-11: retired — the clamp is `GpuTilingFromHost` in
+`host_arch`, the source generator is `test/support/metal_gemm_source`). The
+compiler emits data, the runtime executes code: a kernel
 is vendored, never generated, and every compile-time GPU decision is a
 permission (the `kFlagRelaxed` model), never a requirement, because the
 build host is not the device.

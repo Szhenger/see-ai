@@ -1,6 +1,7 @@
 #ifndef SEEML_SOURCE_RECIPE_RECIPE_H_
 #define SEEML_SOURCE_RECIPE_RECIPE_H_
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -13,6 +14,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "source/identity/hash.h"
 #include "source/plan/config.h"
@@ -261,7 +264,10 @@ inline std::expected<void, std::string> CheckValue(const Field& f,
       // to a complete decimal, so strtof consumes all of it; an overflow
       // comes back infinite and the bound below refuses it.
       const float x = std::strtof(std::string(v).c_str(), nullptr);
-      *d = x;
+      // One zero: a written "-0" is the zero a closed bound admits, and
+      // -0.0f would be other header bits — another plan hash and another
+      // recipe hash — for the recipe "0" writes.
+      *d = x == 0.0f ? 0.0 : static_cast<double>(x);
       // A nonzero text that is zero or subnormal as that f32 underflowed
       // (strtof's ERANGE, which the hand-parsed flags refused): "1e-60"
       // would otherwise pass a closed lower bound of 0 as exactly 0 —
@@ -299,11 +305,14 @@ struct Inputs {
 /// Applies `values` to `config`: each value parsed completely and held to
 /// its bound, then the fields held to each other. Fields absent from
 /// `values` keep `config`'s defaults. The first violation is returned,
-/// naming the field and its bound.
+/// naming the field and its bound — and `config` is then untouched: the
+/// values are applied to a copy that replaces it only when every rule
+/// holds, so a refused recipe never leaves half of itself behind (the
+/// target filters cleared, say, which reads as "adapt every weight").
 inline std::expected<void, std::string> Apply(const Values& values,
                                               const Inputs& inputs,
                                               UpdateConfig* config) {
-  UpdateConfig& c = *config;
+  UpdateConfig c = *config;
   for (const auto& [name, text] : values) {
     const Field* f = FindField(name);
     if (!f)
@@ -430,6 +439,7 @@ inline std::expected<void, std::string> Apply(const Values& values,
                              "pass --data too");
   if (set("split_seed") && !set("val_frac"))
     return needs("split_seed", "needs val_frac: it seeds the compiled split");
+  *config = std::move(c);
   return {};
 }
 
@@ -459,8 +469,23 @@ inline std::string ResolvedText(const UpdateConfig& c) {
     return std::string(buf);
   };
   auto yes = [](bool b) { return std::string(b ? "true" : "false"); };
+  // A recipe's budgets are whole MiB and print as that count. A config
+  // built in code may hold any byte count: the bytes below a MiB are
+  // appended, so two budgets that differ never share a text (and a hash).
+  auto mib = [](uint64_t bytes) {
+    std::string s = std::to_string(bytes >> 20);
+    if (const uint64_t rest = bytes & ((uint64_t{1} << 20) - 1))
+      s += "+" + std::to_string(rest) + "B";
+    return s;
+  };
+  // The filters are a set — a weight is adapted when any of them matches —
+  // so the text holds them sorted, each once: "wq,wv" and "wv,wq" compile
+  // the same plan and are the same recipe.
+  std::vector<std::string> filters = c.lora.target_filters;
+  std::sort(filters.begin(), filters.end());
+  filters.erase(std::unique(filters.begin(), filters.end()), filters.end());
   std::string targets;
-  for (const std::string& t : c.lora.target_filters)
+  for (const std::string& t : filters)
     targets += (targets.empty() ? "" : ",") + t;
   const std::pair<const char*, std::string> lines[] = {
       {"data_batch", std::to_string(c.batch)},
@@ -492,8 +517,7 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"attention", c.attention == AttentionKind::kAuto     ? "auto"
                     : c.attention == AttentionKind::kCached ? "cached"
                                                             : "tiled"},
-      {"attention_cache_budget_mib",
-       std::to_string(c.attention_cache_budget_bytes >> 20)},
+      {"attention_cache_budget_mib", mib(c.attention_cache_budget_bytes)},
       {"remat", c.remat == RematKind::kAuto ? "auto"
                 : c.remat == RematKind::kOn ? "on"
                                             : "off"},
@@ -502,7 +526,7 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"val_frac", bits(c.val_frac)},
       {"split_seed", std::to_string(c.split_seed)},
       {"masked_loss", yes(c.masked_loss)},
-      {"memory_budget_mib", std::to_string(c.memory_budget_bytes >> 20)},
+      {"memory_budget_mib", mib(c.memory_budget_bytes)},
   };
   static_assert(std::size(lines) == std::size(kFields),
                 "the resolved text names every field");
