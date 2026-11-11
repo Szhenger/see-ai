@@ -126,6 +126,35 @@ class RecipeCliTest(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn(says, r.stderr)
 
+    def test_a_boolean_flag_overrides_the_file_either_way(self):
+        path = os.path.join(self.dir, "bools.json")
+        with open(path, "w") as f:
+            json.dump({"data_batch": 12, "quantize_base": True}, f)
+        on, out_on = self.compile("bool_on", "--recipe", path)
+        self.assertEqual(on.returncode, 0, on.stderr[-1500:])
+        # --no-quantize-base clears what the file set: the plain plan's bytes.
+        off, out_off = self.compile("bool_off", "--recipe", path,
+                                    "--no-quantize-base")
+        self.assertEqual(off.returncode, 0, off.stderr[-1500:])
+        plain, out_plain = self.compile("bool_plain", "--data-batch", "12")
+        self.assertEqual(plain.returncode, 0, plain.stderr[-1500:])
+        self.assertEqual(self.plan(out_off), self.plan(out_plain))
+        self.assertNotEqual(self.plan(out_on), self.plan(out_plain))
+        self.assertEqual(self.report("bool_off")["recipe_hash"],
+                         self.report("bool_plain")["recipe_hash"])
+        # Which makes the other storage choice reachable from the same file.
+        bf16, _ = self.compile("bool_bf16", "--recipe", path,
+                               "--no-quantize-base", "--bf16-base")
+        self.assertEqual(bf16.returncode, 0, bf16.stderr[-1500:])
+        both, _ = self.compile("refused", "--quantize-base",
+                               "--no-quantize-base")
+        self.assertNotEqual(both.returncode, 0)
+        self.assertIn("--quantize-base and --no-quantize-base contradict",
+                      both.stderr)
+        # Only booleans have the form.
+        r, _ = self.compile("refused", "--no-lora-rank")
+        self.assertIn("unknown argument '--no-lora-rank'", r.stderr)
+
     def test_a_bad_recipe_file_is_refused_by_key(self):
         cases = [
             ('{"rank": 4}', "unknown field 'rank'"),
@@ -248,13 +277,25 @@ class RunnerFlagsTest(unittest.TestCase):
                         "--steps", "3")
         self.assertEqual(r.returncode, 2, r.stderr[-1500:])
         self.assertIn("must exceed the plan's compiled warmup", r.stderr)
-        # A resume's --steps counts further steps: the rule is not its.
+        # A resume's --steps counts further steps: from step 6, two more
+        # end at 8, past the warmup, and the engine's rule admits it.
         with open(ckpt, "wb") as f:
             f.write(own)
         r = self.update("--checkpoint", ckpt, "--resume", "--seed", "1",
                         "--steps", "2", "--force")
         self.assertEqual(r.returncode, 0, r.stderr[-1500:])
         self.assertNotIn("no checkpoint resumed", r.stderr)
+        # A checkpoint of this plan that does not load (truncated): the
+        # peek calls it a resume, the engine starts fresh — and the engine's
+        # own warmup rule refuses the 2-step horizon the runner's early
+        # check could not see.
+        broken = os.path.join(self.dir, "broken.ckpt")
+        with open(broken, "wb") as f:
+            f.write(own[:200])
+        r = self.update("--checkpoint", broken, "--resume", "--seed", "1",
+                        "--steps", "2", "--force")
+        self.assertNotEqual(r.returncode, 0, r.stderr[-1500:])
+        self.assertIn("does not exceed the plan's compiled warmup", r.stderr)
 
 
 if __name__ == "__main__":

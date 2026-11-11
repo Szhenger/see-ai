@@ -2457,6 +2457,12 @@ def cmd_run(args):
     ex = Executor(plan, backend, args.source)
     steps = args.steps or plan.default_steps
     ex.horizon = steps  # a fresh run anneals over its own length
+    # UpdateEngine::Train's warmup rule (S4 #150): a horizon inside the
+    # compiled warmup leaves the cosine phase no steps.
+    if plan.lr_schedule == 1 and plan.warmup_steps and steps <= plan.warmup_steps:
+        raise PlanError(f"the run's horizon ({steps} steps) does not exceed "
+                        f"the plan's compiled warmup ({plan.warmup_steps} "
+                        "steps): the run would end inside the ramp")
     report = {"plan": args.plan, "backend": backend.name,
               "device": backend.device, "steps": steps, "loss_curve": []}
     if val is not None and plan.sections["eval"]:

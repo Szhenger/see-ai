@@ -64,7 +64,14 @@ same rules (`source/recipe/run_flags.h`, vendored): its integers are digits
 alone (F63), a fresh run's `--steps` inside the compiled warmup is refused
 (N20), as are `--checkpoint-every` without `--checkpoint` and `--eval-every`
 without a validation split (N24) — each exercised through an emitted
-runner. Acceptance 1 holds on both planes. Not here: the recipe hash, the
+runner. After the reviews of #185 the warmup rule itself is the engine's:
+`UpdateEngine::Train` refuses any horizon inside the compiled warmup, so a
+resume whose step + steps still ends on the ramp and a run whose checkpoint
+did not load (and so started fresh) are refused where only the engine can
+see them; the runner's check stays as the early usage error for a fresh
+run, and `frontier_exec run` mirrors the engine. Every boolean recipe flag
+has a `--no-` form, so a flag overrides a recipe file's boolean either way
+(both forms at once is refused). Acceptance 1 holds on both planes. Not here: the recipe hash, the
 held-out corpus hash and the exporter's parity figures are not in the plan
 yet (item 2: the header is full at 320 bytes, so they land with the v23
 metadata section), the runtime screen does not print the four hashes, and

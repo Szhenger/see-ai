@@ -116,7 +116,8 @@ void PrintUsage() {
   std::fprintf(stderr,
                "usage: seeml-update-compile --source model.smf --out dir/\n"
                "  [--recipe recipe.json]  the fields below as one JSON object;\n"
-               "                      a flag overrides the field it names\n"
+               "                      a flag overrides the field it names;\n"
+               "                      a boolean flag --x has the form --no-x\n"
                "  [--data-batch N] [--loss xent|mse|kl|xent+kl]\n"
                "  [--teacher t.smf] [--distill-weight W] [--temperature T]\n"
                "  [--lora-rank R] [--lora-alpha A] [--lora-seed S]\n"
@@ -287,7 +288,17 @@ int main(int argc, char** argv) {
   }
   for (const recipe::Field& field : recipe::kFields) {
     if (field.kind == recipe::Kind::kBool) {
-      if (args.Take(field.flag)) recipe_values[field.name] = "true";
+      // A boolean has two spellings, so a flag can override a recipe file
+      // either way: --quantize-base sets the field, --no-quantize-base
+      // clears it. Both at once is a contradiction, not an order to guess.
+      const std::string off = "--no-" + std::string(field.flag + 2);
+      const bool set = args.Take(field.flag);
+      const bool clear = args.Take(off.c_str());
+      if (set && clear)
+        return Fail(std::string(field.flag) + " and " + off +
+                    " contradict each other");
+      if (set) recipe_values[field.name] = "true";
+      if (clear) recipe_values[field.name] = "false";
     } else if (auto v = args.TakeValue(field.flag)) {
       recipe_values[field.name] = *v;
     }

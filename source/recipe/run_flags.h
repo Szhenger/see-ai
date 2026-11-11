@@ -39,11 +39,11 @@ inline std::optional<std::string> RunFlagsViolation(const PlanHeader& header,
                                                     const RunFlags& f) {
   // Review N20: a fresh run's --steps is the schedule's horizon; inside
   // the compiled warmup the cosine phase has no steps at all and the run
-  // ends mid-ramp. The rule is the fresh run's. (A resume's --steps counts
-  // further steps, and the engine then anneals over the resumed step plus
-  // that count — TrainOptions::horizon_steps — so a resume early in the
-  // ramp with a small count can still end inside it; that sum is not held
-  // here.)
+  // ends mid-ramp. This is the early usage error for a fresh run, from
+  // the flags and the header alone. The rule itself is the engine's
+  // (UpdateEngine::Train refuses any horizon inside the warmup): only it
+  // knows a resume's step, so a resume whose step + steps still ends on the
+  // ramp, and a run whose checkpoint did not load, are refused there.
   if (f.steps_given && !f.resume && f.steps != 0 &&
       header.lr_schedule == static_cast<uint32_t>(LrSchedule::kCosineWithWarmup) &&
       f.steps <= header.warmup_steps)
