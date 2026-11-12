@@ -532,6 +532,15 @@ TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {
               "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
               "\"logits_parity_checked\": true, \"logits_parity_max_delta\": -1"),
        "finite non-negative number"},
+      // Numbers are JSON's: the strict scalar parsers alone would take these.
+      {report(smf, tok,
+              "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 010, "
+              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+       "takes a JSON number"},
+      {report(smf, tok,
+              "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
+              "\"logits_parity_checked\": true, \"logits_parity_max_delta\": .5"),
+       "takes a JSON number"},
       {"[]", "not a JSON object"},
       {report(smf, tok, good_rest) + " x", "content after the closing"},
   };

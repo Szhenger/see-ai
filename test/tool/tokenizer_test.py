@@ -259,10 +259,31 @@ class ExportReportTest(unittest.TestCase):
 
     def test_the_fast_hash_is_the_reference_mirror(self):
         rng = self.np.random.default_rng(1)
-        for n in (0, 1, 7, 8, 9, 1000, (1 << 20) - 1, (1 << 20) + 13):
+        # ... the exact chunk multiples included: no partial chunk to fold.
+        for n in (0, 1, 7, 8, 9, 1000, (1 << 20) - 1, 1 << 20, (1 << 20) + 13,
+                  2 << 20):
             data = rng.integers(0, 256, n, dtype=self.np.uint8).tobytes()
             self.assertEqual(content_hash.content_hash64_np(self.np, data),
                              content_hash.content_hash64(data), n)
+
+    def test_a_figure_the_reader_refuses_is_refused_at_export(self):
+        # A parity over no ids, or a logit delta that is not a finite
+        # non-negative number (json would spell it NaN), is a report the
+        # compiler's reader refuses: the exporter does not write one.
+        for figures in (dict(tokenizer_parity_ids=0),
+                        dict(logits_parity_max_delta=float("nan")),
+                        dict(logits_parity_max_delta=float("inf")),
+                        dict(logits_parity_max_delta=-1.0)):
+            with self.assertRaises(ValueError):
+                self.em.write_export_report(self.smf, self.section, **figures)
+            self.assertFalse(os.path.exists(self.smf + ".export.json"))
+        # A failed proof withdraws the model and its report together: a
+        # report left behind would be held against the next file there.
+        self.em.write_export_report(self.smf, self.section)
+        self.em.withdraw_export(self.smf)
+        self.assertFalse(os.path.exists(self.smf))
+        self.assertFalse(os.path.exists(self.smf + ".export.json"))
+        self.em.withdraw_export(self.smf)  # nothing there: not an error
 
     def test_an_imported_model_compiles_only_beside_its_report(self):
         r, plan_path = self.compile()

@@ -1,9 +1,10 @@
 #include "compiler/frontend/ingressor/export_report.h"
 
-#include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <system_error>
 
 #include "compiler/diagnostics/tokenizing/error.h"
 #include "source/identity/hash.h"
@@ -65,6 +66,13 @@ std::expected<std::map<std::string, Field>, std::string> Parse(
           return std::unexpected(
               "key '" + key + "' takes " +
               (*kind == Field::kBool ? "true or false" : "a number"));
+        // A JSON number, as any other reader of the file holds it to (the
+        // recipe file's rule): the strict scalar parsers below also take
+        // "010", ".5" and "1.", which no JSON parser does.
+        if (*kind == Field::kNumber &&
+            !recipe::file_detail::IsJsonNumber(f.text))
+          return std::unexpected("key '" + key + "' takes a JSON number, got '" +
+                                 f.text + "'");
       }
       out.emplace(std::move(key), std::move(f));
       if (c.Eat(',')) continue;
@@ -101,6 +109,11 @@ std::expected<ExportReport, std::string> ReadExportReport(
   const std::string path = smf_path + kExportReportSuffix;
   std::ifstream f(path, std::ios::binary);
   if (!f) {
+    // A report that is there but cannot be opened is not an absent one: it
+    // may describe other bytes, and a report is never ignored.
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec) || ec)
+      return Error("exporter report '" + path + "' cannot be read");
     if (NeedsExportReport(model))
       return Error(
           "no exporter report '" + path +
@@ -146,15 +159,9 @@ std::expected<ExportReport, std::string> ReadExportReport(
       delta < 0.0)
     return bad("logits_parity_max_delta is not a finite non-negative number");
   r.logits_parity_max_delta = static_cast<float>(delta);
-  if (!std::isfinite(r.logits_parity_max_delta))
-    return bad("logits_parity_max_delta is not a finite non-negative number");
-  // A figure without its check, and a check without a figure, say nothing.
-  if (!r.tokenizer_parity && r.tokenizer_parity_ids != 0)
-    return bad("tokenizer_parity_ids is set but the parity was not checked");
-  if (r.tokenizer_parity && r.tokenizer_parity_ids == 0)
-    return bad("the tokenizer parity is marked checked over zero ids");
-  if (!r.logits_parity && r.logits_parity_max_delta != 0.0f)
-    return bad("logits_parity_max_delta is set but the parity was not checked");
+  // A figure without its check, and a check without a figure, say nothing:
+  // the rules a report built in code is held to as well.
+  if (auto why = ExportReportViolation(r)) return bad(*why);
   return r;
 }
 

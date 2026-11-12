@@ -107,8 +107,6 @@ struct FrontendStats {
   std::optional<CorpusFacts> corpus;  // set when the compile took --data
 };
 
-/// What the driver learned while compiling that CompiledUpdate does not
-/// otherwise carry. Filled where each number is computed.
 /// One arena tensor, for the backend screen's table.
 struct TensorFact {
   std::string name;
@@ -116,6 +114,8 @@ struct TensorFact {
   std::string segment;  // "persistent" | "io" | "transient"
 };
 
+/// What the driver learned while compiling that CompiledUpdate does not
+/// otherwise carry. Filled where each number is computed.
 struct CompileFacts {
   FrontendStats frontend;
   // Analysis: what the passes returned.

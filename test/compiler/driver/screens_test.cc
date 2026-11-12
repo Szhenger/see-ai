@@ -165,6 +165,24 @@ TEST(CompileScreens, TheWorkAndTheLedgerAreThePlansOwn) {
   EXPECT_EQ(T(s.frontend, "recipe_hash"), std::string(hex));
 }
 
+TEST(CompileScreens, TheActivationsSavedAreTheLoweredPlans) {
+  // S5 #151: a forward value the backward recomputes is not kept for it, so
+  // the row is taken on the block that is lowered — after rematerialization,
+  // not as autodiff left it.
+  SmfModel model = MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
+  UpdateConfig config = BaseConfig(16);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
+                       UpdateCompiler(config).Compile(model));
+  config.remat = RematKind::kOn;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate remat,
+                       UpdateCompiler(config).Compile(model));
+  ASSERT_TRUE(remat.remat_recomputed_values > 0);
+  EXPECT_TRUE(U(remat.screens.analysis, "saved_activation_bytes") <
+              U(plain.screens.analysis, "saved_activation_bytes"));
+  EXPECT_TRUE(U(remat.screens.analysis, "saved_activation_bytes") <=
+              remat.transient_size);
+}
+
 TEST(CompileScreens, TheNumbersAreThePlansOwn) {
   SmfModel model = MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
   UpdateConfig config = BaseConfig(16);

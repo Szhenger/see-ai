@@ -192,6 +192,9 @@ struct Compilation {
   Status BindMerge();
   // The plan's metadata section: the manifest words and the ledger (v23).
   std::vector<uint8_t> BuildMetadata();
+  // The forward values a backward op reads, on the block as it stands: the
+  // activations a step keeps from forward to backward (S5 #151).
+  uint64_t SavedActivationBytes() const;
   ResolveFn ResolveTrain();
 
   std::expected<CompiledUpdate, std::string> Run();
@@ -209,6 +212,12 @@ Status Compilation::ValidateConfig() {
         "the model carries a tokenizer section but no exporter report was "
         "verified for it: the exporter's output is checked, not trusted "
         "(ReadExportReport reads <model>.smf.export.json)");
+  // A report built in code holds the reader's rules: what the metadata
+  // records must pass the loader, and be a report the committed model's own
+  // can state again (a parity "checked" over zero ids would not read back).
+  if (auto why = ExportReportViolation(config_.export_report))
+    return generating::Error(generating::kDriver,
+                             "config export_report: " + *why);
   // The recipe's bounds a config built in code must hold too (S4 #150,
   // review N18): an unbounded rank overflowed into an invalid plan.
   if (auto why = recipe::ConfigViolation(config_))
@@ -803,22 +812,25 @@ Status Compilation::CalculusPasses() {
   for (const PassTiming& t : timings)
     if (t.name == "autodiff" && t.ops_after > primal_ops.size())
       facts.adjoint_ops = t.ops_after - primal_ops.size();
-  {
-    const std::unordered_set<const sir::Operation*> primal(primal_ops.begin(),
-                                                           primal_ops.end());
-    for (const sir::Operation* op : primal_ops) {
-      if (op->isMemoryOp()) continue;
-      for (const auto& r : op->results()) {
-        bool read_by_backward = false;
-        for (const sir::Operation* user : r->users())
-          read_by_backward |= !primal.contains(user);
-        if (read_by_backward)
-          facts.saved_activation_bytes +=
-              static_cast<uint64_t>(r->shape().byteSize(r->dtype()));
-      }
+  facts.saved_activation_bytes = SavedActivationBytes();
+  return {};
+}
+
+uint64_t Compilation::SavedActivationBytes() const {
+  uint64_t bytes = 0;
+  const std::unordered_set<const sir::Operation*> primal(primal_ops.begin(),
+                                                         primal_ops.end());
+  for (const sir::Operation* op : primal_ops) {
+    if (op->isMemoryOp()) continue;
+    for (const auto& r : op->results()) {
+      bool read_by_backward = false;
+      for (const sir::Operation* user : r->users())
+        read_by_backward |= !primal.contains(user);
+      if (read_by_backward)
+        bytes += static_cast<uint64_t>(r->shape().byteSize(r->dtype()));
     }
   }
-  return {};
+  return bytes;
 }
 
 Status Compilation::MergeAndReview() {
@@ -1068,6 +1080,9 @@ Status Compilation::Rematerialize() {
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
     timings.insert(timings.end(), pm.timings().begin(), pm.timings().end());
     phase_start = PhaseClock::now();  // passes are timed by their manager
+    // A recomputed value is no longer kept for the backward (its readers
+    // moved to the copy); what its recompute reads now is.
+    facts.saved_activation_bytes = SavedActivationBytes();
     RebindTransients(block, pinned, *binding);
     if (auto ok = BindMerge(); !ok) return std::unexpected(ok.error());
     seeml::diag::Note(
@@ -1452,11 +1467,14 @@ Status Compilation::ReportSummary() {
                     : std::string()) +
                "), rodata " + std::to_string(header.rodata_size) + " B");
 
-  // The five largest values the arena holds, with their segment (S6 #152).
+  // The five largest values the arena holds, with their segment (S6 #152):
+  // the training block's, and the merged deltas — each the size of the
+  // weight it adapts, pinned above the training high-water mark and bound
+  // through the merge program's own map.
   {
     std::vector<TensorFact> tensors;
-    for (const auto& [value, ref] : binding->refs) {
-      if (IsRodataRef(ref) || IsSourceRef(ref)) continue;
+    auto add = [&](const sir::Value* value, uint64_t ref) {
+      if (IsRodataRef(ref) || IsSourceRef(ref)) return;
       const uint64_t at = RefOffset(ref);
       tensors.push_back(
           {std::string(value->id()),
@@ -1464,7 +1482,10 @@ Status Compilation::ReportSummary() {
            at < binding->persistent_size ? "persistent"
            : at < binding->io_end        ? "io"
                                          : "transient"});
-    }
+    };
+    for (const auto& [value, ref] : binding->refs) add(value, ref);
+    for (const auto& [delta, adapter_index] : merge->outputs)
+      add(delta, merge_bound.at(delta));
     std::sort(tensors.begin(), tensors.end(),
               [](const TensorFact& a, const TensorFact& b) {
                 return a.bytes != b.bytes ? a.bytes > b.bytes : a.name < b.name;

@@ -19,7 +19,6 @@
 // not two independent ones.
 // =============================================================================
 
-#include <bit>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -209,12 +208,24 @@ int DumpJson(const std::vector<uint8_t>& plan, const PlanHeader& h,
                 ", \"logits_parity_max_delta_bits\": %u, \"ledger\": [",
                 meta.meta.recipe_hash, meta.meta.export_report_hash,
                 meta.meta.export_flags, meta.meta.tokenizer_parity_ids,
-                std::bit_cast<uint32_t>(meta.meta.logits_parity_max_delta));
+                static_cast<unsigned>(
+                    F32BitsOf(meta.meta.logits_parity_max_delta)));
+    // Ledger text is printable ASCII (the loader's rule), which still
+    // admits the two characters a JSON string must escape.
+    auto json = [](const char* s) {
+      std::string out;
+      for (; *s != '\0'; ++s) {
+        if (*s == '"' || *s == '\\') out += '\\';
+        out += *s;
+      }
+      return out;
+    };
     for (size_t i = 0; i < meta.ledger.size(); ++i)
       std::printf("%s\n    {\"pass\": \"%s\", \"arithmetic\": %u, "
                   "\"instructions\": %u, \"why\": \"%s\"}",
-                  i ? "," : "", meta.ledger[i].pass, meta.ledger[i].arithmetic,
-                  meta.ledger[i].instructions, meta.ledger[i].why);
+                  i ? "," : "", json(meta.ledger[i].pass).c_str(),
+                  meta.ledger[i].arithmetic, meta.ledger[i].instructions,
+                  json(meta.ledger[i].why).c_str());
     std::printf("%s]}", meta.ledger.empty() ? "" : "\n  ");
   }
   std::printf("\n}\n");

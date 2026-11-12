@@ -185,9 +185,11 @@ inline constexpr StatRow kAnalysisRows[] = {
     {"saved_activation_bytes", "activations saved", StatKind::kBytes, "B",
      "forward values the backward reads: kept from forward to backward"},
     {"flops_forward", "forward work", StatKind::kCount, "FLOP",
-     "GEMM + attention work of the eval program (the forward and the loss)"},
+     "GEMM + attention work of the eval program (the forward and the loss), "
+     "one pass"},
     {"flops_backward", "backward work", StatKind::kCount, "FLOP",
-     "the train program's work less the forward's"},
+     "one pass of the train program less the forward's: a step runs "
+     "grad_accum of each"},
     {"flops_optimizer", "optimizer work", StatKind::kCount, "FLOP",
      "the step program's GEMM + attention work (elementwise updates are 0)"},
     {"epilogue_bytes_removed", "epilogue fusion saves", StatKind::kBytes, "B",

@@ -1673,6 +1673,23 @@ TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
   EXPECT_EQ(wm.meta.tokenizer_parity_ids, 1234u);
   EXPECT_EQ(wm.meta.logits_parity_max_delta, 6.4e-5f);
   EXPECT_EQ(with_report.recipe_hash, exact.recipe_hash);  // not a recipe field
+
+  // A report built in code holds the reader's rules (ExportReportViolation):
+  // a parity "checked" over zero ids passes the loader, and the committed
+  // model's own report would then be one ReadExportReport refuses.
+  UpdateConfig unreadable = reported;
+  unreadable.export_report.tokenizer_parity_ids = 0;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(unreadable).Compile(model),
+                        "config export_report: the tokenizer parity is marked "
+                        "checked over zero ids");
+  unreadable = reported;
+  unreadable.export_report.report_hash = 0;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(unreadable).Compile(model),
+                        "config export_report: the report carries no hash");
+  unreadable = reported;
+  unreadable.export_report.logits_parity_max_delta = std::nanf("");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(unreadable).Compile(model),
+                        "config export_report: logits_parity_max_delta");
 }
 
 TEST(UpdateCompiler, TheRecipesBoundsHoldForAConfigBuiltInCode) {

@@ -964,16 +964,37 @@ def export_hf_decoder(model_dir: str, out_path: str, seq_len: int,
     conv["tokenizer_section"] = section
     # The report the compiler verifies (S4 #150): the file's hash and the
     # section's, no parity proven yet — the CLI rewrites it with what its
-    # --tokenizer-parity / --hf-parity runs prove.
-    write_export_report(out_path, section)
+    # --tokenizer-parity / --hf-parity runs prove (the file is hashed once).
+    conv["smf_hash"] = smf_content_hash(out_path)
+    write_export_report(out_path, section, smf_hash=conv["smf_hash"])
     return conv
 
 
 EXPORT_REPORT_SUFFIX = ".export.json"
 
 
+def smf_content_hash(smf_path: str) -> int:
+    """ContentHash64 of the SMF file: the hash the compiler's loader takes
+    of it, and what binds an export report to these bytes."""
+    import numpy as np
+    data = np.memmap(smf_path, dtype=np.uint8, mode="r")
+    try:
+        return content_hash.content_hash64_np(np, data)
+    finally:
+        del data
+
+
+def withdraw_export(smf_path: str):
+    """Removes an SMF whose proof failed and the report beside it: a report
+    left behind would be held against whatever is written there next."""
+    for path in (smf_path, smf_path + EXPORT_REPORT_SUFFIX):
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
+
+
 def write_export_report(smf_path: str, tokenizer_section: bytes = b"",
-                        tokenizer_parity_ids=None, logits_parity_max_delta=None):
+                        tokenizer_parity_ids=None, logits_parity_max_delta=None,
+                        smf_hash=None):
     """The exporter's report on the SMF it wrote (S4 #150), beside it as
     `<model>.smf.export.json`: the file's ContentHash64 — what binds the
     report to these bytes — the tokenizer section's hash, and what parity
@@ -982,12 +1003,24 @@ def write_export_report(smf_path: str, tokenizer_section: bytes = b"",
     verifies the report against the file and refuses an imported checkpoint
     (a model carrying a tokenizer section) without one; the figures land in
     the plan's metadata. A flat JSON object, read by the frontend's strict
-    reader."""
-    import numpy as np
-    data = np.memmap(smf_path, dtype=np.uint8, mode="r")
+    reader — so a figure that reader refuses (a parity over no ids, a delta
+    that is not finite and non-negative, which JSON cannot even spell) is a
+    ValueError here, before anything is written. `smf_hash` is the file's
+    hash when the caller already took it."""
+    import math
+    if tokenizer_parity_ids is not None and int(tokenizer_parity_ids) <= 0:
+        raise ValueError("export report: the tokenizer parity compared no ids")
+    if logits_parity_max_delta is not None and not (
+            math.isfinite(logits_parity_max_delta)
+            and logits_parity_max_delta >= 0.0):
+        raise ValueError("export report: the logits-parity delta is "
+                         f"{logits_parity_max_delta}, not a finite "
+                         "non-negative number")
+    if smf_hash is None:
+        smf_hash = smf_content_hash(smf_path)
     report = {
         "schema": 1,
-        "smf_hash": f"{content_hash.content_hash64_np(np, data):016x}",
+        "smf_hash": f"{smf_hash:016x}",
         "tokenizer_hash": (f"{content_hash.content_hash64(tokenizer_section):016x}"
                            if tokenizer_section else "0" * 16),
         "tokenizer_parity_checked": tokenizer_parity_ids is not None,
@@ -995,7 +1028,6 @@ def write_export_report(smf_path: str, tokenizer_section: bytes = b"",
         "logits_parity_checked": logits_parity_max_delta is not None,
         "logits_parity_max_delta": float(logits_parity_max_delta or 0.0),
     }
-    del data
     path = smf_path + EXPORT_REPORT_SUFFIX
     with open(path, "w") as f:
         json.dump(report, f, indent=1)
@@ -1564,7 +1596,7 @@ if __name__ == "__main__":
                     n, ids = tokenizer_parity(args.hf[0], args.hf[1], corpus,
                                               tool)
                 except ValueError:
-                    os.unlink(args.hf[1])
+                    withdraw_export(args.hf[1])
                     raise
                 parity_ids = ids
                 print(f"tokenizer parity: {n} strings, {ids} ids, the core "
@@ -1581,11 +1613,18 @@ if __name__ == "__main__":
                       f"(max |logits| {scale:.3g}) vs transformers",
                       file=sys.stderr)
             # The report the compiler verifies (S4 #150), with what this
-            # export proved.
-            path = write_export_report(
-                args.hf[1], conv["tokenizer_section"],
-                tokenizer_parity_ids=parity_ids,
-                logits_parity_max_delta=logits_delta)
+            # export proved. A figure no report can state (a non-finite
+            # logit delta) is a proof that failed: the export is withdrawn,
+            # not left beside the report that says nothing was run.
+            try:
+                path = write_export_report(
+                    args.hf[1], conv["tokenizer_section"],
+                    tokenizer_parity_ids=parity_ids,
+                    logits_parity_max_delta=logits_delta,
+                    smf_hash=conv["smf_hash"])
+            except ValueError as e:
+                withdraw_export(args.hf[1])
+                raise ValueError(f"{e}; the export is withdrawn") from e
             print(f"wrote {path} (the export report: tokenizer parity "
                   f"{'run' if parity_ids is not None else 'not run'}, logits "
                   f"parity {'run' if logits_delta is not None else 'not run'})",

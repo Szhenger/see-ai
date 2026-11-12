@@ -99,7 +99,6 @@ inline uint64_t AttentionFlops(std::span<const UpdateInstruction> program) {
   return flops;
 }
 
-/// The arithmetic of one optimizer step of a plan.
 /// One GEMM shape of a program and what it costs.
 struct GemmShape {
   uint64_t m = 0, n = 0, k = 0;
@@ -114,9 +113,6 @@ inline std::vector<GemmShape> GemmCensus(
     std::span<const UpdateInstruction> program) {
   std::vector<GemmShape> shapes;
   for (const UpdateInstruction& ins : program) {
-    const UpdateInstruction one[] = {ins};
-    const uint64_t flops = GemmFlops(one);
-    if (flops == 0 && ins.out[0] * ins.out[1] * ins.out[2] != 0) continue;
     switch (static_cast<OpCode>(ins.opcode)) {
       case OpCode::kGemmNN: case OpCode::kGemmNT: case OpCode::kGemmTN:
       case OpCode::kGemmAccNN: case OpCode::kGemmNNQ8: case OpCode::kGemmNTQ8:
@@ -125,6 +121,8 @@ inline std::vector<GemmShape> GemmCensus(
       default:
         continue;
     }
+    const UpdateInstruction one[] = {ins};
+    const uint64_t flops = GemmFlops(one);
     GemmShape* found = nullptr;
     for (GemmShape& g : shapes)
       if (g.m == ins.out[0] && g.n == ins.out[1] && g.k == ins.out[2])
@@ -146,6 +144,7 @@ inline std::vector<GemmShape> GemmCensus(
   return shapes;
 }
 
+/// The arithmetic of one optimizer step of a plan.
 struct PlanWork {
   uint64_t micro_batches = 1;          // G: train-program passes per step
   uint64_t train_gemm_flops = 0;       // one pass of the train program

@@ -49,8 +49,15 @@ struct Totals {
   double predicted_ms = 0.0;  // ms = FLOP / (GFLOP/s * 1e9) * 1e3
 };
 
+/// One program of `plan`; empty when the header's section does not lie
+/// inside the blob — the screens are filled before the backend boundary
+/// check has proven the header (MeasurePlanWork's rule).
 std::span<const UpdateInstruction> Program(const std::vector<uint8_t>& plan,
                                            uint64_t offset, uint64_t count) {
+  uint64_t bytes = 0;
+  if (!MulOk(count, sizeof(UpdateInstruction), &bytes) ||
+      !RangeOk(offset, bytes, plan.size()))
+    return {};
   return {reinterpret_cast<const UpdateInstruction*>(plan.data() + offset),
           static_cast<size_t>(count)};
 }
@@ -81,7 +88,8 @@ Totals Measure(const UpdateConfig& config, const CompiledUpdate& r) {
     return SatAdd(GemmFlops(p), AttentionFlops(p));
   };
   t.flops_forward = flops(t.eval);
-  const uint64_t train = flops(t.train);
+  const uint64_t train =
+      SatAdd(t.work.train_gemm_flops, t.work.train_attention_flops);
   t.flops_backward = train > t.flops_forward ? train - t.flops_forward : 0;
   t.flops_optimizer = flops(t.step);
   t.peak = std::isfinite(config.peak_gflops) && config.peak_gflops > 0.0;
@@ -253,8 +261,8 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   for (const LedgerEntry& e : r.ledger) reordered += e.instructions;
   an.Set("reordered_instructions", reordered);
   an.Set("analysis_ms", t.analysis_ms);
-  for (const PassTiming& t : r.pass_timings)
-    an.AddRow("passes", {t.name, static_cast<uint64_t>(t.ops_after), t.ms});
+  for (const PassTiming& p : r.pass_timings)
+    an.AddRow("passes", {p.name, static_cast<uint64_t>(p.ops_after), p.ms});
   for (const AdapterDebugInfo& a : r.adapters)
     an.AddRow("adapter_sites",
               {a.weight_name, static_cast<uint64_t>(a.k),
@@ -316,7 +324,7 @@ void FillBackend(const CompileFacts& f, const UpdateConfig& config,
   for (const TensorFact& tensor : f.largest_tensors)
     be.AddRow("largest_tensors", {tensor.name, tensor.bytes, tensor.segment});
   // The GEMM census: the train program's products by shape.
-  const uint64_t train_gemm = GemmFlops(t.train);
+  const uint64_t train_gemm = t.work.train_gemm_flops;
   for (const GemmShape& g : GemmCensus(t.train))
     be.AddRow("gemm_census",
               {std::to_string(g.m) + " x " + std::to_string(g.n) + " x " +

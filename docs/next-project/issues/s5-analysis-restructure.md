@@ -74,8 +74,9 @@ screen** states adjoint ops, the activations saved for the backward, forward
 / backward / optimizer work, what each fusion stopped writing. Acceptance 3
 as it can be held: the work rows are `GemmFlops + AttentionFlops` of the
 plan's own eval, train and step programs (`source/statistics/plan_work.h`,
-the unit of `seeml-bench` and the runtime screen; forward + backward equals
-the runtime's work per step) — `seeml-plan-probe --profile` reports time per
+the unit of `seeml-bench` and the runtime screen; forward + backward is one
+pass of the train program, so the runtime's work per step is `grad_accum`
+times it) — `seeml-plan-probe --profile` reports time per
 opcode and no FLOP figure, so there is nothing of the probe's to match; byte
 rows use the arena binder's size function. **Open: the defaults flip**
 (clip 1.0, lr 1e-4 cosine + warmup, alpha / sqrt(r)) and its F1 rows — the
