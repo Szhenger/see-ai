@@ -97,7 +97,7 @@ TEST(CompileScreens, EveryScreenIsCompleteForEveryFixtureFamily) {
 
 TEST(CompileScreens, TheWorkAndTheLedgerAreThePlansOwn) {
   // S5 #151 / S6 #152: the analysis screen's forward / backward / optimizer
-  // work is the unit seeml-bench and the probe report (GEMM + attention
+  // work is the unit seeml-bench and the runtime screen report (GEMM + attention
   // FLOPs of the plan's own programs), the GEMM census sums to the train
   // program's GEMM work, the ledger is the plan's metadata, and the GPU
   // prediction is the same work over the GPU's peak.

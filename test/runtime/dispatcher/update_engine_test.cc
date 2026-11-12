@@ -24,6 +24,7 @@
 #include "runtime/dispatcher/update_engine.h"
 #include "source/identity/hash.h"
 #include "source/parallel/parallel_for.h"
+#include "compiler/frontend/ingressor/export_report.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "compiler/frontend/egressor/model_writer.h"
 #include "test/framework/seetest.h"
@@ -696,6 +697,71 @@ TEST(UpdateEngineCommit, RejectsModelFileThePlanWasNotCompiledFrom) {
   EXPECT_ERROR_CONTAINS(engine.CommitToModel(wrong, dir.File("never.smf")),
                         "source_model_hash");
   EXPECT_OK(engine.CommitToModel(right, dir.File("ok.smf")));
+}
+
+TEST(UpdateEngineCommit, TheCommittedModelCarriesItsOwnReport) {
+  // S4 #150: the committed model keeps the source's tokenizer section, so it
+  // is an imported checkpoint to the next compile — the engine writes the
+  // report that describes the bytes it committed, carrying the tokenizer
+  // parity the plan recorded and no logits parity.
+  ScopedTempDir dir;
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
+  {
+    // The SMTK head alone: magic, version 1, kind 1, pre-tokenizer 1, flags
+    // 0, vocab 16, 0 merges, 0 special, -1 x 4, no template.
+    auto u32 = [&](uint32_t x) {
+      for (int i = 0; i < 4; ++i) model.tokenizer.push_back((x >> (8 * i)) & 0xFF);
+    };
+    for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u, 0xFFFFFFFFu,
+                       0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+      u32(x);
+  }
+  const std::string src = dir.File("src.smf");
+  ASSERT_OK(SaveSmf(src, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel saved, LoadSmf(src));
+  UpdateConfig config = BaseConfig(16);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved),
+                        "no exporter report was verified");
+  config.export_report.present = true;
+  config.export_report.report_hash = 0x1234;
+  config.export_report.tokenizer_parity = true;
+  config.export_report.tokenizer_parity_ids = 77;
+  config.export_report.logits_parity = true;
+  config.export_report.logits_parity_max_delta = 1e-4f;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(config).Compile(saved));
+  UpdateEngine engine;
+  ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+  ASSERT_OK(engine.RunMerge());
+  const std::string out = dir.File("out.smf");
+  ASSERT_OK(engine.CommitToModel(src, out));
+  ASSERT_OK_AND_ASSIGN(SmfModel committed, LoadSmf(out));
+  ASSERT_TRUE(NeedsExportReport(committed));
+  EXPECT_ERROR_CONTAINS(ReadExportReport(out, committed), "no exporter report");
+  ASSERT_OK(engine.WriteCommittedModelReport(out));
+  ASSERT_OK_AND_ASSIGN(ExportReport report, ReadExportReport(out, committed));
+  EXPECT_TRUE(report.present);
+  EXPECT_TRUE(report.tokenizer_parity);
+  EXPECT_EQ(report.tokenizer_parity_ids, 77u);
+  EXPECT_FALSE(report.logits_parity);  // the weights are no longer the checkpoint's
+  // ... and the next fine-tune compiles from it.
+  config.export_report = report;
+  EXPECT_OK(UpdateCompiler(config).Compile(committed));
+  // A model with no section gets no report.
+  SmfModel plain = MakeMlp(kInDim, 10, 3, 1);
+  const std::string plain_src = dir.File("plain.smf");
+  ASSERT_OK(SaveSmf(plain_src, plain));
+  ASSERT_OK_AND_ASSIGN(SmfModel plain_saved, LoadSmf(plain_src));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain_compiled,
+                       UpdateCompiler(BaseConfig(kBatch)).Compile(plain_saved));
+  UpdateEngine plain_engine;
+  ASSERT_OK(plain_engine.LoadFromMemory(plain_compiled.plan.data(),
+                                        plain_compiled.plan.size()));
+  ASSERT_OK(plain_engine.RunMerge());
+  const std::string plain_out = dir.File("plain_out.smf");
+  ASSERT_OK(plain_engine.CommitToModel(plain_src, plain_out));
+  ASSERT_OK(plain_engine.WriteCommittedModelReport(plain_out));
+  EXPECT_FALSE(std::ifstream(plain_out + ".export.json").good());
 }
 
 TEST(UpdateEngineCommit, VerifySourceModelFailsFastOnTheWrongFile) {

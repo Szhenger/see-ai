@@ -962,6 +962,13 @@ int main(int argc, char** argv) {
   commit_s = since(t_commit0);
   write_report(true, nullptr);
   std::fprintf(stderr, "seeml-update: committed '%s'\n", out.c_str());
+  // The committed model's report (S4 #150): it keeps the tokenizer section,
+  // so compiling it again needs the report that describes these bytes.
+  if (auto r = engine.WriteCommittedModelReport(out); !r) {
+    std::fprintf(stderr, "seeml-update: the committed model's report: %s\n",
+                 r.error().c_str());
+    outputs_ok = false;
+  }
   if (!outputs_ok) {
     std::fprintf(stderr,
                  "seeml-update: the update is committed, but a requested "

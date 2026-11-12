@@ -1372,6 +1372,32 @@ std::expected<void, std::string> UpdateEngine::VerifySourceModel(
   return {};
 }
 
+std::expected<void, std::string> UpdateEngine::WriteCommittedModelReport(
+    const std::string& out_path) const {
+  if (header_.tokenizer_hash == 0) return {};
+  auto hash = HashFileContent(out_path);
+  if (!hash) return std::unexpected(hash.error());
+  const bool parity = metadata_.present &&
+                      (metadata_.meta.export_flags & update::kExportTokenizerParity);
+  char text[512];
+  const int n = std::snprintf(
+      text, sizeof(text),
+      "{\n \"schema\": 1,\n \"smf_hash\": \"%016llx\",\n"
+      " \"tokenizer_hash\": \"%016llx\",\n"
+      " \"tokenizer_parity_checked\": %s,\n"
+      " \"tokenizer_parity_ids\": %llu,\n"
+      " \"logits_parity_checked\": false,\n"
+      " \"logits_parity_max_delta\": 0.0\n}\n",
+      static_cast<unsigned long long>(*hash),
+      static_cast<unsigned long long>(header_.tokenizer_hash),
+      parity ? "true" : "false",
+      static_cast<unsigned long long>(
+          parity ? metadata_.meta.tokenizer_parity_ids : 0));
+  return WriteFileDurable(out_path + ".export.json",
+                          reinterpret_cast<const uint8_t*>(text),
+                          static_cast<size_t>(n));
+}
+
 std::expected<void, std::string> UpdateEngine::CommitToModel(
     const std::string& source_model_path, const std::string& out_path) const {
   if (!merged_)

@@ -66,7 +66,7 @@ uint64_t ResultBytes(const std::vector<sir::Operation*>& ops) {
   uint64_t bytes = 0;
   for (const sir::Operation* op : ops)
     for (const auto& r : op->results())
-      bytes += static_cast<uint64_t>(r->shape().volume()) * 4;
+      bytes += static_cast<uint64_t>(r->shape().byteSize(r->dtype()));
   return bytes;
 }
 
@@ -814,7 +814,7 @@ Status Compilation::CalculusPasses() {
           read_by_backward |= !primal.contains(user);
         if (read_by_backward)
           facts.saved_activation_bytes +=
-              static_cast<uint64_t>(r->shape().volume()) * 4;
+              static_cast<uint64_t>(r->shape().byteSize(r->dtype()));
       }
     }
   }
@@ -1460,7 +1460,7 @@ Status Compilation::ReportSummary() {
       const uint64_t at = RefOffset(ref);
       tensors.push_back(
           {std::string(value->id()),
-           static_cast<uint64_t>(value->shape().volume()) * 4,
+           static_cast<uint64_t>(value->shape().byteSize(value->dtype())),
            at < binding->persistent_size ? "persistent"
            : at < binding->io_end        ? "io"
                                          : "transient"});
