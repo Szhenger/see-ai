@@ -95,6 +95,76 @@ TEST(CompileScreens, EveryScreenIsCompleteForEveryFixtureFamily) {
   }
 }
 
+TEST(CompileScreens, TheWorkAndTheLedgerAreThePlansOwn) {
+  // S5 #151 / S6 #152: the analysis screen's forward / backward / optimizer
+  // work is the unit seeml-bench and the probe report (GEMM + attention
+  // FLOPs of the plan's own programs), the GEMM census sums to the train
+  // program's GEMM work, the ledger is the plan's metadata, and the GPU
+  // prediction is the same work over the GPU's peak.
+  SmfModel model = MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
+  UpdateConfig config = BaseConfig(16);
+  config.grad_accum_steps = 2;
+  config.peak_gflops = 100.0;
+  config.gpu_peak_gflops = 400.0;
+  config.precision = Precision::kCertifiedBf16;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+  const CompileScreens& s = c.screens;
+  PlanHeader h;
+  std::memcpy(&h, c.plan.data(), sizeof(h));
+  auto program = [&](uint64_t off, uint64_t count) {
+    return std::span<const UpdateInstruction>(
+        reinterpret_cast<const UpdateInstruction*>(c.plan.data() + off), count);
+  };
+  auto flops = [](std::span<const UpdateInstruction> p) {
+    return GemmFlops(p) + AttentionFlops(p);
+  };
+  const auto train = program(h.train_instr_offset, h.train_instr_count);
+  const auto eval = program(h.eval_instr_offset, h.eval_instr_count);
+  const auto step = program(h.step_instr_offset, h.step_instr_count);
+  EXPECT_EQ(U(s.analysis, "flops_forward"), flops(eval));
+  EXPECT_EQ(U(s.analysis, "flops_forward") + U(s.analysis, "flops_backward"),
+            flops(train));
+  EXPECT_EQ(U(s.analysis, "flops_optimizer"), flops(step));
+  EXPECT_TRUE(U(s.analysis, "flops_backward") > U(s.analysis, "flops_forward"));
+  EXPECT_TRUE(U(s.analysis, "adjoint_ops") > 0);
+  EXPECT_TRUE(U(s.analysis, "saved_activation_bytes") > 0);
+  EXPECT_TRUE(U(s.analysis, "saved_activation_bytes") <= c.transient_size);
+  // The ledger: the plan's own section, and its reordered count the relaxed
+  // instructions the compile flagged.
+  DecodedMetadata meta;
+  ASSERT_FALSE(PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta)
+                   .has_value());
+  EXPECT_EQ(U(s.analysis, "reordered_instructions"),
+            c.relaxed_gemms + c.relaxed_attention);
+  EXPECT_TRUE(c.relaxed_gemms > 0);
+  const std::string analysis = s.analysis.Json(0);
+  for (const LedgerEntry& e : meta.ledger)
+    EXPECT_STR_CONTAINS(analysis, std::string("\"pass\": \"") + e.pass + "\"");
+  EXPECT_STR_CONTAINS(analysis, "\"arithmetic\": \"reordered\"");
+  // The census sums to the train program's GEMM work; the largest tensors
+  // are arena values.
+  uint64_t census = 0;
+  for (const GemmShape& g : GemmCensus(train)) census += g.flops;
+  EXPECT_EQ(census, GemmFlops(train));
+  const std::string backend = s.backend.Json(0);
+  EXPECT_STR_CONTAINS(backend, "\"gemm_census\"");
+  EXPECT_STR_CONTAINS(backend, "\"largest_tensors\"");
+  EXPECT_EQ(U(s.backend, "io_bytes"), c.io_size);
+  EXPECT_EQ(U(s.backend, "persistent_bytes") + U(s.backend, "io_bytes") +
+                U(s.backend, "transient_bytes"),
+            c.arena_size);
+  // The GPU half: the same work over the GPU's stated peak.
+  const PlanWork work = MeasurePlanWork(c.plan);
+  EXPECT_EQ(R(s.backend, "gpu_peak_gflops"), 400.0);
+  EXPECT_EQ(R(s.backend, "predicted_step_gpu_ms"),
+            static_cast<double>(work.FlopsPerStep()) / (400.0 * 1e6));
+  // The manifest's recipe word, on the frontend screen.
+  char hex[24];
+  std::snprintf(hex, sizeof(hex), "%016llx",
+                static_cast<unsigned long long>(meta.meta.recipe_hash));
+  EXPECT_EQ(T(s.frontend, "recipe_hash"), std::string(hex));
+}
+
 TEST(CompileScreens, TheNumbersAreThePlansOwn) {
   SmfModel model = MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
   UpdateConfig config = BaseConfig(16);
