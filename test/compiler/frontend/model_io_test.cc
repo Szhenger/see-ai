@@ -12,6 +12,9 @@
 #include <tuple>
 #include <vector>
 
+#include <cstdio>
+
+#include "compiler/frontend/ingressor/export_report.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "compiler/frontend/egressor/model_writer.h"
 #include "source/parallel/parallel_for.h"
@@ -448,6 +451,109 @@ TEST(Smf, TheSweepRefusesNonFiniteWeightsAndReportsRanges) {
   ASSERT_FALSE(refused.has_value());
   EXPECT_STR_CONTAINS(refused.error(), "teacher tensor '" + w->name + "'");
   EXPECT_STR_CONTAINS(refused.error(), "element 2");
+}
+
+TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {
+  // S4 #150: the report beside an imported checkpoint binds to the file's
+  // hash and the section's; an absent report is a refusal for a model that
+  // carries a section, and a report that is there is never ignored.
+  seeml::testing::ScopedTempDir dir;
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+  model.tokenizer = {'S', 'M', 'T', 'K', 1, 2, 3, 4};  // opaque to the reader
+  const std::string path = dir.File("m.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel loaded, LoadSmf(path));
+  ASSERT_TRUE(NeedsExportReport(loaded));
+  auto hex = [](uint64_t v) {
+    char b[24];
+    std::snprintf(b, sizeof(b), "%016llx", static_cast<unsigned long long>(v));
+    return std::string(b);
+  };
+  auto write = [&](const std::string& body) {
+    std::ofstream f(path + kExportReportSuffix, std::ios::binary | std::ios::trunc);
+    f << body;
+  };
+  auto report = [&](const std::string& smf, const std::string& tok,
+                    const std::string& rest) {
+    return "{\"schema\": 1, \"smf_hash\": \"" + smf +
+           "\", \"tokenizer_hash\": \"" + tok + "\", " + rest + "}";
+  };
+  const std::string good_rest =
+      "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 1234, "
+      "\"logits_parity_checked\": true, \"logits_parity_max_delta\": 6.4e-05";
+  const std::string smf = hex(loaded.content_hash), tok = hex(loaded.TokenizerHash());
+
+  EXPECT_ERROR_CONTAINS(ReadExportReport(path, loaded), "no exporter report");
+  write(report(smf, tok, good_rest));
+  ASSERT_OK_AND_ASSIGN(ExportReport r, ReadExportReport(path, loaded));
+  EXPECT_TRUE(r.present);
+  EXPECT_NE(r.report_hash, 0u);
+  EXPECT_TRUE(r.tokenizer_parity);
+  EXPECT_EQ(r.tokenizer_parity_ids, 1234u);
+  EXPECT_TRUE(r.logits_parity);
+  EXPECT_EQ(r.logits_parity_max_delta, 6.4e-05f);
+  const std::string unproven =
+      "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
+      "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0.0";
+  write(report(smf, tok, unproven));
+  ASSERT_OK_AND_ASSIGN(ExportReport u, ReadExportReport(path, loaded));
+  EXPECT_TRUE(u.present);
+  EXPECT_FALSE(u.tokenizer_parity);
+  EXPECT_NE(u.report_hash, r.report_hash);
+
+  struct Bad {
+    std::string body;
+    const char* says;
+  };
+  const Bad bad[] = {
+      {report(hex(loaded.content_hash ^ 1), tok, good_rest),
+       "describes another model file"},
+      {report(smf, hex(loaded.TokenizerHash() ^ 1), good_rest),
+       "tokenizer_hash is not the model's"},
+      {report("12", tok, good_rest), "16 lowercase hex digits"},
+      {"{\"schema\": 2, \"smf_hash\": \"" + smf + "\", \"tokenizer_hash\": \"" +
+           tok + "\", " + good_rest + "}",
+       "unsupported schema 2"},
+      {report(smf, tok, good_rest + ", \"extra\": 1"), "unknown key 'extra'"},
+      {report(smf, tok, "\"tokenizer_parity_checked\": true"), "is missing"},
+      {report(smf, tok,
+              "\"tokenizer_parity_checked\": 1, \"tokenizer_parity_ids\": 1, "
+              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+       "takes true or false"},
+      {report(smf, tok,
+              "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 5, "
+              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+       "the parity was not checked"},
+      {report(smf, tok,
+              "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 0, "
+              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+       "checked over zero ids"},
+      {report(smf, tok,
+              "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
+              "\"logits_parity_checked\": true, \"logits_parity_max_delta\": -1"),
+       "finite non-negative number"},
+      {"[]", "not a JSON object"},
+      {report(smf, tok, good_rest) + " x", "content after the closing"},
+  };
+  for (const Bad& b : bad) {
+    write(b.body);
+    EXPECT_ERROR_CONTAINS(ReadExportReport(path, loaded), b.says);
+  }
+  // A model without a section needs none — and one that is there is still
+  // held to the file.
+  SmfModel plain = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+  const std::string plain_path = dir.File("plain.smf");
+  ASSERT_OK(SaveSmf(plain_path, plain));
+  ASSERT_OK_AND_ASSIGN(SmfModel plain_loaded, LoadSmf(plain_path));
+  EXPECT_FALSE(NeedsExportReport(plain_loaded));
+  ASSERT_OK_AND_ASSIGN(ExportReport none, ReadExportReport(plain_path, plain_loaded));
+  EXPECT_FALSE(none.present);
+  {
+    std::ofstream f(plain_path + kExportReportSuffix);
+    f << report(smf, hex(0), unproven);  // another file's report
+  }
+  EXPECT_ERROR_CONTAINS(ReadExportReport(plain_path, plain_loaded),
+                        "describes another model file");
 }
 
 TEST(Smf, TheTokenizerSectionRoundTripsAsV7) {

@@ -19,6 +19,7 @@
 #include "compiler/driver/statistics.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/computation/parser.h"
+#include "compiler/frontend/ingressor/export_report.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "compiler/frontend/tokenization/corpus_ingress.h"
 #include "source/contract/split.h"
@@ -199,6 +200,15 @@ struct Compilation {
 Status Compilation::ValidateConfig() {
   wants_teacher = config_.loss == LossKind::kKLDistill ||
                              config_.loss == LossKind::kXEntPlusKL;
+  // Exporter verification (S4 #150): an imported checkpoint — a model from a
+  // file, carrying a tokenizer section — compiles only beside the exporter's
+  // verified report (ReadExportReport fills config.export_report).
+  if (NeedsExportReport(source) && !config_.export_report.present)
+    return generating::Error(
+        generating::kDriver,
+        "the model carries a tokenizer section but no exporter report was "
+        "verified for it: the exporter's output is checked, not trusted "
+        "(ReadExportReport reads <model>.smf.export.json)");
   // The recipe's bounds a config built in code must hold too (S4 #150,
   // review N18): an unbounded rank overflowed into an invalid plan.
   if (auto why = recipe::ConfigViolation(config_))

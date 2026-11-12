@@ -962,7 +962,45 @@ def export_hf_decoder(model_dir: str, out_path: str, seq_len: int,
                              norm_eps=conv["norm_eps"],
                              tokenizer_section=section)
     conv["tokenizer_section"] = section
+    # The report the compiler verifies (S4 #150): the file's hash and the
+    # section's, no parity proven yet — the CLI rewrites it with what its
+    # --tokenizer-parity / --hf-parity runs prove.
+    write_export_report(out_path, section)
     return conv
+
+
+EXPORT_REPORT_SUFFIX = ".export.json"
+
+
+def write_export_report(smf_path: str, tokenizer_section: bytes = b"",
+                        tokenizer_parity_ids=None, logits_parity_max_delta=None):
+    """The exporter's report on the SMF it wrote (S4 #150), beside it as
+    `<model>.smf.export.json`: the file's ContentHash64 — what binds the
+    report to these bytes — the tokenizer section's hash, and what parity
+    was proven: the ids the tokenizer-parity harness compared (None = not
+    run) and the logits-parity figure (None = not run). The compiler
+    verifies the report against the file and refuses an imported checkpoint
+    (a model carrying a tokenizer section) without one; the figures land in
+    the plan's metadata. A flat JSON object, read by the frontend's strict
+    reader."""
+    import numpy as np
+    data = np.memmap(smf_path, dtype=np.uint8, mode="r")
+    report = {
+        "schema": 1,
+        "smf_hash": f"{content_hash.content_hash64_np(np, data):016x}",
+        "tokenizer_hash": (f"{content_hash.content_hash64(tokenizer_section):016x}"
+                           if tokenizer_section else "0" * 16),
+        "tokenizer_parity_checked": tokenizer_parity_ids is not None,
+        "tokenizer_parity_ids": int(tokenizer_parity_ids or 0),
+        "logits_parity_checked": logits_parity_max_delta is not None,
+        "logits_parity_max_delta": float(logits_parity_max_delta or 0.0),
+    }
+    del data
+    path = smf_path + EXPORT_REPORT_SUFFIX
+    with open(path, "w") as f:
+        json.dump(report, f, indent=1)
+        f.write("\n")
+    return path
 
 
 def tokenizer_parity(model_dir: str, smf_path: str, corpus_path: str,
@@ -1511,6 +1549,7 @@ if __name__ == "__main__":
             conv = export_hf_decoder(args.hf[0], args.hf[1], args.seq_len,
                                      allow_eps_drift=args.allow_eps_drift,
                                      tokenizer=not args.no_tokenizer)
+            parity_ids = logits_delta = None
             if args.tokenizer_parity:
                 repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 tool = os.path.join(os.environ.get("SEEML_BUILD_DIR",
@@ -1527,6 +1566,7 @@ if __name__ == "__main__":
                 except ValueError:
                     os.unlink(args.hf[1])
                     raise
+                parity_ids = ids
                 print(f"tokenizer parity: {n} strings, {ids} ids, the core "
                       "and the reference agree", file=sys.stderr)
             if args.text_corpus:
@@ -1536,9 +1576,20 @@ if __name__ == "__main__":
                                    tokenizer_section=conv["tokenizer_section"])
             if args.hf_parity:
                 delta, scale = hf_parity(args.hf[0], conv)
+                logits_delta = delta
                 print(f"hf parity: max |Δ logits| = {delta:.3g} "
                       f"(max |logits| {scale:.3g}) vs transformers",
                       file=sys.stderr)
+            # The report the compiler verifies (S4 #150), with what this
+            # export proved.
+            path = write_export_report(
+                args.hf[1], conv["tokenizer_section"],
+                tokenizer_parity_ids=parity_ids,
+                logits_parity_max_delta=logits_delta)
+            print(f"wrote {path} (the export report: tokenizer parity "
+                  f"{'run' if parity_ids is not None else 'not run'}, logits "
+                  f"parity {'run' if logits_delta is not None else 'not run'})",
+                  file=sys.stderr)
         except (ValueError, RuntimeError) as e:
             print(f"export_model.py: --hf: {e}", file=sys.stderr)
             sys.exit(2)

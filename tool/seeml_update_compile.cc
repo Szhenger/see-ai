@@ -97,6 +97,7 @@
 #include "compiler/diagnostics/logger.h"
 #include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
+#include "compiler/frontend/ingressor/export_report.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "source/contract/split.h"
 #include "source/identity/version.h"
@@ -428,6 +429,14 @@ int main(int argc, char** argv) {
   if (teacher_path) {
     teacher_model = std::move((*models)[1]);
     teacher = &teacher_model;
+  }
+
+  // --- Exporter verification (S4 #150): the report beside the model, held to
+  // the bytes just loaded. An imported checkpoint without one is refused.
+  {
+    auto report = ReadExportReport(*source_path, source_model);
+    if (!report) return Fail(report.error());
+    config.export_report = *report;
   }
 
   // --- Compile ----------------------------------------------------------------

@@ -11,7 +11,7 @@ a hash the device will compare, so it is held to the C++ by test
 Pure Python: about a second per megabyte, which is the size of a tokenizer
 section; it is not the way to hash a model file.
 """
-from typing import Iterable
+from typing import Any, Iterable, List
 
 _MASK = (1 << 64) - 1
 FNV_OFFSET_BASIS = 0xCBF29CE484222325
@@ -71,3 +71,49 @@ def content_hash64(data: bytes) -> int:
     for p in partials:
         h = _mix_word(h, p)
     return _mix_word(h, len(data))
+
+
+def content_hash64_np(np: Any, data: Any) -> int:
+    """ContentHash64 of `data` (bytes, or any uint8 buffer such as a
+    memory-mapped file), with NumPy: the same digest as content_hash64,
+    computed across every chunk's eight lanes at once — a 500 MB model file
+    in seconds where the pure-Python fold takes minutes. The exporter uses
+    it to bind its report to the SMF it wrote (S4 #150)."""
+    buf = np.frombuffer(data, dtype=np.uint8) if not hasattr(data, "dtype") \
+        else np.asarray(data, dtype=np.uint8).reshape(-1)
+    n = int(buf.size)
+    prime = np.uint64(FNV_PRIME)
+    lanes0 = np.array([(FNV_OFFSET_BASIS ^ ((0x9E3779B97F4A7C15 * (lane + 1)) & _MASK))
+                       for lane in range(CONTENT_HASH_LANES)], dtype=np.uint64)
+
+    def kernel(block: Any) -> List[int]:
+        """StripedFnv1a64 over each row of `block` ([chunks, g] uint8)."""
+        chunks, g = block.shape
+        full = g - g % CONTENT_HASH_LANES
+        state = np.repeat(lanes0[None, :], chunks, axis=0)
+        if full:
+            cols = block[:, :full].reshape(chunks, full // CONTENT_HASH_LANES,
+                                           CONTENT_HASH_LANES)
+            with np.errstate(over="ignore"):
+                for i in range(full // CONTENT_HASH_LANES):
+                    state = (state ^ cols[:, i, :].astype(np.uint64)) * prime
+        with np.errstate(over="ignore"):
+            for lane, i in enumerate(range(full, g)):
+                state[:, lane] = (state[:, lane] ^ block[:, i].astype(np.uint64)) * prime
+        out = []
+        for row in state:
+            h = FNV_OFFSET_BASIS
+            for lane in row:
+                h = _mix_word(h, int(lane))
+            out.append(_mix_word(h, g))
+        return out
+
+    g = _chunk_grain(n, CONTENT_HASH_CHUNK)
+    whole = n // g if n else 0
+    partials = kernel(buf[:whole * g].reshape(whole, g)) if whole else []
+    if n - whole * g or not n:
+        partials += kernel(buf[whole * g:].reshape(1, n - whole * g))
+    h = FNV_OFFSET_BASIS
+    for p in partials:
+        h = _mix_word(h, p)
+    return _mix_word(h, n)

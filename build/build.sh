@@ -44,6 +44,7 @@ compile compiler/frontend/operator/activation.cc      op_activation.o
 compile compiler/diagnostics/logger.cc        logger.o
 compile source/language/model_format.cc model_format.o
 compile compiler/frontend/ingressor/model_reader.cc model_reader.o
+compile compiler/frontend/ingressor/export_report.cc export_report.o
 compile compiler/frontend/egressor/model_writer.cc model_writer.o
 compile compiler/frontend/accountant/resource_analyzer.cc resource_analyzer.o
 compile compiler/frontend/tokenization/corpus_ingress.cc corpus_ingress.o
@@ -135,7 +136,7 @@ compile test/support/corpora.cc               fixtures_corpora.o
 compile test/support/probes.cc                fixtures_probes.o
 compile test/support/metal_gemm_source.cc     metal_gemm_source.o
 
-LIBS="build/model_format.o build/model_reader.o build/model_writer.o \
+LIBS="build/model_format.o build/model_reader.o build/export_report.o build/model_writer.o \
       build/resource_analyzer.o build/corpus_ingress.o \
       build/value_resolver.o build/sema.o build/parser.o \
       build/pass_manager.o build/dce.o build/precision.o build/schedule.o \

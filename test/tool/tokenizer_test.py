@@ -209,6 +209,108 @@ class SmolLmSectionTest(unittest.TestCase):
                          content_hash.content_hash64(self.section))
 
 
+@unittest.skipUnless(os.path.isfile(os.path.join(BUILD, "seeml-update-compile")),
+                     "needs the built seeml-update-compile")
+class ExportReportTest(unittest.TestCase):
+    """Exporter verification (S4 #150): a model that carries a tokenizer
+    section compiles only beside the report the exporter wrote for exactly
+    these bytes, and what the report proves lands in the plan's metadata."""
+
+    def setUp(self):
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("NumPy not installed")
+        self.np = np
+        sys.path.insert(0, os.path.join(REPO, "tool"))
+        import export_model as em
+        import frontier_exec as fx
+        self.em, self.fx = em, fx
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        with open(os.path.join(self.dir, "tokenizer.json"), "w") as f:
+            json.dump(tiny_tokenizer_json(), f)
+        self.section = ts.build_section(self.dir)
+        vocab, dim, ffn = 259, 8, 16
+        rng = np.random.default_rng(0)
+
+        def mat(rows, cols):
+            return (rng.standard_normal((rows, cols)) * 0.15).astype(np.float32)
+        blocks = [{
+            "ln1_g": np.ones(dim, np.float32), "wq": mat(dim, dim),
+            "wk": mat(dim, dim), "wv": mat(dim, dim), "wo": mat(dim, dim),
+            "ln2_g": np.ones(dim, np.float32), "w_gate": mat(dim, ffn),
+            "w_up": mat(dim, ffn), "w_down": mat(ffn, dim),
+        }]
+        head = {"lnf_g": np.ones(dim, np.float32), "w_head": mat(dim, vocab)}
+        self.smf = os.path.join(self.dir, "m.smf")
+        em.export_token_decoder_smf(mat(vocab, dim), blocks, head, self.smf,
+                                    seq_len=4, num_heads=2,
+                                    tokenizer_section=self.section)
+
+    def compile(self):
+        out = os.path.join(self.dir, "pkg")
+        r = subprocess.run(
+            [os.path.join(BUILD, "seeml-update-compile"), "--source", self.smf,
+             "--out", out, "--data-batch", "16", "--no-embed", "--report",
+             os.path.join(self.dir, "report.json")],
+            capture_output=True, text=True)
+        return r, os.path.join(out, "update_plan.seeu")
+
+    def test_the_fast_hash_is_the_reference_mirror(self):
+        rng = self.np.random.default_rng(1)
+        for n in (0, 1, 7, 8, 9, 1000, (1 << 20) - 1, (1 << 20) + 13):
+            data = rng.integers(0, 256, n, dtype=self.np.uint8).tobytes()
+            self.assertEqual(content_hash.content_hash64_np(self.np, data),
+                             content_hash.content_hash64(data), n)
+
+    def test_an_imported_model_compiles_only_beside_its_report(self):
+        r, plan_path = self.compile()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no exporter report", r.stderr)
+        # The report with nothing proven: accepted, and recorded as such.
+        path = self.em.write_export_report(self.smf, self.section)
+        self.assertEqual(path, self.smf + ".export.json")
+        r, plan_path = self.compile()
+        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
+        plan = self.fx.Plan.load(plan_path)
+        self.assertEqual(plan.metadata["export_flags"],
+                         self.fx.formats.EXPORT_REPORT_PRESENT)
+        with open(path, "rb") as f:
+            self.assertEqual(plan.metadata["export_report_hash"],
+                             content_hash.content_hash64(f.read()))
+        with open(os.path.join(self.dir, "report.json")) as f:
+            report = json.load(f)
+        self.assertEqual(int(report["identity"]["export_report_hash"], 16),
+                         plan.metadata["export_report_hash"])
+        self.assertEqual(int(report["identity"]["recipe_hash"], 16),
+                         plan.metadata["recipe_hash"])
+        self.assertIn("parity not run",
+                      report["screens"]["frontend"]["export_report"])
+        # With parity proven, the figures ride in the plan.
+        self.em.write_export_report(self.smf, self.section,
+                                    tokenizer_parity_ids=2907,
+                                    logits_parity_max_delta=6.4e-5)
+        r, plan_path = self.compile()
+        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
+        plan = self.fx.Plan.load(plan_path)
+        self.assertEqual(plan.metadata["export_flags"], 7)
+        self.assertEqual(plan.metadata["tokenizer_parity_ids"], 2907)
+        self.assertAlmostEqual(plan.metadata["logits_parity_max_delta"],
+                               6.4e-5, 9)
+        self.assertTrue(all(e["arithmetic"] == 0 for e in plan.metadata["ledger"]))
+        self.assertIn("lora-graft", [e["pass"] for e in plan.metadata["ledger"]])
+        # A model changed after the export no longer matches its report.
+        with open(self.smf, "r+b") as f:
+            f.seek(-1, os.SEEK_END)
+            last = f.read(1)
+            f.seek(-1, os.SEEK_END)
+            f.write(bytes([last[0] ^ 1]))
+        r, _ = self.compile()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("describes another model file", r.stderr)
+
+
 FRONTIER = os.environ.get("SEEML_FRONTIER_DIR", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(REPO))),
     "out", "frontier-2026-09-22"))
