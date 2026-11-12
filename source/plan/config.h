@@ -1,6 +1,7 @@
 #ifndef SEEML_SOURCE_PLAN_CONFIG_H_
 #define SEEML_SOURCE_PLAN_CONFIG_H_
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -36,9 +37,21 @@ enum class AttentionKind : uint8_t { kAuto = 0, kCached = 1, kTiled = 2 };
 // UpdateConfig::remat.
 enum class RematKind : uint8_t { kAuto = 0, kOff = 1, kOn = 2 };
 
+// How the adapter's product is scaled (S5 #151). kAlphaOverRank is LoRA's
+// own s = alpha / r; kAlphaOverSqrtRank is rank-stabilized LoRA's
+// s = alpha / sqrt(r), whose update does not shrink as the rank grows.
+enum class LoraScaling : uint8_t { kAlphaOverRank = 0, kAlphaOverSqrtRank = 1 };
+
 struct LoRASpec {
   int64_t rank = 8;
   float alpha = 16.0f;
+  LoraScaling scaling = LoraScaling::kAlphaOverRank;
+  /// The scale s of the adapter product, C' = C + s * (x @ A @ B).
+  float Scale() const {
+    const float r = static_cast<float>(rank);
+    return scaling == LoraScaling::kAlphaOverSqrtRank ? alpha / std::sqrt(r)
+                                                      : alpha / r;
+  }
   uint64_t seed = 42;
   // Substring filters matched against the frozen weight's tensor name.
   // Empty => every eligible student MatMul is adapted.
