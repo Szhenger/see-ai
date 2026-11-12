@@ -68,6 +68,18 @@ struct OptimizerSpec {
 
 enum class Precision : uint8_t { kF32 = 0, kCertifiedBf16 = 1 };
 
+/// What the exporter proved about the source model, read from the report it
+/// wrote beside the SMF and verified against the file by the frontend (S4
+/// #150). Recorded in the plan's metadata; not a recipe field.
+struct ExportReport {
+  bool present = false;
+  uint64_t report_hash = 0;           // ContentHash64 of the report file
+  bool tokenizer_parity = false;      // the parity harness was run
+  uint64_t tokenizer_parity_ids = 0;  // ids it compared against the reference
+  bool logits_parity = false;         // the logits-parity check was run
+  float logits_parity_max_delta = 0.0f;
+};
+
 struct UpdateConfig {
   int64_t batch = 32;
   LossKind loss = LossKind::kSoftmaxXEnt;
@@ -207,6 +219,16 @@ struct UpdateConfig {
   // a --data corpus that carries a mask; set here for a plan compiled
   // without data that will be fed one. The cross-entropy alone.
   bool masked_loss = false;
+  // The exporter's report on the source model (S4 #150). A model that
+  // carries a tokenizer section and was loaded from a file — an imported
+  // checkpoint — is refused without one: the exporter's output is verified,
+  // not trusted. Exporter-native demo models have no reference to be in
+  // parity with and need none.
+  ExportReport export_report;
+  // The target's GPU peak in GFLOP/s (S6 #152), as the user states it:
+  // the backend screen's GPU-denominated predicted step. Never written
+  // into the plan. 0 = unstated.
+  double gpu_peak_gflops = 0.0;
 };
 
 }  // namespace seeml::update

@@ -149,6 +149,11 @@ HostArchInfo DetectHostArch() {
 
 #if defined(__APPLE__)
   info.cpu_model = CanonicalModel(SysctlString("machdep.cpu.brand_string"));
+  // Apple silicon: the SoC carries the GPU the Metal backend runs on.
+#if defined(__aarch64__)
+  if (info.cpu_model.starts_with("Apple "))
+    info.gpu_family = info.cpu_model + " GPU";
+#endif
   info.l1d_bytes = SysctlU64("hw.l1dcachesize");
   info.l2_bytes = SysctlU64("hw.l2cachesize");
   if (uint64_t cores = SysctlU64("hw.physicalcpu"); cores > 0)

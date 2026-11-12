@@ -150,7 +150,7 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // field is zero below v22, which the load contract proves; a v21 runtime
 // never reads them, and a v22 runtime reads a v21 plan's zero padding as
 // "feature absent". The readable floor stays at v4.
-inline constexpr uint32_t kSeeuVersion = 22;
+inline constexpr uint32_t kSeeuVersion = 23;
 
 // The version that grew the header with the data contract.
 inline constexpr uint32_t kSeeuDataContractVersion = 22;
@@ -158,8 +158,16 @@ inline constexpr uint32_t kSeeuDataContractVersion = 22;
 inline constexpr uint32_t kDataFlagMaskedLoss = 1u << 0;    // labels carry -1 = ignore
 inline constexpr uint32_t kDataFlagCorpusPinned = 1u << 1;  // corpus_hash is enforced
 inline constexpr uint32_t kDataFlagSplit = 1u << 2;         // a compiled held-out split
+// v23 (S4 #150 / S5 #151 / S6 #152): the plan carries a metadata section —
+// the identity manifest's remaining words and the reduction-order ledger —
+// at the first 64-aligned byte after the emit table (source/plan/
+// metadata.h). The header stays 320 bytes and no section moves; a plan
+// without the flag is read as every plan before v23 was.
+inline constexpr uint32_t kDataFlagMetadata = 1u << 3;
+inline constexpr uint32_t kSeeuMetadataVersion = 23;
 inline constexpr uint32_t kDataFlagsMask =
-    kDataFlagMaskedLoss | kDataFlagCorpusPinned | kDataFlagSplit;
+    kDataFlagMaskedLoss | kDataFlagCorpusPinned | kDataFlagSplit |
+    kDataFlagMetadata;
 
 // The version that admitted source refs in every program (adapter-only).
 inline constexpr uint32_t kSeeuSourceWeightsVersion = 21;

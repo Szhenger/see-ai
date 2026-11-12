@@ -63,6 +63,25 @@ of the target description beyond the tiling clamp, the backend screen's new
 rows and the GPU-denominated predicted step (item 4), and scheduling (item
 3, gated on F8).
 
+## Status 2026-11-12
+
+On `claude/v100b-s4s5s6-close`: the screen filler is one function per screen
+and no driver function exceeds 150 lines (acceptance 2). Plans are identical
+to main on 17 fixtures but for the v23 flag bit and the metadata section
+(acceptance 1). The backend screen states the io segment, the five largest
+arena tensors, the GEMM census by shape (sums to the train program's GEMM
+work), the target (host key + GPU family) and, with `--gpu-peak-gflops`, the
+step predicted on the GPU; a Metal run then prints its measured step beside
+that prediction. Acceptance 3, SmolLM-135M (batch 512 x 128, rank 8, int8
+base) on the M5 GPU, 2026-11-12, with a stated 2000 GFLOP/s: predicted
+162.2 ms, measured 223.0 ms (1455 GFLOP/s achieved, 72.8 %). **The host was
+on battery**: the line is printed and lands where the acceptance asks, but
+the measured figure is not a number to quote — re-take it on AC power. The
+2000 GFLOP/s is a stated figure, not a measured peak of this GPU. Not done:
+the MSE opcode drop and the attention segment operand of design item 2
+(the conv lowering is gone; the MSE drop was deferred to its own issue);
+scheduling stays gated on F8 (#139).
+
 ## Acceptance
 
 - Bit-identical `.seeu` and packages for every fixture before and after the

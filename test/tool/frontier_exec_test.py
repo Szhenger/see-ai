@@ -187,7 +187,12 @@ class ReaderTest(unittest.TestCase):
             # The data contract (v22).
             (good, dict(version=21, tokenizer_hash=1),
              "plan carries data-contract fields below v22"),
-            (good, dict(data_flags=8), "plan data_flags carries unknown bits"),
+            (good, dict(data_flags=16), "plan data_flags carries unknown bits"),
+            # The metadata section (v23): the flag below its version, and
+            # the flag over a plan that carries no section.
+            (good, dict(version=22, data_flags=8),
+             "plan carries a metadata section below v23"),
+            (good, dict(data_flags=8), "plan metadata section"),
             (good, dict(data_flags=4),
              "plan header val_frac is not a finite value in its range"),
             (good, dict(data_flags=4, val_frac_bits=0x3F800000),  # 1.0

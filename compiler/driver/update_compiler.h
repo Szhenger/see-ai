@@ -8,6 +8,7 @@
 
 #include "compiler/analysis/pass_manager.h"  // PassTiming
 #include "source/language/model_format.h"
+#include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/screens.h"
 
@@ -139,6 +140,10 @@ struct CompiledUpdate {
   // (plan v20). 0 under Precision::kF32.
   uint64_t relaxed_gemms = 0;
   uint64_t relaxed_attention = 0;
+  // The identity manifest's recipe word and the reduction-order ledger, as
+  // the plan's metadata section carries them (v23).
+  uint64_t recipe_hash = 0;
+  std::vector<LedgerEntry> ledger;
   // The corpus the compile took (S2 #148, UpdateConfig::data_path): the
   // canonical SDS the plan is pinned to (empty without --data), whether it
   // was given as an SDS (nothing to write) or tokenized here from raw text

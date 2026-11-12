@@ -284,6 +284,11 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // counts below are plain multiplies.
   if (auto ok = VerifyPlanContract(header, plan_size); !ok)
     return std::unexpected(ok.error());
+  // The metadata section (v23): the manifest words and the ledger, held to
+  // the plan they sit in before anything reads them.
+  up::DecodedMetadata metadata;
+  if (auto why = up::PlanMetadataViolation(header, plan, plan_size, &metadata))
+    return diag::executing::Error(*why);
   const uint64_t train_bytes =
       header.train_instr_count * sizeof(up::UpdateInstruction);
   const uint64_t merge_bytes =
@@ -527,6 +532,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   arena_ = arena;
   arena_bytes_ = arena_bytes;
   header_ = header;
+  metadata_ = std::move(metadata);
   train_program_ = std::move(train);
   merge_program_ = std::move(merge);
   eval_program_ = std::move(eval);
@@ -1364,6 +1370,32 @@ std::expected<void, std::string> UpdateEngine::VerifySourceModel(
         "source_model_hash — refusing to run against '" +
         source_model_path + "'");
   return {};
+}
+
+std::expected<void, std::string> UpdateEngine::WriteCommittedModelReport(
+    const std::string& out_path) const {
+  if (header_.tokenizer_hash == 0) return {};
+  auto hash = HashFileContent(out_path);
+  if (!hash) return std::unexpected(hash.error());
+  const bool parity = metadata_.present &&
+                      (metadata_.meta.export_flags & update::kExportTokenizerParity);
+  char text[512];
+  const int n = std::snprintf(
+      text, sizeof(text),
+      "{\n \"schema\": 1,\n \"smf_hash\": \"%016llx\",\n"
+      " \"tokenizer_hash\": \"%016llx\",\n"
+      " \"tokenizer_parity_checked\": %s,\n"
+      " \"tokenizer_parity_ids\": %llu,\n"
+      " \"logits_parity_checked\": false,\n"
+      " \"logits_parity_max_delta\": 0.0\n}\n",
+      static_cast<unsigned long long>(*hash),
+      static_cast<unsigned long long>(header_.tokenizer_hash),
+      parity ? "true" : "false",
+      static_cast<unsigned long long>(
+          parity ? metadata_.meta.tokenizer_parity_ids : 0));
+  return WriteFileDurable(out_path + ".export.json",
+                          reinterpret_cast<const uint8_t*>(text),
+                          static_cast<size_t>(n));
 }
 
 std::expected<void, std::string> UpdateEngine::CommitToModel(

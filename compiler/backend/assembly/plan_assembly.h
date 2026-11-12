@@ -63,9 +63,11 @@ std::vector<uint8_t> SeedPersistentImage(const ArenaBinding& binding);
 /// rodata on a kSeeuRodataAlignment boundary (a GPU backend wraps the
 /// frozen weights zero-copy), the persistent image, the emit table, and
 /// padding to a page multiple.
+/// `metadata_bytes` (plan v23, source/plan/metadata.h) follow the emit table
+/// at the next 64-aligned byte, before the page padding; 0 = no section.
 uint64_t LayOutPlan(PlanHeader& header, const PlanPrograms& programs,
                     const ArenaBinding& binding, uint64_t persist_init_bytes,
-                    uint64_t emit_count);
+                    uint64_t emit_count, uint64_t metadata_bytes);
 
 /// Assembles the blob of `size` bytes by APPENDING into one exact
 /// reservation (E2, #81): each frozen weight is written exactly once, from
@@ -79,6 +81,7 @@ std::vector<uint8_t> AssemblePlan(const PlanHeader& header,
                                   const ArenaBinding& binding,
                                   const std::vector<uint8_t>& persist_init,
                                   const std::vector<EmitEntry>& emit_table,
+                                  const std::vector<uint8_t>& metadata,
                                   uint64_t size, bool consume);
 
 /// The integrity seal: hashes the blob with the hash field zeroed (as

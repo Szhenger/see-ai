@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "source/plan/metadata.h"
 #include "source/plan/opcode_names.h"
 #include "source/plan/update_types.h"
 #include "source/identity/hash.h"
@@ -193,7 +194,41 @@ int DumpJson(const std::vector<uint8_t>& plan, const PlanHeader& h,
                 PRIu64 ", \"arena_offset\": %" PRIu64 "}",
                 i ? "," : "", e.smf_data_offset, e.byte_size, e.arena_offset);
   }
-  std::printf("%s]\n}\n", h.emit_count ? "\n  " : "");
+  std::printf("%s]", h.emit_count ? "\n  " : "");
+  // The metadata section (v23): the manifest words and the ledger.
+  DecodedMetadata meta;
+  if (auto why = PlanMetadataViolation(h, plan.data(), plan.size(), &meta)) {
+    std::fprintf(stderr, "seeml-seeu-dump: %s\n", why->c_str());
+    return 1;
+  }
+  if (meta.present) {
+    std::printf(",\n  \"metadata\": {\"recipe_hash\": %" PRIu64
+                ", \"export_report_hash\": %" PRIu64
+                ", \"export_flags\": %u, \"tokenizer_parity_ids\": %" PRIu64
+                ", \"logits_parity_max_delta_bits\": %u, \"ledger\": [",
+                meta.meta.recipe_hash, meta.meta.export_report_hash,
+                meta.meta.export_flags, meta.meta.tokenizer_parity_ids,
+                static_cast<unsigned>(
+                    F32BitsOf(meta.meta.logits_parity_max_delta)));
+    // Ledger text is printable ASCII (the loader's rule), which still
+    // admits the two characters a JSON string must escape.
+    auto json = [](const char* s) {
+      std::string out;
+      for (; *s != '\0'; ++s) {
+        if (*s == '"' || *s == '\\') out += '\\';
+        out += *s;
+      }
+      return out;
+    };
+    for (size_t i = 0; i < meta.ledger.size(); ++i)
+      std::printf("%s\n    {\"pass\": \"%s\", \"arithmetic\": %u, "
+                  "\"instructions\": %u, \"why\": \"%s\"}",
+                  i ? "," : "", json(meta.ledger[i].pass).c_str(),
+                  meta.ledger[i].arithmetic, meta.ledger[i].instructions,
+                  json(meta.ledger[i].why).c_str());
+    std::printf("%s]}", meta.ledger.empty() ? "" : "\n  ");
+  }
+  std::printf("\n}\n");
   return std::ferror(stdout) ? 1 : 0;
 }
 

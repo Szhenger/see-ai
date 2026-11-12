@@ -61,6 +61,29 @@ analysis screen's new rows (item 3), the attention segment mask, 8-bit
 moments, and the defaults flip (item 4: its own PR, with F1 rows measured on
 AC power).
 
+## Status 2026-11-12
+
+On `claude/v100b-s4s5s6-close`: **the ledger** is in the plan (v23 metadata
+section) and on the analysis screen — one entry per pass that ran, each
+bit-identical, and `precision` the one reordering entry, whose instruction
+count the loader holds equal to the plan's `kFlagRelaxed` instructions
+(acceptance 2: zero reordering entries on an exact package; on a relaxed one
+`precision` accounts for every relaxed GEMM and tiled-attention instruction —
+they are flagged by the precision assignment and by nothing else). **The
+screen** states adjoint ops, the activations saved for the backward, forward
+/ backward / optimizer work, what each fusion stopped writing. Acceptance 3
+as it can be held: the work rows are `GemmFlops + AttentionFlops` of the
+plan's own eval, train and step programs (`source/statistics/plan_work.h`,
+the unit of `seeml-bench` and the runtime screen; forward + backward is one
+pass of the train program, so the runtime's work per step is `grad_accum`
+times it) — `seeml-plan-probe --profile` reports time per
+opcode and no FLOP figure, so there is nothing of the probe's to match; byte
+rows use the arena binder's size function. **Open: the defaults flip**
+(clip 1.0, lr 1e-4 cosine + warmup, alpha / sqrt(r)) and its F1 rows — the
+acceptance asks for its own PR with measurements, and the host has been on
+battery for this whole branch, so no F1 row was taken. Also not done:
+the attention segment operand / mask, 8-bit moments, the MSE opcode drop.
+
 ## Acceptance
 
 - Every fixture compiles to a bit-identical plan before and after the move

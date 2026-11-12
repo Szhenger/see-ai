@@ -1,6 +1,7 @@
 #ifndef SEEML_SOURCE_STATISTICS_PLAN_WORK_H_
 #define SEEML_SOURCE_STATISTICS_PLAN_WORK_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <span>
@@ -96,6 +97,51 @@ inline uint64_t AttentionFlops(std::span<const UpdateInstruction> program) {
     if (products) flops = SatAdd(flops, SatMul(SatMul(2, products), macs));
   }
   return flops;
+}
+
+/// One GEMM shape of a program and what it costs.
+struct GemmShape {
+  uint64_t m = 0, n = 0, k = 0;
+  uint64_t count = 0;
+  uint64_t flops = 0;  // 2*M*N*K, summed over the shape's instructions
+};
+
+/// The GEMM instructions of `program` grouped by (M, N, K), largest work
+/// first (ties by shape): the same eight opcodes and the same unit as
+/// GemmFlops, so the census sums to it.
+inline std::vector<GemmShape> GemmCensus(
+    std::span<const UpdateInstruction> program) {
+  std::vector<GemmShape> shapes;
+  for (const UpdateInstruction& ins : program) {
+    switch (static_cast<OpCode>(ins.opcode)) {
+      case OpCode::kGemmNN: case OpCode::kGemmNT: case OpCode::kGemmTN:
+      case OpCode::kGemmAccNN: case OpCode::kGemmNNQ8: case OpCode::kGemmNTQ8:
+      case OpCode::kGemmNNBF16: case OpCode::kGemmNTBF16:
+        break;
+      default:
+        continue;
+    }
+    const UpdateInstruction one[] = {ins};
+    const uint64_t flops = GemmFlops(one);
+    GemmShape* found = nullptr;
+    for (GemmShape& g : shapes)
+      if (g.m == ins.out[0] && g.n == ins.out[1] && g.k == ins.out[2])
+        found = &g;
+    if (!found) {
+      shapes.push_back({ins.out[0], ins.out[1], ins.out[2], 0, 0});
+      found = &shapes.back();
+    }
+    ++found->count;
+    found->flops = SatAdd(found->flops, flops);
+  }
+  std::sort(shapes.begin(), shapes.end(),
+            [](const GemmShape& a, const GemmShape& b) {
+              if (a.flops != b.flops) return a.flops > b.flops;
+              if (a.m != b.m) return a.m < b.m;
+              if (a.n != b.n) return a.n < b.n;
+              return a.k < b.k;
+            });
+  return shapes;
 }
 
 /// The arithmetic of one optimizer step of a plan.

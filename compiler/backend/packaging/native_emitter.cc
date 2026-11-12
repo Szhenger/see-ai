@@ -161,6 +161,9 @@ constexpr const char* kPlanFileName = "update_plan.seeu";
 // screen's predicted step and utilization are computed against it, and a
 // run's own --peak-gflops overrides it (S0 #146).
 constexpr double kSeemlPeakGflops = 0.0 /*seeml:peak_gflops*/;
+// The target GPU's peak (--gpu-peak-gflops at compile time, S6 #152): the
+// denominator of the predicted step when the run is on the Metal backend.
+constexpr double kSeemlGpuPeakGflops = 0.0 /*seeml:gpu_peak_gflops*/;
 
 /// The directory holding this executable, asked of the OS (a bare or
 /// PATH-found argv[0] says nothing about where the binary is), with
@@ -718,6 +721,31 @@ int main(int argc, char** argv) {
     const seeml::update::PlanWork work = seeml::update::MeasurePlanWork(
         {engine.plan_data(), engine.plan_size()});
     const double flops = static_cast<double>(work.FlopsPerStep());
+    // On the GPU the prediction is against the GPU's stated peak, unless
+    // this run named its own.
+    if (std::string_view(engine.backend_name()).starts_with("metal") &&
+        kSeemlGpuPeakGflops > 0.0 && !Has(argc, argv, "--peak-gflops"))
+      peak_gflops = kSeemlGpuPeakGflops;
+    // The identity manifest (S4 #150): the four inputs' hashes, as the plan
+    // carries them — the model's was verified against the file at commit
+    // binding, the corpus's and the tokenizer's by the feeder contract.
+    {
+      auto hex = [](uint64_t v) {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)v);
+        return std::string(buf);
+      };
+      const seeml::update::PlanHeader& h = engine.header();
+      if (h.source_model_hash)
+        runtime_screen.Set("model_hash", hex(h.source_model_hash));
+      if (h.tokenizer_hash)
+        runtime_screen.Set("tokenizer_hash", hex(h.tokenizer_hash));
+      if (h.data_flags & seeml::update::kDataFlagCorpusPinned)
+        runtime_screen.Set("corpus_hash", hex(h.corpus_hash));
+      if (engine.metadata().present)
+        runtime_screen.Set("recipe_hash",
+                           hex(engine.metadata().meta.recipe_hash));
+    }
     runtime_screen.Set("device_bytes", planned);
     runtime_screen.Set("flops_per_step", work.FlopsPerStep());
     if (peak_gflops > 0.0)
@@ -934,6 +962,13 @@ int main(int argc, char** argv) {
   commit_s = since(t_commit0);
   write_report(true, nullptr);
   std::fprintf(stderr, "seeml-update: committed '%s'\n", out.c_str());
+  // The committed model's report (S4 #150): it keeps the tokenizer section,
+  // so compiling it again needs the report that describes these bytes.
+  if (auto r = engine.WriteCommittedModelReport(out); !r) {
+    std::fprintf(stderr, "seeml-update: the committed model's report: %s\n",
+                 r.error().c_str());
+    outputs_ok = false;
+  }
   if (!outputs_ok) {
     std::fprintf(stderr,
                  "seeml-update: the update is committed, but a requested "
@@ -974,6 +1009,7 @@ constexpr const char* kVendoredSources[] = {
     "source/plan/update_types.h",         "source/plan/config.h",
     "source/plan/bf16.h",
     "source/plan/instruction.h",          "source/plan/schema.h",
+    "source/plan/metadata.h",
     "source/identity/hash.h",             "source/identity/host_memory.h",
     "source/contract/bounds.h",           "source/contract/plan_contract.h",
     "source/contract/split.h",
@@ -1197,6 +1233,18 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
     char peak[64];
     std::snprintf(peak, sizeof(peak), "%.17g /*seeml:peak_gflops*/", stated);
     main_tu.replace(at, marker.size(), peak);
+    // The GPU's peak, the same way.
+    const std::string gpu_marker = "0.0 /*seeml:gpu_peak_gflops*/";
+    const size_t gpu_at = main_tu.find(gpu_marker);
+    if (gpu_at == std::string::npos)
+      return generating::Error(generating::kNativeEmitter,
+                               "the runner template lost its GPU peak marker");
+    const double gpu = std::isfinite(options.gpu_peak_gflops) &&
+                               options.gpu_peak_gflops > 0.0
+                           ? options.gpu_peak_gflops
+                           : 0.0;
+    std::snprintf(peak, sizeof(peak), "%.17g /*seeml:gpu_peak_gflops*/", gpu);
+    main_tu.replace(gpu_at, gpu_marker.size(), peak);
   }
   if (auto r = WriteFile(paths.main_tu, main_tu); !r)
     return std::unexpected(r.error());

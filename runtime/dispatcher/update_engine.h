@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "runtime/executor/backend.h"
 #include "runtime/pipeline/dataset.h"
@@ -298,6 +299,18 @@ class UpdateEngine {
   [[nodiscard]] std::expected<void, std::string> CommitToModel(
       const std::string& source_model_path, const std::string& out_path) const;
 
+  /// The report of a committed model (S4 #150): writes
+  /// `out_path` + ".export.json" for the file CommitToModel just wrote, in
+  /// the exporter's schema, so the committed model — which keeps the source's
+  /// tokenizer section — compiles again. It carries the file's own hash, the
+  /// section's hash, and the tokenizer parity the plan's metadata recorded
+  /// for the source (the section is copied byte for byte, so that proof
+  /// still describes it); the logits parity is marked not run: the weights
+  /// are no longer the checkpoint's. A plan bound to no tokenizer writes
+  /// nothing — such a model needs no report.
+  [[nodiscard]] std::expected<void, std::string> WriteCommittedModelReport(
+      const std::string& out_path) const;
+
   /// Checks that `source_model_path` hashes to the plan's source_model_hash,
   /// without training or writing anything. CommitToModel re-verifies the
   /// copy it patches (no TOCTOU window); calling this right after load
@@ -329,6 +342,9 @@ class UpdateEngine {
 
   // --- Introspection / test hooks -------------------------------------------
   const seeml::update::PlanHeader& header() const { return header_; }
+  /// The plan's metadata section (v23): `present` is false for a plan
+  /// without one.
+  const seeml::update::DecodedMetadata& metadata() const { return metadata_; }
   /// The loaded plan's bytes and their count (borrowed, mapped or owned).
   const uint8_t* plan_data() const { return plan_; }
   size_t plan_size() const { return plan_size_; }
@@ -390,6 +406,7 @@ class UpdateEngine {
   float* WritePtr(uint64_t ref);
 
   seeml::update::PlanHeader header_{};
+  seeml::update::DecodedMetadata metadata_{};
   // Step-latency instrumentation (SEEML_STEP_TIMING): phase boundaries of
   // the training stream, scanned once at load; zeros/unused otherwise.
   // Unconditional members keep the class layout build-independent.

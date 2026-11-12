@@ -25,6 +25,7 @@
 #include "source/identity/version.h"
 #include "source/language/model_format.h"
 #include "source/plan/opcode_names.h"
+#include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "source/recipe/recipe.h"
 #include "source/statistics/screens.h"
@@ -62,6 +63,11 @@ void Field(const char* name, size_t offset, size_t size) {
   X(val_frac_bits) X(data_flags)
 #define INSTRUCTION_FIELDS(X) X(opcode) X(flags) X(imm) X(in) X(out)
 #define EMIT_ENTRY_FIELDS(X) X(smf_data_offset) X(byte_size) X(arena_offset)
+#define PLAN_METADATA_FIELDS(X)                                              \
+  X(magic) X(format) X(bytes) X(recipe_hash) X(export_report_hash)           \
+  X(export_flags) X(logits_parity_max_delta) X(tokenizer_parity_ids)         \
+  X(ledger_count) X(reserved0) X(reserved1)
+#define LEDGER_ENTRY_FIELDS(X) X(pass) X(arithmetic) X(instructions) X(why)
 #define CKPT_FIELDS(X) \
   X(magic) X(version) X(plan_hash) X(step) X(persistent_size) X(payload_hash)
 
@@ -70,6 +76,14 @@ void Field(const char* name, size_t offset, size_t size) {
 #define SIZE_OF_UpdateInstruction(f) SIZE_OF(up::UpdateInstruction, f)
 #define SIZE_OF_EmitEntry(f) SIZE_OF(up::EmitEntry, f)
 #define SIZE_OF_CkptHeader(f) SIZE_OF(rt::CkptHeader, f)
+#define SIZE_OF_PlanMetadata(f) SIZE_OF(up::PlanMetadata, f)
+#define SIZE_OF_LedgerEntry(f) SIZE_OF(up::LedgerEntry, f)
+static_assert(0 PLAN_METADATA_FIELDS(SIZE_OF_PlanMetadata) ==
+                  sizeof(up::PlanMetadata),
+              "PlanMetadata: the manifest's field list is incomplete");
+static_assert(0 LEDGER_ENTRY_FIELDS(SIZE_OF_LedgerEntry) ==
+                  sizeof(up::LedgerEntry),
+              "LedgerEntry: the manifest's field list is incomplete");
 static_assert(0 PLAN_HEADER_FIELDS(SIZE_OF_PlanHeader) == sizeof(up::PlanHeader),
               "PlanHeader: the manifest's field list is missing a field");
 static_assert(0 INSTRUCTION_FIELDS(SIZE_OF_UpdateInstruction) ==
@@ -198,9 +212,32 @@ int main(int argc, char**) {
          [] { INSTRUCTION_FIELDS(X) });
 #undef X
 #define X(f) SEEML_FIELD(up::EmitEntry, f);
-  Struct("EmitEntry", sizeof(up::EmitEntry), [] { EMIT_ENTRY_FIELDS(X) }, true);
+  Struct("EmitEntry", sizeof(up::EmitEntry), [] { EMIT_ENTRY_FIELDS(X) });
 #undef X
-  std::printf("    }\n  },\n");
+#define X(f) SEEML_FIELD(up::PlanMetadata, f);
+  Struct("PlanMetadata", sizeof(up::PlanMetadata),
+         [] { PLAN_METADATA_FIELDS(X) });
+#undef X
+#define X(f) SEEML_FIELD(up::LedgerEntry, f);
+  Struct("LedgerEntry", sizeof(up::LedgerEntry),
+         [] { LEDGER_ENTRY_FIELDS(X) }, true);
+#undef X
+  // The data-contract flags (v22) and the metadata section (v23, S4 / S5 /
+  // S6): the manifest words the header has no room for, and the ledger.
+  std::printf("    },\n    \"data_flags\": {\"masked_loss\": %u, "
+              "\"corpus_pinned\": %u, \"split\": %u, \"metadata\": %u},\n"
+              "    \"metadata\": {\"magic\": %u, \"format\": %u, "
+              "\"version\": %u, \"ledger_max\": %u,\n"
+              "      \"export_flags\": {\"report\": %u, "
+              "\"tokenizer_parity\": %u, \"logits_parity\": %u},\n"
+              "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u}}\n"
+              "  },\n",
+              up::kDataFlagMaskedLoss, up::kDataFlagCorpusPinned,
+              up::kDataFlagSplit, up::kDataFlagMetadata,
+              up::kPlanMetadataMagic, up::kPlanMetadataFormat,
+              up::kSeeuMetadataVersion, up::kLedgerMaxEntries,
+              up::kExportReportPresent, up::kExportTokenizerParity,
+              up::kExportLogitsParity, up::kLedgerExact, up::kLedgerReordered);
 
   std::printf("  \"sekp\": {\n    \"magic\": %u, \"version\": %u, "
               "\"oldest_readable\": %u,\n    \"flags\": {\"has_val_initial\": "

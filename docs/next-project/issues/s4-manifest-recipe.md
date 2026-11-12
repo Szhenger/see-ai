@@ -81,6 +81,30 @@ compile": the 2026-09-22 plan predates v22 and its bytes cannot be
 reproduced. The debug toggles (`--no-fuse-*`, `--no-rope-table`), the kernel
 tiles and the paths (`--data`, `--teacher`) are not recipe fields.
 
+## Status 2026-11-12
+
+Design items 2 and 3 landed on `claude/v100b-s4s5s6-close`. **The manifest**
+is the plan's v23 metadata section (`source/plan/metadata.h`; the header
+stays 320 bytes, the section sits in the padding after the emit table under
+`data_flags` bit 3): the resolved recipe's hash, the exporter report's hash
+and its parity figures, beside the header's model, tokenizer, corpus and
+held-out-split hashes, split seed and mask flag. The loader proves the
+section before reading it (`PlanMetadataViolation`, mutation-tested); the
+frontend screen, `--report` (`identity`) and the runtime screen print the
+four hashes (acceptance 2: SmolLM-135M, 2026-11-12, model `4448e52d513b5011`,
+tokenizer `bc20bbcbeb260e1f`, corpus `8671aa8ec28e361f`, recipe
+`124555bc49b44c47`, the same four on the compile and the Metal run).
+**Exporter verification**: `tool/export_model.py` writes
+`<model>.smf.export.json` (file hash, section hash, tokenizer-parity ids,
+logits-parity delta, each marked run or not); `ReadExportReport` holds it to
+the loaded model; an imported checkpoint without one is refused, on the CLI
+and in the library. The device's committed model gets its own report from
+the engine, so it compiles again. Not here: the report records the parity
+figures and sets no threshold on them, and a report with no parity run is
+accepted (the item asks that they be checked against the file and recorded);
+the hash is of the resolved recipe, so `--remat auto` and `--remat on` that
+resolve alike share it.
+
 ## Acceptance
 
 - Every N15/N18/N20/N24/N26/N27/F56/F63 input is refused with a diagnostic

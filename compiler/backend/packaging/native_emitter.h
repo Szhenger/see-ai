@@ -65,6 +65,8 @@ struct EmitOptions {
   /// into the runner so its runtime screen predicts the step and states the
   /// utilization the compile's backend screen predicted (S0 #146).
   double peak_gflops = 0.0;
+  // The target GPU's peak (S6 #152); 0 = unstated.
+  double gpu_peak_gflops = 0.0;
 };
 
 [[nodiscard]] std::expected<EmitPaths, std::string> EmitNativePackage(

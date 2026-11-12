@@ -98,6 +98,7 @@ add_library(seeml_tokenizer STATIC
 add_library(seeml_update STATIC
     source/language/model_format.cc
     compiler/frontend/ingressor/model_reader.cc
+    compiler/frontend/ingressor/export_report.cc
     compiler/frontend/egressor/model_writer.cc
     compiler/frontend/accountant/resource_analyzer.cc
     compiler/frontend/tokenization/corpus_ingress.cc
