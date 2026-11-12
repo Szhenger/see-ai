@@ -6,6 +6,10 @@
 #include <cstring>
 #include <string_view>
 
+#include <span>
+
+#include "compiler/backend/architecture/host_arch.h"
+#include "source/plan/metadata.h"
 #include "source/statistics/plan_work.h"
 
 namespace seeml::update {
@@ -31,21 +35,67 @@ std::string Hex16(uint64_t v) {
 
 }  // namespace
 
-void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
-                        CompiledUpdate& r) {
-  CompileScreens& s = r.screens;
-  double frontend_ms = 0.0, analysis_ms = 0.0, backend_ms = 0.0;
-  for (const PassTiming& t : r.pass_timings) {
-    if (IsFrontendPhase(t.name)) frontend_ms += t.ms;
-    else if (IsBackendPhase(t.name)) backend_ms += t.ms;
-    else analysis_ms += t.ms;
-  }
+namespace {
 
-  // --- frontend ---------------------------------------------------------------
+/// What more than one screen reads, computed once from the plan.
+struct Totals {
+  double frontend_ms = 0.0, analysis_ms = 0.0, backend_ms = 0.0;
+  uint64_t device_bytes = 0;  // arena + plan
+  PlanHeader header{};
+  std::span<const UpdateInstruction> train, eval, step;
+  PlanWork work;
+  uint64_t flops_forward = 0, flops_backward = 0, flops_optimizer = 0;
+  bool peak = false;          // a finite positive --peak-gflops
+  double predicted_ms = 0.0;  // ms = FLOP / (GFLOP/s * 1e9) * 1e3
+};
+
+std::span<const UpdateInstruction> Program(const std::vector<uint8_t>& plan,
+                                           uint64_t offset, uint64_t count) {
+  return {reinterpret_cast<const UpdateInstruction*>(plan.data() + offset),
+          static_cast<size_t>(count)};
+}
+
+Totals Measure(const UpdateConfig& config, const CompiledUpdate& r) {
+  Totals t;
+  for (const PassTiming& p : r.pass_timings) {
+    if (IsFrontendPhase(p.name)) t.frontend_ms += p.ms;
+    else if (IsBackendPhase(p.name)) t.backend_ms += p.ms;
+    else t.analysis_ms += p.ms;
+  }
+  t.device_bytes = r.arena_size + r.plan.size();
+  if (r.plan.size() >= sizeof(t.header)) {
+    std::memcpy(&t.header, r.plan.data(), sizeof(t.header));
+    t.train = Program(r.plan, t.header.train_instr_offset,
+                      t.header.train_instr_count);
+    t.eval = Program(r.plan, t.header.eval_instr_offset,
+                     t.header.eval_instr_count);
+    t.step = Program(r.plan, t.header.step_instr_offset,
+                     t.header.step_instr_count);
+  }
+  t.work = MeasurePlanWork(r.plan);
+  // Forward, backward, optimizer (S5 #151), with the unit seeml-plan-probe
+  // reports per section: the eval program is the forward and the loss, the
+  // train program is that plus the backward (and, without accumulation, the
+  // update), the step program is the update under accumulation.
+  auto flops = [](std::span<const UpdateInstruction> p) {
+    return SatAdd(GemmFlops(p), AttentionFlops(p));
+  };
+  t.flops_forward = flops(t.eval);
+  const uint64_t train = flops(t.train);
+  t.flops_backward = train > t.flops_forward ? train - t.flops_forward : 0;
+  t.flops_optimizer = flops(t.step);
+  t.peak = std::isfinite(config.peak_gflops) && config.peak_gflops > 0.0;
+  t.predicted_ms = t.peak ? static_cast<double>(t.work.FlopsPerStep()) /
+                                (config.peak_gflops * 1e6)
+                          : 0.0;
+  return t;
+}
+
+void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
+                  const CompiledUpdate& r, const Totals& t, Screen& fe) {
   const IngressorFacts& ing = f.frontend.ingressor;
   const TopologyFacts& top = f.frontend.topology;
   const AccountantFacts& acc = f.frontend.accountant;
-  Screen& fe = s.frontend;
   fe.Set("model_ops", ing.model_ops);
   fe.Set("model_tensors", ing.model_tensors);
   fe.Set("weight_tensors", ing.weight_tensors);
@@ -106,23 +156,46 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
                                std::to_string(c.split_seed) + ", split " +
                                Hex16(c.val_split_hash));
   }
+  // The identity manifest (S4 #150): every input of the fine-tune, hashed —
+  // the accountant prints what the plan's header and metadata carry.
+  fe.Set("model_hash", ing.content_hash ? Hex16(ing.content_hash)
+                                        : std::string("none: built in memory"));
+  if (t.header.tokenizer_hash)
+    fe.Set("tokenizer_hash", Hex16(t.header.tokenizer_hash));
+  fe.Set("recipe_hash", Hex16(r.recipe_hash));
+  if (config.export_report.present) {
+    const ExportReport& e = config.export_report;
+    char delta[32];
+    std::snprintf(delta, sizeof(delta), "%.3g",
+                  static_cast<double>(e.logits_parity_max_delta));
+    fe.Set("export_report",
+           Hex16(e.report_hash) + "; tokenizer parity " +
+               (e.tokenizer_parity
+                    ? std::to_string(e.tokenizer_parity_ids) + " ids equal"
+                    : std::string("not run")) +
+               "; logits parity " +
+               (e.logits_parity ? std::string("max delta ") + delta
+                                : std::string("not run")));
+  }
   fe.Set("footprint_weights", acc.footprint_weights);
   fe.Set("footprint_activations", acc.footprint_activations);
   fe.Set("footprint_deltas", acc.footprint_deltas);
   fe.Set("footprint_caches", acc.footprint_caches);
   fe.Set("footprint_total", acc.footprint_total);
-  const uint64_t device_bytes = r.arena_size + r.plan.size();
-  fe.Set("bound_ratio", device_bytes ? static_cast<double>(r.estimate_bytes) /
-                                           static_cast<double>(device_bytes)
+  fe.Set("bound_ratio", t.device_bytes ? static_cast<double>(r.estimate_bytes) /
+                                           static_cast<double>(t.device_bytes)
                                      : 0.0);
   fe.Set("memory_budget", acc.memory_budget);
-  fe.Set("frontend_ms", frontend_ms);
+  fe.Set("frontend_ms", t.frontend_ms);
   for (const WeightRange& w : ing.ranges)
     fe.AddRow("tensors", {w.name, w.bytes, static_cast<double>(w.min),
                           static_cast<double>(w.max)});
 
-  // --- analysis ---------------------------------------------------------------
-  Screen& an = s.analysis;
+}
+
+void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
+                  const CompiledUpdate& r, const Totals& t, Screen& an) {
+  const IngressorFacts& ing = f.frontend.ingressor;
   an.Set("passes", r.pass_timings.size());
   an.Set("ops_in", f.ops_in);
   an.Set("ops_out", f.ops_out);
@@ -167,7 +240,19 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
          : f.bf16_weights ? std::to_string(f.bf16_weights) + " bf16"
          : r.adapter_only ? std::string("none: read from the model file")
                           : std::string("none: f32"));
-  an.Set("analysis_ms", analysis_ms);
+  // What the calculus added and what the fusions removed (S5 #151).
+  an.Set("adjoint_ops", f.adjoint_ops);
+  an.Set("saved_activation_bytes", f.saved_activation_bytes);
+  an.Set("flops_forward", t.flops_forward);
+  an.Set("flops_backward", t.flops_backward);
+  an.Set("flops_optimizer", t.flops_optimizer);
+  an.Set("epilogue_bytes_removed", f.epilogue_bytes_removed);
+  an.Set("addend_bytes_removed", f.addend_bytes_removed);
+  an.Set("chain_bytes_removed", f.chain_bytes_removed);
+  uint64_t reordered = 0;
+  for (const LedgerEntry& e : r.ledger) reordered += e.instructions;
+  an.Set("reordered_instructions", reordered);
+  an.Set("analysis_ms", t.analysis_ms);
   for (const PassTiming& t : r.pass_timings)
     an.AddRow("passes", {t.name, static_cast<uint64_t>(t.ops_after), t.ms});
   for (const AdapterDebugInfo& a : r.adapters)
@@ -178,9 +263,17 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
                            : a.bf16              ? "bf16"
                            : r.adapter_only      ? "file"
                                                  : "f32")});
+  // The reduction-order ledger, as the plan's metadata carries it.
+  for (const LedgerEntry& e : r.ledger)
+    an.AddRow("ledger",
+              {std::string(e.pass),
+               std::string(e.arithmetic == kLedgerExact ? "bit-identical"
+                                                         : "reordered"),
+               static_cast<uint64_t>(e.instructions), std::string(e.why)});
+}
 
-  // --- backend ----------------------------------------------------------------
-  Screen& be = s.backend;
+void FillBackend(const CompileFacts& f, const UpdateConfig& config,
+                 const CompiledUpdate& r, const Totals& t, Screen& be) {
   be.Set("train_instructions", r.train_instruction_count);
   be.Set("eval_instructions", r.eval_instruction_count);
   be.Set("merge_instructions", r.merge_instruction_count);
@@ -188,41 +281,67 @@ void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
     be.Set("step_instructions", r.step_instruction_count);
   be.Set("arena_bytes", r.arena_size);
   be.Set("persistent_bytes", r.persistent_size);
+  be.Set("io_bytes", r.io_size);
   be.Set("transient_bytes", r.transient_size);
   be.Set("rodata_bytes", r.rodata_size);
   be.Set("plan_bytes", r.plan.size());
-  be.Set("device_bytes", device_bytes);
-  const PlanWork work = MeasurePlanWork(r.plan);
-  be.Set("gemm_flops", work.GemmFlopsPerStep());
-  be.Set("attention_flops", work.AttentionFlopsPerStep());
-  // A finite positive peak only: an infinite one would predict a 0 ms step.
-  const bool peak =
-      std::isfinite(config.peak_gflops) && config.peak_gflops > 0.0;
-  // ms = FLOP ÷ (GFLOP/s · 1e9) · 1e3.
-  const double predicted_ms =
-      peak ? static_cast<double>(work.FlopsPerStep()) /
-                 (config.peak_gflops * 1e6)
-           : 0.0;
-  if (peak) {
+  be.Set("device_bytes", t.device_bytes);
+  be.Set("gemm_flops", t.work.GemmFlopsPerStep());
+  be.Set("attention_flops", t.work.AttentionFlopsPerStep());
+  if (t.peak) {
     be.Set("peak_gflops", config.peak_gflops);
-    be.Set("predicted_step_ms", predicted_ms);
+    be.Set("predicted_step_ms", t.predicted_ms);
+  }
+  // The GPU half of the target (S6 #152): the same work over the GPU's
+  // stated peak, so a Metal run's measured step has a prediction beside it.
+  if (std::isfinite(config.gpu_peak_gflops) && config.gpu_peak_gflops > 0.0) {
+    be.Set("gpu_peak_gflops", config.gpu_peak_gflops);
+    be.Set("predicted_step_gpu_ms",
+           static_cast<double>(t.work.FlopsPerStep()) /
+               (config.gpu_peak_gflops * 1e6));
+  }
+  {
+    const HostArchInfo host = DetectHostArch();
+    be.Set("target", HostKey(host) + "; GPU " +
+                         (host.gpu_family.empty() ? std::string("none")
+                                                  : host.gpu_family));
   }
   be.Set("kernel_policy",
          r.gemm_tile_k == 0 && r.gemm_tile_n == 0
              ? std::string("runtime default")
              : "K " + std::to_string(r.gemm_tile_k) + ", N " +
                    std::to_string(r.gemm_tile_n));
-  PlanHeader header{};
-  if (r.plan.size() >= sizeof(header))
-    std::memcpy(&header, r.plan.data(), sizeof(header));
-  be.Set("plan_hash", Hex16(header.plan_hash));
-  be.Set("backend_ms", backend_ms);
+  be.Set("plan_hash", Hex16(t.header.plan_hash));
+  be.Set("backend_ms", t.backend_ms);
+  for (const TensorFact& tensor : f.largest_tensors)
+    be.AddRow("largest_tensors", {tensor.name, tensor.bytes, tensor.segment});
+  // The GEMM census: the train program's products by shape.
+  const uint64_t train_gemm = GemmFlops(t.train);
+  for (const GemmShape& g : GemmCensus(t.train))
+    be.AddRow("gemm_census",
+              {std::to_string(g.m) + " x " + std::to_string(g.n) + " x " +
+                   std::to_string(g.k),
+               g.count, g.flops,
+               train_gemm ? 100.0 * static_cast<double>(g.flops) /
+                                static_cast<double>(train_gemm)
+                          : 0.0});
+}
 
-  // --- runtime, as planned -------------------------------------------------------
-  Screen& rt = s.runtime;
-  rt.Set("device_bytes", device_bytes);
-  rt.Set("flops_per_step", work.FlopsPerStep());
-  if (peak) rt.Set("predicted_step_ms", predicted_ms);
+void FillRuntime(const Totals& t, Screen& rt) {
+  rt.Set("device_bytes", t.device_bytes);
+  rt.Set("flops_per_step", t.work.FlopsPerStep());
+  if (t.peak) rt.Set("predicted_step_ms", t.predicted_ms);
+}
+
+}  // namespace
+
+void FillCompileScreens(const CompileFacts& f, const UpdateConfig& config,
+                        CompiledUpdate& r) {
+  const Totals t = Measure(config, r);
+  FillFrontend(f, config, r, t, r.screens.frontend);
+  FillAnalysis(f, config, r, t, r.screens.analysis);
+  FillBackend(f, config, r, t, r.screens.backend);
+  FillRuntime(t, r.screens.runtime);
 }
 
 std::string RenderCompileScreens(const CompileScreens& screens, bool verbose) {

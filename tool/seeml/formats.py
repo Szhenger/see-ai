@@ -129,13 +129,26 @@ SMTK_HEAD = Layout("SmtkHead", [
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 22
+SEEU_VERSION = 23
 SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
 # PlanHeader.data_flags (v22).
 DATA_FLAG_MASKED_LOSS = 1
 DATA_FLAG_CORPUS_PINNED = 2
 DATA_FLAG_SPLIT = 4
-DATA_FLAGS_MASK = 7
+DATA_FLAG_METADATA = 8   # v23: the plan carries a metadata section
+DATA_FLAGS_MASK = 15
+# The metadata section (v23, source/plan/metadata.h): the identity
+# manifest's remaining words and the reduction-order ledger, at the first
+# 64-aligned byte after the emit table.
+SEEU_METADATA_VERSION = 23
+PLAN_METADATA_MAGIC = 0x4D454553  # "SEEM"
+PLAN_METADATA_FORMAT = 1
+LEDGER_MAX_ENTRIES = 64
+EXPORT_REPORT_PRESENT = 1
+EXPORT_TOKENIZER_PARITY = 2
+EXPORT_LOGITS_PARITY = 4
+LEDGER_EXACT = 0
+LEDGER_REORDERED = 1
 SEEU_OLDEST_READABLE = 4
 RODATA_BIT = 1 << 63
 # v17: the source model file (E12), the eval program only; v21: every
@@ -335,8 +348,24 @@ PROBE_TRACE_PREAMBLE = struct.Struct("<IIQ")  # magic, version, instructions
 PROBE_TRACE_RECORD = struct.Struct("<IHHI")
 PROBE_TRACE_EXTENT = struct.Struct("<QQ")     # arena offset, bytes
 
+PLAN_METADATA = Layout("PlanMetadata", [
+    ("magic", "I"), ("format", "I"), ("bytes", "Q"), ("recipe_hash", "Q"),
+    ("export_report_hash", "Q"), ("export_flags", "I"),
+    ("logits_parity_max_delta", "f"), ("tokenizer_parity_ids", "Q"),
+    ("ledger_count", "I"), ("reserved0", "I"), ("reserved1", "Q")])
+LEDGER_ENTRY = Layout("LedgerEntry", [
+    ("pass", "32s"), ("arithmetic", "I"), ("instructions", "I"),
+    ("why", "56s")])
+
+
+def plan_metadata_offset(emit_table_offset: int, emit_count: int) -> int:
+    """PlanMetadataOffset: the first 64-aligned byte after the emit table."""
+    return (emit_table_offset + emit_count * EMIT_ENTRY.size + 63) & ~63
+
+
 STRUCTS = {
-    "seeu": (PLAN_HEADER, INSTRUCTION, EMIT_ENTRY),
+    "seeu": (PLAN_HEADER, INSTRUCTION, EMIT_ENTRY, PLAN_METADATA,
+             LEDGER_ENTRY),
     "sekp": (CKPT_HEADER, CKPT_HEADER_V4_TAIL, CKPT_HEADER_V5_TAIL),
 }
 
@@ -386,6 +415,19 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
     same("seeu.gemm_panel_floats", GEMM_PANEL_FLOATS,
          seeu["gemm_panel_floats"])
     same("seeu.opcodes", {n: k for k, n in OPCODES.items()}, seeu["opcodes"])
+    same("seeu.data_flags", {"masked_loss": DATA_FLAG_MASKED_LOSS,
+                             "corpus_pinned": DATA_FLAG_CORPUS_PINNED,
+                             "split": DATA_FLAG_SPLIT,
+                             "metadata": DATA_FLAG_METADATA},
+         seeu.get("data_flags"))
+    same("seeu.metadata",
+         {"magic": PLAN_METADATA_MAGIC, "format": PLAN_METADATA_FORMAT,
+          "version": SEEU_METADATA_VERSION, "ledger_max": LEDGER_MAX_ENTRIES,
+          "export_flags": {"report": EXPORT_REPORT_PRESENT,
+                           "tokenizer_parity": EXPORT_TOKENIZER_PARITY,
+                           "logits_parity": EXPORT_LOGITS_PARITY},
+          "arithmetic": {"exact": LEDGER_EXACT, "reordered": LEDGER_REORDERED}},
+         seeu.get("metadata"))
     same("seeu.flags", {"epilogue_bias": FLAG_EPILOGUE_BIAS,
                         "epilogue_act_shift": FLAG_EPILOGUE_ACT_SHIFT,
                         "epilogue_act_mask": FLAG_EPILOGUE_ACT_MASK,

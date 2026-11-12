@@ -25,6 +25,7 @@
 #include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
+#include "source/plan/metadata.h"
 #include "source/recipe/recipe.h"
 
 namespace seeml::update {
@@ -56,6 +57,16 @@ std::expected<CompiledUpdate, std::string> Attributed(
         generating::kDriver,
         "unattributed diagnostic escaped a subsystem: " + compiled.error());
   return compiled;
+}
+
+/// The f32 / i32 bytes of every result of `ops`: what stops being written
+/// when those ops are fused away.
+uint64_t ResultBytes(const std::vector<sir::Operation*>& ops) {
+  uint64_t bytes = 0;
+  for (const sir::Operation* op : ops)
+    for (const auto& r : op->results())
+      bytes += static_cast<uint64_t>(r->shape().volume()) * 4;
+  return bytes;
 }
 
 struct Compilation {
@@ -178,6 +189,8 @@ struct Compilation {
   Status ReportSummary();
   // The merge program bound into the training arena (again after a rebind).
   Status BindMerge();
+  // The plan's metadata section: the manifest words and the ledger (v23).
+  std::vector<uint8_t> BuildMetadata();
   ResolveFn ResolveTrain();
 
   std::expected<CompiledUpdate, std::string> Run();
@@ -774,6 +787,27 @@ Status Compilation::CalculusPasses() {
   }
 
   facts.gradients = param_grads.size();
+  // What the calculus added (S5 #151): the ops autodiff emitted, and the
+  // forward values its backward reads — the activations a training step
+  // must keep from forward to backward.
+  for (const PassTiming& t : timings)
+    if (t.name == "autodiff" && t.ops_after > primal_ops.size())
+      facts.adjoint_ops = t.ops_after - primal_ops.size();
+  {
+    const std::unordered_set<const sir::Operation*> primal(primal_ops.begin(),
+                                                           primal_ops.end());
+    for (const sir::Operation* op : primal_ops) {
+      if (op->isMemoryOp()) continue;
+      for (const auto& r : op->results()) {
+        bool read_by_backward = false;
+        for (const sir::Operation* user : r->users())
+          read_by_backward |= !primal.contains(user);
+        if (read_by_backward)
+          facts.saved_activation_bytes +=
+              static_cast<uint64_t>(r->shape().volume()) * 4;
+      }
+    }
+  }
   return {};
 }
 
@@ -836,6 +870,7 @@ Status Compilation::FusionPasses() {
                    GemmEpilogueFuser().Run(b, quantized, protected_values);
                if (!fused) return std::unexpected(fused.error());
                facts.epilogue_fusions = fused->fused_chains;
+               facts.epilogue_bytes_removed = ResultBytes(fused->fused_away);
                // Fuse-then-rebind: the primal snapshot is the eval program
                // and the DCE root set; the orphaned ops leave it here, so
                // eval lowers the fused GEMMs and the sweep may free them.
@@ -864,6 +899,7 @@ Status Compilation::FusionPasses() {
                auto fused = GemmAddendFuser().Run(b, narrow, protected_values);
                if (!fused) return std::unexpected(fused.error());
                facts.addend_fusions = fused->fused;
+               facts.addend_bytes_removed = ResultBytes(fused->fused_away);
                // Fuse-then-rebind, as above: a folded forward GEMM leaves
                // the eval snapshot; the add that absorbed it stays.
                if (!fused->fused_away.empty()) {
@@ -885,6 +921,7 @@ Status Compilation::FusionPasses() {
                auto fused = ElementwiseChainFuser().Run(b, protected_values);
                if (!fused) return std::unexpected(fused.error());
                facts.chain_fusions = fused->fused_chains;
+               facts.chain_bytes_removed = ResultBytes(fused->fused_away);
                // Fuse-then-rebind, as above: the folded ops leave the eval
                // snapshot (their tail stays in it, now carrying the chain).
                if (!fused->fused_away.empty()) {
@@ -1256,12 +1293,14 @@ Status Compilation::Assemble() {
   auto emit_table = BuildEmitTable(*merge, adapters, build, merge_bound);
   if (!emit_table) return std::unexpected(emit_table.error());
   if (auto ok = FillHeader(); !ok) return std::unexpected(ok.error());
+  const std::vector<uint8_t> metadata = BuildMetadata();
+  header.data_flags |= kDataFlagMetadata;
   const uint64_t plan_bytes = LayOutPlan(header, programs, *binding,
                                          persist_init.size(),
-                                         emit_table->size());
+                                         emit_table->size(), metadata.size());
   phase("persist-init", block.numOps());
   result.plan = AssemblePlan(header, programs, *binding, persist_init,
-                             *emit_table, plan_bytes, consume);
+                             *emit_table, metadata, plan_bytes, consume);
   phase("assemble", block.numOps());
   SealPlan(result.plan);
 
@@ -1403,6 +1442,26 @@ Status Compilation::ReportSummary() {
                     : std::string()) +
                "), rodata " + std::to_string(header.rodata_size) + " B");
 
+  // The five largest values the arena holds, with their segment (S6 #152).
+  {
+    std::vector<TensorFact> tensors;
+    for (const auto& [value, ref] : binding->refs) {
+      if (IsRodataRef(ref) || IsSourceRef(ref)) continue;
+      const uint64_t at = RefOffset(ref);
+      tensors.push_back(
+          {std::string(value->id()),
+           static_cast<uint64_t>(value->shape().volume()) * 4,
+           at < binding->persistent_size ? "persistent"
+           : at < binding->io_end        ? "io"
+                                         : "transient"});
+    }
+    std::sort(tensors.begin(), tensors.end(),
+              [](const TensorFact& a, const TensorFact& b) {
+                return a.bytes != b.bytes ? a.bytes > b.bytes : a.name < b.name;
+              });
+    if (tensors.size() > 5) tensors.resize(5);
+    facts.largest_tensors = std::move(tensors);
+  }
   // The screens (S0 #146): what the compile did, as numbers.
   facts.attention_ops = attention_decision.attention_ops;
   FillCompileScreens(facts, config_, result);
@@ -1428,6 +1487,72 @@ Status Compilation::BindMerge() {
       merge_pinned, merge_bound);
   binding->arena_size = std::max(binding->arena_size, merge_high);
   return {};
+}
+
+// One ledger line per pass that ran, in order: every analysis pass computes
+// the bits of its input (each is proven so by the fused-vs-unfused, tiled-
+// vs-cached and remat-vs-plain twin tests), and the precision assignment is
+// the one decision that lets a backend reorder a reduction — under the
+// numerics certificate the package must then carry.
+std::vector<uint8_t> Compilation::BuildMetadata() {
+  struct Reason {
+    std::string_view pass, why;
+  };
+  static constexpr Reason kExactPasses[] = {
+      {"attention-tiling", "same expressions; probabilities recomputed"},
+      {"lora-graft", "adds the adapter path; B is zero at step 0"},
+      {"rope-table", "angles hoisted; the kernels' own recurrence"},
+      {"autodiff", "adds the backward; the forward is untouched"},
+      {"optimizer", "adds the update; the forward is untouched"},
+      {"fuse-gemm-epilogue", "bias and activation inside the GEMM's loop"},
+      {"fuse-gemm-addend", "d + s over the complete dot product"},
+      {"fuse-elementwise", "stages run per block, in program order"},
+      {"dce", "removes ops nothing reads"},
+      {"rematerialize", "same opcode over the same operands"},
+  };
+  std::vector<LedgerEntry> ledger;
+  for (const PassTiming& t : timings)
+    for (const Reason& r : kExactPasses)
+      if (t.name == r.pass)
+        ledger.push_back(MakeLedgerEntry(r.pass, kLedgerExact, 0, r.why));
+  if (relaxed_gemms + relaxed_attention != 0)
+    ledger.push_back(MakeLedgerEntry(
+        "precision", kLedgerReordered,
+        static_cast<uint32_t>(relaxed_gemms + relaxed_attention),
+        "relaxed kernels; needs the numerics certificate"));
+  // The RESOLVED recipe is what is hashed (S4 #150): the request with every
+  // decision the compile took written in — which attention family the plan
+  // runs, whether it rematerializes, whether the loss is masked, which
+  // weights the eval program reads — and the knobs those decisions consumed
+  // (the two budgets) dropped. Two requests that resolve to the same plan
+  // share a hash; a plan's bytes depend on what it is, not on how it was
+  // asked for.
+  UpdateConfig resolved = config_;
+  resolved.attention =
+      attention_decision.tiled && attention_decision.attention_ops > 0
+          ? AttentionKind::kTiled
+          : AttentionKind::kCached;
+  resolved.attention_cache_budget_bytes =
+      UpdateConfig{}.attention_cache_budget_bytes;
+  resolved.remat = remat_on ? RematKind::kOn : RematKind::kOff;
+  resolved.memory_budget_bytes = 0;
+  resolved.masked_loss = masked_loss;
+  resolved.eval_on_plan = shipped.empty() && !config_.adapter_only;
+  PlanMetadata meta;
+  meta.recipe_hash = recipe::RecipeHash(resolved);
+  const ExportReport& e = config_.export_report;
+  if (e.present) {
+    meta.export_flags = kExportReportPresent |
+                        (e.tokenizer_parity ? kExportTokenizerParity : 0) |
+                        (e.logits_parity ? kExportLogitsParity : 0);
+    meta.export_report_hash = e.report_hash;
+    meta.tokenizer_parity_ids = e.tokenizer_parity ? e.tokenizer_parity_ids : 0;
+    meta.logits_parity_max_delta =
+        e.logits_parity ? e.logits_parity_max_delta : 0.0f;
+  }
+  result.recipe_hash = meta.recipe_hash;
+  result.ledger = ledger;
+  return EncodePlanMetadata(meta, ledger);
 }
 
 ResolveFn Compilation::ResolveTrain() {

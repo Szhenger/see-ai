@@ -563,6 +563,101 @@ TEST(CoverageTable, TheMaskedLossFlagAndTheMaskedOpcodesAgree) {
   }
 }
 
+TEST(CoverageTable, TheMetadataSectionIsProvenBeforeItIsRead) {
+  // Plan v23: the loader holds the metadata section to the plan it sits in
+  // (PlanMetadataViolation) — every rule, by mutation of a compiled plan.
+  const std::vector<uint8_t> plan = MlpPlan();
+  ASSERT_FALSE(plan.empty());
+  const OpenPlan base(plan);
+  ASSERT_TRUE((base.h.data_flags & up::kDataFlagMetadata) != 0);
+  const uint64_t off = up::PlanMetadataOffset(base.h);
+  auto load = [](OpenPlan& open) {
+    const std::vector<uint8_t> edited = open.Sealed();
+    UpdateEngine engine;
+    return engine.LoadFromMemory(edited.data(), edited.size());
+  };
+  {
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
+    EXPECT_TRUE(engine.metadata().present);
+    EXPECT_NE(engine.metadata().meta.recipe_hash, 0u);
+    EXPECT_TRUE(!engine.metadata().ledger.empty());
+  }
+  struct Edit {
+    uint64_t at;      // byte offset inside the section
+    uint8_t value;
+    const char* says;
+  };
+  const uint64_t entry0 = sizeof(up::PlanMetadata);
+  const Edit edits[] = {
+      {offsetof(up::PlanMetadata, magic), 0x00, "bad magic"},
+      {offsetof(up::PlanMetadata, format), 0x09, "unsupported plan metadata format"},
+      {offsetof(up::PlanMetadata, bytes), 0x01, "size disagrees with its ledger"},
+      {offsetof(up::PlanMetadata, ledger_count), 0x7F, "ledger is too long"},
+      {offsetof(up::PlanMetadata, reserved0), 0x01, "reserved plan metadata words"},
+      {offsetof(up::PlanMetadata, reserved1), 0x01, "reserved plan metadata words"},
+      {offsetof(up::PlanMetadata, export_flags), 0x08, "unknown bits"},
+      {offsetof(up::PlanMetadata, export_flags), 0x02, "without a report"},
+      {offsetof(up::PlanMetadata, export_flags), 0x01, "without its hash"},
+      {offsetof(up::PlanMetadata, export_report_hash), 0x01, "without a report"},
+      {offsetof(up::PlanMetadata, tokenizer_parity_ids), 0x01,
+       "parity ids without the parity flag"},
+      {offsetof(up::PlanMetadata, logits_parity_max_delta) + 2, 0x80,
+       "logits-parity figure"},
+      {entry0 + 0, 0x00, "not NUL-padded text"},             // an empty name
+      {entry0 + 31, 'x', "not NUL-padded text"},             // no terminator
+      {entry0 + 1, 0x07, "not NUL-padded text"},             // a control byte
+      {entry0 + offsetof(up::LedgerEntry, arithmetic), 0x02,
+       "unknown arithmetic"},
+      {entry0 + offsetof(up::LedgerEntry, instructions), 0x01,
+       "an exact ledger entry counts changed instructions"},
+      {entry0 + offsetof(up::LedgerEntry, arithmetic), 0x01,
+       "a reordered ledger entry changes no instruction"},
+  };
+  for (const Edit& e : edits) {
+    OpenPlan open(plan);
+    open.bytes[off + e.at] = e.value;
+    const auto loaded = load(open);
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), e.says);
+  }
+  {
+    // The ledger against the programs: an instruction flagged relaxed that
+    // no ledger line accounts for.
+    OpenPlan open(plan);
+    up::UpdateInstruction ins;
+    std::memcpy(&ins, open.bytes.data() + open.Offset(0), sizeof(ins));
+    ins.flags |= up::kFlagRelaxed;
+    open.Replace(0, 0, ins);
+    const auto loaded = load(open);
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_STR_CONTAINS(loaded.error(), "the ledger accounts for 0 instruction(s)");
+  }
+  {
+    // The flag below its version; and a plan without the flag is read as
+    // every plan before v23 was (the section's bytes are then padding).
+    OpenPlan old(plan);
+    old.h.version = up::kSeeuMetadataVersion - 1;
+    const auto refused = load(old);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_STR_CONTAINS(refused.error(), "metadata section below v23");
+    OpenPlan bare(plan);
+    bare.h.data_flags &= ~up::kDataFlagMetadata;
+    const std::vector<uint8_t> edited = bare.Sealed();
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(edited.data(), edited.size()));
+    EXPECT_FALSE(engine.metadata().present);
+  }
+  {
+    // A section that would run past the blob.
+    OpenPlan open(plan);
+    open.bytes.resize(off + 32);
+    open.h.data_flags |= up::kDataFlagMetadata;
+    const auto loaded = load(open);
+    ASSERT_FALSE(loaded.has_value());
+  }
+}
+
 TEST(CoverageTable, TheVocabularyScanCoversEveryProgram) {
   // F07's twin for token plans: an embedding gather over a one-row table
   // planted in each program must bound every staged token id.

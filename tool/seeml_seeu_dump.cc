@@ -19,6 +19,7 @@
 // not two independent ones.
 // =============================================================================
 
+#include <bit>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "source/plan/metadata.h"
 #include "source/plan/opcode_names.h"
 #include "source/plan/update_types.h"
 #include "source/identity/hash.h"
@@ -193,7 +195,29 @@ int DumpJson(const std::vector<uint8_t>& plan, const PlanHeader& h,
                 PRIu64 ", \"arena_offset\": %" PRIu64 "}",
                 i ? "," : "", e.smf_data_offset, e.byte_size, e.arena_offset);
   }
-  std::printf("%s]\n}\n", h.emit_count ? "\n  " : "");
+  std::printf("%s]", h.emit_count ? "\n  " : "");
+  // The metadata section (v23): the manifest words and the ledger.
+  DecodedMetadata meta;
+  if (auto why = PlanMetadataViolation(h, plan.data(), plan.size(), &meta)) {
+    std::fprintf(stderr, "seeml-seeu-dump: %s\n", why->c_str());
+    return 1;
+  }
+  if (meta.present) {
+    std::printf(",\n  \"metadata\": {\"recipe_hash\": %" PRIu64
+                ", \"export_report_hash\": %" PRIu64
+                ", \"export_flags\": %u, \"tokenizer_parity_ids\": %" PRIu64
+                ", \"logits_parity_max_delta_bits\": %u, \"ledger\": [",
+                meta.meta.recipe_hash, meta.meta.export_report_hash,
+                meta.meta.export_flags, meta.meta.tokenizer_parity_ids,
+                std::bit_cast<uint32_t>(meta.meta.logits_parity_max_delta));
+    for (size_t i = 0; i < meta.ledger.size(); ++i)
+      std::printf("%s\n    {\"pass\": \"%s\", \"arithmetic\": %u, "
+                  "\"instructions\": %u, \"why\": \"%s\"}",
+                  i ? "," : "", meta.ledger[i].pass, meta.ledger[i].arithmetic,
+                  meta.ledger[i].instructions, meta.ledger[i].why);
+    std::printf("%s]}", meta.ledger.empty() ? "" : "\n  ");
+  }
+  std::printf("\n}\n");
   return std::ferror(stdout) ? 1 : 0;
 }
 

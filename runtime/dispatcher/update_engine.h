@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "runtime/executor/backend.h"
 #include "runtime/pipeline/dataset.h"
@@ -329,6 +330,9 @@ class UpdateEngine {
 
   // --- Introspection / test hooks -------------------------------------------
   const seeml::update::PlanHeader& header() const { return header_; }
+  /// The plan's metadata section (v23): `present` is false for a plan
+  /// without one.
+  const seeml::update::DecodedMetadata& metadata() const { return metadata_; }
   /// The loaded plan's bytes and their count (borrowed, mapped or owned).
   const uint8_t* plan_data() const { return plan_; }
   size_t plan_size() const { return plan_size_; }
@@ -390,6 +394,7 @@ class UpdateEngine {
   float* WritePtr(uint64_t ref);
 
   seeml::update::PlanHeader header_{};
+  seeml::update::DecodedMetadata metadata_{};
   // Step-latency instrumentation (SEEML_STEP_TIMING): phase boundaries of
   // the training stream, scanned once at load; zeros/unused otherwise.
   // Unconditional members keep the class layout build-independent.

@@ -177,6 +177,11 @@ inline std::optional<std::string> PlanHeaderViolation(
         std::to_string(kSeeuDataContractVersion));
   if (header.data_flags & ~kDataFlagsMask)
     return contract_detail::Violation("plan data_flags carries unknown bits");
+  if ((header.data_flags & kDataFlagMetadata) &&
+      header.version < kSeeuMetadataVersion)
+    return contract_detail::Violation(
+        "plan carries a metadata section below v" +
+        std::to_string(kSeeuMetadataVersion));
   if (header.data_flags & kDataFlagSplit) {
     const float frac = std::bit_cast<float>(header.val_frac_bits);
     if (!std::isfinite(frac) || !(frac > 0.0f) || !(frac < 1.0f))

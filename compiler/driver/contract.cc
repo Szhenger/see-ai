@@ -8,6 +8,7 @@
 #include "compiler/diagnostics/passing/error.h"
 #include "compiler/diagnostics/tokenizing/error.h"
 #include "compiler/diagnostics/updating/error.h"
+#include "source/plan/metadata.h"
 #include "source/contract/plan_contract.h"
 
 namespace seeml::update {
@@ -136,6 +137,11 @@ std::expected<void, std::string> VerifyGeneratedPlan(
     if (auto why = PlanHeaderViolation(header, compiled.plan.size()))
       return Broken("backend",
                     "the emitted plan's header fails the device's load "
+                    "contract: " + *why);
+    if (auto why = PlanMetadataViolation(header, compiled.plan.data(),
+                                         compiled.plan.size()))
+      return Broken("backend",
+                    "the emitted plan's metadata fails the device's load "
                     "contract: " + *why);
   }
   if (compiled.train_instruction_count == 0 ||

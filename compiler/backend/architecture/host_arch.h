@@ -28,6 +28,11 @@ struct HostArchInfo {
   size_t physical_cores = 1;
   size_t cache_line_bytes = 64;
   std::string cpu_model = "unknown";  // the OS's CPU brand string, trimmed
+  // The GPU half of the target (S6 #152): the family of the GPU the
+  // runtime's Metal backend would run on — on Apple silicon the SoC's own
+  // ("Apple M5 GPU"); empty where the host has none the runtime can use.
+  // Not part of the host key: the kernel-policy table tunes CPU GEMM tiles.
+  std::string gpu_family;
 };
 
 /// The host identity a measured kernel-policy table is keyed on

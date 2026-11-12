@@ -7,6 +7,7 @@
 #include "compiler/diagnostics/generating/error.h"
 #include "source/contract/split.h"  // SplitMix64Next
 #include "source/identity/hash.h"
+#include "source/plan/metadata.h"
 #include "source/parallel/parallel_for.h"
 
 namespace seeml::update {
@@ -71,7 +72,7 @@ std::expected<std::vector<EmitEntry>, std::string> BuildEmitTable(
 
 uint64_t LayOutPlan(PlanHeader& header, const PlanPrograms& programs,
                     const ArenaBinding& binding, uint64_t persist_init_bytes,
-                    uint64_t emit_count) {
+                    uint64_t emit_count, uint64_t metadata_bytes) {
   uint64_t off = AlignUp(sizeof(PlanHeader));
   header.train_instr_offset = off;
   header.train_instr_count = programs.train.size();
@@ -98,6 +99,8 @@ uint64_t LayOutPlan(PlanHeader& header, const PlanPrograms& programs,
   header.emit_table_offset = off;
   header.emit_count = emit_count;
   off += emit_count * sizeof(EmitEntry);
+  // The metadata section (v23): where PlanMetadataOffset says it is.
+  if (metadata_bytes != 0) off = PlanMetadataOffset(header) + metadata_bytes;
   // Pad the blob to a page multiple: a zero-copy wrap of the rodata section
   // rounds its length up to whole pages, and those pages must be the plan's.
   return PageUp(off);
@@ -108,6 +111,7 @@ std::vector<uint8_t> AssemblePlan(const PlanHeader& header,
                                   const ArenaBinding& binding,
                                   const std::vector<uint8_t>& persist_init,
                                   const std::vector<EmitEntry>& emit_table,
+                                  const std::vector<uint8_t>& metadata,
                                   uint64_t size, bool consume) {
   std::vector<uint8_t> plan;
   plan.reserve(size);
@@ -156,6 +160,8 @@ std::vector<uint8_t> AssemblePlan(const PlanHeader& header,
   if (!emit_table.empty())
     append(header.emit_table_offset, emit_table.data(),
            emit_table.size() * sizeof(EmitEntry));
+  if (!metadata.empty())
+    append(PlanMetadataOffset(header), metadata.data(), metadata.size());
   pad_to(size);
   return plan;
 }

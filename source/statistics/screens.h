@@ -93,6 +93,19 @@ inline constexpr StatRow kFrontendRows[] = {
     {"validation", "validation", StatKind::kText, "",
      "the compiled held-out split: records, seed, the indices' hash",
      screens_detail::kO},
+    // The identity manifest (S4 #150): every input of the fine-tune, hashed.
+    {"model_hash", "model hash", StatKind::kText, "",
+     "ContentHash64 of the source model file the plan is bound to",
+     screens_detail::kX},
+    {"tokenizer_hash", "tokenizer hash", StatKind::kText, "",
+     "the model's tokenizer section, which every corpus must name",
+     screens_detail::kO | screens_detail::kX},
+    {"recipe_hash", "recipe hash", StatKind::kText, "",
+     "the resolved recipe: the request with every decision written in",
+     screens_detail::kX},
+    {"export_report", "exporter report", StatKind::kText, "",
+     "the report's hash and the parity the exporter proved",
+     screens_detail::kO | screens_detail::kX},
     {"footprint_weights", "step-0 weights", StatKind::kBytes, "B",
      "frozen weights at the base's storage", screens_detail::kV},
     {"footprint_activations", "step-0 activations", StatKind::kBytes, "B",
@@ -167,6 +180,27 @@ inline constexpr StatRow kAnalysisRows[] = {
      "forward values the backward recomputes instead of keeping"},
     {"narrow_weights", "narrow weights", StatKind::kText, "",
      "frozen weights stored int8 or bf16 in rodata"},
+    {"adjoint_ops", "adjoint ops", StatKind::kCount, "ops",
+     "operations autodiff emitted for the backward"},
+    {"saved_activation_bytes", "activations saved", StatKind::kBytes, "B",
+     "forward values the backward reads: kept from forward to backward"},
+    {"flops_forward", "forward work", StatKind::kCount, "FLOP",
+     "GEMM + attention work of the eval program (the forward and the loss)"},
+    {"flops_backward", "backward work", StatKind::kCount, "FLOP",
+     "the train program's work less the forward's"},
+    {"flops_optimizer", "optimizer work", StatKind::kCount, "FLOP",
+     "the step program's GEMM + attention work (elementwise updates are 0)"},
+    {"epilogue_bytes_removed", "epilogue fusion saves", StatKind::kBytes, "B",
+     "intermediate tensors the epilogue fusions no longer write",
+     screens_detail::kV},
+    {"addend_bytes_removed", "addend fusion saves", StatKind::kBytes, "B",
+     "intermediate tensors the addend fusions no longer write",
+     screens_detail::kV},
+    {"chain_bytes_removed", "chain fusion saves", StatKind::kBytes, "B",
+     "intermediate tensors the elementwise chains no longer write",
+     screens_detail::kV},
+    {"reordered_instructions", "reordered arithmetic", StatKind::kCount, "",
+     "instructions whose reduction order a backend may change (the ledger)"},
     {"analysis_ms", "analysis time", StatKind::kReal, "ms",
      "the passes' wall time", screens_detail::kV | screens_detail::kX, 3},
 };
@@ -182,7 +216,16 @@ inline constexpr StatColumn kAdapterColumns[] = {
     {"rank", StatKind::kCount, ""},
     {"storage", StatKind::kText, ""},
 };
+inline constexpr StatColumn kLedgerColumns[] = {
+    {"pass", StatKind::kText, ""},
+    {"arithmetic", StatKind::kText, ""},
+    {"instructions", StatKind::kCount, ""},
+    {"why", StatKind::kText, ""},
+};
 inline constexpr StatTable kAnalysisTables[] = {
+    {"ledger", "reduction-order ledger",
+     "each pass: bit-identical to its input or not, and why (plan metadata)",
+     kLedgerColumns},
     {"passes", "passes", "each pass and phase: the ops after it, its time",
      kPassColumns},
     {"adapter_sites", "adapters",
@@ -207,6 +250,8 @@ inline constexpr StatRow kBackendRows[] = {
      "the one allocation the device makes"},
     {"persistent_bytes", "persistent", StatKind::kBytes, "B",
      "adapters and optimizer state, kept across steps", screens_detail::kV},
+    {"io_bytes", "io", StatKind::kBytes, "B",
+     "the staged input, label and loss slots"},
     {"transient_bytes", "transient", StatKind::kBytes, "B",
      "activations and gradients alive within a step", screens_detail::kV},
     {"rodata_bytes", "rodata", StatKind::kBytes, "B",
@@ -222,6 +267,14 @@ inline constexpr StatRow kBackendRows[] = {
      "the target's peak, as passed with --peak-gflops", screens_detail::kO, 1},
     {"predicted_step_ms", "predicted step", StatKind::kReal, "ms",
      "(GEMM + attention work) ÷ the target peak", screens_detail::kO, 3},
+    {"gpu_peak_gflops", "target GPU peak", StatKind::kReal, "GFLOP/s",
+     "the target GPU's peak, as passed with --gpu-peak-gflops",
+     screens_detail::kO, 1},
+    {"predicted_step_gpu_ms", "predicted step, GPU", StatKind::kReal, "ms",
+     "(GEMM + attention work) ÷ the target GPU peak", screens_detail::kO, 3},
+    {"target", "target", StatKind::kText, "",
+     "the compiling host's key and its GPU family",
+     screens_detail::kV | screens_detail::kX},
     {"kernel_policy", "kernel policy", StatKind::kText, "",
      "the CPU GEMM tiles the header carries", screens_detail::kX},
     {"plan_hash", "plan hash", StatKind::kText, "",
@@ -230,12 +283,44 @@ inline constexpr StatRow kBackendRows[] = {
      "binding, lowering, assembly and sealing, wall time",
      screens_detail::kV | screens_detail::kX, 3},
 };
+inline constexpr StatColumn kTensorSizeColumns[] = {
+    {"name", StatKind::kText, ""},
+    {"bytes", StatKind::kBytes, "B"},
+    {"segment", StatKind::kText, ""},
+};
+inline constexpr StatColumn kGemmCensusColumns[] = {
+    {"m x n x k", StatKind::kText, ""},
+    {"count", StatKind::kCount, ""},
+    {"flops", StatKind::kCount, "FLOP"},
+    {"share", StatKind::kReal, "%", 0, 1},
+};
+inline constexpr StatTable kBackendTables[] = {
+    {"largest_tensors", "largest arena tensors",
+     "the five largest values the arena holds, with their segment",
+     kTensorSizeColumns},
+    {"gemm_census", "GEMM census",
+     "the train program's products by shape: count, work, share of GEMM work",
+     kGemmCensusColumns},
+};
 inline constexpr ScreenSpec kBackendScreen = {
-    "backend", "the plan it emitted", kBackendRows};
+    "backend", "the plan it emitted", kBackendRows, kBackendTables};
 
 // --- runtime: planned by the compiler, measured by the device -------------------
 
 inline constexpr StatRow kRuntimeRows[] = {
+    // The identity manifest (S4 #150): the four inputs' hashes, as the plan
+    // carries them and the loader verified them.
+    {"model_hash", "model hash", StatKind::kText, "",
+     "the source model the plan is bound to and the run verified",
+     screens_detail::kO | screens_detail::kX},
+    {"tokenizer_hash", "tokenizer hash", StatKind::kText, "",
+     "the tokenizer section every corpus must name",
+     screens_detail::kO | screens_detail::kX},
+    {"corpus_hash", "corpus hash", StatKind::kText, "",
+     "the corpus the plan is pinned to", screens_detail::kO | screens_detail::kX},
+    {"recipe_hash", "recipe hash", StatKind::kText, "",
+     "the resolved recipe the plan was compiled from",
+     screens_detail::kO | screens_detail::kX},
     {"device_bytes", "planned memory", StatKind::kBytes, "B",
      "arena + plan: the resource contract the device checks"},
     {"flops_per_step", "work per step", StatKind::kCount, "FLOP",

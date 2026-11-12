@@ -8,6 +8,7 @@
 
 #include "compiler/analysis/pass_manager.h"  // PassTiming
 #include "source/language/model_format.h"
+#include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/screens.h"
 
@@ -143,6 +144,10 @@ struct CompiledUpdate {
   // canonical SDS the plan is pinned to (empty without --data), whether it
   // was given as an SDS (nothing to write) or tokenized here from raw text
   // (the CLI writes corpus.sds and its manifest beside the plan).
+  // The identity manifest's recipe word and the reduction-order ledger, as
+  // the plan's metadata section carries them (v23).
+  uint64_t recipe_hash = 0;
+  std::vector<LedgerEntry> ledger;
   std::vector<uint8_t> corpus_sds;
   std::string corpus_manifest;
   bool corpus_from_sds = false;

@@ -261,6 +261,10 @@ def header_violation(h, plan_size):
                 f"v{formats.SEEU_DATA_CONTRACT_VERSION}")
     if h.data_flags & ~formats.DATA_FLAGS_MASK:
         return "plan data_flags carries unknown bits"
+    if (h.data_flags & formats.DATA_FLAG_METADATA and
+            h.version < formats.SEEU_METADATA_VERSION):
+        return ("plan carries a metadata section below "
+                f"v{formats.SEEU_METADATA_VERSION}")
     if h.data_flags & formats.DATA_FLAG_SPLIT:
         frac = struct.unpack("<f", struct.pack("<I", h.val_frac_bits))[0]
         if not (math.isfinite(frac) and 0.0 < frac < 1.0):
@@ -270,6 +274,78 @@ def header_violation(h, plan_size):
     if h.data_flags & formats.DATA_FLAG_CORPUS_PINNED and not h.corpus_hash:
         return "plan pins a corpus without its hash"
     return None
+
+
+def _c_text(raw, allow_empty):
+    """A NUL-padded printable-ASCII field, or None (metadata_detail::Text)."""
+    end = raw.find(b"\0")
+    if end < 0 or (end == 0 and not allow_empty) or any(raw[end:]):
+        return None
+    if any(b < 0x20 or b > 0x7E for b in raw[:end]):
+        return None
+    return raw[:end].decode("ascii")
+
+
+def metadata_violation(h, blob, relaxed_instructions):
+    """PlanMetadataViolation (source/plan/metadata.h), rule for rule: the
+    v23 metadata section held to the plan it sits in. Returns (why, None)
+    or (None, metadata) — metadata is None for a plan without the flag."""
+    if not h.data_flags & formats.DATA_FLAG_METADATA:
+        return None, None
+    M, L = formats.PLAN_METADATA, formats.LEDGER_ENTRY
+    off = formats.plan_metadata_offset(h.emit_table_offset, h.emit_count)
+    if off > len(blob) or len(blob) - off < M.size:
+        return "plan metadata section lies outside the plan", None
+    m = dict(zip(M.names, M.unpack_from(blob, off)))
+    if m["magic"] != formats.PLAN_METADATA_MAGIC:
+        return "plan metadata section has a bad magic", None
+    if m["format"] != formats.PLAN_METADATA_FORMAT:
+        return "unsupported plan metadata format", None
+    if m["ledger_count"] > formats.LEDGER_MAX_ENTRIES:
+        return "plan metadata ledger is too long", None
+    if (m["bytes"] != M.size + m["ledger_count"] * L.size or
+            m["bytes"] > len(blob) - off):
+        return "plan metadata section size disagrees with its ledger", None
+    if m["reserved0"] or m["reserved1"]:
+        return "reserved plan metadata words are not zero", None
+    flags = m["export_flags"]
+    if flags & ~(formats.EXPORT_REPORT_PRESENT | formats.EXPORT_TOKENIZER_PARITY
+                 | formats.EXPORT_LOGITS_PARITY):
+        return "plan metadata export flags carry unknown bits", None
+    report = flags & formats.EXPORT_REPORT_PRESENT
+    if not report and (flags or m["export_report_hash"]):
+        return "plan metadata carries export fields without a report", None
+    if report and not m["export_report_hash"]:
+        return "plan metadata names an export report without its hash", None
+    if not flags & formats.EXPORT_TOKENIZER_PARITY and m["tokenizer_parity_ids"]:
+        return "plan metadata carries parity ids without the parity flag", None
+    delta = m["logits_parity_max_delta"]
+    if (not math.isfinite(delta) or delta < 0.0 or
+            (not flags & formats.EXPORT_LOGITS_PARITY and delta != 0.0)):
+        return ("plan metadata logits-parity figure is not a finite "
+                "non-negative value under its flag"), None
+    ledger, reordered = [], 0
+    for i in range(m["ledger_count"]):
+        raw_pass, arithmetic, count, raw_why = L.unpack_from(
+            blob, off + M.size + i * L.size)
+        name, why = _c_text(raw_pass, False), _c_text(raw_why, True)
+        if name is None or why is None:
+            return "plan metadata ledger entry is not NUL-padded text", None
+        if arithmetic not in (formats.LEDGER_EXACT, formats.LEDGER_REORDERED):
+            return "plan metadata ledger entry has an unknown arithmetic", None
+        if arithmetic == formats.LEDGER_EXACT and count:
+            return "an exact ledger entry counts changed instructions", None
+        if arithmetic == formats.LEDGER_REORDERED and not count:
+            return "a reordered ledger entry changes no instruction", None
+        reordered += count
+        ledger.append({"pass": name, "arithmetic": arithmetic,
+                       "instructions": count, "why": why})
+    if reordered != relaxed_instructions:
+        return (f"the ledger accounts for {reordered} instruction(s) of "
+                f"reordered arithmetic, the programs carry "
+                f"{relaxed_instructions}"), None
+    m["ledger"] = ledger
+    return None, m
 
 
 class Plan:
@@ -309,6 +385,10 @@ class Plan:
         relaxed = [i for name in ("train", "step") for i in self.sections[name]
                    if i.flags & FLAG_RELAXED]
         self.relaxed_instructions = len(relaxed)
+        # v23: the metadata section — the manifest words and the ledger.
+        why, self.metadata = metadata_violation(self, blob, len(relaxed))
+        if why:
+            raise PlanError(f"{path}: {why}")
         self.relaxed_gemms = sum(1 for i in relaxed
                                  if i.opcode in RELAXED_GEMM_OPCODES)
 

@@ -21,6 +21,7 @@
 #include "runtime/pipeline/dataset.h"
 #include "source/contract/split.h"
 #include "source/identity/hash.h"
+#include "source/plan/metadata.h"
 #include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
 #include "source/parallel/parallel_for.h"
@@ -1584,6 +1585,94 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   EXPECT_ERROR_CONTAINS(
       UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
       "carries no labels, but the loss stages class-index labels");
+}
+
+TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
+  // Plan v23 (S4 #150 / S5 #151 / S6 #152): the metadata section holds the
+  // resolved recipe's hash and one ledger line per pass; an exact plan's
+  // ledger names no reordered arithmetic, a relaxed plan's names every
+  // relaxed instruction.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  auto decode = [](const CompiledUpdate& c) {
+    DecodedMetadata meta;
+    const PlanHeader h = HeaderOf(c);
+    if ((h.data_flags & kDataFlagMetadata) == 0)
+      ADD_FAILURE("the plan carries no metadata flag");
+    if (h.version != kSeeuVersion) ADD_FAILURE("the plan is not at kSeeuVersion");
+    const auto why = PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
+    if (why) ADD_FAILURE(*why);
+    return meta;
+  };
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate exact,
+                       UpdateCompiler(BaseConfig(kBatch)).Compile(model));
+  const DecodedMetadata em = decode(exact);
+  ASSERT_TRUE(em.present);
+  EXPECT_EQ(em.meta.recipe_hash, exact.recipe_hash);
+  EXPECT_NE(em.meta.recipe_hash, 0u);
+  EXPECT_EQ(em.meta.export_flags, 0u);  // an in-memory model: no report
+  ASSERT_TRUE(em.ledger.size() >= 4);
+  std::vector<std::string> passes;
+  for (const LedgerEntry& e : em.ledger) {
+    EXPECT_EQ(e.arithmetic, kLedgerExact);
+    EXPECT_EQ(e.instructions, 0u);
+    EXPECT_TRUE(e.why[0] != '\0');
+    passes.emplace_back(e.pass);
+  }
+  for (const char* want : {"lora-graft", "autodiff", "optimizer", "dce"})
+    EXPECT_TRUE(std::find(passes.begin(), passes.end(), want) != passes.end());
+  EXPECT_EQ(exact.ledger.size(), em.ledger.size());
+
+  // The same request spelled another way resolves to the same plan: an MLP
+  // has no attention, so --attention tiled decides nothing, and a memory
+  // budget the plan fits changes no byte.
+  UpdateConfig respelled = BaseConfig(kBatch);
+  respelled.attention = AttentionKind::kTiled;
+  respelled.memory_budget_bytes = uint64_t{1} << 30;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate same,
+                       UpdateCompiler(respelled).Compile(model));
+  EXPECT_EQ(same.recipe_hash, exact.recipe_hash);
+  EXPECT_TRUE(same.plan == exact.plan);
+  // Another recipe is another hash, and so another plan.
+  UpdateConfig other = BaseConfig(kBatch);
+  other.optimizer.lr *= 2.0f;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate moved, UpdateCompiler(other).Compile(model));
+  EXPECT_NE(moved.recipe_hash, exact.recipe_hash);
+
+  // Relaxed: the precision assignment is the one reordering entry, and it
+  // accounts for every relaxed instruction.
+  UpdateConfig relaxed_cfg = BaseConfig(kBatch);
+  relaxed_cfg.precision = Precision::kCertifiedBf16;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate relaxed,
+                       UpdateCompiler(relaxed_cfg).Compile(model));
+  ASSERT_TRUE(relaxed.relaxed_gemms > 0);
+  const DecodedMetadata rm = decode(relaxed);
+  uint64_t reordered = 0, reordering_entries = 0;
+  for (const LedgerEntry& e : rm.ledger)
+    if (e.arithmetic == kLedgerReordered) {
+      ++reordering_entries;
+      reordered += e.instructions;
+      EXPECT_EQ(std::string(e.pass), "precision");
+    }
+  EXPECT_EQ(reordering_entries, 1u);
+  EXPECT_EQ(reordered, relaxed.relaxed_gemms + relaxed.relaxed_attention);
+
+  // What the exporter proved rides in the section.
+  UpdateConfig reported = BaseConfig(kBatch);
+  reported.export_report = {.present = true,
+                            .report_hash = 0xFEED,
+                            .tokenizer_parity = true,
+                            .tokenizer_parity_ids = 1234,
+                            .logits_parity = true,
+                            .logits_parity_max_delta = 6.4e-5f};
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate with_report,
+                       UpdateCompiler(reported).Compile(model));
+  const DecodedMetadata wm = decode(with_report);
+  EXPECT_EQ(wm.meta.export_flags, kExportReportPresent | kExportTokenizerParity |
+                                      kExportLogitsParity);
+  EXPECT_EQ(wm.meta.export_report_hash, 0xFEEDu);
+  EXPECT_EQ(wm.meta.tokenizer_parity_ids, 1234u);
+  EXPECT_EQ(wm.meta.logits_parity_max_delta, 6.4e-5f);
+  EXPECT_EQ(with_report.recipe_hash, exact.recipe_hash);  // not a recipe field
 }
 
 TEST(UpdateCompiler, TheRecipesBoundsHoldForAConfigBuiltInCode) {

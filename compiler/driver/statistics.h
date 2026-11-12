@@ -109,6 +109,13 @@ struct FrontendStats {
 
 /// What the driver learned while compiling that CompiledUpdate does not
 /// otherwise carry. Filled where each number is computed.
+/// One arena tensor, for the backend screen's table.
+struct TensorFact {
+  std::string name;
+  uint64_t bytes = 0;
+  std::string segment;  // "persistent" | "io" | "transient"
+};
+
 struct CompileFacts {
   FrontendStats frontend;
   // Analysis: what the passes returned.
@@ -124,6 +131,14 @@ struct CompileFacts {
   bool remat_budget_configured = false;
   uint64_t int8_weights = 0;
   uint64_t bf16_weights = 0;
+  // What the calculus added and the fusions removed (S5 #151).
+  uint64_t adjoint_ops = 0;             // ops autodiff emitted
+  uint64_t saved_activation_bytes = 0;  // forward values the backward reads
+  uint64_t epilogue_bytes_removed = 0;  // intermediates no longer written
+  uint64_t addend_bytes_removed = 0;
+  uint64_t chain_bytes_removed = 0;
+  // Backend (S6 #152): the five largest values the arena holds.
+  std::vector<TensorFact> largest_tensors;
 };
 
 /// Fills `result.screens` from `facts`, the config and the compiled plan:

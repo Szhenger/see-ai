@@ -284,6 +284,11 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // counts below are plain multiplies.
   if (auto ok = VerifyPlanContract(header, plan_size); !ok)
     return std::unexpected(ok.error());
+  // The metadata section (v23): the manifest words and the ledger, held to
+  // the plan they sit in before anything reads them.
+  up::DecodedMetadata metadata;
+  if (auto why = up::PlanMetadataViolation(header, plan, plan_size, &metadata))
+    return diag::executing::Error(*why);
   const uint64_t train_bytes =
       header.train_instr_count * sizeof(up::UpdateInstruction);
   const uint64_t merge_bytes =
@@ -527,6 +532,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   arena_ = arena;
   arena_bytes_ = arena_bytes;
   header_ = header;
+  metadata_ = std::move(metadata);
   train_program_ = std::move(train);
   merge_program_ = std::move(merge);
   eval_program_ = std::move(eval);

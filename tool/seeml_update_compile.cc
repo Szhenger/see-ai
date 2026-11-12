@@ -146,6 +146,8 @@ void PrintUsage() {
                "  [--kernel-policy table.json] [--target-host KEY]\n"
                "  [--gemm-tiles K,N]\n"
                "  [--no-embed] [--build] [--version]\n"
+               "  [--gpu-peak-gflops G]  the target GPU's peak: the GPU-denominated\n"
+               "                      predicted step (and a Metal run's)\n"
                "  [--peak-gflops G]   the target's peak; the backend screen then\n"
                "                      predicts a step's time from the plan's work\n"
                "  [--verbose]         every screen row, the per-pass and per-adapter\n"
@@ -352,6 +354,16 @@ int main(int argc, char** argv) {
                   "'");
     config.peak_gflops = peak;
   }
+  // The GPU half of the target description (S6 #152): the backend screen
+  // then predicts the step on the GPU too, and a Metal run prints its
+  // measured step beside that prediction.
+  if (auto v = args.TakeValue("--gpu-peak-gflops")) {
+    double peak = 0.0;
+    if (!recipe::ParseF64Strict(*v, &peak) || !(peak > 0.0))
+      return Fail("--gpu-peak-gflops must be a positive number, got '" + *v +
+                  "'");
+    config.gpu_peak_gflops = peak;
+  }
   const bool want_build = args.Take("--build");
 
   if (const auto& m = args.MissingValue())
@@ -453,6 +465,7 @@ int main(int argc, char** argv) {
       compiled->relaxed_gemms + compiled->relaxed_attention > 0;
   emit_options.embed_plan_tu = !no_embed;
   emit_options.peak_gflops = config.peak_gflops;
+  emit_options.gpu_peak_gflops = config.gpu_peak_gflops;
   auto paths = EmitNativePackage(
       compiled->plan, *out_dir,
       repo_root.empty() || !std::filesystem::exists(repo_root + "/source")
@@ -559,6 +572,14 @@ int main(int argc, char** argv) {
                  "  \"plan_hash\": \"%016" PRIx64 "\",\n"
                  "  \"source_model_hash\": \"%016" PRIx64 "\",\n"
                  "  \"recipe_hash\": \"%016" PRIx64 "\",\n"
+                 "  \"identity\": {\"model_hash\": \"%016" PRIx64
+                 "\", \"tokenizer_hash\": \"%016" PRIx64
+                 "\", \"corpus_hash\": \"%016" PRIx64
+                 "\", \"recipe_hash\": \"%016" PRIx64
+                 "\", \"val_split_hash\": \"%016" PRIx64
+                 "\", \"split_seed\": %" PRIu64
+                 ", \"masked_loss\": %s, \"export_report_hash\": \"%016" PRIx64
+                 "\"},\n"
                  "  \"host_arch\": {\"isa\": \"%s\", \"cpu_model\": \"%s\", "
                  "\"physical_cores\": %zu, \"l1d_bytes\": %" PRIu64
                  ", \"l2_bytes\": %" PRIu64 ", \"simd_width_f32\": %zu},\n"
@@ -600,7 +621,13 @@ int main(int argc, char** argv) {
                  kSeemlVersion, JsonEscape(paths->plan_file).c_str(),
                  compiled->plan.size(), plan_header.version,
                  plan_header.plan_hash, plan_header.source_model_hash,
-                 recipe::RecipeHash(config),
+                 compiled->recipe_hash,
+                 plan_header.source_model_hash, plan_header.tokenizer_hash,
+                 plan_header.corpus_hash, compiled->recipe_hash,
+                 plan_header.val_split_hash, plan_header.split_seed,
+                 (plan_header.data_flags & kDataFlagMaskedLoss) ? "true"
+                                                                : "false",
+                 config.export_report.report_hash,
                  std::string(host_arch.isa).c_str(),
                  JsonEscape(host_arch.cpu_model).c_str(),
                  host_arch.physical_cores, host_arch.l1d_bytes,
