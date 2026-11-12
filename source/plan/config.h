@@ -40,12 +40,17 @@ enum class RematKind : uint8_t { kAuto = 0, kOff = 1, kOn = 2 };
 // How the adapter's product is scaled (S5 #151). kAlphaOverRank is LoRA's
 // own s = alpha / r; kAlphaOverSqrtRank is rank-stabilized LoRA's
 // s = alpha / sqrt(r), whose update does not shrink as the rank grows.
+// The default is alpha / sqrt(r) since 2026-11-12: on SmolLM-135M at the
+// nightly's setting it ends 0.013 / 0.023 / 0.033 nats of held-out loss
+// below alpha / r over three adapter seeds (docs/benchmarks.md, "The
+// best-practice defaults, measured"; docs/ledger/defaults-2026-11-12/).
+// The enum values are not stored in the plan; the scale itself is.
 enum class LoraScaling : uint8_t { kAlphaOverRank = 0, kAlphaOverSqrtRank = 1 };
 
 struct LoRASpec {
   int64_t rank = 8;
   float alpha = 16.0f;
-  LoraScaling scaling = LoraScaling::kAlphaOverRank;
+  LoraScaling scaling = LoraScaling::kAlphaOverSqrtRank;
   /// The scale s of the adapter product, C' = C + s * (x @ A @ B).
   float Scale() const {
     const float r = static_cast<float>(rank);

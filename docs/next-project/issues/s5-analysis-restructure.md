@@ -84,6 +84,24 @@ acceptance asks for its own PR with measurements, and the host has been on
 battery for this whole branch, so no F1 row was taken. Also not done:
 the attention segment operand / mask, 8-bit moments, the MSE opcode drop.
 
+## Status 2026-11-12, the defaults
+
+Design item 4, measured and decided on `claude/v100b-defaults-flip`
+(`docs/benchmarks.md`, "The best-practice defaults, measured";
+`docs/ledger/defaults-2026-11-12/`). SmolLM-135M at the nightly's setting,
+300 steps, held-out loss against a baseline of 3.6396: **alpha / sqrt(r)
+ends at 3.6265, and below alpha / r on three adapter seeds (−0.013, −0.023,
+−0.033) — it is now the default** (`lora_scaling`, a recipe field;
+`alpha_over_r` restores the old plans, which the identity harness confirms
+on 17 fixtures). **Clipping 1.0 is not flipped**: its row is the baseline's
+to the fifth decimal, the clip is per tensor rather than the global norm the
+practice means, and the clipping rows ran about 85 ms a step slower (battery,
+to be re-measured). **lr 1e-4 / 2e-4 with cosine + warmup is not flipped**:
+at this horizon it ends 0.36 / 0.21 nats above the baseline. Under the rule
+that no default flips without a row, two of the three stay where they are.
+The rows are SeeAI's only, on battery (losses reproduce bit for bit; no step
+time is quoted).
+
 ## Acceptance
 
 - Every fixture compiles to a bit-identical plan before and after the move

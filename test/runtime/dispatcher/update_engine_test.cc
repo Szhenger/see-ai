@@ -1629,6 +1629,9 @@ Dataset ValSet() { return PortableSet(96, 202, 7); }
 std::vector<uint8_t> OverfitPlan() {
   UpdateConfig config = BaseConfig(kBatch);
   config.optimizer.lr = 0.02f;
+  // The scenario (an endpoint past the minimum, still below step 0) was
+  // tuned at alpha / r; the scale is not what these tests are about.
+  config.lora.scaling = LoraScaling::kAlphaOverRank;
   return CompilePlan(config, 4);
 }
 

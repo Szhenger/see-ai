@@ -63,6 +63,7 @@ ops_out = 594 ops
 adapters = 29
 lora_rank = 16
 lora_alpha = 32.0
+lora_scale = 8 = alpha / sqrt(r)
 trainable_parameters = 630,784
 trainable_share = 4.296 %
 gradients = 58

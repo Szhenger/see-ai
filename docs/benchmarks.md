@@ -1627,6 +1627,37 @@ every row of this branch; `docs/ledger/f7-2026-11-04/`):
 
 Per site the fused kernel costs 124.5 → 133.5 µs (`512x576x576`), 302.1 → 300.7 µs (`512x1536x576`) and 8,488.0 → 8,860.2 µs at the head — the epilogue's eight multiply-adds per output and the store of C' — where the small dispatches it folds away cost 17.9, 43.8 and 1,797.5 µs: 6.6 ms of small dispatches leave each forward pass and 1.4 ms of epilogue arrive, 181 pairs per pass (five earlier forms were a wash, each within 2 ms of neutral: with C stored as well, 4.2 ms of epilogue per pass against the 6.8 ms removed; hoisting B's column into registers, 7.9 and 6.6 ms; C's store dropped with the device loads per element kept, 5.0 ms; the operands staged through threadgroup memory but the pass still scalar per element, 4.8 ms — the `*_v1`..`*_v5` files. Neither the store nor the loads' source was the cost: the tile kernel's epilogue is scalar, sixteen guarded elements per thread, where the small kernel it replaces takes four outputs per thread as float4s — so the rank-r term is now its own vectorized pass over the staged tile, four columns per thread). The step reads 237 → 237 ms (2,157 → 2,159 tok/s), the 300-step wall 74.8 → 74.4 s (0.6 %), 3.17 → 3.10 mJ per token (unchanged within the meter's noise: the pass the fold saves and the epilogue's traffic cost about the same energy); both arms commit 10-24's `ab2504dc…`, and the adapter-only f32 plan (the `k_gemm_nn_lr` path, 20 steps by the driver) commits `1a736ae3…` under both.
 
+### The best-practice defaults, measured (S5 #151, 2026-11-12)
+
+The design's audit of `source/plan/config.h` against frontier LoRA practice names three candidate defaults — gradient clipping at norm 1.0, a learning rate of 1e-4–2e-4 with cosine decay and warmup, and the rank-stabilized scale α/√r — under the rule that *every default is a measured claim*. This is the measurement: SmolLM-135M at the nightly's setting (`--data docs_corpus.txt --val-frac 0.1 --data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 300`, Metal backend), one package per row, the held-out loss of the committed state. Every row starts from the same 4.627349; the baseline package run twice ends on the same 3.639602.
+
+| row | flags added to the setting | held-out loss, step 150 | held-out loss, step 300 | vs baseline |
+|---|---|---|---|---|
+| baseline | — (lr 1e-3 constant, no clip, α/r) | 3.7363 | **3.6396** | — |
+| clip | `--clip-norm 1.0` | 3.7361 | 3.6396 | −0.00003 |
+| cosine | `--lr-schedule cosine --warmup 15` | 3.7424 | 3.6655 | +0.026 |
+| lr 2e-4 | `--lr 2e-4 --lr-schedule cosine --warmup 15` | 3.9200 | 3.8508 | +0.211 |
+| lr 1e-4 | `--lr 1e-4 --lr-schedule cosine --warmup 15` | 4.0981 | 4.0027 | +0.363 |
+| α/√r | `--lora-scaling alpha_over_sqrt_r` | 3.7094 | **3.6265** | **−0.013** |
+| all three, lr 1e-4 | clip + lr 1e-4 cosine + α/√r | 3.9444 | 3.8693 | +0.230 |
+| all three, lr 2e-4 | clip + lr 2e-4 cosine + α/√r | 3.8350 | 3.7656 | +0.126 |
+
+α/√r against α/r on two more adapter seeds (`--lora-seed`; the table above is seed 42):
+
+| adapter seed | α/r | α/√r | difference |
+|---|---|---|---|
+| 42 | 3.6396 | 3.6265 | −0.013 |
+| 7 | 3.6369 | 3.6142 | −0.023 |
+| 123 | 3.6439 | 3.6108 | −0.033 |
+
+**What flipped, and what did not.**
+
+- **α/√r is the default** (`lora_scaling`, a recipe field; `alpha_over_r` restores the old scale and the old plan bytes). It is the one candidate whose row beats the baseline, on all three seeds. It changes the algorithm, not the arithmetic: the scale is the adapter GEMM's own alpha, the CPU's bits are a function of that number alone, and Metal applies a scale that is not a power of two to rounding (it always did; the old default happened to be 2).
+- **Clipping stays off.** The row is the baseline's to the fifth decimal — on this run the clip almost never binds — so there is no measured claim to flip on. Two things the row does show: SeeAI's clip is *per tensor*, not the global-norm clip the practice cites (the frontier harness's parity rule 3 already says so), so `--clip-norm 1.0` here is not that practice; and the three rows that clip ran at 309–314 ms a step where the rows that do not ran at 224–229 ms. The host was on battery, so that is not a figure — but it is the same on all three, and it is the next thing to measure on AC power before clipping is ever a default.
+- **The learning rate stays 1e-3 constant.** At this horizon (300 steps, about three passes over 451 training records) 1e-4 with cosine ends 0.36 nats above the baseline and 2e-4 0.21 above; cosine alone at 1e-3 costs 0.026. The practice's lower rate is for longer runs on larger data; this row does not carry that claim and no row here supports it. A longer-horizon row is what would.
+
+**What these rows are not.** One model, one corpus, one horizon, three seeds for the one flip. They are SeeAI rows only: the torch and MLX-LM rows of the frontier harness were not run at these settings (`tool/frontier_run.py` now takes `--scaling` with the compiler's default, so its reference rows scale as the plan does). **The host was on battery with Low Power Mode on**; the losses do not depend on that (the baseline reproduces bit for bit), the step times do, and none is quoted as a result.
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

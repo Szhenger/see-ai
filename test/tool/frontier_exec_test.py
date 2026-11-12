@@ -767,7 +767,10 @@ MATRIX = [
     ("mlp_xent_adamw", "mlp.smf", "class.sds", 8,
      ["--clip-norm", "0.5", "--lr-schedule", "cosine", "--warmup", "2",
       "--min-lr-factor", "0.1", "--steps", "8"]),
-    ("mlp_unfused", "mlp.smf", "class.sds", 8, ["--no-fuse-epilogue"]),
+    # alpha / r pinned: the teeth test perturbs AdamW's eps on this plan,
+    # which three steps only show while the second moments are small.
+    ("mlp_unfused", "mlp.smf", "class.sds", 8,
+     ["--no-fuse-epilogue", "--lora-scaling", "alpha_over_r"]),
     ("mlp_mse_sgd", "mlp.smf", "dense.sds", 8,
      ["--loss", "mse", "--optimizer", "sgd", "--weight-decay", "0.01",
       "--clip-norm", "0.5"]),                       # the fused SGD clip

@@ -1,0 +1,92 @@
+{
+ "model": "SmolLM-135M",
+ "setting": "--data docs_corpus.txt --val-frac 0.1 --data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 300; --backend metal",
+ "host": "Apple M5, on battery, Low Power Mode on: step times are not quotable",
+ "baseline_rerun_val_end": 3.639602,
+ "rows": [
+  {
+   "row": "baseline",
+   "val_start": 4.627349,
+   "val_step150": 3.736269,
+   "val_end": 3.639602,
+   "measured_step_ms_battery": 226.743
+  },
+  {
+   "row": "clip",
+   "val_start": 4.627349,
+   "val_step150": 3.736145,
+   "val_end": 3.639575,
+   "measured_step_ms_battery": 309.448
+  },
+  {
+   "row": "cos_only",
+   "val_start": 4.627349,
+   "val_step150": 3.742445,
+   "val_end": 3.665473,
+   "measured_step_ms_battery": 228.465
+  },
+  {
+   "row": "lr2e4cos",
+   "val_start": 4.627349,
+   "val_step150": 3.919982,
+   "val_end": 3.850754,
+   "measured_step_ms_battery": 227.572
+  },
+  {
+   "row": "lr1e4cos",
+   "val_start": 4.627349,
+   "val_step150": 4.098069,
+   "val_end": 4.002706,
+   "measured_step_ms_battery": 508.062
+  },
+  {
+   "row": "rslora",
+   "val_start": 4.627349,
+   "val_step150": 3.709375,
+   "val_end": 3.626503,
+   "measured_step_ms_battery": 228.283
+  },
+  {
+   "row": "all",
+   "val_start": 4.627349,
+   "val_step150": 3.94441,
+   "val_end": 3.869255,
+   "measured_step_ms_battery": 314.091
+  },
+  {
+   "row": "all2e4",
+   "val_start": 4.627349,
+   "val_step150": 3.835015,
+   "val_end": 3.765611,
+   "measured_step_ms_battery": 312.762
+  },
+  {
+   "row": "base_s7",
+   "val_start": 4.627349,
+   "val_step150": 3.735107,
+   "val_end": 3.636921,
+   "measured_step_ms_battery": 224.977
+  },
+  {
+   "row": "rs_s7",
+   "val_start": 4.627349,
+   "val_step150": 3.696524,
+   "val_end": 3.614166,
+   "measured_step_ms_battery": 223.705
+  },
+  {
+   "row": "base_s123",
+   "val_start": 4.627349,
+   "val_step150": 3.736855,
+   "val_end": 3.64387,
+   "measured_step_ms_battery": 228.913
+  },
+  {
+   "row": "rs_s123",
+   "val_start": 4.627349,
+   "val_step150": 3.701688,
+   "val_end": 3.610753,
+   "measured_step_ms_battery": 229.349
+  }
+ ]
+}
