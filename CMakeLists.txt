@@ -105,13 +105,14 @@ add_library(seeml_update STATIC
     compiler/frontend/topology/sema.cc
     compiler/frontend/computation/parser.cc
     compiler/analysis/pass_manager.cc
-    compiler/analysis/algebra/conv_lowering.cc
     compiler/analysis/topology/dce.cc
     compiler/analysis/algebra/epilogue_fuser.cc
     compiler/analysis/algebra/rope_table.cc
     compiler/analysis/algebra/chain_fuser.cc
     compiler/analysis/algebra/addend_fuser.cc
-    compiler/analysis/algebra/rematerializer.cc
+    compiler/analysis/calculus/rematerializer.cc
+    compiler/analysis/statistics/precision.cc
+    compiler/analysis/optimization/schedule.cc
     compiler/analysis/statistics/attention_tiling.cc
     compiler/analysis/algebra/lora_grafter.cc
     compiler/analysis/algebra/merge_builder.cc
@@ -121,8 +122,8 @@ add_library(seeml_update STATIC
     compiler/backend/architecture/host_arch.cc
     compiler/backend/architecture/kernel_policy_table.cc
     compiler/backend/allocation/arena_binder.cc
+    compiler/backend/assembly/plan_assembly.cc
     compiler/backend/selection/instruction_lowering.cc
-    compiler/backend/architecture/kernel_emitter.cc
     compiler/driver/contract.cc
     compiler/driver/update_compiler.cc
     compiler/driver/statistics.cc
@@ -238,6 +239,7 @@ add_library(seeml_testing STATIC
     test/support/models.cc
     test/support/corpora.cc
     test/support/probes.cc
+    test/support/metal_gemm_source.cc
 )
 target_link_libraries(seeml_testing PUBLIC seeml_update seeml_update_rt)
 # The emitter suite vendors runtime sources out of the repository checkout.
@@ -266,6 +268,7 @@ endfunction()
 
 seeml_add_test(seeml_hash_test              test/source/identity/hash_test.cc)
 seeml_add_test(seeml_split_test             test/source/contract/split_test.cc)
+seeml_add_test(seeml_recipe_test            test/source/recipe/recipe_test.cc)
 seeml_add_test(seeml_parallel_for_test      test/source/parallel/parallel_for_test.cc)
 seeml_add_test(seeml_screen_test            test/source/statistics/screen_test.cc)
 seeml_add_test(seeml_bpe_test               test/source/tokenizer/bpe_test.cc)

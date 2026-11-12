@@ -56,6 +56,11 @@ on:
         type: boolean
         default: false
 
+# Runner image: pinned to ubuntu-24.04, not ubuntu-latest. On 2026-11-11
+# `ubuntu-latest` became Ubuntu 26.04, where apt.llvm.org publishes no
+# llvm-toolchain-19 repository (404 on its Release file) and setup-python
+# offers no 3.9 — every Linux job failed at toolchain setup, on main's
+# nightly too. Move the pin when the toolchain steps are ported.
 jobs:
   frontier:
     name: Frontier rows (hosted Apple silicon, opt-in)
@@ -210,7 +215,7 @@ jobs:
 
   tsan:
     name: ThreadSanitizer (full suites)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       CXX: clang++-19
@@ -256,7 +261,7 @@ jobs:
 
   fuzz-extended:
     name: fuzz (15 min, cached corpus)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CXX: clang++-19
@@ -345,7 +350,7 @@ jobs:
   # until it is re-pinned (another host's epoch there still fails closed).
   bench:
     name: bench (Tier A regression gate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CXX: clang++-19

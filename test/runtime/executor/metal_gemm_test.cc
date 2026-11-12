@@ -16,7 +16,7 @@
 
 #if defined(__APPLE__)
 
-#include "compiler/backend/architecture/kernel_emitter.h"
+#include "test/support/metal_gemm_source.h"
 #include "runtime/executor/metal_gemm.h"
 #include "runtime/executor/update_kernels.h"
 
@@ -24,7 +24,7 @@ namespace {
 
 namespace k = seeml::update_rt::kernels;
 using seeml::testing::RandnVector;
-using seeml::update::EmitMetalKernels;
+using seeml::testing::MetalGemmSource;
 using seeml::update::GpuTiling;
 using seeml::update_rt::MetalGemmRunner;
 using Kind = seeml::update_rt::MetalGemmRunner::Kind;
@@ -35,7 +35,7 @@ constexpr size_t kM = 33, kN = 29, kK = 21;
 
 std::unique_ptr<MetalGemmRunner> MakeRunner() {
   const GpuTiling tiling;  // 16 x 16 x 16
-  auto runner = MetalGemmRunner::Create(EmitMetalKernels(tiling),
+  auto runner = MetalGemmRunner::Create(MetalGemmSource(tiling),
                                         tiling.tile_m, tiling.tile_n);
   if (!runner) {
     ADD_FAILURE("Metal runner creation failed: " + runner.error());

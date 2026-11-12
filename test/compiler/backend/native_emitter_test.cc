@@ -386,6 +386,24 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::HeldOutIndices(");
     EXPECT_STR_CONTAINS(main_tu, "--val-frac is not a runner ");
     EXPECT_STR_CONTAINS(main_tu, "dataset->SplitHeldOut(held, split_hash)");
+    // S4 #150: the runner's integers are digits alone and its flags are
+    // held to the plan by the recipe's rules, from the vendored headers.
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseU64Strict(s, out)");
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::RunFlagsViolation(");
+    // The rules run on the header read for the usage errors, before the
+    // plan loads; a resume is a checkpoint that is there (a bare --resume
+    // starts a fresh run), and the floats are as strict as the integers.
+    EXPECT_STR_CONTAINS(main_tu, "RunFlagsViolation(hdr, flags)");
+    // ... and one bound to this plan: the engine refuses another plan's
+    // checkpoint and starts fresh, so the fresh run's rule holds there too.
+    EXPECT_STR_CONTAINS(main_tu,
+                        "flags.resume = resumed_from && resumed_from->step > 0 &&");
+    EXPECT_STR_CONTAINS(main_tu, "resumed_from->plan_hash == hdr.plan_hash;");
+    // ... which is also the only checkpoint the seed / split refusal reads:
+    // another plan's binds this run to nothing (test/tool/recipe_test.py
+    // runs both through a built runner).
+    EXPECT_STR_CONTAINS(main_tu, "if (!flags.resume) resumed_from.reset();");
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseF64Strict(s, out)");
     // CR4 #145, the storage role's rows: only for a run that saved a
     // checkpoint, the bytes and the fsyncs as means over its checkpoints.
     EXPECT_STR_CONTAINS(main_tu, "if (report->checkpoints > 0) {");
@@ -398,7 +416,8 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     for (const char* header :
          {"source/statistics/screen.h", "source/statistics/screens.h",
           "source/statistics/plan_work.h", "source/statistics/process.h",
-          "source/contract/split.h", "source/language/dataset_format.h"}) {
+          "source/contract/split.h", "source/language/dataset_format.h",
+          "source/recipe/recipe.h", "source/recipe/run_flags.h"}) {
       bool vendored = false;
       for (const std::string& v : paths.vendored_sources) vendored |= v == header;
       if (!vendored) ADD_FAILURE(std::string(header) + " is not vendored");

@@ -117,6 +117,7 @@ std::expected<CheckpointRecord, std::string> LoadCheckpointRecord(
   CheckpointRecord record;
   record.step = h.step;
   record.horizon_steps = v4.horizon_steps;
+  record.plan_hash = h.plan_hash;
   if (h.version >= 5) {
     record.has_binding = (v5.flags & kCkptHasBinding) != 0;
     record.shuffle_origin = v5.shuffle_origin;
@@ -158,6 +159,7 @@ std::expected<CheckpointRecord, std::string> PeekCheckpointRecord(
   CheckpointRecord record;
   record.step = h.step;
   record.horizon_steps = v4.horizon_steps;
+  record.plan_hash = h.plan_hash;
   if (h.version >= 5) {
     record.has_binding = (v5.flags & kCkptHasBinding) != 0;
     record.shuffle_origin = v5.shuffle_origin;

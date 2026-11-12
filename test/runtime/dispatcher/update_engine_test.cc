@@ -1315,6 +1315,78 @@ TEST(UpdateEngineLr, TheHorizonIsTheRunNotTheCompiledBudget) {
   EXPECT_NEAR(idle.EffectiveLr(), 0.1f * 0.1f, 1e-7);
 }
 
+TEST(UpdateEngineLr, AHorizonInsideTheCompiledWarmupIsRefused) {
+  // S4 #150, review N20, held where the run's start is known: a fresh run,
+  // a resume whose step + steps still ends on the ramp, and a run that
+  // asked to resume a checkpoint that does not load (so starts fresh) are
+  // all refused; a horizon one step past the warmup trains.
+  const std::vector<uint8_t> plan = CosinePlan(/*warmup=*/4);
+  ASSERT_FALSE(plan.empty());
+  auto data_at = [&]() -> Dataset {
+    auto d = MakeClassificationData(64, kInDim, 9);
+    if (!d) std::abort();
+    d->EnableShuffle(5);
+    return std::move(*d);
+  };
+  {
+    UpdateEngine fresh;
+    ASSERT_OK(fresh.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = data_at();
+    EXPECT_ERROR_CONTAINS(fresh.Train(d, 4, Quiet()),
+                          "the run's horizon (4 steps) does not exceed the "
+                          "plan's compiled warmup (4 steps)");
+    EXPECT_EQ(fresh.step(), 0u);  // refused before a step ran
+    ASSERT_OK(fresh.Train(d, 5, Quiet()));
+  }
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("warmup.ckpt");
+  {
+    UpdateEngine first;
+    ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = data_at();
+    TrainOptions interrupted = Quiet();
+    interrupted.checkpoint_path = ckpt;
+    interrupted.checkpoint_every = 1;
+    uint64_t polls = 0;
+    interrupted.should_stop = [&] { return polls++ == 1; };
+    ASSERT_OK_AND_ASSIGN(auto cut, first.Train(d, 30, interrupted));
+    EXPECT_EQ(first.step(), 1u);
+  }
+  TrainOptions ropt = Quiet();
+  ropt.checkpoint_path = ckpt;
+  ropt.resume = true;
+  {
+    // A real resume at step 1: 1 + 3 = 4 still ends on the ramp.
+    UpdateEngine resumed;
+    ASSERT_OK(resumed.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = data_at();
+    EXPECT_ERROR_CONTAINS(resumed.Train(d, 3, ropt),
+                          "the run's horizon (4 steps) does not exceed");
+  }
+  {
+    // 1 + 4 = 5 clears it; and with no count the checkpoint's horizon holds.
+    UpdateEngine resumed;
+    ASSERT_OK(resumed.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = data_at();
+    ASSERT_OK(resumed.Train(d, 4, ropt));
+    EXPECT_EQ(resumed.horizon(), 5u);
+  }
+  {
+    // A checkpoint that does not load: the engine starts fresh, and the
+    // fresh run's 2-step horizon is refused all the same.
+    const std::string broken = tmp.File("broken.ckpt");
+    std::ofstream(broken, std::ios::binary) << "not a checkpoint";
+    TrainOptions bopt = Quiet();
+    bopt.checkpoint_path = broken;
+    bopt.resume = true;
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = data_at();
+    EXPECT_ERROR_CONTAINS(engine.Train(d, 2, bopt),
+                          "the run's horizon (2 steps) does not exceed");
+  }
+}
+
 TEST(UpdateEngineLr, ResumeTrainsTheRemainderOnTheSameSchedule) {
   // An update interrupted at step 12 of 30 and resumed with NO step count
   // trains exactly 18 more, anneals to the floor at step 30, and commits

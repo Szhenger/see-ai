@@ -11,10 +11,9 @@
 #include "compiler/diagnostics/diagnostic.h"
 
 // =============================================================================
-// passing/ — errors formed while orchestrating and lowering SIR in the
-// analysis subsystem, outside the analytic methods themselves
-// (compiler/analysis/): the pass manager's invariant gate and the
-// legality checks of structural lowerings such as im2col conv rewriting.
+// passing/ — errors formed while orchestrating SIR passes in the analysis
+// subsystem, outside the analytic methods themselves (compiler/analysis/):
+// the pass manager's invariant gate.
 // Failure discipline: a pass's own error is propagated verbatim (tests match
 // it exactly); corruption found *after* a pass is attributed to that pass by
 // name so the offender is never ambiguous.
@@ -23,7 +22,6 @@
 namespace seeml::diag::passing {
 
 inline constexpr std::string_view kPassManager = "PassManager";
-inline constexpr std::string_view kConvLowering = "ConvLowering";
 
 /// Post-pass verification failure, attributed to the offending pass:
 /// "PassManager: SIR invariants violated after pass '<pass>': <why>".
@@ -36,15 +34,6 @@ inline constexpr std::string_view kConvLowering = "ConvLowering";
       .append("': ")
       .append(why);
   return Fail(kPassManager, m);
-}
-
-/// Lowering legality failure: "ConvLowering: '<op>' <what>".
-[[nodiscard]] inline std::unexpected<std::string> LoweringError(std::string_view op,
-                                                                std::string_view what) {
-  std::string m;
-  m.reserve(op.size() + what.size() + 3);
-  m.append("'").append(op).append("' ").append(what);
-  return Fail(kConvLowering, m);
 }
 
 /// Progress note after a pass runs clean:

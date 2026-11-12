@@ -91,10 +91,9 @@ What SeeAI can train today, stated up front:
   `nn.Sequential` of `Linear`/activation/`LayerNorm` modules, and
   `export_decoder_smf` / `export_token_decoder_smf` + `export_token_sds`
   emit hand-built decoders (`--demo-decoder` writes a working pair). 
-  The compiler's intermediate representation additionally models 2-D convolution 
-  (lowered to matrix multiplication via im2col), but
-  grouped/dilated forms are rejected and the SMF container does not yet
-  carry convolutions.
+  The compiler's intermediate representation additionally models 2-D
+  convolution (the `conv2d` / `im2col` operator builders), but no pass
+  lowers it and the SMF container does not carry convolutions.
 - **Training method.** LoRA adapters on frozen `MatMul` weights only — the
   base model is never trained directly. Optimizers: SGD or AdamW, one
   parameter group. Losses: cross-entropy, MSE, KL distillation from a

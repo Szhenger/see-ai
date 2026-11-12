@@ -31,7 +31,7 @@ class MetalGemmRunner {
   /// builds (the stub translation unit) and on Metal-less hosts.
   static bool Available();
 
-  /// JIT-compiles `msl_source` (EmitMetalKernels output) and builds the
+  /// JIT-compiles `msl_source` (test/support's MetalGemmSource) and builds the
   /// four compute pipelines. tile_m/tile_n must match the GpuTiling the
   /// source was emitted with — they define the threadgroup shape.
   static std::expected<std::unique_ptr<MetalGemmRunner>, std::string> Create(

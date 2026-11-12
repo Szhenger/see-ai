@@ -991,6 +991,21 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         "the requested horizon (" + std::to_string(horizon_) +
         " steps) ends before the run does (step " +
         std::to_string(step_ + steps) + ")");
+  // The warmup rule (S4 #150, review N20), held where the run's true start
+  // is known: a horizon inside the compiled warmup leaves the cosine phase
+  // no steps, so the whole run sits on the ramp. The runner refuses a fresh
+  // run's --steps early as a usage error; this covers what only the engine
+  // can see — a resume whose step + steps still ends inside the ramp, and a
+  // run that asked to resume but started fresh because its checkpoint did
+  // not load.
+  if (header_.lr_schedule ==
+          static_cast<uint32_t>(up::LrSchedule::kCosineWithWarmup) &&
+      header_.warmup_steps != 0 && horizon_ <= header_.warmup_steps)
+    return diag::executing::Error(
+        "the run's horizon (" + std::to_string(horizon_) +
+        " steps) does not exceed the plan's compiled warmup (" +
+        std::to_string(header_.warmup_steps) +
+        " steps): the run would end inside the ramp");
 
   // The run binding every checkpoint of this run will carry.
   binding_.bound = true;

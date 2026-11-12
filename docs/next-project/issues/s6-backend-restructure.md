@@ -37,6 +37,32 @@ predicted step time has no GPU denominator. Design: [`docs/next-project/seeai.md
    share), dispatch count per program, plan and package bytes, predicted
    step time at the host peak.
 
+## Status 2026-11-11
+
+The moves of design item 1 are complete on `claude/v100b-s4s5s6` (step 1 of
+the S4/S5/S6 plan), every plan bit-identical. `backend/assembly/
+plan_assembly.{h,cc}` holds what the driver did inline — the seeded
+persistent image, the emit table, the section layout, the blob and its seal
+— as five pure functions. `CompileImpl`, 1,390 lines, is now one
+`Compilation` (what the stages hand each other) and 24 methods — 20 stages
+run in order, and beside them the header fill, the merge binding, the train
+resolver and `Run`; the longest is under 140 lines and no driver function
+exceeds 150 except `FillCompileScreens` (192 lines of row assignments, left for the
+screen work of item 4). One ordering difference: the config rules all run
+before the weight sweep, which used to sit between two groups of them.
+`kernel_emitter.{h,cc}` is retired: the GPU tiling clamp is architecture
+data (`GpuTilingFromHost` in `host_arch`), and the Metal source generator,
+used only by the G1a hardware harness test, is `test/support/
+metal_gemm_source`. Verified: plan content identical to main 523e4fc on 17
+fixtures; goldens and the ABI manifest unchanged by this step. Open: the
+header's manifest and ledger with the v23 bump (item 2; the masked
+cross-entropy pair already landed with S3), dropping the MSE opcodes
+(deferred to its own issue — MSE is live in the demo MLP, an identity
+fixture and the frontier matrix; conv had no opcode to drop), the GPU half
+of the target description beyond the tiling clamp, the backend screen's new
+rows and the GPU-denominated predicted step (item 4), and scheduling (item
+3, gated on F8).
+
 ## Acceptance
 
 - Bit-identical `.seeu` and packages for every fixture before and after the

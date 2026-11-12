@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "compiler/backend/architecture/host_arch.h"
-#include "compiler/backend/architecture/kernel_emitter.h"
 #include "compiler/backend/architecture/kernel_policy_table.h"
 #include "source/plan/schema.h"
 #include "test/framework/seetest.h"
@@ -267,10 +266,10 @@ TEST(KernelPolicyTable, ResolutionPrecedenceIsFlagTableDefault) {
 }
 
 // =============================================================================
-// architecture/ — GPU kernel emitter
+// architecture/ — the GPU half of the tiling
 // =============================================================================
 
-TEST(KernelEmitter, GpuTilingClampsHostTiling) {
+TEST(HostArch, GpuTilingClampsHostTiling) {
   const GpuTiling t = GpuTilingFromHost({.mc = 512, .kc = 96, .nc = 16});
   EXPECT_EQ(t.tile_m, 32u);  // clamped down from 512
   EXPECT_EQ(t.tile_k, 32u);

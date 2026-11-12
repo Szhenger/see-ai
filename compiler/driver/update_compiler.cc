@@ -6,13 +6,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "compiler/backend/allocation/arena_binder.h"
+#include "compiler/backend/assembly/plan_assembly.h"
 #include "compiler/backend/selection/instruction_lowering.h"
 #include "compiler/diagnostics/generating/error.h"
 #include "compiler/driver/contract.h"
@@ -25,8 +25,7 @@
 #include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
-#include "source/identity/hash.h"
-#include "source/parallel/parallel_for.h"
+#include "source/recipe/recipe.h"
 
 namespace seeml::update {
 
@@ -35,9 +34,18 @@ namespace generating = seeml::diag::generating;
 
 // =============================================================================
 // UpdateCompiler::Compile
+//
+// The driver is orchestration: one Compilation holds what the stages hand
+// each other, and each stage is one step of the pipeline (S6 #152) —
+// frontend (config, ingress, topology, data, the accountant's gate, the
+// forward graph and the loss), analysis (the three pass phases, the merge
+// program, storage selection), backend (binding, rematerialization,
+// lowering, assembly), then the report.
 // =============================================================================
 
 namespace {
+
+using Status = std::expected<void, std::string>;
 
 // The diagnostics contract: every error that crosses the driver boundary
 // must name a registered unit, or the failing process cannot be delimited.
@@ -50,59 +58,145 @@ std::expected<CompiledUpdate, std::string> Attributed(
   return compiled;
 }
 
-}  // namespace
+struct Compilation {
+  const UpdateConfig& config_;
+  const SmfModel& source;
+  const SmfModel* teacher;
+  const bool consume;
 
-AttentionKind DecideAttention(const TrainingFootprint& footprint,
-                              const UpdateConfig& config) {
-  if (config.attention != AttentionKind::kAuto) return config.attention;
-  const bool over_budget =
-      footprint.probs_cache_bytes > config.attention_cache_budget_bytes;
-  // Against a CONFIGURED memory budget only (see the header): with none,
-  // the cache budget decides by itself, and the gate that follows keeps
-  // its own, host-sized refusal. CheckTrainableLocally falls back to the
-  // host's memory for a zero budget, which is exactly what a decision
-  // that changes the plan's bytes may not consult.
-  const bool cached_fits =
-      config.memory_budget_bytes == 0 ||
-      CheckTrainableLocally(footprint, config.memory_budget_bytes).has_value();
-  return (over_budget || !cached_fits) ? AttentionKind::kTiled
-                                       : AttentionKind::kCached;
-}
-
-std::expected<CompiledUpdate, std::string> UpdateCompiler::Compile(
-    const SmfModel& source, const SmfModel* teacher) {
-  return Attributed(CompileImpl(source, teacher, /*consume=*/false));
-}
-
-std::expected<CompiledUpdate, std::string> UpdateCompiler::Compile(
-    SmfModel&& source, SmfModel* teacher) {
-  // `source` binds to a caller's non-const model (as `teacher` points to
-  // one), which is what makes releasing their payloads well-defined.
-  return Attributed(CompileImpl(source, teacher, /*consume=*/true));
-}
-
-std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
-    const SmfModel& source, const SmfModel* teacher, bool consume) {
   // Every pass (PassManager) and every driver phase between them, timed:
   // the compile report carries these, so a compile-side performance claim
   // is a measurement anyone can repeat (E5, #84).
   using PhaseClock = std::chrono::steady_clock;
   std::vector<PassTiming> timings;
-  auto phase_start = PhaseClock::now();
-  auto phase = [&](const char* name, size_t ops) {
+  PhaseClock::time_point phase_start = PhaseClock::now();
+  void phase(const char* name, size_t ops) {
     const auto now = PhaseClock::now();
     timings.push_back(
         {name, ops,
          std::chrono::duration<double, std::milli>(now - phase_start).count()});
     phase_start = now;
-  };
-  const bool wants_teacher = config_.loss == LossKind::kKLDistill ||
+  }
+
+  // Frontend.
+  bool wants_teacher = false;
+  CompileFacts facts;
+  int64_t batch = 0;
+  std::optional<sema::Topology> topology;
+  std::optional<sema::Topology> teacher_topology;
+  bool token_input = false;
+  int64_t in_dim = 0;
+  std::optional<tokenization::CorpusIngress> corpus;
+  bool masked_loss = false;
+  TrainingFootprint footprint;
+  AttentionKind attention = AttentionKind::kAuto;
+  sir::Block block;
+  GraphBuild build;
+  int64_t out_dim = 0;
+  sir::Value* teacher_out = nullptr;
+  sir::Value* labels = nullptr;
+  uint32_t label_kind = 0;
+  uint64_t label_bytes = 0;
+  sir::Value* loss = nullptr;
+
+  // Analysis.
+  AttilingDecision attention_decision;
+  std::vector<GraftedAdapter> adapters;
+  std::vector<sir::Value*> trainables;
+  std::vector<sir::Operation*> primal_ops;
+  std::unordered_map<sir::Value*, sir::Value*> param_grads;
+  uint32_t accum = 1;
+  std::optional<MergeProgram> merge;
+  std::unordered_map<const sir::Value*, float> quant_scales;
+  std::unordered_set<const sir::Value*> bf16_weights;
+
+  // Backend.
+  std::unordered_set<const sir::Value*> pinned;
+  std::optional<ArenaBinding> binding;
+  std::unordered_set<const sir::Value*> merge_pinned;
+  std::unordered_map<const sir::Value*, uint64_t> merge_bound;
+  uint64_t plain_arena = 0;
+  bool remat_on = false;
+  Rematerialization remat;
+  PlanPrograms programs;
+  uint64_t relaxed_gemms = 0, relaxed_attention = 0;
+  std::unordered_set<const sir::Value*> shipped;
+  PlanHeader header;
+  uint32_t recorded_accum = 1;
+  uint64_t accumulator_bytes = 0;
+  CompiledUpdate result;
+
+  Compilation(const UpdateConfig& config, const SmfModel& source_model,
+              const SmfModel* teacher_model, bool consume_models)
+      : config_(config),
+        source(source_model),
+        teacher(teacher_model),
+        consume(consume_models) {}
+
+  // The config alone: every float finite and in range, the adapter-only
+  // preconditions, the kernel tile, the schedule triple.
+  Status ValidateConfig();
+  // The weights cross into the compiler finite; the sweep records ranges.
+  Status Ingress();
+  // Topology to completion, then the cross-input rules.
+  Status VerifyTopology();
+  // --data: the corpus held to the model, and the compiled split.
+  Status IngestData();
+  // The masked objective: asked for, or implied by the corpus.
+  Status DecideMaskedLoss();
+  // The model as read, for the frontend screen.
+  Status RecordFrontendFacts();
+  // The accountant's early gate and the attention decision.
+  Status ProveFootprint();
+  // Forward SIR: student, and the frozen teacher sharing its input.
+  Status BuildForwardGraph();
+  // The loss, grafted onto the forward graph.
+  Status GraftLoss();
+  // Phase A, and the primal snapshot that becomes the eval program.
+  Status StructuralPasses();
+  // Phase B: autodiff pruned to the adapters, optimizer synthesis.
+  Status CalculusPasses();
+  // The merge program and the frozen-weight storage selection.
+  Status MergeAndReview();
+  // Phase C: the three fusers, then the DCE sweep.
+  Status FusionPasses();
+  // Segmented arena binding, the merge program bound above it.
+  Status BindArenas();
+  // Rematerialization, decided on the plain binding.
+  Status Rematerialize();
+  // The train stream, its relaxed instructions, the step program split.
+  Status LowerTrain();
+  // The eval program, which scores what ships, and the merge program.
+  Status LowerEvalAndMerge();
+  // The header words the compile decided; assembly lays the sections out.
+  Status FillHeader();
+  // The plan blob, sealed, and the exact memory gate.
+  Status Assemble();
+  // Debug hooks: the SIR dump, the timings, per-parameter and per-adapter refs.
+  Status ReportDebug();
+  // The compile's numbers, the screens, and the backend boundary check.
+  Status ReportSummary();
+  // The merge program bound into the training arena (again after a rebind).
+  Status BindMerge();
+  ResolveFn ResolveTrain();
+
+  std::expected<CompiledUpdate, std::string> Run();
+};
+
+Status Compilation::ValidateConfig() {
+  wants_teacher = config_.loss == LossKind::kKLDistill ||
                              config_.loss == LossKind::kXEntPlusKL;
+  // The recipe's bounds a config built in code must hold too (S4 #150,
+  // review N18): an unbounded rank overflowed into an invalid plan.
+  if (auto why = recipe::ConfigViolation(config_))
+    return generating::Error(generating::kDriver, "config " + *why);
   // CR1 #142: every float the config carries is finite and within the
-  // range the CLI accepts — the library path enforced nothing, so a NaN
-  // learning rate compiled into the plan header and a NaN temperature into
-  // the KL words, and passed every comparison downstream. The runtime's
-  // load contract and the validator apply the same bounds.
+  // range the runtime's load contract and the validator apply — the library
+  // path enforced nothing, so a NaN learning rate compiled into the plan
+  // header and a NaN temperature into the KL words, and passed every
+  // comparison downstream. (The recipe's table, source/recipe/recipe.h, is
+  // narrower: its upper bounds on lr, weight decay, the clip, alpha and the
+  // distillation weight are the command line's and are not held here.)
   {
     const OptimizerSpec& o = config_.optimizer;
     struct Rule {
@@ -144,19 +238,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   if (wants_teacher && !teacher)
     return generating::Error(generating::kDriver,
                              "the selected loss requires a teacher model");
-  // --- Ingress: the weights cross into the compiler finite (CR1 #142 F12
-  // / F34; the ingressor's rule, S1 #147), and the same pass records each
-  // tensor's range for the frontend screen.
-  CompileFacts facts;
-  {
-    auto swept = SweepWeights(source, "student");
-    if (!swept) return std::unexpected(swept.error());
-    facts.frontend.ingressor.ranges = std::move(swept->ranges);
-    if (teacher)
-      if (auto t = SweepWeights(*teacher, "teacher"); !t)
-        return std::unexpected(t.error());
-  }
-  phase("ingress", 0);
   // The adapter-only package (F6 #134, plan v21): the frozen weights stay
   // in the model file the device already holds, bound by hash at run time,
   // so the plan ships at adapter scale. Its preconditions are the config
@@ -208,56 +289,47 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
         "gemm_tile_k " + std::to_string(config_.gemm_tile_k) +
             " is not a multiple of the kernel's 4-wide unroll");
 
-  // The schedule triple (E8, #91). Each of these used to compile and then
-  // misbehave silently at run time: a zero budget is a plan with nothing to
-  // default to; a warmup that swallows the budget leaves no horizon, so
-  // every later step ran at the floor; warmup under a constant schedule was
-  // ignored; and a zero floor trains the schedule's final step — and any
-  // step past a horizon — at LR 0, moving nothing but AdamW's moments.
-  {
-    const OptimizerSpec& o = config_.optimizer;
-    const bool cosine = o.lr_schedule == LrSchedule::kCosineWithWarmup;
-    if (config_.default_steps == 0)
-      return generating::Error(generating::kDriver,
-                               "the step budget must be positive");
-    if (!cosine && o.warmup_steps != 0)
-      return generating::Error(
-          generating::kDriver,
-          "warmup applies to the cosine schedule only; under the constant "
-          "schedule it would be silently ignored");
-    if (cosine && o.warmup_steps >= config_.default_steps)
-      return generating::Error(
-          generating::kDriver,
-          "warmup (" + std::to_string(o.warmup_steps) +
-              " steps) must be shorter than the step budget (" +
-              std::to_string(config_.default_steps) + ")");
-    if (cosine && !(o.min_lr_factor >= 0.0f && o.min_lr_factor <= 1.0f))
-      return generating::Error(generating::kDriver,
-                               "min_lr_factor must lie in [0, 1]");
-    if (cosine && o.min_lr_factor == 0.0f && !o.allow_zero_lr)
-      return generating::Error(
-          generating::kDriver,
-          "a cosine floor of 0 trains the schedule's last step at a learning "
-          "rate of zero; set min_lr_factor > 0 (the default is 0.1) or "
-          "allow_zero_lr to ask for it deliberately");
-  }
+  // The schedule triple (E8, #91): optimization's rule
+  // (analysis/optimization/schedule.h).
+  if (auto ok = VerifySchedule(config_.optimizer, config_.default_steps); !ok)
+    return std::unexpected(ok.error());
+  return {};
+}
 
-  const int64_t batch = config_.batch;
+Status Compilation::Ingress() {
+  // --- Ingress: the weights cross into the compiler finite (CR1 #142 F12
+  // / F34; the ingressor's rule, S1 #147), and the same pass records each
+  // tensor's range for the frontend screen.
+  {
+    auto swept = SweepWeights(source, "student");
+    if (!swept) return std::unexpected(swept.error());
+    facts.frontend.ingressor.ranges = std::move(swept->ranges);
+    if (teacher)
+      if (auto t = SweepWeights(*teacher, "teacher"); !t)
+        return std::unexpected(t.error());
+  }
+  phase("ingress", 0);
+  return {};
+}
+
+Status Compilation::VerifyTopology() {
+  batch = config_.batch;
 
   // --- Topology, to completion (S1 #147): the whole model verified and
   // every value shaped from the tensor table before the accountant walks
   // it or computation builds it; then what no single model can know — the
   // teacher against the student, the loss against the input kind, the
   // adapter filters against the weights, the reserved `t::` namespace.
-  auto topology = sema::VerifyModel(source, batch);
-  if (!topology) return std::unexpected(topology.error());
+  auto verified = sema::VerifyModel(source, batch);
+  if (!verified) return std::unexpected(verified.error());
+  topology = std::move(*verified);
   // The input's kind and width are topology's one reading of the tensor
   // table: a rank-1 dynamic ({-1}) input declares i32 token ids (SMF v4),
   // otherwise the width is the static, positive last dim (topology refuses
   // the rest — a non-positive width would flow into the SIR as a dynamic
   // dim and seal a plan the runtime rejects).
-  const bool token_input = topology->token_input;
-  const int64_t in_dim = topology->input_width;
+  token_input = topology->token_input;
+  in_dim = topology->input_width;
   if (token_input) {
     if (source.seq_len == 0)
       return generating::Error(generating::kDriver,
@@ -268,7 +340,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           generating::kDriver,
           "the compiled batch must be a whole number of sequences");
   }
-  std::optional<sema::Topology> teacher_topology;
   if (wants_teacher) {
     auto tt = sema::VerifyModel(*teacher, batch);
     if (!tt) return std::unexpected(tt.error());
@@ -281,12 +352,14 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       !ok)
     return std::unexpected(ok.error());
   phase("topology", source.ops.size());
+  return {};
+}
 
+Status Compilation::IngestData() {
   // --- The data path (S2 #148): --data runs the vendored stages over the
   // corpus with the model's own tokenizer section, holds the result to the
   // model, and pins the plan to the canonical corpus by hash. Before the
   // accountant: the corpus rows are its.
-  std::optional<tokenization::CorpusIngress> corpus;
   if (!config_.data_path.empty()) {
     auto c = tokenization::IngestCorpus(
         config_.data_path, source, *topology,
@@ -330,10 +403,14 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                              "a compiled validation split needs the corpus: "
                              "pass --data with --val-frac");
   }
+  return {};
+}
+
+Status Compilation::DecideMaskedLoss() {
   // The masked loss (S3 #149, plan v22 kDataFlagMaskedLoss): asked for, or
   // implied by a corpus that carries a mask. The cross-entropy alone has a
   // masked form; the other objectives take every position.
-  const bool masked_loss =
+  masked_loss =
       config_.masked_loss || (corpus && corpus->shape.masked);
   if (masked_loss && config_.loss != LossKind::kSoftmaxXEnt)
     return generating::Error(
@@ -357,7 +434,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
         "--masked-loss with a corpus that carries no loss mask: the plan "
         "would refuse its own corpus; drop --masked-loss, or pass a prompt / "
         "response corpus (or a masked .sds)");
+  return {};
+}
 
+Status Compilation::RecordFrontendFacts() {
   // The model as read, for the frontend screen (S0 #146). Captured before
   // any pass: the consuming compile releases the weight payloads as plan
   // assembly packs them, so the byte counts come from the tensors' sizes.
@@ -389,14 +469,17 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       if (adapted.contains(w.name)) top.adapted_bytes += w.bytes;
     }
   }
+  return {};
+}
 
+Status Compilation::ProveFootprint() {
   // --- 0. Fail fast: prove the training footprint fits local memory. -------
   // The teacher is a frozen forward — no backward caches its activations —
   // so it is estimated at its peak, not its sum; and --quantize-base stores
   // the student's frozen weights as int8 rodata at 1/4 size (under-counting the
   // unselected remainder keeps the bound a lower bound). Both matter:
   // an over-count here refuses compiles the exact final gate would pass.
-  TrainingFootprint footprint =
+  footprint =
       EstimateTrainingFootprint(source, batch, config_.lora.target_filters);
   // Only the student's weights take narrow storage: the teacher stays f32
   // (E12 — it is the distillation target), so it is added after the cut.
@@ -427,10 +510,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   footprint.delta_bytes =
       EstimateLoraDeltaBytes(source, config_.lora.target_filters);
   // The attention decision (E11, plan v15), made on the footprint by
-  // DecideAttention (above) — the cache budget, and the memory budget when
+  // DecideAttention (below) — the cache budget, and the memory budget when
   // one is configured; never the compiling host's memory. --attention
   // forces either.
-  const AttentionKind attention = DecideAttention(footprint, config_);
+  attention = DecideAttention(footprint, config_);
   if (attention == AttentionKind::kTiled) {
     if (footprint.probs_cache_bytes > 0)
       seeml::diag::Note(generating::kDriver,
@@ -474,10 +557,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     }
     return std::unexpected(std::move(why));
   }
+  return {};
+}
 
+Status Compilation::BuildForwardGraph() {
   // --- 1. Forward SIR: student (+ frozen teacher sharing the input). -------
-  sir::Block block;
-  GraphBuild build;
   build.input = token_input
                     ? block.addArgument(sir::DataType::I32, sir::Shape{batch})
                     : block.addArgument(sir::DataType::F32,
@@ -487,12 +571,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                                   &*topology);
   if (!student_out) return std::unexpected(student_out.error());
   build.output = *student_out;
-  const int64_t out_dim = build.output->shape().dims.at(1);
+  out_dim = build.output->shape().dims.at(1);
   if (out_dim <= 0)
     return generating::Error(generating::kDriver,
                              "model output width must be static and positive");
 
-  sir::Value* teacher_out = nullptr;
   if (wants_teacher) {
     // Topology's cross-input check proved the teacher's input and output
     // agree with the student's; the build is a translation.
@@ -506,12 +589,11 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // for analysis before anything is grafted onto them.
   if (auto ok = VerifyFrontendContract(block, build); !ok)
     return std::unexpected(ok.error());
+  return {};
+}
 
+Status Compilation::GraftLoss() {
   // --- 2. Loss grafting. ----------------------------------------------------
-  sir::Value* labels = nullptr;
-  uint32_t label_kind = 0;
-  uint64_t label_bytes = 0;
-  sir::Value* loss = nullptr;
 
   auto make_xent = [&]() {
     labels = block.addArgument(sir::DataType::I32, sir::Shape{batch});
@@ -591,16 +673,17 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
 
   facts.ops_in = block.numOps();
   phase("frontend", block.numOps());
-  AttilingDecision attention_decision;
-  // --- 3. Structural passes (phase A): convolution lowering, then LoRA
-  // grafting — everything that must precede the primal snapshot. The pass
+  return {};
+}
+
+Status Compilation::StructuralPasses() {
+  // --- 3. Structural passes (phase A): the attention decision, LoRA
+  // grafting, the RoPE table — everything that must precede the primal
+  // snapshot. The pass
   // manager re-verifies the block after each pass, so a corrupting rewrite
   // is reported against its author.
-  std::vector<GraftedAdapter> adapters;
   {
     PassManager pm;
-    pm.Add("conv-lowering",
-           [](sir::Block& b) { return ConvLowering().Run(b); });
     // Attention memory (E11, plan v15): before the snapshot, so the eval
     // program runs the same family, and before autodiff, whose VJP rule
     // reads the decision off the op.
@@ -627,7 +710,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     // hands the same table to every backward rotation.
     if (config_.rope_table)
       pm.Add("rope-table",
-             [&facts](sir::Block& b) -> std::expected<void, std::string> {
+             [this](sir::Block& b) -> std::expected<void, std::string> {
                auto tables = RopeTableHoister().Run(b);
                if (!tables) return std::unexpected(tables.error());
                facts.rope_tables = *tables;
@@ -643,7 +726,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     phase_start = PhaseClock::now();  // passes are timed by their manager
   }
 
-  std::vector<sir::Value*> trainables;
   for (const GraftedAdapter& a : adapters) {
     trainables.push_back(a.A);
     trainables.push_back(a.B);
@@ -653,23 +735,24 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // becomes the evaluation program, lowered against the same arena binding.
   // Running it computes the current validation loss without touching any
   // parameter — the basis of the runtime's regression gate.
-  std::vector<sir::Operation*> primal_ops;
   primal_ops.reserve(block.numOps());
   block.walk([&](sir::Operation* op) { primal_ops.push_back(op); });
+  return {};
+}
 
+Status Compilation::CalculusPasses() {
   // --- 4/5. Calculus passes (phase B): reverse-mode autodiff pruned to the
   // adapters, then optimizer synthesis (one program execution == one full
   // step) — again under the per-pass verification gate, which subsumes the
   // former end-of-pipeline SSA validation.
-  std::unordered_map<sir::Value*, sir::Value*> param_grads;
   // Gradient accumulation (roadmap 2a): each micro-batch's gradient is a
   // mean over its own rows, so the seed dL/dL = 1/G makes G folded
   // gradients the mean over the effective batch of batch x G rows.
-  const uint32_t accum = std::max<uint32_t>(1, config_.grad_accum_steps);
+  accum = std::max<uint32_t>(1, config_.grad_accum_steps);
   {
     PassManager pm;
     pm.Add("autodiff", [&](sir::Block& b) -> std::expected<void, std::string> {
-      auto grads = TrainableAutodiff(1.0f / static_cast<float>(accum))
+      auto grads = TrainableAutodiff(AccumulationSeed(accum))
                        .Run(b, loss, trainables);
       if (!grads) return std::unexpected(grads.error());
       param_grads = std::move(*grads);
@@ -691,11 +774,15 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   }
 
   facts.gradients = param_grads.size();
+  return {};
+}
 
+Status Compilation::MergeAndReview() {
   // --- 6. Merge program: Δ = (α/r)·A@B (commit adds Δ to the model file). ---
   MergeBuilder merger;
-  auto merge = merger.Run(adapters);
-  if (!merge) return std::unexpected(merge.error());
+  auto merged = merger.Run(adapters);
+  if (!merged) return std::unexpected(merged.error());
+  merge = std::move(*merged);
   // Analysis boundary: grafts, gradients, and the merge program must be fit
   // for code generation (subsumes the former ad-hoc merge validation).
   if (auto ok = VerifyAnalysisContract(block, adapters, param_grads, *merge);
@@ -706,8 +793,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // Before the fusion phase: the epilogue fuser must know which GEMMs will
   // lower to the q8 opcode, whose in[3] slot the dequant scale occupies —
   // a fused bias ref has nowhere to ride there.
-  std::unordered_map<const sir::Value*, float> quant_scales;
-  std::unordered_set<const sir::Value*> bf16_weights;
   if (config_.quantize_base && config_.bf16_base)
     return generating::Error(generating::kDriver,
                              "quantize_base and bf16_base are mutually "
@@ -728,6 +813,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   facts.int8_weights = quant_scales.size();
   facts.bf16_weights = bf16_weights.size();
   phase("merge-and-review", block.numOps());
+  return {};
+}
+
+Status Compilation::FusionPasses() {
   // --- 7b. Optimization passes (phase C): epilogue fusion, then the DCE
   // sweep — after autodiff, so fusion legality is read off the use-lists
   // (an intermediate the backward program consumes carries that consumer
@@ -833,20 +922,23 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     timings.insert(timings.end(), pm.timings().begin(), pm.timings().end());
     phase_start = PhaseClock::now();  // passes are timed by their manager
   }
+  return {};
+}
 
+Status Compilation::BindArenas() {
   // --- 8. Segmented arena binding. -------------------------------------------
   // Pin the loss slot and every parameter gradient: they are read outside the
   // program (engine / optimizer-less debug builds) and must survive the step.
-  std::unordered_set<const sir::Value*> pinned;
   pinned.insert(loss);
   for (const auto& [p, g] : param_grads) pinned.insert(g);
 
-  // An adapter-only plan (F6 #134, v21; its preconditions were checked at
-  // the top of this function) binds every frozen weight to a source ref
-  // and lays out no rodata.
-  auto binding = BindArena(block, build, pinned, quant_scales, bf16_weights,
-                           config_.adapter_only);
-  if (!binding) return std::unexpected(binding.error());
+  // An adapter-only plan (F6 #134, v21; its preconditions were checked by
+  // ValidateConfig) binds every frozen weight to a source ref and lays out
+  // no rodata.
+  auto bound = BindArena(block, build, pinned, quant_scales, bf16_weights,
+                         config_.adapter_only);
+  if (!bound) return std::unexpected(bound.error());
+  binding = std::move(*bound);
 
   // Bind the merge program into the same arena: A/B mirrors resolve through
   // the alias map; delta outputs are pinned fresh transients ABOVE the
@@ -854,29 +946,16 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // transients: the engine's public sequence Train -> RunMerge -> Evaluate
   // -> CommitToModel would otherwise let the eval forward pass overwrite
   // the materialized deltas before commit patches them into the model.
-  std::unordered_set<const sir::Value*> merge_pinned;
   for (const auto& [delta, adapter_index] : merge->outputs)
     merge_pinned.insert(delta);
 
-  std::unordered_map<const sir::Value*, uint64_t> merge_bound;
-  auto bind_merge = [&]() -> std::expected<void, std::string> {
-    merge_bound.clear();
-    for (const auto& [mirror, original] : merge->aliases) {
-      auto it = binding->refs.find(original);
-      if (it == binding->refs.end())
-        return generating::Error(generating::kDriver,
-                                 "merge alias to unbound value");
-      merge_bound[mirror] = it->second;
-    }
-    const uint64_t merge_high = LinearScanTransients(
-        *merge->block, AlignUp(binding->arena_size), merge_bound,
-        merge_pinned, merge_bound);
-    binding->arena_size = std::max(binding->arena_size, merge_high);
-    return {};
-  };
-  if (auto ok = bind_merge(); !ok) return std::unexpected(ok.error());
+  if (auto ok = BindMerge(); !ok) return std::unexpected(ok.error());
 
   phase("bind-arena", block.numOps());
+  return {};
+}
+
+Status Compilation::Rematerialize() {
   // --- 8b. Rematerialization (roadmap 2b, F5 #133). --------------------------
   // Decided on the plain binding, which is the only way to know the arena:
   // `auto` recomputes when that arena plus the plan — bounded from above
@@ -889,8 +968,8 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // again — storage keeps its refs — and the deltas re-pinned above the
   // new high-water mark. What the plain binding took is kept for the
   // report: bytes_saved is a measurement, not the pass's estimate.
-  const uint64_t plain_arena = AlignUp(binding->arena_size);
-  bool remat_on = config_.remat == RematKind::kOn;
+  plain_arena = AlignUp(binding->arena_size);
+  remat_on = config_.remat == RematKind::kOn;
   std::string over_budget;  // auto: the gate's verdict, with its numbers
   if (config_.remat == RematKind::kAuto) {
     auto instructions_of = [](const auto& ops) {
@@ -930,7 +1009,6 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
       over_budget = std::move(fits.error());
     }
   }
-  Rematerialization remat;
   if (remat_on) {
     PassManager pm;
     pm.Add("rematerialize",
@@ -944,7 +1022,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     timings.insert(timings.end(), pm.timings().begin(), pm.timings().end());
     phase_start = PhaseClock::now();  // passes are timed by their manager
     RebindTransients(block, pinned, *binding);
-    if (auto ok = bind_merge(); !ok) return std::unexpected(ok.error());
+    if (auto ok = BindMerge(); !ok) return std::unexpected(ok.error());
     seeml::diag::Note(
         generating::kDriver,
         std::string("rematerialization ") +
@@ -961,14 +1039,12 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
             std::to_string(AlignUp(binding->arena_size)) + " B");
     phase("rebind-arena", block.numOps());
   }
+  return {};
+}
+
+Status Compilation::LowerTrain() {
   // --- 9. Lowering: train, eval (primal prefix), and merge programs. ---------
-  auto resolve_train =
-      [&](const sir::Value* v) -> std::expected<uint64_t, std::string> {
-    if (auto it = binding->refs.find(v); it != binding->refs.end())
-      return it->second;
-    return generating::Error(generating::kDriver,
-                             "unbound value '" + std::string(v->id()) + "'");
-  };
+  const ResolveFn resolve_train = ResolveTrain();
   std::vector<sir::Operation*> train_ops;
   train_ops.reserve(block.numOps());
   block.walk([&](sir::Operation* op) { train_ops.push_back(op); });
@@ -976,35 +1052,14 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                                bf16_weights, binding->quant_column_scales);
   if (!train_instrs) return std::unexpected(train_instrs.error());
 
-  // --- Relaxed arithmetic (plan v18, F2 / F4). -------------------------------
-  // Under --precision certified-bf16 every frozen-weight GEMM of the train
-  // stream (and so of the step program split from it below) — a product
-  // whose B operand is rodata: the base and teacher weights in f32, int8 or
-  // bf16, NN forward and NT dX — carries kFlagRelaxed. The adapter GEMMs
-  // (A and B live in the arena) and everything else stay exact, as does
-  // the eval program lowered separately below: the gate scores what ships
-  // in reference arithmetic. The bit is a permission the backend may
-  // decline; what it permits is bounded by the certificate the package
-  // must carry. Plan v20 (F3 #131): the tiled attention instructions of the
-  // train stream carry it too — the backend may run their blocks' products
-  // on matrix tiles in another f32 summation order; the certificate prices
-  // their attn.*.tiled sites.
-  uint64_t relaxed_gemms = 0, relaxed_attention = 0;
+  // --- Relaxed arithmetic (plan v18, F2 / F4; v20, F3): which instructions
+  // carry kFlagRelaxed is the precision assignment's decision
+  // (analysis/statistics/precision.h); the eval program lowered separately
+  // below stays exact.
   if (config_.precision == Precision::kCertifiedBf16) {
-    for (UpdateInstruction& ins : *train_instrs) {
-      const auto op = static_cast<OpCode>(ins.opcode);
-      const bool frozen_gemm =
-          (op == OpCode::kGemmNN || op == OpCode::kGemmNT ||
-           op == OpCode::kGemmNNQ8 || op == OpCode::kGemmNTQ8 ||
-           op == OpCode::kGemmNNBF16 || op == OpCode::kGemmNTBF16) &&
-          IsRodataRef(ins.in[1]);
-      const bool tiled_attention =
-          op == OpCode::kAttnFwdTiled || op == OpCode::kAttnDQTiled ||
-          op == OpCode::kAttnDKTiled || op == OpCode::kAttnDVTiled;
-      if (!frozen_gemm && !tiled_attention) continue;
-      ins.flags |= kFlagRelaxed;
-      ++(frozen_gemm ? relaxed_gemms : relaxed_attention);
-    }
+    const RelaxedCounts relaxed = AssignRelaxedPrecision(*train_instrs);
+    relaxed_gemms = relaxed.gemms;
+    relaxed_attention = relaxed.attention;
     seeml::diag::Note(generating::kDriver,
                       "relaxed arithmetic: " + std::to_string(relaxed_gemms) +
                           " frozen-weight GEMM(s) and " +
@@ -1041,7 +1096,12 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                                  "optimizer instruction inside the grad "
                                  "program");
   }
+  programs.train = std::move(*train_instrs);
+  programs.step = std::move(step_instrs);
+  return {};
+}
 
+Status Compilation::LowerEvalAndMerge() {
   // --- The eval program scores what ships (E12, #95, plan v17). ------------
   // Training runs against the narrow copies (that is the memory the int8 /
   // bf16 base buys); the commit patches the f32 weights of the source file.
@@ -1051,7 +1111,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // function up to the rounding of one addition per element. Possible only
   // for a model that came from a file (the offsets and the hash that binds
   // them); an in-memory compile keeps the in-plan proxy, and says so.
-  std::unordered_set<const sir::Value*> shipped;
+  const ResolveFn resolve_train = ResolveTrain();
   const bool from_file = source.content_hash != 0;
   auto narrow_student = [&](const sir::Value* v) {
     auto src = build.weight_sources.find(v);
@@ -1109,60 +1169,14 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
                                bf16_weights, binding->quant_column_scales);
   if (!merge_instrs) return std::unexpected(merge_instrs.error());
 
+  programs.eval = std::move(*eval_instrs);
+  programs.merge = std::move(*merge_instrs);
   facts.ops_out = block.numOps();
   phase("lower", block.numOps());
-  // --- 10. Persistent-segment initial image (deterministic, seeded). --------
-  // Every randn element is a pure function of (seed, element index):
-  // counter-based splitmix64 (the same generator the feeder's shuffler
-  // uses) feeding Box-Muller. That lets ParallelFor split *within* a
-  // tensor — the common case is one large adapter tensor, which a
-  // per-tensor stream would generate serially — while the image stays
-  // bit-identical at any thread count. It also removes the last
-  // implementation-defined numeric in the plan: std::normal_distribution's
-  // algorithm varies across standard libraries.
-  std::vector<uint8_t> persist_init(binding->persistent_size, 0);
-  std::vector<const ParamInit*> randn_params;
-  for (const ParamInit& p : binding->params)
-    if (p.init == "randn") randn_params.push_back(&p);  // zeros already
-  auto counter_randn = [](uint64_t seed, uint64_t index) -> float {
-    // Stride the counter by the two draws each element consumes: with a
-    // stride of one, element j's second draw and element j+1's first draw
-    // would mix the identical counter, coupling every sample's magnitude
-    // to its neighbor's angle (u1_{j+1} == u2_j + 2^-53).
-    uint64_t s = seed + 0x9E3779B97F4A7C15ULL * (2 * index + 1);
-    auto next = [&s]() { return SplitMix64Next(&s); };  // splitmix64
-    // u1 in (0, 1] keeps the log finite; u2 in [0, 1).
-    const double u1 = (static_cast<double>(next() >> 11) + 1.0) * 0x1.0p-53;
-    const double u2 = static_cast<double>(next() >> 11) * 0x1.0p-53;
-    constexpr double kTwoPi = 6.283185307179586476925286766559;
-    return static_cast<float>(std::sqrt(-2.0 * std::log(u1)) *
-                              std::cos(kTwoPi * u2));
-  };
-  for (const ParamInit* rp : randn_params) {
-    const ParamInit& p = *rp;
-    auto* dst = reinterpret_cast<float*>(persist_init.data() + p.offset);
-    const uint64_t count = static_cast<uint64_t>(p.value->shape().volume());
-    ParallelFor(count, 4096, [&](size_t begin, size_t end, size_t) {
-      for (size_t j = begin; j < end; ++j)
-        dst[j] = counter_randn(p.seed, j) * p.std;
-    });
-  }
+  return {};
+}
 
-  // --- 11. Emit table: delta arena ranges -> source-file byte ranges. -------
-  std::vector<EmitEntry> emit_table;
-  for (const auto& [delta, adapter_index] : merge->outputs) {
-    const GraftedAdapter& adapter = adapters[adapter_index];
-    auto src = build.weight_sources.find(adapter.frozen_weight);
-    if (src == build.weight_sources.end())
-      return generating::Error(generating::kDriver,
-                               "adapter weight lacks SMF source");
-    emit_table.push_back({.smf_data_offset = src->second->data_offset,
-                          .byte_size = src->second->byte_size,
-                          .arena_offset = RefOffset(merge_bound.at(delta))});
-  }
-
-  // --- 12. Plan assembly. -----------------------------------------------------
-  PlanHeader header;
+Status Compilation::FillHeader() {
   header.arena_size = AlignUp(binding->arena_size);
   header.persistent_size = binding->persistent_size;
   header.input_ref = binding->refs.at(build.input);
@@ -1192,20 +1206,17 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // step: it keeps the 1/G seed and the folds, but records no
   // accumulation — the runtime's contract (a step program exists exactly
   // when the plan accumulates) is about plans that train.
-  const uint32_t recorded_accum = config_.emit_optimizer ? accum : 1;
+  recorded_accum = config_.emit_optimizer ? accum : 1;
   header.grad_accum_steps = recorded_accum;
-  uint64_t accumulator_bytes = 0;
+  accumulator_bytes = 0;
   for (const ParamInit& pi : binding->params)
     if (pi.value->id().ends_with(".grad_acc")) accumulator_bytes += pi.bytes;
-  header.lr_schedule = static_cast<uint32_t>(config_.optimizer.lr_schedule);
-  // The floor and warmup are the cosine schedule's; a constant-schedule
-  // plan records neither (validated above to carry no warmup), so such
-  // plans are byte-identical to the ones compiled before the floor's
-  // default moved from 0 to 0.1.
-  const bool cosine =
-      config_.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup;
-  header.warmup_steps = cosine ? config_.optimizer.warmup_steps : 0;
-  header.min_lr_factor = cosine ? config_.optimizer.min_lr_factor : 0.0f;
+  // The schedule words: the floor and warmup are the cosine schedule's
+  // (analysis/optimization/schedule.h).
+  const ScheduleWords schedule = ScheduleWordsOf(config_.optimizer);
+  header.lr_schedule = schedule.lr_schedule;
+  header.warmup_steps = schedule.warmup_steps;
+  header.min_lr_factor = schedule.min_lr_factor;
   header.clip_norm = config_.optimizer.clip_norm;
   header.source_model_hash = source.content_hash;
   // The data contract (v22, S2 #148): a model carrying a tokenizer section
@@ -1235,103 +1246,24 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
           "the corpus the plan is pinned to would be refused by the device: " +
               *why);
   }
+  return {};
+}
 
-  uint64_t off = AlignUp(sizeof(PlanHeader));
-  header.train_instr_offset = off;
-  header.train_instr_count = train_instrs->size();
-  off += train_instrs->size() * sizeof(UpdateInstruction);
-  header.merge_instr_offset = off;
-  header.merge_instr_count = merge_instrs->size();
-  off += merge_instrs->size() * sizeof(UpdateInstruction);
-  header.eval_instr_offset = off;
-  header.eval_instr_count = eval_instrs->size();
-  off += eval_instrs->size() * sizeof(UpdateInstruction);
-  header.step_instr_offset = off;
-  header.step_instr_count = step_instrs.size();
-  off += step_instrs.size() * sizeof(UpdateInstruction);
-  // rodata on a page boundary (schema.h kSeeuRodataAlignment): with the
-  // plan itself page-aligned, a GPU backend wraps the frozen weights
-  // zero-copy instead of duplicating them.
-  off = (off + kSeeuRodataAlignment - 1) & ~(kSeeuRodataAlignment - 1);
-  header.rodata_offset = off;
-  header.rodata_size = binding->rodata_size;
-  off = AlignUp(off + binding->rodata_size);
-  header.persist_init_offset = off;
-  header.persist_init_size = persist_init.size();
-  off = AlignUp(off + persist_init.size());
-  header.emit_table_offset = off;
-  header.emit_count = emit_table.size();
-  off += emit_table.size() * sizeof(EmitEntry);
-  // Pad the blob to a page multiple: a zero-copy wrap of the rodata section
-  // rounds its length up to whole pages, and those pages must be the plan's.
-  off = (off + kSeeuRodataAlignment - 1) & ~(kSeeuRodataAlignment - 1);
-
+Status Compilation::Assemble() {
+  // --- 10 - 12. The persistent image, the emit table, the layout, the blob
+  // and its seal are the backend's assembly stage (backend/assembly/).
+  const std::vector<uint8_t> persist_init = SeedPersistentImage(*binding);
+  auto emit_table = BuildEmitTable(*merge, adapters, build, merge_bound);
+  if (!emit_table) return std::unexpected(emit_table.error());
+  if (auto ok = FillHeader(); !ok) return std::unexpected(ok.error());
+  const uint64_t plan_bytes = LayOutPlan(header, programs, *binding,
+                                         persist_init.size(),
+                                         emit_table->size());
   phase("persist-init", block.numOps());
-  // Assemble by APPENDING into one exact reservation (E2, #81). Sizing the
-  // blob first and copying sections into it zero-filled every byte of the
-  // plan — the frozen weights, overwhelmingly — immediately before
-  // overwriting them, on top of a rodata vector that was itself a full
-  // extra copy. Here each frozen weight is written exactly once, from the
-  // loaded model straight to its place in the plan; only alignment gaps
-  // (and the int8 / bf16 packs, which are computed in place) are zeroed.
-  CompiledUpdate result;
-  result.plan.reserve(off);
-  auto pad_to = [&](uint64_t at) { result.plan.resize(at, 0); };
-  auto append = [&](uint64_t at, const void* src, size_t n) {
-    pad_to(at);
-    const auto* p = static_cast<const uint8_t*>(src);
-    result.plan.insert(result.plan.end(), p, p + n);
-  };
-  append(0, &header, sizeof(header));
-  append(header.train_instr_offset, train_instrs->data(),
-         train_instrs->size() * sizeof(UpdateInstruction));
-  append(header.merge_instr_offset, merge_instrs->data(),
-         merge_instrs->size() * sizeof(UpdateInstruction));
-  append(header.eval_instr_offset, eval_instrs->data(),
-         eval_instrs->size() * sizeof(UpdateInstruction));
-  if (!step_instrs.empty())
-    append(header.step_instr_offset, step_instrs.data(),
-           step_instrs.size() * sizeof(UpdateInstruction));
-
-  // A consuming compile releases each source payload after its last pack:
-  // resident weights stay ~one copy (the model shrinking as the plan
-  // grows) instead of two. Tied weights pack once per SIR value, so the
-  // release waits for the last of them.
-  std::unordered_map<const SmfTensor*, size_t> packs_left;
-  if (consume)
-    for (const RodataPack& pack : binding->rodata_packs)
-      ++packs_left[pack.source];
-  for (const RodataPack& pack : binding->rodata_packs) {
-    const uint64_t at = header.rodata_offset + pack.offset;
-    if (pack.storage == RodataPack::Storage::kF32) {
-      append(at, pack.source->data.data(), pack.bytes);
-    } else {
-      pad_to(at + pack.bytes);  // the (smaller) packed form, in place
-      PackRodata(pack, result.plan.data() + at);
-    }
-    if (consume && --packs_left[pack.source] == 0) {
-      // The rvalue overload owns these models: they are not const objects.
-      auto& payload = const_cast<SmfTensor*>(pack.source)->data;
-      SmfBytes().swap(payload);
-    }
-  }
-  if (!persist_init.empty())
-    append(header.persist_init_offset, persist_init.data(),
-           persist_init.size());
-  if (!emit_table.empty())
-    append(header.emit_table_offset, emit_table.data(),
-           emit_table.size() * sizeof(EmitEntry));
-  pad_to(off);
-
+  result.plan = AssemblePlan(header, programs, *binding, persist_init,
+                             *emit_table, plan_bytes, consume);
   phase("assemble", block.numOps());
-  // Integrity seal: hash the whole blob with the hash field zeroed (it is,
-  // so far), then patch the result in. Initialize() re-derives and compares
-  // via the same PlanSelfHash — one canonical function on both sides.
-  const uint64_t plan_hash =
-      PlanSelfHash(result.plan.data(), result.plan.size(),
-                   offsetof(PlanHeader, plan_hash));
-  std::memcpy(result.plan.data() + offsetof(PlanHeader, plan_hash), &plan_hash,
-              sizeof(plan_hash));
+  SealPlan(result.plan);
 
   // The step-0 gate proved a lower bound before any work was done; every
   // byte is bound now, so prove the exact resident footprint — the arena
@@ -1344,6 +1276,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
     return std::unexpected(fits.error());
 
   phase("seal", block.numOps());
+  return {};
+}
+
+Status Compilation::ReportDebug() {
   // --- 13. Debug hooks + report. ----------------------------------------------
   // The SIR dump is debug output, produced only when asked for (E5, #84):
   // streaming the whole graph through an ostringstream and retaining the
@@ -1391,7 +1327,10 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
          .quant_scale = q != quant_scales.end() ? q->second : 0.0f,
          .bf16 = bf16_weights.contains(a.frozen_weight)});
   }
+  return {};
+}
 
+Status Compilation::ReportSummary() {
   result.arena_size = header.arena_size;
   result.persistent_size = header.persistent_size;
   result.io_size = binding->io_end - binding->persistent_size;
@@ -1417,7 +1356,7 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   result.remat_bytes_saved =
       plain_arena > header.arena_size ? plain_arena - header.arena_size : 0;
   result.train_instruction_count = header.train_instr_count;
-  result.step_instruction_count = step_instrs.size();
+  result.step_instruction_count = programs.step.size();
   result.grad_accum_steps = recorded_accum;
   result.merge_instruction_count = header.merge_instr_count;
   result.eval_instruction_count = header.eval_instr_count;
@@ -1472,7 +1411,97 @@ std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
   // the adapters and gradients it claims to train.
   if (auto ok = VerifyGeneratedPlan(result, adapters.size()); !ok)
     return std::unexpected(ok.error());
-  return result;
+  return {};
+}
+
+Status Compilation::BindMerge() {
+  merge_bound.clear();
+  for (const auto& [mirror, original] : merge->aliases) {
+    auto it = binding->refs.find(original);
+    if (it == binding->refs.end())
+      return generating::Error(generating::kDriver,
+                               "merge alias to unbound value");
+    merge_bound[mirror] = it->second;
+  }
+  const uint64_t merge_high = LinearScanTransients(
+      *merge->block, AlignUp(binding->arena_size), merge_bound,
+      merge_pinned, merge_bound);
+  binding->arena_size = std::max(binding->arena_size, merge_high);
+  return {};
+}
+
+ResolveFn Compilation::ResolveTrain() {
+  return [this](const sir::Value* v) -> std::expected<uint64_t, std::string> {
+    if (auto it = binding->refs.find(v); it != binding->refs.end())
+      return it->second;
+    return generating::Error(generating::kDriver,
+                             "unbound value '" + std::string(v->id()) + "'");
+  };
+}
+
+std::expected<CompiledUpdate, std::string> Compilation::Run() {
+  using Stage = Status (Compilation::*)();
+  constexpr Stage kStages[] = {
+      &Compilation::ValidateConfig,
+      &Compilation::Ingress,
+      &Compilation::VerifyTopology,
+      &Compilation::IngestData,
+      &Compilation::DecideMaskedLoss,
+      &Compilation::RecordFrontendFacts,
+      &Compilation::ProveFootprint,
+      &Compilation::BuildForwardGraph,
+      &Compilation::GraftLoss,
+      &Compilation::StructuralPasses,
+      &Compilation::CalculusPasses,
+      &Compilation::MergeAndReview,
+      &Compilation::FusionPasses,
+      &Compilation::BindArenas,
+      &Compilation::Rematerialize,
+      &Compilation::LowerTrain,
+      &Compilation::LowerEvalAndMerge,
+      &Compilation::Assemble,
+      &Compilation::ReportDebug,
+      &Compilation::ReportSummary,
+  };
+  for (const Stage stage : kStages)
+    if (auto ok = (this->*stage)(); !ok) return std::unexpected(ok.error());
+  return std::move(result);
+}
+
+}  // namespace
+
+AttentionKind DecideAttention(const TrainingFootprint& footprint,
+                              const UpdateConfig& config) {
+  if (config.attention != AttentionKind::kAuto) return config.attention;
+  const bool over_budget =
+      footprint.probs_cache_bytes > config.attention_cache_budget_bytes;
+  // Against a CONFIGURED memory budget only (see the header): with none,
+  // the cache budget decides by itself, and the gate that follows keeps
+  // its own, host-sized refusal. CheckTrainableLocally falls back to the
+  // host's memory for a zero budget, which is exactly what a decision
+  // that changes the plan's bytes may not consult.
+  const bool cached_fits =
+      config.memory_budget_bytes == 0 ||
+      CheckTrainableLocally(footprint, config.memory_budget_bytes).has_value();
+  return (over_budget || !cached_fits) ? AttentionKind::kTiled
+                                       : AttentionKind::kCached;
+}
+
+std::expected<CompiledUpdate, std::string> UpdateCompiler::Compile(
+    const SmfModel& source, const SmfModel* teacher) {
+  return Attributed(CompileImpl(source, teacher, /*consume=*/false));
+}
+
+std::expected<CompiledUpdate, std::string> UpdateCompiler::Compile(
+    SmfModel&& source, SmfModel* teacher) {
+  // `source` binds to a caller's non-const model (as `teacher` points to
+  // one), which is what makes releasing their payloads well-defined.
+  return Attributed(CompileImpl(source, teacher, /*consume=*/true));
+}
+
+std::expected<CompiledUpdate, std::string> UpdateCompiler::CompileImpl(
+    const SmfModel& source, const SmfModel* teacher, bool consume) {
+  return Compilation(config_, source, teacher, consume).Run();
 }
 
 }  // namespace seeml::update

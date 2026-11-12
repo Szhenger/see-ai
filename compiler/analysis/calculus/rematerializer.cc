@@ -1,4 +1,4 @@
-#include "compiler/analysis/algebra/rematerializer.h"
+#include "compiler/analysis/calculus/rematerializer.h"
 
 #include <algorithm>
 #include <functional>

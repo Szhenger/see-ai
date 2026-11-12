@@ -54,6 +54,9 @@ namespace seeml::update_rt {
 struct CheckpointRecord {
   uint64_t step = 0;
   uint64_t horizon_steps = 0;
+  // The plan the file is bound to, as a load or a peek read it. A save takes
+  // the plan's hash as its own argument and does not read this.
+  uint64_t plan_hash = 0;
   // v5 — absent (all zero / false) from a v3/v4 file.
   bool has_binding = false;
   uint64_t shuffle_origin = 0;
@@ -91,7 +94,9 @@ struct CheckpointRecord {
 
 /// Reads only the run binding of a checkpoint (no payload is touched or
 /// verified): what a driver needs to refuse a mismatched seed or split
-/// before anything else happens. A file that is not a checkpoint is an
+/// before anything else happens — and the plan hash the file is bound to,
+/// so the driver can tell a checkpoint the engine will resume from one it
+/// will refuse as another plan's. A file that is not a checkpoint is an
 /// error; a v3/v4 file, or a v5 file saved without a binding, yields
 /// has_binding == false.
 [[nodiscard]] std::expected<CheckpointRecord, std::string>
