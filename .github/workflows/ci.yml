@@ -35,6 +35,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Runner image: pinned to ubuntu-24.04, not ubuntu-latest. On 2026-11-11
+# `ubuntu-latest` became Ubuntu 26.04, where apt.llvm.org publishes no
+# llvm-toolchain-19 repository (404 on its Release file) and setup-python
+# offers no 3.9 — every Linux job failed at toolchain setup, on main's
+# nightly too. Move the pin when the toolchain steps are ported.
 jobs:
   # --- Correctness: the supported-toolchain matrix ---------------------------
   # README promises clang or gcc, CMake optional: the shell driver is the
@@ -63,8 +68,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, cxx: g++-14 }
-          - { os: ubuntu-latest, cxx: clang++-19 }
+          - { os: ubuntu-24.04, cxx: g++-14 }
+          - { os: ubuntu-24.04, cxx: clang++-19 }
           - { os: macos-latest, cxx: clang++ }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -130,7 +135,7 @@ jobs:
   # numeric would trip at least one width.
   determinism:
     name: determinism (widths 1/3/8)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CXX: clang++-19
@@ -188,7 +193,7 @@ jobs:
   # red build. Uses the CMake path, which carries the sanitizer plumbing.
   asan-ubsan:
     name: ASan + UBSan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CXX: clang++-19
@@ -241,7 +246,7 @@ jobs:
   # rejection paths that a hand-written test didn't anticipate.
   fuzz-smoke:
     name: fuzz (90s smoke)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       CXX: clang++-19
@@ -316,7 +321,7 @@ jobs:
   # under test are build/run/commit/determinism, not the demo's luck.
   e2e-package:
     name: e2e (export -> compile -> package -> update)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CXX: clang++-19
@@ -586,7 +591,7 @@ jobs:
   # syntax or a stdlib API the oldest supported build host lacks.
   python-tools:
     name: python tools (${{ matrix.python }}, syntax + tiers + suites + lint)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -631,7 +636,7 @@ jobs:
   # in Python (frontier_exec.Plan).
   seam:
     name: plane seam (ABI manifest, golden bytes, two decoders)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       CXX: clang++-19
@@ -780,7 +785,7 @@ jobs:
   # NumPy-only paths, and their default outputs are pinned by digest.
   exporter-compat:
     name: exporter (py ${{ matrix.python }}, numpy ${{ matrix.numpy }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 8
     strategy:
       fail-fast: false

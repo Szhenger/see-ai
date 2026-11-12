@@ -18,10 +18,15 @@ on:
   schedule:
     - cron: "42 8 * * 1"  # weekly full pass, independent of PR traffic
 
+# Runner image: pinned to ubuntu-24.04, not ubuntu-latest. On 2026-11-11
+# `ubuntu-latest` became Ubuntu 26.04, where apt.llvm.org publishes no
+# llvm-toolchain-19 repository (404 on its Release file) and setup-python
+# offers no 3.9 — every Linux job failed at toolchain setup, on main's
+# nightly too. Move the pin when the toolchain steps are ported.
 jobs:
   analyze:
     name: analyze (c-cpp)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       security-events: write
