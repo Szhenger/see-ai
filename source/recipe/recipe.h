@@ -95,8 +95,8 @@ inline constexpr Field kFields[] = {
     {"lora_alpha", "--lora-alpha", Kind::kFloat, 0, 0, 0.0, 1e6, true, false,
      "", "adapter scale numerator: the update is (alpha / r) A B"},
     {"lora_scaling", "--lora-scaling", Kind::kEnum, 0, 0, 0, 0, false, false,
-     "alpha_over_sqrt_r|alpha_over_r",
-     "the adapter scale: rank-stabilized alpha / sqrt(r) (default), or alpha / r"},
+     "alpha_over_r|alpha_over_sqrt_r",
+     "the adapter scale: alpha / r, or rank-stabilized alpha / sqrt(r)"},
     {"lora_seed", "--lora-seed", Kind::kUInt, 0, kU64Max, 0, 0, false, false,
      "", "seed of the adapters' initial image"},
     {"targets", "--targets", Kind::kList, 0, 0, 0, 0, false, false, "",
@@ -338,8 +338,8 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "lora_rank") c.lora.rank = static_cast<int64_t>(u);
     else if (n == "lora_alpha") c.lora.alpha = static_cast<float>(d);
     else if (n == "lora_scaling")
-      c.lora.scaling = v == "alpha_over_r" ? LoraScaling::kAlphaOverRank
-                                           : LoraScaling::kAlphaOverSqrtRank;
+      c.lora.scaling = v == "alpha_over_sqrt_r" ? LoraScaling::kAlphaOverSqrtRank
+                                                : LoraScaling::kAlphaOverRank;
     else if (n == "lora_seed") c.lora.seed = u;
     else if (n == "targets") {
       c.lora.target_filters.clear();

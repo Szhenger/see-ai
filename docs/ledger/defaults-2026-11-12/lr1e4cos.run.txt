@@ -10,7 +10,6 @@ seeml-update: step 240  validation loss 4.017461 (best 4.017461 at step 240)
 seeml-update: step 270  validation loss 4.007955 (best 4.007955 at step 270)
 seeml-update: validation loss 4.627349 -> 4.002706 [backend metal]
 seeml-update: best state at step 300 (validation loss 4.002706); last state 4.002706; 9 periodic evaluation(s)
-  recipe hash              9267f5d930e1fa53              the resolved recipe the plan was compiled from
   measured step            508.062 ms                    training wall time ÷ steps, evaluations excluded
   achieved                 638.6 GFLOP/s                 the work per step ÷ the measured step
   validation loss, start   4.6273 nats                   the held-out loss before training

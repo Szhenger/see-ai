@@ -126,9 +126,7 @@ TEST(LoraGrafter, GraftsEveryEligibleMatMul) {
     if (op->mnemonic() != "sc_high.matmul" ||
         !op->result(0)->id().ends_with(".lora_u"))
       return;
-    // alpha / sqrt(r), the default scale (S5 #151).
-    EXPECT_NEAR(op->getAttrAs<float>("alpha").value_or(0.0f),
-                Spec().Scale(), 1e-6);
+    EXPECT_NEAR(op->getAttrAs<float>("alpha").value_or(0.0f), 2.0f, 1e-6);
     ++scaled;
   });
   EXPECT_EQ(scaled, 2u);
@@ -138,7 +136,7 @@ TEST(LoraGrafter, GraftsEveryEligibleMatMul) {
   EXPECT_EQ(a0.frozen_weight->id(), "w1");
   EXPECT_TRUE(a0.A->shape() == sir::Shape({6, 4}));
   EXPECT_TRUE(a0.B->shape() == sir::Shape({4, 10}));
-  EXPECT_NEAR(a0.scale, 8.0f / 2.0f, 1e-6);
+  EXPECT_NEAR(a0.scale, 8.0f / 4.0f, 1e-6);
 
   const sir::Operation* a_def = a0.A->definingOp();
   ASSERT_NE(a_def, nullptr);

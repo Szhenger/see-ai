@@ -1629,34 +1629,36 @@ Per site the fused kernel costs 124.5 → 133.5 µs (`512x576x576`), 302.1 → 3
 
 ### The best-practice defaults, measured (S5 #151, 2026-11-12)
 
-The design's audit of `source/plan/config.h` against frontier LoRA practice names three candidate defaults — gradient clipping at norm 1.0, a learning rate of 1e-4–2e-4 with cosine decay and warmup, and the rank-stabilized scale α/√r — under the rule that *every default is a measured claim*. This is the measurement: SmolLM-135M at the nightly's setting (`--data docs_corpus.txt --val-frac 0.1 --data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 300`, Metal backend), one package per row, the held-out loss of the committed state. Every row starts from the same 4.627349; the baseline package run twice ends on the same 3.639602.
+The design's audit of `source/plan/config.h` against frontier LoRA practice names three candidate defaults — gradient clipping at norm 1.0, a learning rate of 1e-4–2e-4 with cosine decay and warmup, and the rank-stabilized scale α/√r — under the rule that *every default is a measured claim*. This is the measurement: SmolLM-135M at the nightly row's shapes with the compiler's default optimizer (`--data docs_corpus.txt --val-frac 0.1 --data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 300`, AdamW at lr 1e-3 constant, Metal backend; the nightly itself passes `--lr 1e-4 --lr-schedule const`, which is not a default and is not what these rows test). One package per row. Every row starts from the same held-out loss, 4.627349; the baseline package run twice ends on the same bits. The runner scores the split every 30 steps and **commits the best state it evaluated**, so each row has two figures: the committed state (its step in brackets) and the last state, step 300.
 
-| row | flags added to the setting | held-out loss, step 150 | held-out loss, step 300 | vs baseline |
+| row | flags added to the setting | step 150 | committed | step 300 |
 |---|---|---|---|---|
-| baseline | — (lr 1e-3 constant, no clip, α/r) | 3.7363 | **3.6396** | — |
-| clip | `--clip-norm 1.0` | 3.7361 | 3.6396 | −0.00003 |
-| cosine | `--lr-schedule cosine --warmup 15` | 3.7424 | 3.6655 | +0.026 |
-| lr 2e-4 | `--lr 2e-4 --lr-schedule cosine --warmup 15` | 3.9200 | 3.8508 | +0.211 |
-| lr 1e-4 | `--lr 1e-4 --lr-schedule cosine --warmup 15` | 4.0981 | 4.0027 | +0.363 |
-| α/√r | `--lora-scaling alpha_over_sqrt_r` | 3.7094 | **3.6265** | **−0.013** |
-| all three, lr 1e-4 | clip + lr 1e-4 cosine + α/√r | 3.9444 | 3.8693 | +0.230 |
-| all three, lr 2e-4 | clip + lr 2e-4 cosine + α/√r | 3.8350 | 3.7656 | +0.126 |
+| baseline | — (lr 1e-3 constant, no clip, α/r) | 3.7363 | **3.6396** [210] | 3.7123 |
+| clip | `--clip-norm 1.0` | 3.7361 | 3.6396 [210] | 3.7123 |
+| cosine | `--lr-schedule cosine --warmup 15` | 3.7424 | 3.6655 [210] | 3.6972 |
+| lr 2e-4 | `--lr 2e-4 --lr-schedule cosine --warmup 15` | 3.9200 | 3.8508 [300] | 3.8508 |
+| lr 1e-4 | `--lr 1e-4 --lr-schedule cosine --warmup 15` | 4.0981 | 4.0027 [300] | 4.0027 |
+| α/√r | `--lora-scaling alpha_over_sqrt_r` | 3.7094 | 3.6265 [210] | 3.8256 |
+| all three, lr 1e-4 | clip + lr 1e-4 cosine + α/√r | 3.9444 | 3.8693 [300] | 3.8693 |
+| all three, lr 2e-4 | clip + lr 2e-4 cosine + α/√r | 3.8350 | 3.7656 [300] | 3.7656 |
 
-α/√r against α/r on two more adapter seeds (`--lora-seed`; the table above is seed 42):
+α/r against α/√r on three adapter seeds and three ranks (alpha = 2r throughout, so α/r is always 2; α/√r is 2√r):
 
-| adapter seed | α/r | α/√r | difference |
-|---|---|---|---|
-| 42 | 3.6396 | 3.6265 | −0.013 |
-| 7 | 3.6369 | 3.6142 | −0.023 |
-| 123 | 3.6439 | 3.6108 | −0.033 |
+| rank, seed | α/√r scale | α/r committed | α/√r committed | difference | α/r step 300 | α/√r step 300 |
+|---|---|---|---|---|---|---|
+| r 8, seed 42 | 5.66 | 3.6396 | 3.6265 | −0.013 | 3.7123 | 3.8256 |
+| r 8, seed 7 | 5.66 | 3.6369 | 3.6142 | −0.023 | 3.6959 | 3.7567 |
+| r 8, seed 123 | 5.66 | 3.6439 | 3.6108 | −0.033 | 3.7248 | 3.7659 |
+| r 4, seed 42 | 4 | 3.6802 | 3.6491 | −0.031 | 3.7113 | 3.7150 |
+| r 16, seed 42 | 8 | 3.6040 | 3.6889 | **+0.085** | 3.7472 | 3.9911 |
 
-**What flipped, and what did not.**
+**No default flipped.**
 
-- **α/√r is the default** (`lora_scaling`, a recipe field; `alpha_over_r` restores the old scale and the old plan bytes). It is the one candidate whose row beats the baseline, on all three seeds. It changes the algorithm, not the arithmetic: the scale is the adapter GEMM's own alpha, the CPU's bits are a function of that number alone, and Metal applies a scale that is not a power of two to rounding (it always did; the old default happened to be 2).
-- **Clipping stays off.** The row is the baseline's to the fifth decimal — on this run the clip almost never binds — so there is no measured claim to flip on. Two things the row does show: SeeAI's clip is *per tensor*, not the global-norm clip the practice cites (the frontier harness's parity rule 3 already says so), so `--clip-norm 1.0` here is not that practice; and the three rows that clip ran at 309–314 ms a step where the rows that do not ran at 224–229 ms. The host was on battery, so that is not a figure — but it is the same on all three, and it is the next thing to measure on AC power before clipping is ever a default.
-- **The learning rate stays 1e-3 constant.** At this horizon (300 steps, about three passes over 451 training records) 1e-4 with cosine ends 0.36 nats above the baseline and 2e-4 0.21 above; cosine alone at 1e-3 costs 0.026. The practice's lower rate is for longer runs on larger data; this row does not carry that claim and no row here supports it. A longer-horizon row is what would.
+- **α/√r stays opt-in** (`lora_scaling`, a new recipe field; `alpha_over_r` remains the default, and plans are unchanged). At rank 8 its committed state is better on all three seeds, which on its own would have been a flip — and was, for an afternoon, until the rank rows came in. At rank 16 it is 0.085 nats *worse*, and at every rank and seed its step-300 state is worse than α/r's. What the rows show is a larger scale learning faster and then overfitting a 451-record corpus by step 210: a bigger effective learning rate, which the best-state gate hides at rank 8 and cannot hide at rank 16. That is not the claim rsLoRA makes (that the update should not shrink as the rank grows), and nothing here measures that claim; a row that would is one at matched effective learning rate across ranks on data that does not overfit in 300 steps.
+- **Clipping stays off.** Its row is the baseline's to the fifth decimal — on this run the clip almost never binds — so there is no measured claim to flip on. SeeAI's clip is *per tensor*, not the global-norm clip the practice cites (the frontier harness's parity rule 3 already says so), so `--clip-norm 1.0` here is not that practice. The three rows that clip ran at 309–314 ms a step where the others ran at 224–229 ms; the host was on battery, so that is not a figure, but it is the same on all three and is the next thing to measure on AC power.
+- **The learning rate stays 1e-3 constant.** At this horizon (300 steps, about three passes over 451 training records) 1e-4 with cosine ends 0.36 nats above the baseline and 2e-4 0.21 above; cosine alone at 1e-3 costs 0.026 at the committed state (and gains 0.015 at step 300, where it has decayed). The practice's lower rate is for longer runs on larger data; no row here carries that claim.
 
-**What these rows are not.** One model, one corpus, one horizon, three seeds for the one flip. They are SeeAI rows only: the torch and MLX-LM rows of the frontier harness were not run at these settings (`tool/frontier_run.py` now takes `--scaling` with the compiler's default, so its reference rows scale as the plan does). **The host was on battery with Low Power Mode on**; the losses do not depend on that (the baseline reproduces bit for bit), the step times do, and none is quoted as a result.
+**What these rows are not.** One model, one corpus, one horizon. They are SeeAI rows only: the torch and MLX-LM rows of the frontier harness were not run at these settings (`tool/frontier_run.py` now takes `--scaling`, with the compiler's default, so a reference row can scale as an α/√r plan does). **The host was on battery with Low Power Mode on**; the losses do not depend on that (the baseline reproduces bit for bit), the step times do, and none is quoted as a result.
 
 ## Tier C — Memory (the gate that refuses compiles)
 

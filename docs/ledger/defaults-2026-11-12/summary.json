@@ -1,92 +1,169 @@
 {
  "model": "SmolLM-135M",
- "setting": "--data docs_corpus.txt --val-frac 0.1 --data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 300; --backend metal",
+ "setting": "--data docs_corpus.txt --val-frac 0.1 --data-batch 512 --quantize-base --steps 300 (rank / alpha per row; default optimizer: adamw, lr 1e-3 const); --backend metal",
  "host": "Apple M5, on battery, Low Power Mode on: step times are not quotable",
- "baseline_rerun_val_end": 3.639602,
+ "committed_state": "the runner commits the best evaluated state (every 30 steps), not the last",
+ "baseline_rerun_val_best": 3.639602,
  "rows": [
   {
    "row": "baseline",
+   "what": "r8 a16 alpha/r",
    "val_start": 4.627349,
    "val_step150": 3.736269,
-   "val_end": 3.639602,
+   "best_step": 210,
+   "val_best_committed": 3.639602,
+   "val_last_step300": 3.712294,
    "measured_step_ms_battery": 226.743
   },
   {
    "row": "clip",
+   "what": "+ --clip-norm 1.0",
    "val_start": 4.627349,
    "val_step150": 3.736145,
-   "val_end": 3.639575,
+   "best_step": 210,
+   "val_best_committed": 3.639575,
+   "val_last_step300": 3.71228,
    "measured_step_ms_battery": 309.448
   },
   {
    "row": "cos_only",
+   "what": "+ cosine, warmup 15",
    "val_start": 4.627349,
    "val_step150": 3.742445,
-   "val_end": 3.665473,
+   "best_step": 210,
+   "val_best_committed": 3.665473,
+   "val_last_step300": 3.697181,
    "measured_step_ms_battery": 228.465
   },
   {
    "row": "lr2e4cos",
+   "what": "+ lr 2e-4 cosine",
    "val_start": 4.627349,
    "val_step150": 3.919982,
-   "val_end": 3.850754,
+   "best_step": 300,
+   "val_best_committed": 3.850754,
+   "val_last_step300": 3.850754,
    "measured_step_ms_battery": 227.572
   },
   {
    "row": "lr1e4cos",
+   "what": "+ lr 1e-4 cosine",
    "val_start": 4.627349,
    "val_step150": 4.098069,
-   "val_end": 4.002706,
+   "best_step": 300,
+   "val_best_committed": 4.002706,
+   "val_last_step300": 4.002706,
    "measured_step_ms_battery": 508.062
   },
   {
    "row": "rslora",
+   "what": "r8 a16 alpha/sqrt(r)",
    "val_start": 4.627349,
    "val_step150": 3.709375,
-   "val_end": 3.626503,
+   "best_step": 210,
+   "val_best_committed": 3.626503,
+   "val_last_step300": 3.825571,
    "measured_step_ms_battery": 228.283
   },
   {
    "row": "all",
+   "what": "clip + lr 1e-4 cosine + alpha/sqrt(r)",
    "val_start": 4.627349,
    "val_step150": 3.94441,
-   "val_end": 3.869255,
+   "best_step": 300,
+   "val_best_committed": 3.869255,
+   "val_last_step300": 3.869255,
    "measured_step_ms_battery": 314.091
   },
   {
    "row": "all2e4",
+   "what": "clip + lr 2e-4 cosine + alpha/sqrt(r)",
    "val_start": 4.627349,
    "val_step150": 3.835015,
-   "val_end": 3.765611,
+   "best_step": 300,
+   "val_best_committed": 3.765611,
+   "val_last_step300": 3.765611,
    "measured_step_ms_battery": 312.762
   },
   {
    "row": "base_s7",
+   "what": "seed 7, alpha/r",
    "val_start": 4.627349,
    "val_step150": 3.735107,
-   "val_end": 3.636921,
+   "best_step": 210,
+   "val_best_committed": 3.636921,
+   "val_last_step300": 3.695914,
    "measured_step_ms_battery": 224.977
   },
   {
    "row": "rs_s7",
+   "what": "seed 7, alpha/sqrt(r)",
    "val_start": 4.627349,
    "val_step150": 3.696524,
-   "val_end": 3.614166,
+   "best_step": 210,
+   "val_best_committed": 3.614166,
+   "val_last_step300": 3.756683,
    "measured_step_ms_battery": 223.705
   },
   {
    "row": "base_s123",
+   "what": "seed 123, alpha/r",
    "val_start": 4.627349,
    "val_step150": 3.736855,
-   "val_end": 3.64387,
+   "best_step": 210,
+   "val_best_committed": 3.64387,
+   "val_last_step300": 3.72481,
    "measured_step_ms_battery": 228.913
   },
   {
    "row": "rs_s123",
+   "what": "seed 123, alpha/sqrt(r)",
    "val_start": 4.627349,
    "val_step150": 3.701688,
-   "val_end": 3.610753,
+   "best_step": 210,
+   "val_best_committed": 3.610753,
+   "val_last_step300": 3.765898,
    "measured_step_ms_battery": 229.349
+  },
+  {
+   "row": "r16_base",
+   "what": "r16 a32 alpha/r (scale 2)",
+   "val_start": 4.627349,
+   "val_step150": 3.694461,
+   "best_step": 210,
+   "val_best_committed": 3.603999,
+   "val_last_step300": 3.747242,
+   "measured_step_ms_battery": 279.312
+  },
+  {
+   "row": "r16_rs",
+   "what": "r16 a32 alpha/sqrt(r) (scale 8)",
+   "val_start": 4.627349,
+   "val_step150": 3.723783,
+   "best_step": 210,
+   "val_best_committed": 3.688886,
+   "val_last_step300": 3.991119,
+   "measured_step_ms_battery": 277.394
+  },
+  {
+   "row": "r4_base",
+   "what": "r4 a8 alpha/r (scale 2)",
+   "val_start": 4.627349,
+   "val_step150": 3.775637,
+   "best_step": 210,
+   "val_best_committed": 3.6802,
+   "val_last_step300": 3.711343,
+   "measured_step_ms_battery": 227.618
+  },
+  {
+   "row": "r4_rs",
+   "what": "r4 a8 alpha/sqrt(r) (scale 4)",
+   "val_start": 4.627349,
+   "val_step150": 3.74696,
+   "best_step": 210,
+   "val_best_committed": 3.649112,
+   "val_last_step300": 3.715006,
+   "measured_step_ms_battery": 227.897
   }
  ]
 }

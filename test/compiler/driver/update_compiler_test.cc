@@ -141,7 +141,7 @@ TEST(UpdateCompiler, DebugHooksDescribeAdaptersAndParams) {
 
   for (const AdapterDebugInfo& a : compiled.adapters) {
     EXPECT_EQ(a.r, 4);
-    EXPECT_NEAR(a.scale, 4.0f, 1e-6);  // alpha / sqrt(r) = 8 / 2 (S5 #151)
+    EXPECT_NEAR(a.scale, 2.0f, 1e-6);
     EXPECT_TRUE(IsRodataRef(a.weight_rodata_ref));
     EXPECT_FALSE(IsRodataRef(a.a_ref));
     EXPECT_FALSE(IsRodataRef(a.b_ref));
@@ -543,7 +543,7 @@ TEST(UpdateCompiler, LoraSitesCostNoActivationSizedPassOfTheirOwn) {
       if (op != OpCode::kGemmNN && op != OpCode::kGemmNT &&
           op != OpCode::kGemmTN)
         continue;  // the norms' epsilon word
-      EXPECT_EQ(GemmAlphaOf(ins.imm), 4.0f);  // alpha / sqrt(r) = 8 / 2
+      EXPECT_EQ(GemmAlphaOf(ins.imm), 2.0f);
       if (op == OpCode::kGemmNN) ++nn_alpha;
       if (op == OpCode::kGemmNT) ++nt_alpha;
       if (op == OpCode::kGemmTN) ++tn_alpha;
@@ -1588,25 +1588,24 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
 }
 
 TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
-  // S5 #151: lora_scaling picks rank-stabilized s = alpha / sqrt(r) (the
-  // default since 2026-11-12) or LoRA's own s = alpha / r. The two are
-  // different plans with different resolved recipes; at rank 1 the two
-  // scales are the same number and so the same program.
+  // S5 #151: lora_scaling picks s = alpha / r (LoRA's own, the default) or
+  // rank-stabilized s = alpha / sqrt(r). The default is untouched; the
+  // other is a different plan with a different resolved recipe; at rank 1
+  // the two scales are the same number and so the same program.
   LoRASpec spec;
   spec.rank = 8;
   spec.alpha = 16.0f;
-  EXPECT_TRUE(spec.scaling == LoraScaling::kAlphaOverSqrtRank);  // the default
+  EXPECT_EQ(spec.Scale(), 2.0f);
+  spec.scaling = LoraScaling::kAlphaOverSqrtRank;
   EXPECT_EQ(spec.Scale(), 16.0f / std::sqrt(8.0f));
   spec.rank = 4;
   EXPECT_EQ(spec.Scale(), 8.0f);
-  spec.scaling = LoraScaling::kAlphaOverRank;
-  EXPECT_EQ(spec.Scale(), 4.0f);
 
   SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
   UpdateConfig config = BaseConfig(kBatch);
   ASSERT_OK_AND_ASSIGN(CompiledUpdate plain, UpdateCompiler(config).Compile(model));
   UpdateConfig rs = config;
-  rs.lora.scaling = LoraScaling::kAlphaOverRank;
+  rs.lora.scaling = LoraScaling::kAlphaOverSqrtRank;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate stabilized, UpdateCompiler(rs).Compile(model));
   EXPECT_NE(plain.recipe_hash, stabilized.recipe_hash);
   EXPECT_NE(HeaderOf(plain).plan_hash, HeaderOf(stabilized).plan_hash);
@@ -1615,7 +1614,7 @@ TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
   UpdateConfig one = config;
   one.lora.rank = 1;
   UpdateConfig one_rs = one;
-  one_rs.lora.scaling = LoraScaling::kAlphaOverRank;
+  one_rs.lora.scaling = LoraScaling::kAlphaOverSqrtRank;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate a, UpdateCompiler(one).Compile(model));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate b, UpdateCompiler(one_rs).Compile(model));
   EXPECT_NE(a.recipe_hash, b.recipe_hash);  // the recipe still says which

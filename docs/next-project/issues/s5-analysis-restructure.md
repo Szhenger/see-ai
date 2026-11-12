@@ -86,21 +86,22 @@ the attention segment operand / mask, 8-bit moments, the MSE opcode drop.
 
 ## Status 2026-11-12, the defaults
 
-Design item 4, measured and decided on `claude/v100b-defaults-flip`
+Design item 4, measured on `claude/v100b-defaults-flip`
 (`docs/benchmarks.md`, "The best-practice defaults, measured";
-`docs/ledger/defaults-2026-11-12/`). SmolLM-135M at the nightly's setting,
-300 steps, held-out loss against a baseline of 3.6396: **alpha / sqrt(r)
-ends at 3.6265, and below alpha / r on three adapter seeds (−0.013, −0.023,
-−0.033) — it is now the default** (`lora_scaling`, a recipe field;
-`alpha_over_r` restores the old plans, which the identity harness confirms
-on 17 fixtures). **Clipping 1.0 is not flipped**: its row is the baseline's
-to the fifth decimal, the clip is per tensor rather than the global norm the
-practice means, and the clipping rows ran about 85 ms a step slower (battery,
-to be re-measured). **lr 1e-4 / 2e-4 with cosine + warmup is not flipped**:
-at this horizon it ends 0.36 / 0.21 nats above the baseline. Under the rule
-that no default flips without a row, two of the three stay where they are.
+`docs/ledger/defaults-2026-11-12/`): SmolLM-135M, the nightly row's shapes,
+the default optimizer, 300 steps on Metal, sixteen rows. **No default
+flipped**, each for its row. *alpha / sqrt(r)* is a recipe field
+(`lora_scaling`) and stays opt-in: its committed state beats alpha / r at
+rank 8 on three seeds (−0.013 to −0.033) and at rank 4 (−0.031), loses at
+rank 16 (+0.085), and its step-300 state is worse at every rank and seed —
+a larger scale overfitting a small corpus faster, not the rank-stabilized
+claim. *Clip 1.0* matches the baseline to the fifth decimal (and the clip
+is per tensor, not the practice's global norm). *lr 1e-4 / 2e-4 with
+cosine + warmup* ends 0.36 / 0.21 nats above the baseline at this horizon.
 The rows are SeeAI's only, on battery (losses reproduce bit for bit; no step
-time is quoted).
+time is quoted). What would carry each claim: a matched-learning-rate rank
+sweep on data that does not overfit in 300 steps (alpha / sqrt(r)); a
+global-norm clip (clipping); a longer horizon on more data (the rate).
 
 ## Acceptance
 

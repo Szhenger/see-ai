@@ -35,8 +35,8 @@ was written down (the 2026-09-22 Frontier Harness report, §6):
      — exactly `dataset.cc`. Same ids in every stack, checked by hash.
   2. Adapted set: the seven projections of every layer AND the LM head —
      SeeAI's `--hf` importer writes the tied head as its own weight and
-     adapts it. Rank and the scale (--scaling: alpha / sqrt(r), the
-     compiler's default since 2026-11-12, or alpha / r) are the plan's. The adapter parameter
+     adapts it. Rank and the scale (--scaling, as the compiler's
+     --lora-scaling: alpha / r by default, or alpha / sqrt(r)) are the plan's. The adapter parameter
      count of every row must equal the SeeAI report's up to the k/v
      expansion SeeAI's GQA-to-MHA repeat implies (`expected_adapter_params`).
   3. Optimizer: AdamW with BIAS CORRECTION (mlx.optimizers.AdamW defaults to
@@ -845,8 +845,8 @@ def build_parser():
         sp.add_argument("--weight-decay", type=float, default=0.01)
         sp.add_argument("--rank", type=int, default=8)
         sp.add_argument("--alpha", type=float, default=16.0)
-        sp.add_argument("--scaling", choices=["alpha_over_sqrt_r", "alpha_over_r"],
-                        default="alpha_over_sqrt_r",
+        sp.add_argument("--scaling", choices=["alpha_over_r", "alpha_over_sqrt_r"],
+                        default="alpha_over_r",
                         help="the adapter scale, as the compiler's --lora-scaling "
                              "(same default)")
         sp.add_argument("--seed", type=int, default=7)
