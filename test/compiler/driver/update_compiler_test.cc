@@ -1652,6 +1652,64 @@ TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
             0);
 }
 
+TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
+  // #191: with segment_mask the train and eval programs compute the starts
+  // once, before the first attention forward, and every cached forward is
+  // the masked one; the EOS id is the tokenizer section's. Refused without
+  // a section naming an EOS, and for the tiled family (step 2).
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
+  auto head = [](int32_t eos) {
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t x) {
+      for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
+    };
+    for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u,
+                       static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
+                       0xFFFFFFFFu, 0u})
+      u32(x);
+    return b;
+  };
+  UpdateConfig config = BaseConfig(16);
+  config.segment_mask = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                        "names no EOS id");
+  model.tokenizer = head(-1);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                        "names no EOS id");
+  model.tokenizer = head(5);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+  for (const auto& program : {TrainProgramOf(c), EvalProgramOf(c)}) {
+    size_t starts_at = program.size(), first_attn = program.size(), seg = 0;
+    for (size_t i = 0; i < program.size(); ++i) {
+      const auto op = static_cast<OpCode>(program[i].opcode);
+      if (op == OpCode::kSegmentStarts) {
+        EXPECT_EQ(starts_at, program.size());  // once
+        starts_at = i;
+        EXPECT_EQ(program[i].out[1], 5u);
+      }
+      if (op == OpCode::kAttnFwdSeg) {
+        ++seg;
+        if (first_attn == program.size()) first_attn = i;
+      }
+      EXPECT_TRUE(op != OpCode::kAttnFwd);
+    }
+    EXPECT_TRUE(starts_at < first_attn);
+    EXPECT_TRUE(seg > 0);
+  }
+  UpdateConfig tiled = config;
+  tiled.attention = AttentionKind::kTiled;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(tiled).Compile(model),
+                        "tiled attention family is not masked yet");
+  // Off by default: the plan is the unmasked one.
+  UpdateConfig plain = BaseConfig(16);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate u, UpdateCompiler(plain).Compile(model));
+  for (const UpdateInstruction& ins : TrainProgramOf(u))
+    EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSegmentStarts);
+  // Every cached forward of the unmasked plan is a masked one here.
+  EXPECT_EQ(CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg),
+            CountOpcode(TrainProgramOf(u), OpCode::kAttnFwd));
+}
+
 TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
   // #190: under clip_mode global the optimizer program is every
   // kSqNormAccum, then every kClipGlobal (one per adapter tensor, all on the

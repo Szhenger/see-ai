@@ -11,6 +11,8 @@
 #include <functional>
 #include <cstring>
 #include <limits>
+#include <random>
+#include <utility>
 #include <vector>
 
 #include "runtime/executor/update_kernels.h"
@@ -1090,6 +1092,56 @@ TEST(ClipNorm, ZeroGradientIsExactAndABadCapIsRefused) {
     EXPECT_FALSE(k::ClipNorm(h.data(), h.size(), cap));
     EXPECT_BITWISE_EQ_F32(h0, h);
   }
+}
+
+TEST(SegmentMask, NoRowSeesAnotherDocumentAndUnmaskedRowsKeepTheirBits) {
+  // #191: window 0 holds a document ending at position 2 (EOS id 9), so
+  // rows 3..5 start a new one; window 1 holds no EOS. Perturbing k and v at
+  // positions 0..2 changes nothing rows 3..5 produce, and with every start
+  // at 0 the masked forward is the unmasked one, bit for bit.
+  const size_t B = 2, S = 6, H = 2, d = 4, D = H * d;
+  const std::vector<int32_t> tokens = {1, 2, 9, 3, 4, 5, 6, 7, 8, 1, 2, 3};
+  std::vector<int32_t> starts(B * S, -1);
+  k::SegmentStarts(tokens.data(), starts.data(), B, S, 9);
+  EXPECT_EQ(starts, (std::vector<int32_t>{0, 0, 0, 3, 3, 3, 0, 0, 0, 0, 0, 0}));
+  std::mt19937 rng(3);
+  std::normal_distribution<float> n01;
+  std::vector<float> q(B * S * D), kk(B * S * D), v(B * S * D);
+  for (auto* t : {&q, &kk, &v})
+    for (float& x : *t) x = n01(rng);
+  auto run = [&](const std::vector<float>& kin, const std::vector<float>& vin,
+                 const int32_t* st) {
+    std::vector<float> o(B * S * D), p(B * H * S * S);
+    k::AttnFwd(q.data(), kin.data(), vin.data(), o.data(), p.data(), B, S, H, d,
+               st);
+    return std::make_pair(o, p);
+  };
+  const auto [o, p] = run(kk, v, starts.data());
+  // Masked keys are exact zeros, and each row still sums to one.
+  for (size_t h = 0; h < H; ++h)
+    for (size_t i = 3; i < S; ++i) {
+      const float* row = p.data() + (h * S + i) * S;  // window 0
+      for (size_t j = 0; j < 3; ++j) EXPECT_EQ(row[j], 0.0f);
+      double sum = 0.0;
+      for (size_t j = 0; j < S; ++j) sum += row[j];
+      EXPECT_NEAR(sum, 1.0, 1e-6);
+    }
+  std::vector<float> k2 = kk, v2 = v;
+  for (size_t t = 0; t < 3; ++t)
+    for (size_t c = 0; c < D; ++c) {
+      k2[t * D + c] += 5.0f;
+      v2[t * D + c] -= 3.0f;
+    }
+  const auto [o2, p2] = run(k2, v2, starts.data());
+  for (size_t i = 3; i < S; ++i)
+    for (size_t c = 0; c < D; ++c)
+      EXPECT_EQ(std::bit_cast<uint32_t>(o[i * D + c]),
+                std::bit_cast<uint32_t>(o2[i * D + c]));
+  const std::vector<int32_t> zeros(B * S, 0);
+  const auto [oz, pz] = run(kk, v, zeros.data());
+  const auto [ou, pu] = run(kk, v, nullptr);
+  EXPECT_BITWISE_EQ_F32(ou, oz);
+  EXPECT_BITWISE_EQ_F32(pu, pz);
 }
 
 TEST(ClipGlobal, EveryTensorSharesTheOneFactorAndTheJointNormLandsOnTheCap) {

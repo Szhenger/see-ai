@@ -1365,21 +1365,30 @@ kernel void k_embed_fwd(KSIG, uint g [[thread_position_in_grid]]) {
 // max and sum by fixed shuffle trees (deterministic), masked columns
 // j > i written as exact zeros — the layout AttnFwd's CPU kernel leaves.
 // p.rows = B*H*S, p.cols = S.
+// The segment mask (#191, plan v25): with p.flags bit 0, ref slot 1 holds
+// the i32 document start of every token position, and keys before row i's
+// start are written as exact zeros like the causal ones (p.H = heads).
 kernel void k_attn_softmax(KSIG, uint g [[thread_position_in_grid]],
                            uint lane [[thread_index_in_simdgroup]]) {
   const uint r = g >> 5;
   if (r >= p.rows) return;
   const uint S = p.cols, i = r % S;
   device float* row = WF(0) + (ulong)r * S;
+  uint j0 = 0u;
+  if (p.flags & 1u) {
+    const uint b = r / (p.H * S);
+    j0 = (uint)((device const int*)(RBASE(1) + p.off[1]))[(ulong)b * S + i];
+  }
+  for (uint j = lane; j < j0; j += 32u) row[j] = 0.0f;
   float m = -INFINITY;
-  for (uint j = lane; j <= i; j += 32u) m = max(m, row[j]);
+  for (uint j = j0 + lane; j <= i; j += 32u) m = max(m, row[j]);
   m = max(m, simd_shuffle_xor(m, 16u));
   m = max(m, simd_shuffle_xor(m, 8u));
   m = max(m, simd_shuffle_xor(m, 4u));
   m = max(m, simd_shuffle_xor(m, 2u));
   m = max(m, simd_shuffle_xor(m, 1u));
   float sum = 0.0f;
-  for (uint j = lane; j <= i; j += 32u) {
+  for (uint j = j0 + lane; j <= i; j += 32u) {
     const float e = exp(row[j] - m);
     row[j] = e;
     sum += e;
@@ -1390,8 +1399,20 @@ kernel void k_attn_softmax(KSIG, uint g [[thread_position_in_grid]],
   sum += simd_shuffle_xor(sum, 2u);
   sum += simd_shuffle_xor(sum, 1u);
   const float inv = 1.0f / sum;
-  for (uint j = lane; j <= i; j += 32u) row[j] *= inv;
+  for (uint j = j0 + lane; j <= i; j += 32u) row[j] *= inv;
   for (uint j = i + 1u + lane; j < S; j += 32u) row[j] = 0.0f;
+}
+// One thread per window: the document start of every position (#191).
+// p.B = windows, p.S = positions, p.k = the EOS id.
+kernel void k_segment_starts(KSIG, uint b [[thread_position_in_grid]]) {
+  if (b >= p.B) return;
+  device const int* tok = (device const int*)(RBASE(0) + p.off[0]);
+  device int* starts = (device int*)(ar + p.off[1]);
+  int start = 0;
+  for (uint t = 0; t < p.S; ++t) {
+    starts[(ulong)b * p.S + t] = start;
+    if (tok[(ulong)b * p.S + t] == (int)p.k) start = (int)(t + 1u);
+  }
 }
 // dS = P * (dP - rowsum(dP * P)): one simdgroup per row, fixed shuffle
 // tree for the rowsum. Masked entries carry p == 0, so their dS is 0.

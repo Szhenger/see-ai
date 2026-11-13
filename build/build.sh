@@ -58,6 +58,7 @@ compile compiler/analysis/pass_manager.cc  pass_manager.o
 compile compiler/analysis/topology/dce.cc           dce.o
 compile compiler/analysis/algebra/epilogue_fuser.cc epilogue_fuser.o
 compile compiler/analysis/algebra/rope_table.cc     rope_table.o
+compile compiler/analysis/algebra/segment_mask.cc   segment_mask.o
 compile compiler/analysis/algebra/chain_fuser.cc    chain_fuser.o
 compile compiler/analysis/algebra/addend_fuser.cc   addend_fuser.o
 compile compiler/analysis/calculus/rematerializer.cc rematerializer.o
@@ -140,7 +141,7 @@ LIBS="build/model_format.o build/model_reader.o build/export_report.o build/mode
       build/resource_analyzer.o build/corpus_ingress.o \
       build/value_resolver.o build/sema.o build/parser.o \
       build/pass_manager.o build/dce.o build/precision.o build/schedule.o \
-      build/epilogue_fuser.o build/rope_table.o build/chain_fuser.o build/addend_fuser.o build/attention_tiling.o build/rematerializer.o \
+      build/epilogue_fuser.o build/rope_table.o build/segment_mask.o build/chain_fuser.o build/addend_fuser.o build/attention_tiling.o build/rematerializer.o \
       build/lora_grafter.o \
       build/merge_builder.o build/autodiff.o build/optimizer_synth.o \
       build/quantization.o \

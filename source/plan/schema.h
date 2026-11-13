@@ -154,8 +154,11 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // opcodes the validator refuses below v24. No header field and no section
 // changes; a plan that does not clip globally is the v23 plan with its
 // version word raised.
-inline constexpr uint32_t kSeeuVersion = 24;
+// v25 (#191): the attention segment mask — kSegmentStarts and kAttnFwdSeg,
+// refused below v25; no header field and no section changes.
+inline constexpr uint32_t kSeeuVersion = 25;
 inline constexpr uint32_t kSeeuGlobalClipVersion = 24;
+inline constexpr uint32_t kSeeuSegmentMaskVersion = 25;
 
 // The version that grew the header with the data contract.
 inline constexpr uint32_t kSeeuDataContractVersion = 22;

@@ -1546,6 +1546,52 @@ TEST(MetalBackend, ANonFiniteGradientNormIsRefusedAlikeOnBothBackends) {
   EXPECT_NEAR(twin->cpu[16], 3.0f / 13.0f, 1e-6);  // ||g|| = 13, cap 1
 }
 
+TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
+  // #191: the starts bit for bit, and the masked forward at tolerance (the
+  // GEMMs' own), with masked probabilities exact zeros on both backends.
+  if (Skip()) return;
+  const uint32_t B = 2, S = 8, H = 2, d = 4, D = H * d;
+  // Arena (floats): tokens 0..15, starts 16..31, q 32.., k, v, o, P.
+  const uint64_t tok = 0, st = 16, q = 32, kk = q + B * S * D, v = kk + B * S * D,
+                 o = v + B * S * D, p = o + B * S * D;
+  std::vector<float> arena(p + B * H * S * S, 0.0f);
+  const int32_t ids[] = {1, 2, 9, 3, 4, 9, 5, 6, 7, 8, 1, 2, 3, 4, 5, 9};
+  std::memcpy(arena.data() + tok, ids, sizeof(ids));
+  std::mt19937 rng(7);
+  std::normal_distribution<float> n01;
+  for (uint64_t i = q; i < o; ++i) arena[i] = n01(rng);
+  UpdateInstruction starts;
+  starts.opcode = static_cast<uint16_t>(OpCode::kSegmentStarts);
+  starts.in[0] = MakeArenaRef(tok * 4);
+  starts.in[1] = MakeArenaRef(st * 4);
+  starts.out[0] = (uint64_t{B} << 32) | S;
+  starts.out[1] = 9;
+  UpdateInstruction fwd;
+  fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdSeg);
+  fwd.in[0] = MakeArenaRef(q * 4);
+  fwd.in[1] = MakeArenaRef(kk * 4);
+  fwd.in[2] = MakeArenaRef(v * 4);
+  fwd.in[3] = MakeArenaRef(o * 4);
+  fwd.out[0] = MakeArenaRef(p * 4);
+  fwd.out[1] = PackAttnGeometry(B, S, H, d);
+  fwd.out[2] = MakeArenaRef(st * 4);
+  auto twin = RunTwin({starts, fwd}, arena, std::vector<uint8_t>(64, 0));
+  ASSERT_OK(twin);
+  for (uint64_t i = st; i < st + B * S; ++i)
+    EXPECT_EQ(std::bit_cast<uint32_t>(twin->cpu[i]),
+              std::bit_cast<uint32_t>(twin->gpu[i]));
+  EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[st + 4]), 3);  // after the EOS at 2
+  ExpectRangeClose("the masked output", *twin, o, B * S * D, 1e-5, 1e-5);
+  ExpectRangeClose("the masked probabilities", *twin, p, B * H * S * S, 1e-5,
+                   1e-5);
+  // Row 6 of window 0 starts at 6 (EOS at 5): keys 0..5 are exact zeros.
+  for (uint32_t h = 0; h < H; ++h)
+    for (uint32_t j = 0; j < 6; ++j) {
+      EXPECT_EQ(twin->cpu[p + (h * S + 6) * S + j], 0.0f);
+      EXPECT_EQ(twin->gpu[p + (h * S + 6) * S + j], 0.0f);
+    }
+}
+
 TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
   // #190: two gradients, one norm over both (sqrt(169 + 25)); both backends
   // land each on the shared factor — at tolerance, the GPU summing the

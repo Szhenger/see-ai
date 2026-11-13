@@ -109,6 +109,7 @@ add_library(seeml_update STATIC
     compiler/analysis/topology/dce.cc
     compiler/analysis/algebra/epilogue_fuser.cc
     compiler/analysis/algebra/rope_table.cc
+    compiler/analysis/algebra/segment_mask.cc
     compiler/analysis/algebra/chain_fuser.cc
     compiler/analysis/algebra/addend_fuser.cc
     compiler/analysis/calculus/rematerializer.cc

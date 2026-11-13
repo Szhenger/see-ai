@@ -172,8 +172,20 @@ void RopeTable(float* table, size_t S, size_t d, float base) {
   });
 }
 
+void SegmentStarts(const int32_t* tokens, int32_t* starts, size_t B, size_t S,
+                   int32_t eos) {
+  for (size_t b = 0; b < B; ++b) {
+    int32_t start = 0;
+    for (size_t t = 0; t < S; ++t) {
+      starts[b * S + t] = start;
+      if (tokens[b * S + t] == eos) start = static_cast<int32_t>(t + 1);
+    }
+  }
+}
+
 void AttnFwd(const float* q, const float* k, const float* v, float* o,
-             float* probs, size_t B, size_t S, size_t H, size_t d) {
+             float* probs, size_t B, size_t S, size_t H, size_t d,
+             const int32_t* starts) {
   const size_t D = H * d;
   const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(d));
   // One unit = one query row (b, h, i): writes P row (b,h,i,*) and the o
@@ -185,27 +197,31 @@ void AttnFwd(const float* q, const float* k, const float* v, float* o,
       const auto [b, h, i] = UnitOf(u, H, S);
       const float* qi = q + (b * S + i) * D + h * d;
       float* prow = probs + u * S;
+      // The segment mask (v25): keys before this row's document start are
+      // masked as the causal ones are; with no starts, every row starts at 0.
+      const size_t j0 = starts ? static_cast<size_t>(starts[b * S + i]) : 0;
       // Scores for the causal prefix j <= i, then a stable row softmax.
       DotRun(qi, k + b * S * D + h * d, D, i + 1, d, dots);
+      for (size_t j = 0; j < j0; ++j) prow[j] = 0.0f;  // segment mask
       float row_max = -INFINITY;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float s = static_cast<float>(dots[j]) * inv_sqrt_d;
         prow[j] = s;
         if (s > row_max) row_max = s;
       }
       double denom = 0.0;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float e = std::exp(prow[j] - row_max);
         prow[j] = e;
         denom += e;
       }
       const float inv_denom = 1.0f / static_cast<float>(denom);
-      for (size_t j = 0; j <= i; ++j) prow[j] *= inv_denom;
+      for (size_t j = j0; j <= i; ++j) prow[j] *= inv_denom;
       for (size_t j = i + 1; j < S; ++j) prow[j] = 0.0f;  // causal mask
       // O row segment: o(b, i, h, c) = sum_j P(i, j) * v(b, j, h, c).
       float* oi = o + (b * S + i) * D + h * d;
       for (size_t c = 0; c < d; ++c) oi[c] = 0.0f;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float p = prow[j];
         const float* vj = v + (b * S + j) * D + h * d;
         for (size_t c = 0; c < d; ++c) oi[c] += p * vj[c];

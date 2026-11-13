@@ -123,6 +123,7 @@ struct CompileFacts {
   uint64_t ops_out = 0;
   uint64_t gradients = 0;
   uint64_t rope_tables = 0;
+  uint64_t segment_masked_ops = 0;  // #191
   uint64_t epilogue_fusions = 0;
   uint64_t addend_fusions = 0;
   uint64_t chain_fusions = 0;

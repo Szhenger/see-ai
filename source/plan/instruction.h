@@ -206,6 +206,16 @@ enum class OpCode : uint16_t {
   // precede the first scaling, so every tensor sees the same factor.
   kSqNormAccum = 53,  // acc += ||g||^2   in: g, acc[1];          out[0] = count
   kClipGlobal = 54,   // g *= min(1, max/sqrt(acc))  in: g, acc[1], max bits; out[0] = count
+  // The attention segment mask (#191, plan v25): packed windows hold
+  // several documents joined by EOS, and a position must not attend to
+  // another document. Segments are contiguous, so the mask is one start
+  // per row: kSegmentStarts writes, for every token position t of window b,
+  // the first position of t's document (one past the last EOS strictly
+  // before t; 0 when none), and kAttnFwdSeg is kAttnFwd with keys j < that
+  // start masked as the causal ones are — exact zeros in the P cache, so
+  // the cached backward needs no operand of its own.
+  kSegmentStarts = 55,  // in: tokens(i32 [B*S]), starts(i32 [B*S]); out[0]=B<<32|S, out[1]=eos id
+  kAttnFwdSeg = 56,     // in: q, k, v, o; out[0]=P ref, out[1]=PackAttnGeometry, out[2]=starts ref
 };
 
 inline constexpr uint64_t kAttnStatsWidth = 4;
