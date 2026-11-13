@@ -1610,6 +1610,24 @@ TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
   EXPECT_NE(plain.recipe_hash, stabilized.recipe_hash);
   EXPECT_NE(HeaderOf(plain).plan_hash, HeaderOf(stabilized).plan_hash);
   EXPECT_EQ(plain.train_instruction_count, stabilized.train_instruction_count);
+  // The rule reaches the program, not only the recipe (whose hash alone
+  // moves the plan hash): rank 4, alpha 8 is s = 2 under alpha / r and
+  // s = 4 under alpha / sqrt(r) — the alpha of each adapter's three
+  // products (t@B, dC@B^T, t^T@dC) and the grafted adapter's own scale.
+  for (const auto& [c, s] :
+       {std::pair{&plain, 2.0f}, std::pair{&stabilized, 4.0f}}) {
+    size_t alphas = 0;
+    for (const UpdateInstruction& ins : TrainProgramOf(*c)) {
+      const auto op = static_cast<OpCode>(ins.opcode);
+      if (ins.imm == 0 || (op != OpCode::kGemmNN && op != OpCode::kGemmNT &&
+                           op != OpCode::kGemmTN))
+        continue;
+      EXPECT_EQ(GemmAlphaOf(ins.imm), s);
+      ++alphas;
+    }
+    EXPECT_EQ(alphas, 3 * c->adapters.size());
+    for (const AdapterDebugInfo& a : c->adapters) EXPECT_EQ(a.scale, s);
+  }
 
   UpdateConfig one = config;
   one.lora.rank = 1;

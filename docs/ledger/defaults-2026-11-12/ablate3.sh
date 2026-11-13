@@ -1,7 +1,8 @@
 #!/bin/sh
 # alpha / r vs alpha / sqrt(r) at rank 16, alpha 32 (scale 2 vs 8), and at
-# rank 8 with alpha / r at alpha 45.2548 (the same scale 5.657 as the rank-8
-# alpha / sqrt(r) row: the same program but for the recipe).
+# rank 4, alpha 8 (scale 2 vs 4). This script has no rank-8 alpha / r row
+# at alpha 45.2548 (the rank-8 alpha / sqrt(r) row's scale 5.657), and the
+# ledger holds none.
 WT=~/SeeAI/see-ai/.claude/worktrees/review-2026-11-09
 SRC=~/.claude/jobs/8eaa3413/tmp/accept_s6
 OUT=~/.claude/jobs/8eaa3413/tmp/ablate
