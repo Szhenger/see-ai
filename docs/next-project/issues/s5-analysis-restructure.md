@@ -97,11 +97,15 @@ rank 16 (+0.085), and its step-300 state is worse at every rank and seed —
 a larger scale overfitting a small corpus faster, not the rank-stabilized
 claim. *Clip 1.0* matches the baseline to the fifth decimal (and the clip
 is per tensor, not the practice's global norm). *lr 1e-4 / 2e-4 with
-cosine + warmup* ends 0.36 / 0.21 nats above the baseline at this horizon.
+cosine + warmup* ends 0.36 / 0.21 nats above the baseline at 300 steps, and
+at 1,200 steps still never reaches the default's best state (3.787 / 3.732
+against 3.640) — though it does not collapse as the default does (6.46 at
+step 1,200; the best-state gate hides that when there is a split).
 The rows are SeeAI's only, on battery (losses reproduce bit for bit; no step
 time is quoted). What would carry each claim: a matched-learning-rate rank
 sweep on data that does not overfit in 300 steps (alpha / sqrt(r)); a
-global-norm clip (clipping); a longer horizon on more data (the rate).
+global-norm clip (clipping); more data (the rate: the longer horizon is
+measured and does not carry it).
 
 ## Acceptance
 
