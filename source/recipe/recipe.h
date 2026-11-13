@@ -94,6 +94,9 @@ inline constexpr Field kFields[] = {
      false, "", "adapter rank r"},
     {"lora_alpha", "--lora-alpha", Kind::kFloat, 0, 0, 0.0, 1e6, true, false,
      "", "adapter scale numerator: the update is (alpha / r) A B"},
+    {"lora_scaling", "--lora-scaling", Kind::kEnum, 0, 0, 0, 0, false, false,
+     "alpha_over_r|alpha_over_sqrt_r",
+     "the adapter scale: alpha / r, or rank-stabilized alpha / sqrt(r)"},
     {"lora_seed", "--lora-seed", Kind::kUInt, 0, kU64Max, 0, 0, false, false,
      "", "seed of the adapters' initial image"},
     {"targets", "--targets", Kind::kList, 0, 0, 0, 0, false, false, "",
@@ -334,6 +337,9 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "temperature") c.temperature = static_cast<float>(d);
     else if (n == "lora_rank") c.lora.rank = static_cast<int64_t>(u);
     else if (n == "lora_alpha") c.lora.alpha = static_cast<float>(d);
+    else if (n == "lora_scaling")
+      c.lora.scaling = v == "alpha_over_sqrt_r" ? LoraScaling::kAlphaOverSqrtRank
+                                                : LoraScaling::kAlphaOverRank;
     else if (n == "lora_seed") c.lora.seed = u;
     else if (n == "targets") {
       c.lora.target_filters.clear();
@@ -499,6 +505,9 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"temperature", bits(c.temperature)},
       {"lora_rank", std::to_string(c.lora.rank)},
       {"lora_alpha", bits(c.lora.alpha)},
+      {"lora_scaling", c.lora.scaling == LoraScaling::kAlphaOverSqrtRank
+                           ? "alpha_over_sqrt_r"
+                           : "alpha_over_r"},
       {"lora_seed", std::to_string(c.lora.seed)},
       {"targets", targets},
       {"optimizer", c.optimizer.kind == OptimizerKind::kAdamW ? "adamw" : "sgd"},

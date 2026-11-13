@@ -84,6 +84,25 @@ acceptance asks for its own PR with measurements, and the host has been on
 battery for this whole branch, so no F1 row was taken. Also not done:
 the attention segment operand / mask, 8-bit moments, the MSE opcode drop.
 
+## Status 2026-11-12, the defaults
+
+Design item 4, measured on `claude/v100b-defaults-flip`
+(`docs/benchmarks.md`, "The best-practice defaults, measured";
+`docs/ledger/defaults-2026-11-12/`): SmolLM-135M, the nightly row's shapes,
+the default optimizer, 300 steps on Metal, sixteen rows. **No default
+flipped**, each for its row. *alpha / sqrt(r)* is a recipe field
+(`lora_scaling`) and stays opt-in: its committed state beats alpha / r at
+rank 8 on three seeds (−0.013 to −0.033) and at rank 4 (−0.031), loses at
+rank 16 (+0.085), and its step-300 state is worse at every rank and seed —
+a larger scale overfitting a small corpus faster, not the rank-stabilized
+claim. *Clip 1.0* matches the baseline to the fifth decimal (and the clip
+is per tensor, not the practice's global norm). *lr 1e-4 / 2e-4 with
+cosine + warmup* ends 0.36 / 0.21 nats above the baseline at this horizon.
+The rows are SeeAI's only, on battery (losses reproduce bit for bit; no step
+time is quoted). What would carry each claim: a matched-learning-rate rank
+sweep on data that does not overfit in 300 steps (alpha / sqrt(r)); a
+global-norm clip (clipping); a longer horizon on more data (the rate).
+
 ## Acceptance
 
 - Every fixture compiles to a bit-identical plan before and after the move

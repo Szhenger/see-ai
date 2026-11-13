@@ -112,7 +112,7 @@ std::expected<std::vector<GraftedAdapter>, std::string> LoraGrafter::Run(
   // x_i @ (W + Δ) during training and the committed weight is exactly that.
   // Autodiff sums the pair's gradients across sites (Accumulate on fan-out).
   std::unordered_map<sir::Value*, size_t> adapter_for_weight;
-  const float scale = spec_.alpha / static_cast<float>(spec_.rank);
+  const float scale = spec_.Scale();
 
   size_t adapter_index = 0;
   for (sir::Operation* target : targets) {

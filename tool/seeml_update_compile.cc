@@ -122,6 +122,7 @@ void PrintUsage() {
                "  [--data-batch N] [--loss xent|mse|kl|xent+kl]\n"
                "  [--teacher t.smf] [--distill-weight W] [--temperature T]\n"
                "  [--lora-rank R] [--lora-alpha A] [--lora-seed S]\n"
+               "  [--lora-scaling alpha_over_r|alpha_over_sqrt_r]  the adapter scale\n"
                "  [--targets substr,...] [--optimizer adamw|sgd] [--lr LR]\n"
                "  [--weight-decay WD] [--clip-norm C]\n"
                "  [--lr-schedule const|cosine] [--warmup N] [--allow-zero-lr]\n"

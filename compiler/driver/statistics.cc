@@ -210,6 +210,15 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   an.Set("adapters", r.adapters.size());
   an.Set("lora_rank", static_cast<uint64_t>(config.lora.rank));
   an.Set("lora_alpha", static_cast<double>(config.lora.alpha));
+  {
+    char scale[64];
+    std::snprintf(scale, sizeof(scale), "%.6g = alpha / %s",
+                  static_cast<double>(config.lora.Scale()),
+                  config.lora.scaling == LoraScaling::kAlphaOverSqrtRank
+                      ? "sqrt(r)"
+                      : "r");
+    an.Set("lora_scale", std::string(scale));
+  }
   uint64_t trainable = 0;
   for (const AdapterDebugInfo& a : r.adapters)
     trainable += static_cast<uint64_t>(a.r) *

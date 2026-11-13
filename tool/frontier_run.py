@@ -35,7 +35,8 @@ was written down (the 2026-09-22 Frontier Harness report, §6):
      — exactly `dataset.cc`. Same ids in every stack, checked by hash.
   2. Adapted set: the seven projections of every layer AND the LM head —
      SeeAI's `--hf` importer writes the tied head as its own weight and
-     adapts it. Rank and alpha/r are the plan's. The adapter parameter
+     adapts it. Rank and the scale (--scaling, as the compiler's
+     --lora-scaling: alpha / r by default, or alpha / sqrt(r)) are the plan's. The adapter parameter
      count of every row must equal the SeeAI report's up to the k/v
      expansion SeeAI's GQA-to-MHA repeat implies (`expected_adapter_params`).
   3. Optimizer: AdamW with BIAS CORRECTION (mlx.optimizers.AdamW defaults to
@@ -82,6 +83,13 @@ MLX_KEYS = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
 
 
 # --- Rule 1: the records ------------------------------------------------------
+
+def lora_scale(args):
+    """The adapter scale of a reference row: the compiler's LoRASpec::Scale()
+    for the same --scaling (rule 2)."""
+    r = float(args.rank)
+    return args.alpha / (r ** 0.5 if args.scaling == "alpha_over_sqrt_r" else r)
+
 
 def load_records(model_dir, text_path, seq_len):
     """np.int64 [n, seq_len + 1] — export_model.py --text-corpus's records."""
@@ -328,9 +336,9 @@ def cmd_torch(args):
     from transformers import AutoModelForCausalLM
 
     class LoRALinear(nn.Module):
-        def __init__(self, base, r, alpha, gen):
+        def __init__(self, base, r, scale, gen):
             super().__init__()
-            self.base, self.scale = base, alpha / r
+            self.base, self.scale = base, scale
             k, m = base.in_features, base.out_features
             self.A = nn.Parameter(torch.randn(k, r, generator=gen) / math.sqrt(k))
             self.B = nn.Parameter(torch.zeros(r, m))
@@ -355,9 +363,9 @@ def cmd_torch(args):
         for parent in (layer.self_attn, layer.mlp):
             for name, mod in list(parent.named_children()):
                 if name in TARGETS and isinstance(mod, nn.Linear):
-                    setattr(parent, name, LoRALinear(mod, args.rank, args.alpha, gen))
+                    setattr(parent, name, LoRALinear(mod, args.rank, lora_scale(args), gen))
                     adapters += 1
-    model.lm_head = LoRALinear(model.lm_head, args.rank, args.alpha, gen)  # rule 2
+    model.lm_head = LoRALinear(model.lm_head, args.rank, lora_scale(args), gen)  # rule 2
     adapters += 1
     model.to(args.device).train()
     params = [q for q in model.parameters() if q.requires_grad]
@@ -432,7 +440,7 @@ def cmd_torch(args):
         model_dir=args.model_dir, torch=torch.__version__, compile=bool(args.compile),
         threads=threads, records_digest=records_digest(records),
         records={"total": len(records), "train": len(train_rec), "val": len(val_rec)},
-        config=dict(rank=args.rank, alpha=args.alpha, scale=args.alpha / args.rank,
+        config=dict(rank=args.rank, alpha=args.alpha, scale=lora_scale(args),
                     lr=args.lr, weight_decay=args.weight_decay, optimizer="adamw",
                     bias_correction=True, schedule="const", clip=0, batch_records=args.batch,
                     seq_len=args.seq_len, tokens_per_step=tokens, steps=args.steps,
@@ -522,7 +530,7 @@ def cmd_mlx(args):
     model, _ = load(args.model_dir)
     model.set_dtype(mx.float32 if args.dtype == "f32" else mx.bfloat16)  # rule 4
     model.freeze()
-    scale = args.alpha / args.rank
+    scale = lora_scale(args)
     linear_to_lora_layers(model, len(model.layers),
                           {"rank": args.rank, "scale": scale, "dropout": 0.0, "keys": MLX_KEYS})
     head = LoRAHead(model.model.embed_tokens, args.rank, scale)
@@ -837,6 +845,10 @@ def build_parser():
         sp.add_argument("--weight-decay", type=float, default=0.01)
         sp.add_argument("--rank", type=int, default=8)
         sp.add_argument("--alpha", type=float, default=16.0)
+        sp.add_argument("--scaling", choices=["alpha_over_r", "alpha_over_sqrt_r"],
+                        default="alpha_over_r",
+                        help="the adapter scale, as the compiler's --lora-scaling "
+                             "(same default)")
         sp.add_argument("--seed", type=int, default=7)
         sp.add_argument("--val-frac", type=float, default=0.1)
         sp.add_argument("--report", required=True)

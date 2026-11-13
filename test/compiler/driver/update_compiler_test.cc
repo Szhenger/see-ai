@@ -1587,6 +1587,45 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
       "carries no labels, but the loss stages class-index labels");
 }
 
+TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
+  // S5 #151: lora_scaling picks s = alpha / r (LoRA's own, the default) or
+  // rank-stabilized s = alpha / sqrt(r). The default is untouched; the
+  // other is a different plan with a different resolved recipe; at rank 1
+  // the two scales are the same number and so the same program.
+  LoRASpec spec;
+  spec.rank = 8;
+  spec.alpha = 16.0f;
+  EXPECT_EQ(spec.Scale(), 2.0f);
+  spec.scaling = LoraScaling::kAlphaOverSqrtRank;
+  EXPECT_EQ(spec.Scale(), 16.0f / std::sqrt(8.0f));
+  spec.rank = 4;
+  EXPECT_EQ(spec.Scale(), 8.0f);
+
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  UpdateConfig config = BaseConfig(kBatch);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain, UpdateCompiler(config).Compile(model));
+  UpdateConfig rs = config;
+  rs.lora.scaling = LoraScaling::kAlphaOverSqrtRank;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate stabilized, UpdateCompiler(rs).Compile(model));
+  EXPECT_NE(plain.recipe_hash, stabilized.recipe_hash);
+  EXPECT_NE(HeaderOf(plain).plan_hash, HeaderOf(stabilized).plan_hash);
+  EXPECT_EQ(plain.train_instruction_count, stabilized.train_instruction_count);
+
+  UpdateConfig one = config;
+  one.lora.rank = 1;
+  UpdateConfig one_rs = one;
+  one_rs.lora.scaling = LoraScaling::kAlphaOverSqrtRank;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate a, UpdateCompiler(one).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate b, UpdateCompiler(one_rs).Compile(model));
+  EXPECT_NE(a.recipe_hash, b.recipe_hash);  // the recipe still says which
+  const PlanHeader ha = HeaderOf(a), hb = HeaderOf(b);
+  ASSERT_EQ(ha.train_instr_count, hb.train_instr_count);
+  EXPECT_EQ(std::memcmp(a.plan.data() + ha.train_instr_offset,
+                        b.plan.data() + hb.train_instr_offset,
+                        ha.train_instr_count * sizeof(UpdateInstruction)),
+            0);
+}
+
 TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
   // Plan v23 (S4 #150 / S5 #151 / S6 #152): the metadata section holds the
   // resolved recipe's hash and one ledger line per pass; an exact plan's
