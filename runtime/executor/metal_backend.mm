@@ -126,6 +126,7 @@ enum Pipe : int {
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
   kPReduceRows, kPLnFwd, kPLnBwd, kPRmsFwd, kPRmsBwd,
   kPClipPartials, kPClipFinish, kPClipApply, kPSgdClip, kPAdamWClip,
+  kPSqNormFinish, kPClipGlobalScale, kPSegmentStarts,
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
   kPXentFwd, kPXentFinish, kPXentBwd,
   kPXentMaskedFwd, kPXentMaskedFinish, kPXentMaskedCount, kPXentMaskedBwd,
@@ -166,7 +167,7 @@ const char* const kPipeNames[kPipeCount] = {
     "k_reduce_rows",
     "k_layernorm_fwd", "k_layernorm_bwd", "k_rmsnorm_fwd", "k_rmsnorm_bwd",
     "k_clip_partials", "k_clip_finish", "k_clip_apply", "k_sgd_clip",
-    "k_adamw_clip", "k_rope_fwd",
+    "k_adamw_clip", "k_sqnorm_finish", "k_clip_global_scale", "k_segment_starts", "k_rope_fwd",
     "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
     "k_xent_fwd", "k_xent_finish", "k_xent_bwd",
     "k_xent_masked_fwd", "k_xent_masked_finish", "k_xent_masked_count",
@@ -542,6 +543,12 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
       const uint64_t H = hi(ins.out[2]), d = lo(ins.out[2]);
       return B * H * S * S <= kMax && B * S * H * d <= kMax;
     }
+    case up::OpCode::kAttnFwdSeg: {
+      const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
+      return g.B * g.H * g.S * g.S <= kMax && g.B * g.S * g.H * g.d <= kMax;
+    }
+    case up::OpCode::kSegmentStarts:
+      return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
     case up::OpCode::kAttnDP:
     case up::OpCode::kAttnDV:
     case up::OpCode::kAttnDQ:
@@ -584,6 +591,8 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kSgdStep:
     case up::OpCode::kAdamWStep:
     case up::OpCode::kClipNorm:
+    case up::OpCode::kSqNormAccum:
+    case up::OpCode::kClipGlobal:
       return ins.out[0] <= kMax;
     case up::OpCode::kRopeTable:
       return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
@@ -1133,6 +1142,8 @@ bool OverwritesWhatItWrites(up::OpCode op) {
     case up::OpCode::kGemmAccNN:
     case up::OpCode::kAccumulate:
     case up::OpCode::kClipNorm:
+    case up::OpCode::kSqNormAccum:
+    case up::OpCode::kClipGlobal:
     case up::OpCode::kSgdStep:
     case up::OpCode::kAdamWStep:
     case up::OpCode::kAttnDQTiled:
@@ -1690,6 +1701,28 @@ std::expected<void, std::string> MetalBackend::Encode(
       Dispatch(kPClipApply, a, a.n, kElementwiseGroup, true);
       return {};
     }
+    case up::OpCode::kSqNormAccum: {  // v24, #190: the CPU's chunk geometry
+      ref(0, ins.in[0]); ref(1, ins.in[1]);
+      a.n = u32(ins.out[0]);
+      a.k = static_cast<uint32_t>(
+          up::ParallelChunkGrain(a.n, kernels::kGrainCheap));
+      a.m = static_cast<uint32_t>(
+          up::ParallelChunkCount(a.n, kernels::kGrainCheap));
+      Dispatch(kPClipPartials, a, a.m, kElementwiseGroup, true);
+      Dispatch(kPSqNormFinish, a, 1, 1, true);
+      return {};
+    }
+    case up::OpCode::kClipGlobal: {  // v24, #190: kClipNorm's refusals
+      const float cap = BitsToF32(ins.in[2]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
+      ref(0, ins.in[0]); ref(1, ins.in[1]);
+      a.n = u32(ins.out[0]);
+      a.f[0] = cap;
+      Dispatch(kPClipGlobalScale, a, 1, 1, true);
+      Dispatch(kPClipApply, a, a.n, kElementwiseGroup, true);
+      return {};
+    }
     case up::OpCode::kRopeFwd:
     case up::OpCode::kRopeBwd: {
       ref(0, ins.in[0]); ref(1, ins.in[1]);
@@ -1777,6 +1810,29 @@ std::expected<void, std::string> MetalBackend::Encode(
     // Operand kinds: 0 = activation [B*S, H*d] (per-batch S*D, per-head
     // d), 1 = probability matrix [B*H*S, S] (per-batch H*S*S, per-head
     // S*S).
+    case up::OpCode::kSegmentStarts: {  // v25, #191
+      ref(0, ins.in[0]); ref(1, ins.in[1]);
+      a.B = hi(ins.out[0]); a.S = lo(ins.out[0]);
+      a.k = static_cast<uint32_t>(ins.out[1]);
+      Dispatch(kPSegmentStarts, a, a.B, 1);
+      return {};
+    }
+    case up::OpCode::kAttnFwdSeg: {  // v25, #191: kAttnFwd with the starts
+      const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
+      const uint32_t B = u32(g.B), S = u32(g.S), H = u32(g.H), d = u32(g.d);
+      const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(d));
+      EncodeAttentionGemm(kPGemmNT, false, true, ins.in[0], ins.in[1],
+                          ins.out[0], B, S, H, d, 0, 0, 1, S, S, d,
+                          inv_sqrt_d);
+      ref(0, ins.out[0]);
+      ref(1, ins.out[2]);
+      a.rows = B * H * S; a.cols = S; a.H = H;
+      a.flags = 1u;
+      Dispatch(kPAttnSoftmax, a, a.rows * 32u, kElementwiseGroup);
+      EncodeAttentionGemm(kPGemmNN, false, false, ins.out[0], ins.in[2],
+                          ins.in[3], B, S, H, d, 1, 0, 0, S, d, S, 1.0f);
+      return {};
+    }
     case up::OpCode::kAttnFwd: {
       const uint32_t B = hi(ins.out[1]), S = lo(ins.out[1]);
       const uint32_t H = hi(ins.out[2]), d = lo(ins.out[2]);

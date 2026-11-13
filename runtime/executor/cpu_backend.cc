@@ -413,6 +413,18 @@ std::expected<void, std::string> CpuBackend::Execute(
         return std::unexpected(kNonFiniteNormRefusal);
       break;
     }
+    case up::OpCode::kSqNormAccum:  // v24, #190
+      k::SqNormAccum(ReadPtr(ins.in[0]), ins.out[0], WritePtr(ins.in[1]));
+      break;
+    case up::OpCode::kClipGlobal: {  // v24, #190: kClipNorm's verdicts
+      const float cap = BitsToF32(ins.in[2]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
+      if (!k::ClipGlobal(WritePtr(ins.in[0]), ins.out[0], ReadPtr(ins.in[1]),
+                         cap))
+        return std::unexpected(kNonFiniteNormRefusal);
+      break;
+    }
     case up::OpCode::kScale:
       k::Scale(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), BitsToF32(ins.in[2]),
                ins.out[0]);
@@ -550,6 +562,19 @@ std::expected<void, std::string> CpuBackend::Execute(
                  ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu,
                  ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
       break;
+    case up::OpCode::kSegmentStarts:  // v25, #191
+      k::SegmentStarts(reinterpret_cast<const int32_t*>(ReadPtr(ins.in[0])),
+                       reinterpret_cast<int32_t*>(WritePtr(ins.in[1])),
+                       ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                       static_cast<int32_t>(ins.out[1]));
+      break;
+    case up::OpCode::kAttnFwdSeg: {  // v25, #191
+      const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
+      k::AttnFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), ReadPtr(ins.in[2]),
+                 WritePtr(ins.in[3]), WritePtr(ins.out[0]), g.B, g.S, g.H, g.d,
+                 reinterpret_cast<const int32_t*>(ReadPtr(ins.out[2])));
+      break;
+    }
     case up::OpCode::kAttnDP:
       k::AttnDP(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                 ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,

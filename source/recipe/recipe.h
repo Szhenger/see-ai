@@ -110,6 +110,9 @@ inline constexpr Field kFields[] = {
      false, "", "decoupled weight decay"},
     {"clip_norm", "--clip-norm", Kind::kFloat, 0, 0, 0.0, 1e6, false, false,
      "", "per-tensor gradient-norm clip; 0 = off"},
+    {"clip_mode", "--clip-mode", Kind::kEnum, 0, 0, 0, 0, false, false,
+     "per_tensor|global",
+     "what the clip measures: each tensor's own norm, or one over them all"},
     {"lr_schedule", "--lr-schedule", Kind::kEnum, 0, 0, 0, 0, false, false,
      "cosine|const", "learning-rate schedule (cosine, the default, or const)"},
     {"warmup", "--warmup", Kind::kUInt, 0, kStepsMax, 0, 0, false, false, "",
@@ -142,6 +145,8 @@ inline constexpr Field kFields[] = {
      "", "seed of the compiled held-out split (needs val_frac)"},
     {"masked_loss", "--masked-loss", Kind::kBool, 0, 0, 0, 0, false, false, "",
      "cross-entropy over target positions alone"},
+    {"segment_mask", "--segment-mask", Kind::kBool, 0, 0, 0, 0, false, false,
+     "", "no attention across the documents of a packed window"},
     {"memory_budget_mib", "--memory-budget-mib", Kind::kUInt, 1, kMibMax, 0, 0,
      false, false, "", "the memory gate's budget; unset = the host's memory"},
 };
@@ -364,6 +369,7 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "lr") c.optimizer.lr = static_cast<float>(d);
     else if (n == "weight_decay") c.optimizer.weight_decay = static_cast<float>(d);
     else if (n == "clip_norm") c.optimizer.clip_norm = static_cast<float>(d);
+    else if (n == "clip_mode") c.optimizer.clip_global = v == "global";
     else if (n == "lr_schedule")
       c.optimizer.lr_schedule = v == "cosine" ? LrSchedule::kCosineWithWarmup
                                               : LrSchedule::kConstant;
@@ -388,6 +394,7 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "validation_scores") c.eval_on_plan = v == "plan";
     else if (n == "val_frac") c.val_frac = static_cast<float>(d);
     else if (n == "split_seed") c.split_seed = u;
+    else if (n == "segment_mask") c.segment_mask = v == "true";
     else if (n == "masked_loss") c.masked_loss = on;
     else if (n == "memory_budget_mib") c.memory_budget_bytes = u << 20;
     else
@@ -425,6 +432,10 @@ inline std::expected<void, std::string> Apply(const Values& values,
     return needs("distill_weight",
                  "weighs the KL term of loss xent+kl; under loss kl there is "
                  "nothing to weigh it against");
+  if (c.optimizer.clip_global && !(c.optimizer.clip_norm > 0.0f))
+    return needs("clip_mode",
+                 "global measures one norm to clip at clip_norm; it needs "
+                 "clip_norm > 0");
   const bool cosine = c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup;
   if (!cosine)
     for (const char* knob : {"warmup", "min_lr_factor", "allow_zero_lr"})
@@ -516,6 +527,7 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"lr", bits(c.optimizer.lr)},
       {"weight_decay", bits(c.optimizer.weight_decay)},
       {"clip_norm", bits(c.optimizer.clip_norm)},
+      {"clip_mode", c.optimizer.clip_global ? "global" : "per_tensor"},
       {"lr_schedule",
        c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup ? "cosine"
                                                                 : "const"},
@@ -539,6 +551,7 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"val_frac", bits(c.val_frac)},
       {"split_seed", std::to_string(c.split_seed)},
       {"masked_loss", yes(c.masked_loss)},
+      {"segment_mask", yes(c.segment_mask)},
       {"memory_budget_mib", mib(c.memory_budget_bytes)},
   };
   static_assert(std::size(lines) == std::size(kFields),

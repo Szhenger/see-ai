@@ -1024,6 +1024,62 @@ TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
     clip.in[1] = bad;
     refused(clip, up::kSeeuVersion, "clip_norm threshold");
   }
+  // The segment mask (#191, v25): starts are B*S i32 in, B*S out; the
+  // masked forward's packed geometry and its starts operand in bounds.
+  up::UpdateInstruction seg;
+  seg.opcode = static_cast<uint16_t>(up::OpCode::kSegmentStarts);
+  seg.in[0] = up::MakeArenaRef(0);
+  seg.in[1] = up::MakeArenaRef(64);
+  seg.out[0] = (uint64_t{2} << 32) | 8;  // B = 2, S = 8
+  seg.out[1] = 7;
+  EXPECT_OK(ValidateInstruction(seg, kArena, kRodata, up::kSeeuVersion));
+  refused(seg, up::kSeeuSegmentMaskVersion - 1, "segment mask opcode 55");
+  up::UpdateInstruction seg_bad = seg;
+  seg_bad.out[1] = uint64_t{1} << 31;
+  refused(seg_bad, up::kSeeuVersion, "segment EOS id");
+  seg_bad = seg;
+  seg_bad.in[1] = up::MakeArenaRef(32);  // overlaps the tokens
+  refused(seg_bad, up::kSeeuVersion, "alias");
+  up::UpdateInstruction fwd_seg;
+  fwd_seg.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwdSeg);
+  fwd_seg.in[0] = up::MakeArenaRef(0);     // q: B*S*H*d = 1*4*1*2 = 8 floats
+  fwd_seg.in[1] = up::MakeArenaRef(64);
+  fwd_seg.in[2] = up::MakeArenaRef(128);
+  fwd_seg.in[3] = up::MakeArenaRef(192);
+  fwd_seg.out[0] = up::MakeArenaRef(256);  // P: B*H*S*S = 16 floats
+  fwd_seg.out[1] = up::PackAttnGeometry(1, 4, 1, 2);
+  fwd_seg.out[2] = up::MakeArenaRef(384);  // starts: 4 i32
+  EXPECT_OK(ValidateInstruction(fwd_seg, kArena, kRodata, up::kSeeuVersion));
+  refused(fwd_seg, up::kSeeuSegmentMaskVersion - 1, "segment mask opcode 56");
+  up::UpdateInstruction fwd_bad = fwd_seg;
+  fwd_bad.out[1] = up::PackAttnGeometry(1, 0, 1, 2);
+  refused(fwd_bad, up::kSeeuVersion, "out of bounds");
+  // The global clip (#190, v24): the threshold held as kClipNorm's is, the
+  // one-float slot in bounds and apart from g, and both opcodes refused
+  // below v24.
+  up::UpdateInstruction acc;
+  acc.opcode = static_cast<uint16_t>(up::OpCode::kSqNormAccum);
+  acc.in[0] = up::MakeArenaRef(0);
+  acc.in[1] = up::MakeArenaRef(64);
+  acc.out[0] = 16;
+  EXPECT_OK(ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion));
+  refused(acc, up::kSeeuGlobalClipVersion - 1, "global clip opcode 53");
+  up::UpdateInstruction aliased = acc;
+  aliased.in[1] = up::MakeArenaRef(32);  // inside g
+  refused(aliased, up::kSeeuVersion, "alias");
+  up::UpdateInstruction global;
+  global.opcode = static_cast<uint16_t>(up::OpCode::kClipGlobal);
+  global.in[0] = up::MakeArenaRef(0);
+  global.in[1] = up::MakeArenaRef(64);
+  global.in[2] = f32(1.0f);
+  global.out[0] = 16;
+  EXPECT_OK(ValidateInstruction(global, kArena, kRodata, up::kSeeuVersion));
+  refused(global, up::kSeeuGlobalClipVersion - 1, "global clip opcode 54");
+  for (const uint64_t bad : {f32(0.0f), f32(-1.0f), f32(nan), f32(INFINITY),
+                             f32(1.0f) | (uint64_t{1} << 32)}) {
+    global.in[2] = bad;
+    refused(global, up::kSeeuVersion, "global clip threshold");
+  }
   // The distillation temperature (F17 / F10): the KL words' low half, at
   // every version — both softmaxes divide by it.
   up::UpdateInstruction fwd;

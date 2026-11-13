@@ -38,14 +38,19 @@ namespace seeml::update {
 // hook) keeps the accumulators and the folds but emits no step.
 class OptimizerSynthesizer {
  public:
+  // `clip_global` (#190): with clip_norm > 0, one norm over every gradient
+  // instead of one per tensor — the squared norms accumulated into one
+  // persistent float, every gradient scaled by the factor it implies, then
+  // the steps (unclipped), then the sum zeroed for the next step.
   OptimizerSynthesizer(OptimizerKind kind, float clip_norm,
                        uint32_t grad_accum_steps = 1, bool emit_step = true,
-                       bool fuse_clip = true)
+                       bool fuse_clip = true, bool clip_global = false)
       : kind_(kind),
         clip_norm_(clip_norm),
         grad_accum_steps_(grad_accum_steps),
         emit_step_(emit_step),
-        fuse_clip_(fuse_clip) {}
+        fuse_clip_(fuse_clip),
+        clip_global_(clip_global) {}
 
   [[nodiscard]] std::expected<void, std::string> Run(
       seeml::sir::Block& block,
@@ -58,6 +63,7 @@ class OptimizerSynthesizer {
   uint32_t grad_accum_steps_;
   bool emit_step_;
   bool fuse_clip_;
+  bool clip_global_;
 };
 
 }  // namespace seeml::update

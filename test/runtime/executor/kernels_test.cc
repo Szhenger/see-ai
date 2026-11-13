@@ -11,6 +11,8 @@
 #include <functional>
 #include <cstring>
 #include <limits>
+#include <random>
+#include <utility>
 #include <vector>
 
 #include "runtime/executor/update_kernels.h"
@@ -1089,6 +1091,95 @@ TEST(ClipNorm, ZeroGradientIsExactAndABadCapIsRefused) {
     std::vector<float> h = h0;
     EXPECT_FALSE(k::ClipNorm(h.data(), h.size(), cap));
     EXPECT_BITWISE_EQ_F32(h0, h);
+  }
+}
+
+TEST(SegmentMask, NoRowSeesAnotherDocumentAndUnmaskedRowsKeepTheirBits) {
+  // #191: window 0 holds a document ending at position 2 (EOS id 9), so
+  // rows 3..5 start a new one; window 1 holds no EOS. Perturbing k and v at
+  // positions 0..2 changes nothing rows 3..5 produce, and with every start
+  // at 0 the masked forward is the unmasked one, bit for bit.
+  const size_t B = 2, S = 6, H = 2, d = 4, D = H * d;
+  const std::vector<int32_t> tokens = {1, 2, 9, 3, 4, 5, 6, 7, 8, 1, 2, 3};
+  std::vector<int32_t> starts(B * S, -1);
+  k::SegmentStarts(tokens.data(), starts.data(), B, S, 9);
+  EXPECT_EQ(starts, (std::vector<int32_t>{0, 0, 0, 3, 3, 3, 0, 0, 0, 0, 0, 0}));
+  std::mt19937 rng(3);
+  std::normal_distribution<float> n01;
+  std::vector<float> q(B * S * D), kk(B * S * D), v(B * S * D);
+  for (auto* t : {&q, &kk, &v})
+    for (float& x : *t) x = n01(rng);
+  auto run = [&](const std::vector<float>& kin, const std::vector<float>& vin,
+                 const int32_t* st) {
+    std::vector<float> o(B * S * D), p(B * H * S * S);
+    k::AttnFwd(q.data(), kin.data(), vin.data(), o.data(), p.data(), B, S, H, d,
+               st);
+    return std::make_pair(o, p);
+  };
+  const auto [o, p] = run(kk, v, starts.data());
+  // Masked keys are exact zeros, and each row still sums to one.
+  for (size_t h = 0; h < H; ++h)
+    for (size_t i = 3; i < S; ++i) {
+      const float* row = p.data() + (h * S + i) * S;  // window 0
+      for (size_t j = 0; j < 3; ++j) EXPECT_EQ(row[j], 0.0f);
+      double sum = 0.0;
+      for (size_t j = 0; j < S; ++j) sum += row[j];
+      EXPECT_NEAR(sum, 1.0, 1e-6);
+    }
+  std::vector<float> k2 = kk, v2 = v;
+  for (size_t t = 0; t < 3; ++t)
+    for (size_t c = 0; c < D; ++c) {
+      k2[t * D + c] += 5.0f;
+      v2[t * D + c] -= 3.0f;
+    }
+  const auto [o2, p2] = run(k2, v2, starts.data());
+  for (size_t i = 3; i < S; ++i)
+    for (size_t c = 0; c < D; ++c)
+      EXPECT_EQ(std::bit_cast<uint32_t>(o[i * D + c]),
+                std::bit_cast<uint32_t>(o2[i * D + c]));
+  const std::vector<int32_t> zeros(B * S, 0);
+  const auto [oz, pz] = run(kk, v, zeros.data());
+  const auto [ou, pu] = run(kk, v, nullptr);
+  EXPECT_BITWISE_EQ_F32(ou, oz);
+  EXPECT_BITWISE_EQ_F32(pu, pz);
+}
+
+TEST(ClipGlobal, EveryTensorSharesTheOneFactorAndTheJointNormLandsOnTheCap) {
+  // #190: ||a||^2 = 169, ||b||^2 = 25 — one norm, sqrt(194), over both; a
+  // cap of 1 scales both by the same 1 / sqrt(194), so the update keeps its
+  // direction. A per-tensor clip would scale a by 1/13 and b by 1/5.
+  std::vector<float> a = {3.0f, -4.0f, 12.0f}, b = {0.0f, 5.0f};
+  float acc = 0.0f;
+  k::SqNormAccum(a.data(), a.size(), &acc);
+  k::SqNormAccum(b.data(), b.size(), &acc);
+  EXPECT_EQ(acc, 194.0f);
+  EXPECT_TRUE(k::ClipGlobal(a.data(), a.size(), &acc, 1.0f));
+  EXPECT_TRUE(k::ClipGlobal(b.data(), b.size(), &acc, 1.0f));
+  const float s = static_cast<float>(1.0 / std::sqrt(194.0));
+  EXPECT_EQ(a[0], 3.0f * s);
+  EXPECT_EQ(b[1], 5.0f * s);
+  double joint = 0.0;
+  for (float v : a) joint += double(v) * v;
+  for (float v : b) joint += double(v) * v;
+  EXPECT_NEAR(std::sqrt(joint), 1.0, 1e-6);
+  // Inside the ball: untouched, bit for bit.
+  std::vector<float> c = {0.1f, 0.2f};
+  float small = 0.0f;
+  k::SqNormAccum(c.data(), c.size(), &small);
+  const std::vector<float> c0 = c;
+  EXPECT_TRUE(k::ClipGlobal(c.data(), c.size(), &small, 1.0f));
+  EXPECT_BITWISE_EQ_F32(c0, c);
+  // A non-finite sum and a bad cap are refused with g untouched.
+  std::vector<float> d = {1.0f, INFINITY};
+  float bad = 0.0f;
+  k::SqNormAccum(d.data(), d.size(), &bad);
+  std::vector<float> e = {3.0f, 4.0f};
+  const std::vector<float> e0 = e;
+  EXPECT_FALSE(k::ClipGlobal(e.data(), e.size(), &bad, 1.0f));
+  EXPECT_BITWISE_EQ_F32(e0, e);
+  for (const float cap : {0.0f, -1.0f, INFINITY, NAN}) {
+    EXPECT_FALSE(k::ClipGlobal(e.data(), e.size(), &acc, cap));
+    EXPECT_BITWISE_EQ_F32(e0, e);
   }
 }
 

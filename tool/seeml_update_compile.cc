@@ -19,9 +19,10 @@
 //                                      the adapter scale: alpha / r (the
 //                                      default) or alpha / sqrt(r)
 //       [--targets substr,substr]      restrict adapters to matching weights
-//       [--optimizer adamw|sgd] [--lr 2e-3] [--weight-decay 0.01]
-//       [--clip-norm 0]                per-tensor L2 gradient clip (0 = off)
-//       [--lr-schedule cosine|const]   runtime LR schedule (cosine; warmup 5 % of steps)
+//       [--optimizer adamw|sgd] [--lr 1e-3] [--weight-decay 0.01]
+//       [--clip-norm 0]                L2 gradient clip (0 = off)
+//       [--clip-mode per_tensor|global] each tensor's norm, or one over all (#190)
+//       [--lr-schedule const|cosine]   runtime LR schedule
 //       [--warmup 0]                   warmup steps (cosine schedule)
 //       [--min-lr-factor 0.1]          cosine floor as a fraction of --lr
 //       [--allow-zero-lr]              permit --min-lr-factor 0 (the last
@@ -129,6 +130,8 @@ void PrintUsage() {
                "  [--targets substr,...] [--optimizer adamw|sgd] [--lr LR]\n"
                "  [--weight-decay WD] [--clip-norm C]\n"
                "  [--lr-schedule cosine|const] [--warmup N] [--allow-zero-lr]\n"
+               "  [--weight-decay WD] [--clip-norm C] [--clip-mode per_tensor|global]\n"
+               "  [--lr-schedule const|cosine] [--warmup N] [--allow-zero-lr]\n"
                "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
@@ -140,6 +143,7 @@ void PrintUsage() {
                "  [--val-frac F] [--split-seed S]  the held-out split, compiled\n"
                "                      from the corpus and named in the plan\n"
                "  [--masked-loss]     the cross-entropy over target positions\n"
+               "  [--segment-mask]    no attention across a window's documents\n"
                "                      alone (labels of -1 ignored); implied by\n"
                "                      a --data corpus that carries a mask\n"
                "  [--steps N]\n"

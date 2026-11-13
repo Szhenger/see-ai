@@ -412,6 +412,12 @@ class Plan:
                 if op == 28 and not positive(ins.src[1]):
                     raise PlanError(f"{where}: the clip_norm threshold must "
                                     "be a finite positive float")
+                if op in (53, 54) and self.version < formats.SEEU_GLOBAL_CLIP_VERSION:
+                    raise PlanError(f"{where}: global clip opcode {op} in a "
+                                    f"pre-v{formats.SEEU_GLOBAL_CLIP_VERSION} plan")
+                if op == 54 and not positive(ins.src[2]):
+                    raise PlanError(f"{where}: the global clip threshold must "
+                                    "be a finite positive float")
                 if op in (17, 18) and ins.out[1] != 0:
                     if self.version < 12:
                         raise PlanError(f"{where}: an optimizer step carries "
@@ -1025,6 +1031,11 @@ class NumpyBackend:
         out[self.np.arange(idx.shape[0]), idx] = 1.0
         return out
 
+    def host(self, array):
+        """A host NumPy array as this backend's tensor (v25 masks and the
+        i32 bit patterns stored as f32)."""
+        return self.np.asarray(array).astype(self.compute)
+
     def causal(self, s):
         return self.np.tril(self.np.ones((s, s), self.compute))
 
@@ -1116,6 +1127,10 @@ class TorchBackend:
     def one_hot(self, idx, width):
         return self.torch.nn.functional.one_hot(idx.long(), width).to(
             self.compute)
+
+    def host(self, array):
+        return self.torch.from_numpy(array.copy()).to(dtype=self.compute,
+                                                      device=self.dev)
 
     def causal(self, s):
         return self.torch.tril(self.torch.ones(s, s, dtype=self.compute,
@@ -1215,6 +1230,9 @@ class MlxBackend:
     def one_hot(self, idx, width):
         return (self.mx.arange(width)[None, :] == idx[:, None]).astype(
             self.compute)
+
+    def host(self, array):
+        return self.mx.array(array).astype(self.compute)
 
     def causal(self, s):
         return self.mx.tril(self.mx.ones((s, s), dtype=self.compute))
@@ -1795,6 +1813,22 @@ def _clip(m, x, ins, step):
     m.write(ins.src[0], g * _clip_factor(x, g, bits_f32(ins.src[1])))
 
 
+def _sqnorm_accum(m, x, ins, step):
+    """v24 (#190): the slot gains this gradient's squared norm."""
+    g = m.read(ins.src[0], (ins.out[0],))
+    m.write(ins.src[1], m.read(ins.src[1], (1,)) + x.sum(g * g, 0))
+
+
+def _clip_global(m, x, ins, step):
+    """v24 (#190): g scaled by min(1, limit / sqrt(slot)) — the one factor
+    every gradient of the step shares."""
+    g = m.read(ins.src[0], (ins.out[0],))
+    norm = x.sqrt(m.read(ins.src[1], (1,)))
+    limit = bits_f32(ins.src[2])
+    m.write(ins.src[0], g * x.where(norm > limit, limit / x.maximum(norm, 1e-30),
+                                    1.0 + 0.0 * norm))
+
+
 def _step_gradient(m, x, ins):
     """The gradient an optimizer step consumes: under a fused clip (plan
     v12, threshold bits in out[1]) the clipped gradient, which is never
@@ -1875,6 +1909,44 @@ def _attn_fwd(m, x, ins, step):
     q, k, v = (_heads(x, m.read(ref, (b * s, h * d)), b, s, h, d)
                for ref in ins.src[:3])
     mask = x.causal(s)
+    scores = x.matmul(q, x.perm(k, (0, 1, 3, 2))) / math.sqrt(d)
+    scores = x.where(mask > 0.0, scores, scores * 0.0 - 1e30)
+    probs = _softmax(x, scores) * mask  # masked entries are exactly zero
+    m.write(ins.out[0], probs.reshape((b * h * s, s)))
+    m.write(ins.src[3], _rows(x, x.matmul(probs, v), b, s, h, d))
+
+
+def _segment_starts(m, x, ins, step):
+    """v25 (#191): every position's document start, one past the last EOS
+    strictly before it — written as the i32 bits the runtime writes."""
+    import numpy as np
+    b, s = hi_lo(ins.out[0])
+    eos = int(ins.out[1])
+    tokens = np.asarray(m.read(ins.src[0], (b * s,), "<i4").tolist()).reshape(b, s)
+    starts = np.zeros((b, s), "<i4")
+    for bi in range(b):
+        start = 0
+        for t in range(s):
+            starts[bi, t] = start
+            if tokens[bi, t] == eos:
+                start = t + 1
+    m.write(ins.src[1], x.host(starts.reshape(-1).view("<f4")))
+
+
+def _attn_fwd_seg(m, x, ins, step):
+    """v25 (#191): kAttnFwd with keys before each row's document start
+    masked as the causal ones are."""
+    import numpy as np
+    word = ins.out[1]
+    b, s, h, d = word >> 48, (word >> 32) & 0xFFFF, (word >> 16) & 0xFFFF, word & 0xFFFF
+    q, k, v = (_heads(x, m.read(ref, (b * s, h * d)), b, s, h, d)
+               for ref in ins.src[:3])
+    starts = np.asarray(m.read(ins.out[2], (b * s,), "<i4").tolist()).reshape(b, s)
+    keep = np.zeros((b, 1, s, s), "<f4")
+    for bi in range(b):
+        for i in range(s):
+            keep[bi, 0, i, int(starts[bi, i]):i + 1] = 1.0
+    mask = x.host(keep)
     scores = x.matmul(q, x.perm(k, (0, 1, 3, 2))) / math.sqrt(d)
     scores = x.where(mask > 0.0, scores, scores * 0.0 - 1e30)
     probs = _softmax(x, scores) * mask  # masked entries are exactly zero
@@ -2053,6 +2125,7 @@ INTERPRETER = {
     50: _attn_bwd_tiled("dv"),
     43: _gemm_nn("<u2"), 44: _gemm_nt("<u2"), 45: _rope_table,
     46: _fused_map, 51: _xent_masked_fwd, 52: _xent_masked_bwd,
+    53: _sqnorm_accum, 54: _clip_global, 55: _segment_starts, 56: _attn_fwd_seg,
 }
 assert sorted(INTERPRETER) == sorted(OPCODES)
 

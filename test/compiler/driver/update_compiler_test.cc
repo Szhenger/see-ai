@@ -63,6 +63,14 @@ std::vector<UpdateInstruction> EvalProgramOf(const CompiledUpdate& compiled) {
   return instrs;
 }
 
+std::vector<UpdateInstruction> StepProgramOf(const CompiledUpdate& compiled) {
+  const PlanHeader h = HeaderOf(compiled);
+  std::vector<UpdateInstruction> instrs(h.step_instr_count);
+  std::memcpy(instrs.data(), compiled.plan.data() + h.step_instr_offset,
+              h.step_instr_count * sizeof(UpdateInstruction));
+  return instrs;
+}
+
 size_t CountOpcode(const std::vector<UpdateInstruction>& instrs, OpCode oc) {
   size_t n = 0;
   for (const UpdateInstruction& ins : instrs)
@@ -1642,6 +1650,124 @@ TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
                         b.plan.data() + hb.train_instr_offset,
                         ha.train_instr_count * sizeof(UpdateInstruction)),
             0);
+}
+
+TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
+  // #191: with segment_mask the train and eval programs compute the starts
+  // once, before the first attention forward, and every cached forward is
+  // the masked one; the EOS id is the tokenizer section's. Refused without
+  // a section naming an EOS, and for the tiled family (step 2).
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
+  auto head = [](int32_t eos) {
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t x) {
+      for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
+    };
+    for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u,
+                       static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
+                       0xFFFFFFFFu, 0u})
+      u32(x);
+    return b;
+  };
+  UpdateConfig config = BaseConfig(16);
+  config.segment_mask = true;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                        "names no EOS id");
+  model.tokenizer = head(-1);
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                        "names no EOS id");
+  model.tokenizer = head(5);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+  for (const auto& program : {TrainProgramOf(c), EvalProgramOf(c)}) {
+    size_t starts_at = program.size(), first_attn = program.size(), seg = 0;
+    for (size_t i = 0; i < program.size(); ++i) {
+      const auto op = static_cast<OpCode>(program[i].opcode);
+      if (op == OpCode::kSegmentStarts) {
+        EXPECT_EQ(starts_at, program.size());  // once
+        starts_at = i;
+        EXPECT_EQ(program[i].out[1], 5u);
+      }
+      if (op == OpCode::kAttnFwdSeg) {
+        ++seg;
+        if (first_attn == program.size()) first_attn = i;
+      }
+      EXPECT_TRUE(op != OpCode::kAttnFwd);
+    }
+    EXPECT_TRUE(starts_at < first_attn);
+    EXPECT_TRUE(seg > 0);
+  }
+  UpdateConfig tiled = config;
+  tiled.attention = AttentionKind::kTiled;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(tiled).Compile(model),
+                        "tiled attention family is not masked yet");
+  // Off by default: the plan is the unmasked one.
+  UpdateConfig plain = BaseConfig(16);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate u, UpdateCompiler(plain).Compile(model));
+  for (const UpdateInstruction& ins : TrainProgramOf(u))
+    EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSegmentStarts);
+  // Every cached forward of the unmasked plan is a masked one here.
+  EXPECT_EQ(CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg),
+            CountOpcode(TrainProgramOf(u), OpCode::kAttnFwd));
+}
+
+TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
+  // #190: under clip_mode global the optimizer program is every
+  // kSqNormAccum, then every kClipGlobal (one per adapter tensor, all on the
+  // one slot), then the steps with no fused clip, then the slot zeroed; with
+  // gradient accumulation all of it is the step program.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  for (const uint32_t accum : {1u, 2u}) {
+    UpdateConfig config = BaseConfig(kBatch);
+    config.optimizer.clip_norm = 0.5f;
+    config.optimizer.clip_global = true;
+    config.grad_accum_steps = accum;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+    const PlanHeader h = HeaderOf(c);
+    EXPECT_EQ(h.version, kSeeuVersion);
+    const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
+    std::vector<OpCode> ops;
+    for (const UpdateInstruction& ins : program) ops.push_back(static_cast<OpCode>(ins.opcode));
+    const auto first = [&](OpCode op) {
+      return std::find(ops.begin(), ops.end(), op) - ops.begin();
+    };
+    const auto last = [&](OpCode op) {
+      return ops.rend() - std::find(ops.rbegin(), ops.rend(), op) - 1;
+    };
+    const size_t tensors = c.params.size();
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), OpCode::kSqNormAccum),
+              static_cast<long>(tensors));
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), OpCode::kClipGlobal),
+              static_cast<long>(tensors));
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), OpCode::kClipNorm), 0);
+    EXPECT_TRUE(last(OpCode::kSqNormAccum) < first(OpCode::kClipGlobal));
+    EXPECT_TRUE(last(OpCode::kClipGlobal) < first(OpCode::kAdamWStep));
+    uint64_t slot = 0;
+    for (const UpdateInstruction& ins : program) {
+      const auto op = static_cast<OpCode>(ins.opcode);
+      if (op == OpCode::kAdamWStep) EXPECT_EQ(ins.out[1], 0u);  // no fused clip
+      if (op == OpCode::kSqNormAccum || op == OpCode::kClipGlobal) {
+        if (slot == 0) slot = ins.in[1];
+        EXPECT_EQ(ins.in[1], slot);
+      }
+      if (op == OpCode::kClipGlobal)
+        EXPECT_EQ(ins.in[2], uint64_t{std::bit_cast<uint32_t>(0.5f)});
+    }
+    // The slot is zeroed after the last step.
+    const UpdateInstruction& tail = program.back();
+    EXPECT_EQ(static_cast<OpCode>(tail.opcode), OpCode::kFill);
+    EXPECT_EQ(tail.in[0], slot);
+    if (accum > 1)
+      for (const UpdateInstruction& ins : TrainProgramOf(c))
+        EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSqNormAccum);
+  }
+  // Per tensor stays the default, and stays the plan it was.
+  UpdateConfig per_tensor = BaseConfig(kBatch);
+  per_tensor.optimizer.clip_norm = 0.5f;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate p, UpdateCompiler(per_tensor).Compile(model));
+  for (const UpdateInstruction& ins : TrainProgramOf(p)) {
+    EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSqNormAccum);
+    EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kClipGlobal);
+  }
 }
 
 TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {

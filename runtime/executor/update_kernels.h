@@ -171,8 +171,13 @@ void RopeTable(float* table, size_t S, size_t d, float base);
 // with the causal mask admitting j <= i. P is written for the backward
 // primitives (masked entries are exactly 0).
 void AttnFwd(const float* q, const float* k, const float* v, float* o,
-             float* probs, size_t B, size_t S, size_t H, size_t d);
+             float* probs, size_t B, size_t S, size_t H, size_t d,
+             const int32_t* starts = nullptr);
 // Backward primitives (dispatched in this order by the compiled stream):
+// The segment mask (#191, plan v25): starts[b*S + t] = the first position of
+// t's document in window b (one past the last `eos` strictly before t).
+void SegmentStarts(const int32_t* tokens, int32_t* starts, size_t B, size_t S,
+                   int32_t eos);
 void AttnDP(const float* dout, const float* v, float* dp, size_t B, size_t S,
             size_t H, size_t d);             // dP = dO V^T
 void AttnDV(const float* probs, const float* dout, float* dv, size_t B,
@@ -253,6 +258,12 @@ void KLDistillBwd(const float* p_s, const float* p_t, const float* seed,
 // false, touching nothing, when max_norm is not a finite positive float or
 // the norm is not finite (CR1 #142 F09) — the fused steps' rule below.
 bool ClipNorm(float* g, size_t n, float max_norm);
+// The global clip (#190, plan v24): acc[0] += ||g||^2, the squared norm
+// with the clip's own f64 chunk partials, rounded to f32 once as it lands.
+void SqNormAccum(const float* g, size_t n, float* acc);
+// g *= min(1, max_norm / sqrt(acc[0])). False, touching nothing, when
+// max_norm is not a finite positive float or the norm is not finite.
+bool ClipGlobal(float* g, size_t n, const float* acc, float max_norm);
 
 // --- Optimizers (in-place) ---------------------------------------------------
 // `clip_norm` > 0 (plan v12) folds ClipNorm into the step: it consumes

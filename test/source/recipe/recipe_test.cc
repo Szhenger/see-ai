@@ -96,6 +96,14 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
   UpdateConfig config;
   EXPECT_ERROR_CONTAINS(Apply({{"learning_rate", "1"}}, {}, &config),
                         "unknown recipe field 'learning_rate'");
+  // #190: a global clip measures one norm against clip_norm, so it needs one.
+  EXPECT_ERROR_CONTAINS(Apply({{"clip_mode", "global"}}, {}, &config),
+                        "--clip-mode (recipe field clip_mode) global measures "
+                        "one norm to clip at clip_norm; it needs clip_norm > 0");
+  EXPECT_OK(Apply({{"clip_mode", "global"}, {"clip_norm", "1"}}, {}, &config));
+  EXPECT_TRUE(config.optimizer.clip_global);
+  EXPECT_OK(Apply({{"clip_mode", "per_tensor"}}, {}, &config));
+  EXPECT_FALSE(config.optimizer.clip_global);
   // A written zero is the zero the bound admits.
   EXPECT_OK(Apply({{"clip_norm", "0"}, {"weight_decay", "0.0"}}, {}, &config));
   EXPECT_EQ(config.optimizer.clip_norm, 0.0f);
@@ -366,6 +374,7 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
     if (name == "warmup" || name == "min_lr_factor" || name == "allow_zero_lr")
       with["lr_schedule"] = "cosine";
     if (name == "split_seed") with["val_frac"] = "0.5";
+    if (name == "clip_mode") with["clip_norm"] = "1";
     // A value inside the bound that is not the default.
     std::string value;
     switch (f.kind) {

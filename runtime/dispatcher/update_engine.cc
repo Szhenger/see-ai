@@ -552,7 +552,8 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
         op == up::OpCode::kSoftmaxXEntMaskedFwd || op == up::OpCode::kMseFwd ||
         op == up::OpCode::kKLDistillFwd)
       train_bwd_begin_ = i + 1;
-    if ((op == up::OpCode::kClipNorm || op == up::OpCode::kSgdStep ||
+    if ((op == up::OpCode::kClipNorm || op == up::OpCode::kSqNormAccum ||
+         op == up::OpCode::kClipGlobal || op == up::OpCode::kSgdStep ||
          op == up::OpCode::kAdamWStep) &&
         train_opt_begin_ == train_program_.size())
       train_opt_begin_ = i;

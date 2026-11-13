@@ -78,11 +78,14 @@ struct OptimizerSpec {
   float beta2 = 0.999f;
   float eps = 1e-8f;
   float weight_decay = 0.01f;
-  // Per-tensor L2 gradient clipping applied before each optimizer step;
-  // 0 disables (no clip instructions are emitted).
+  // L2 gradient clipping applied before each optimizer step; 0 disables (no
+  // clip instructions are emitted). Per tensor by default; `clip_global`
+  // (#190, plan v24) measures one norm over every trainable gradient and
+  // scales them all by the one factor it implies.
   float clip_norm = 0.0f;
-  LrSchedule lr_schedule = LrSchedule::kCosineWithWarmup;
-  uint64_t warmup_steps = kWarmupAuto;
+  bool clip_global = false;
+  LrSchedule lr_schedule = LrSchedule::kConstant;
+  uint64_t warmup_steps = 0;
   // The cosine floor as a fraction of lr. 0.1 (E8, #91), not 0: a floor of
   // zero makes the schedule's last step — and, before the horizon followed
   // the run, every step past it — train at LR 0, moving nothing while
@@ -219,6 +222,10 @@ struct UpdateConfig {
   // targets another machine (--target-host); empty = this host. Read by the
   // backend screen's target row only: no plan byte depends on it.
   std::string target_host;
+  // The attention segment mask (#191, plan v25): no position attends to
+  // another document of its packed window (documents found by the model's
+  // tokenizer EOS id). Cached attention only, for now.
+  bool segment_mask = false;
   uint32_t gemm_tile_k = 0;
   uint32_t gemm_tile_n = 0;
   // The target's peak arithmetic rate in GFLOP/s, as the user states it

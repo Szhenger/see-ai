@@ -197,6 +197,25 @@ enum class OpCode : uint16_t {
   // -1 label (the feeder contract refuses a masked corpus for it).
   kSoftmaxXEntMaskedFwd = 51,  // in: logits, labels(i32), loss, probs; out[0..1]=N,C
   kSoftmaxXEntMaskedBwd = 52,  // in: probs, labels, seed, dlogits;     out[0..1]=N,C
+  // The global-norm clip (#190, plan v24): every trainable gradient scaled
+  // by the one factor min(1, max / sqrt(sum over tensors of ||g_t||^2)).
+  // kSqNormAccum adds one gradient's squared norm into a one-float arena
+  // slot (zeroed after the steps, as the gradient accumulators are);
+  // kClipGlobal scales a gradient in place by the factor that slot implies,
+  // refusing a non-finite norm as kClipNorm does. All the accumulations
+  // precede the first scaling, so every tensor sees the same factor.
+  kSqNormAccum = 53,  // acc += ||g||^2   in: g, acc[1];          out[0] = count
+  kClipGlobal = 54,   // g *= min(1, max/sqrt(acc))  in: g, acc[1], max bits; out[0] = count
+  // The attention segment mask (#191, plan v25): packed windows hold
+  // several documents joined by EOS, and a position must not attend to
+  // another document. Segments are contiguous, so the mask is one start
+  // per row: kSegmentStarts writes, for every token position t of window b,
+  // the first position of t's document (one past the last EOS strictly
+  // before t; 0 when none), and kAttnFwdSeg is kAttnFwd with keys j < that
+  // start masked as the causal ones are — exact zeros in the P cache, so
+  // the cached backward needs no operand of its own.
+  kSegmentStarts = 55,  // in: tokens(i32 [B*S]), starts(i32 [B*S]); out[0]=B<<32|S, out[1]=eos id
+  kAttnFwdSeg = 56,     // in: q, k, v, o; out[0]=P ref, out[1]=PackAttnGeometry, out[2]=starts ref
 };
 
 inline constexpr uint64_t kAttnStatsWidth = 4;

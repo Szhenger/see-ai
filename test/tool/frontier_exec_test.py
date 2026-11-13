@@ -756,6 +756,33 @@ def _write_models(out_dir):
         mask[:, -1] = 1
         em.export_token_sds(ids, os.path.join(out_dir, "decoder_masked.sds"),
                             mask=mask)
+        # The segment mask (#191, plan v25): the decoder's geometry with a
+        # head-only tokenizer section (vocabulary 40, EOS id 7) and a corpus
+        # whose windows hold EOS ids, so documents start mid-window.
+        seg = os.path.join(out_dir, "segdec")
+        os.makedirs(seg, exist_ok=True)
+        head = struct.pack("<13I", 0x4B544D53, 1, 1, 1, 0, 40, 0, 0, 7,
+                           0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0)
+        dim, ffn, vocab = 24, 32, 40
+        srng = np.random.default_rng(11)
+
+        def smat(rows, cols):
+            return (srng.standard_normal((rows, cols)) * 0.2).astype("<f4")
+        blocks = [{
+            "ln1_g": np.ones(dim, "<f4"), "wq": smat(dim, dim), "wk": smat(dim, dim),
+            "wv": smat(dim, dim), "wo": smat(dim, dim), "ln2_g": np.ones(dim, "<f4"),
+            "w_gate": smat(dim, ffn), "w_up": smat(dim, ffn), "w_down": smat(ffn, dim),
+        } for _ in range(2)]
+        em.export_token_decoder_smf(smat(vocab, dim), blocks,
+                                    {"lnf_g": np.ones(dim, "<f4"),
+                                     "w_head": smat(dim, vocab)},
+                                    os.path.join(seg, "decoder.smf"), seq_len=6,
+                                    num_heads=4, tokenizer_section=head)
+        em.write_export_report(os.path.join(seg, "decoder.smf"), head)
+        ids = srng.integers(8, 40, (48, 7)).astype("<i4")
+        ids[::2, 2] = 7   # a document ends inside every other window
+        ids[1::3, 4] = 7
+        em.export_token_sds(ids, os.path.join(seg, "corpus.sds"))
         os.makedirs(os.path.join(out_dir, "eps6"), exist_ok=True)
         em._demo_decoder(os.path.join(out_dir, "eps6"), vocab=40, dim=24,
                          heads=4, seq=6, blocks_n=2, samples=48, seed=1,
@@ -768,6 +795,13 @@ MATRIX = [
      ["--clip-norm", "0.5", "--lr-schedule", "cosine", "--warmup", "2",
       "--min-lr-factor", "0.1", "--steps", "8"]),
     ("mlp_unfused", "mlp.smf", "class.sds", 8, ["--no-fuse-epilogue"]),
+    # The global clip (#190, plan v24), with a threshold low enough to bind:
+    # every squared norm into one float, every gradient scaled by one factor;
+    # and under gradient accumulation, where both ride the step program.
+    ("mlp_clip_global", "mlp.smf", "class.sds", 8,
+     ["--clip-mode", "global", "--clip-norm", "0.05"]),
+    ("dec_clip_global_accum", "decoder.smf", "decoder_corpus.sds", 12,
+     ["--clip-mode", "global", "--clip-norm", "0.05", "--grad-accum", "2"]),
     ("mlp_mse_sgd", "mlp.smf", "dense.sds", 8,
      ["--loss", "mse", "--optimizer", "sgd", "--weight-decay", "0.01",
       "--clip-norm", "0.5"]),                       # the fused SGD clip
@@ -803,6 +837,10 @@ MATRIX = [
     # corpus by --data, which also pins the plan to it.
     ("dec_masked", "decoder.smf", "decoder_masked.sds", 12,
      ["--data", "decoder_masked.sds", "--lora-rank", "4"]),
+    # The segment mask (#191, plan v25): no attention across the EOS-joined
+    # documents of a window — the starts and the masked cached forward.
+    ("dec_segment", "segdec/decoder.smf", "segdec/corpus.sds", 12,
+     ["--segment-mask", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
 # placeholder, kCopy a utility no pass selects, and kReduceRows the bias
