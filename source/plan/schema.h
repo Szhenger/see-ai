@@ -150,7 +150,12 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // field is zero below v22, which the load contract proves; a v21 runtime
 // never reads them, and a v22 runtime reads a v21 plan's zero padding as
 // "feature absent". The readable floor stays at v4.
-inline constexpr uint32_t kSeeuVersion = 23;
+// v24 (#190): the global-norm clip — kSqNormAccum and kClipGlobal, two
+// opcodes the validator refuses below v24. No header field and no section
+// changes; a plan that does not clip globally is the v23 plan with its
+// version word raised.
+inline constexpr uint32_t kSeeuVersion = 24;
+inline constexpr uint32_t kSeeuGlobalClipVersion = 24;
 
 // The version that grew the header with the data contract.
 inline constexpr uint32_t kSeeuDataContractVersion = 22;

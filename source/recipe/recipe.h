@@ -110,6 +110,9 @@ inline constexpr Field kFields[] = {
      false, "", "decoupled weight decay"},
     {"clip_norm", "--clip-norm", Kind::kFloat, 0, 0, 0.0, 1e6, false, false,
      "", "per-tensor gradient-norm clip; 0 = off"},
+    {"clip_mode", "--clip-mode", Kind::kEnum, 0, 0, 0, 0, false, false,
+     "per_tensor|global",
+     "what the clip measures: each tensor's own norm, or one over them all"},
     {"lr_schedule", "--lr-schedule", Kind::kEnum, 0, 0, 0, 0, false, false,
      "const|cosine", "learning-rate schedule"},
     {"warmup", "--warmup", Kind::kUInt, 0, kStepsMax, 0, 0, false, false, "",
@@ -364,6 +367,7 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "lr") c.optimizer.lr = static_cast<float>(d);
     else if (n == "weight_decay") c.optimizer.weight_decay = static_cast<float>(d);
     else if (n == "clip_norm") c.optimizer.clip_norm = static_cast<float>(d);
+    else if (n == "clip_mode") c.optimizer.clip_global = v == "global";
     else if (n == "lr_schedule")
       c.optimizer.lr_schedule = v == "cosine" ? LrSchedule::kCosineWithWarmup
                                               : LrSchedule::kConstant;
@@ -425,6 +429,10 @@ inline std::expected<void, std::string> Apply(const Values& values,
     return needs("distill_weight",
                  "weighs the KL term of loss xent+kl; under loss kl there is "
                  "nothing to weigh it against");
+  if (c.optimizer.clip_global && !(c.optimizer.clip_norm > 0.0f))
+    return needs("clip_mode",
+                 "global measures one norm to clip at clip_norm; it needs "
+                 "clip_norm > 0");
   const bool cosine = c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup;
   if (!cosine)
     for (const char* knob : {"warmup", "min_lr_factor", "allow_zero_lr"})
@@ -515,6 +523,7 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"lr", bits(c.optimizer.lr)},
       {"weight_decay", bits(c.optimizer.weight_decay)},
       {"clip_norm", bits(c.optimizer.clip_norm)},
+      {"clip_mode", c.optimizer.clip_global ? "global" : "per_tensor"},
       {"lr_schedule",
        c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup ? "cosine"
                                                                 : "const"},

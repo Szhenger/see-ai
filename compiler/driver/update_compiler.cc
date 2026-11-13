@@ -797,7 +797,8 @@ Status Compilation::CalculusPasses() {
       pm.Add("optimizer", [&](sir::Block& b) {
         return OptimizerSynthesizer(config_.optimizer.kind,
                                     config_.optimizer.clip_norm, accum,
-                                    config_.emit_optimizer, config_.fuse_clip)
+                                    config_.emit_optimizer, config_.fuse_clip,
+                                    config_.optimizer.clip_global)
             .Run(b, param_grads);
       });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
@@ -1141,7 +1142,8 @@ Status Compilation::LowerTrain() {
     auto is_step = [](const UpdateInstruction& ins) {
       const auto op = static_cast<OpCode>(ins.opcode);
       // (kClipNorm precedes the step only with fuse_clip off.)
-      return op == OpCode::kClipNorm || op == OpCode::kSgdStep ||
+      return op == OpCode::kClipNorm || op == OpCode::kSqNormAccum ||
+             op == OpCode::kClipGlobal || op == OpCode::kSgdStep ||
              op == OpCode::kAdamWStep;
     };
     auto split = std::find_if(train_instrs->begin(), train_instrs->end(),

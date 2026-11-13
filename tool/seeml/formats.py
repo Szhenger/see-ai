@@ -129,7 +129,8 @@ SMTK_HEAD = Layout("SmtkHead", [
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 23
+SEEU_VERSION = 24
+SEEU_GLOBAL_CLIP_VERSION = 24  # kSqNormAccum, kClipGlobal (#190)
 SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
 # PlanHeader.data_flags (v22).
 DATA_FLAG_MASKED_LOSS = 1
@@ -214,7 +215,7 @@ OPCODES = {
     44: "gemm.nt.bf16", 45: "rope.table", 46: "fused.map",
     47: "attn.fwd.tiled", 48: "attn.dq.tiled", 49: "attn.dk.tiled",
     50: "attn.dv.tiled", 51: "softmax_xent_masked.fwd",
-    52: "softmax_xent_masked.bwd",
+    52: "softmax_xent_masked.bwd", 53: "sqnorm.accum", 54: "clip.global",
 }
 # The tiled family's stats row: [row max, 1/denominator, delta, pad].
 ATTN_STATS_WIDTH = 4

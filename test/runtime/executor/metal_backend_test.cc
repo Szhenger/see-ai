@@ -1546,6 +1546,76 @@ TEST(MetalBackend, ANonFiniteGradientNormIsRefusedAlikeOnBothBackends) {
   EXPECT_NEAR(twin->cpu[16], 3.0f / 13.0f, 1e-6);  // ||g|| = 13, cap 1
 }
 
+TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
+  // #190: two gradients, one norm over both (sqrt(169 + 25)); both backends
+  // land each on the shared factor — at tolerance, the GPU summing the
+  // squares in f32 where the CPU sums them in f64 — and a non-finite sum is
+  // refused alike, the gradient untouched.
+  if (Skip()) return;
+  const std::vector<uint8_t> no_rodata(64, 0);
+  UpdateInstruction acc_a, acc_b, clip_a, clip_b;
+  acc_a.opcode = acc_b.opcode = static_cast<uint16_t>(OpCode::kSqNormAccum);
+  acc_a.in[0] = MakeArenaRef(0);   // a: floats 0..3
+  acc_b.in[0] = MakeArenaRef(64);  // b: floats 16..19
+  acc_a.in[1] = acc_b.in[1] = MakeArenaRef(128);  // the sum: float 32
+  acc_a.out[0] = acc_b.out[0] = 4;
+  clip_a.opcode = clip_b.opcode = static_cast<uint16_t>(OpCode::kClipGlobal);
+  clip_a.in[0] = MakeArenaRef(0);
+  clip_b.in[0] = MakeArenaRef(64);
+  clip_a.in[1] = clip_b.in[1] = MakeArenaRef(128);
+  clip_a.in[2] = clip_b.in[2] = F32Bits(1.0f);
+  clip_a.out[0] = clip_b.out[0] = 4;
+  std::vector<float> arena(64, 0.0f);
+  const float a0[] = {3.0f, -4.0f, 12.0f, 0.0f}, b0[] = {0.0f, 0.0f, 0.0f, 5.0f};
+  std::copy(std::begin(a0), std::end(a0), arena.begin());
+  std::copy(std::begin(b0), std::end(b0), arena.begin() + 16);
+  auto twin = RunTwin({acc_a, acc_b, clip_a, clip_b}, arena, no_rodata);
+  ASSERT_OK(twin);
+  ExpectRangeClose("the joint squared norm", *twin, 32, 1, 1e-6, 1e-6);
+  ExpectRangeClose("a, scaled", *twin, 0, 4, 1e-6, 1e-6);
+  ExpectRangeClose("b, scaled", *twin, 16, 4, 1e-6, 1e-6);
+  const float s = static_cast<float>(1.0 / std::sqrt(194.0));
+  EXPECT_NEAR(twin->cpu[0], 3.0f * s, 1e-7);
+  EXPECT_NEAR(twin->cpu[19], 5.0f * s, 1e-7);
+  EXPECT_NEAR(twin->gpu[19], 5.0f * s, 1e-6);
+
+  // The refusal: an infinity in a, the same words from both, b untouched.
+  arena[1] = INFINITY;
+  for (int which = 0; which < 2; ++which) {
+    auto backend =
+        which == 0 ? std::expected<std::unique_ptr<ExecutorBackend>,
+                                   std::string>(CreateCpuBackend())
+                   : CreateMetalBackend();
+    ASSERT_OK(backend);
+    const size_t bytes = 16384;
+    uint8_t* mem = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
+    ASSERT_TRUE(mem != nullptr);
+    std::memset(mem, 0, bytes);
+    std::memcpy(mem, arena.data(), arena.size() * sizeof(float));
+    ASSERT_OK((*backend)->Bind(mem, bytes, no_rodata.data(), no_rodata.size(),
+                               no_rodata.size()));
+    StepParams params;
+    std::string error;
+    for (const auto& ins : {acc_a, acc_b, clip_a, clip_b})
+      if (auto r = (*backend)->Execute(ins, params); !r) {
+        error = r.error();
+        break;
+      }
+    if (auto r = (*backend)->Flush(); !r && error.empty()) error = r.error();
+    const std::string what = std::string("global clip on ") + (*backend)->name();
+    if (error.find("gradient norm is not finite") == std::string::npos)
+      ADD_FAILURE(what + ": expected the non-finite-norm refusal, got '" +
+                  error + "'");
+    float b_after[4];
+    std::memcpy(b_after, mem + 64, sizeof(b_after));
+    for (int i = 0; i < 4; ++i)
+      if (std::bit_cast<uint32_t>(b_after[i]) != std::bit_cast<uint32_t>(b0[i]))
+        ADD_FAILURE(what + ": b was written by a refused clip");
+    backend->reset();
+    std::free(mem);
+  }
+}
+
 TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
   if (Skip()) return;
   // Both adapted products of this MLP are tile-sized and unsplit

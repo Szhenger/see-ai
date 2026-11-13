@@ -1092,6 +1092,45 @@ TEST(ClipNorm, ZeroGradientIsExactAndABadCapIsRefused) {
   }
 }
 
+TEST(ClipGlobal, EveryTensorSharesTheOneFactorAndTheJointNormLandsOnTheCap) {
+  // #190: ||a||^2 = 169, ||b||^2 = 25 — one norm, sqrt(194), over both; a
+  // cap of 1 scales both by the same 1 / sqrt(194), so the update keeps its
+  // direction. A per-tensor clip would scale a by 1/13 and b by 1/5.
+  std::vector<float> a = {3.0f, -4.0f, 12.0f}, b = {0.0f, 5.0f};
+  float acc = 0.0f;
+  k::SqNormAccum(a.data(), a.size(), &acc);
+  k::SqNormAccum(b.data(), b.size(), &acc);
+  EXPECT_EQ(acc, 194.0f);
+  EXPECT_TRUE(k::ClipGlobal(a.data(), a.size(), &acc, 1.0f));
+  EXPECT_TRUE(k::ClipGlobal(b.data(), b.size(), &acc, 1.0f));
+  const float s = static_cast<float>(1.0 / std::sqrt(194.0));
+  EXPECT_EQ(a[0], 3.0f * s);
+  EXPECT_EQ(b[1], 5.0f * s);
+  double joint = 0.0;
+  for (float v : a) joint += double(v) * v;
+  for (float v : b) joint += double(v) * v;
+  EXPECT_NEAR(std::sqrt(joint), 1.0, 1e-6);
+  // Inside the ball: untouched, bit for bit.
+  std::vector<float> c = {0.1f, 0.2f};
+  float small = 0.0f;
+  k::SqNormAccum(c.data(), c.size(), &small);
+  const std::vector<float> c0 = c;
+  EXPECT_TRUE(k::ClipGlobal(c.data(), c.size(), &small, 1.0f));
+  EXPECT_BITWISE_EQ_F32(c0, c);
+  // A non-finite sum and a bad cap are refused with g untouched.
+  std::vector<float> d = {1.0f, INFINITY};
+  float bad = 0.0f;
+  k::SqNormAccum(d.data(), d.size(), &bad);
+  std::vector<float> e = {3.0f, 4.0f};
+  const std::vector<float> e0 = e;
+  EXPECT_FALSE(k::ClipGlobal(e.data(), e.size(), &bad, 1.0f));
+  EXPECT_BITWISE_EQ_F32(e0, e);
+  for (const float cap : {0.0f, -1.0f, INFINITY, NAN}) {
+    EXPECT_FALSE(k::ClipGlobal(e.data(), e.size(), &acc, cap));
+    EXPECT_BITWISE_EQ_F32(e0, e);
+  }
+}
+
 TEST(ClipNorm, AVectorAboveTheCapLandsOnIt) {
   // G13 (#97): ||g|| = 13 over a cap of 2 — the clipped vector's norm is
   // the cap, to the rounding of one f32 scale factor per element.

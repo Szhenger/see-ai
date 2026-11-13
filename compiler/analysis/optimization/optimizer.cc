@@ -41,6 +41,28 @@ std::expected<void, std::string> OptimizerSynthesizer::Run(
   }
   if (!emit_step_) return {};
 
+  // The global clip (#190): every squared norm into one float, then every
+  // gradient scaled by the one factor, before the first step reads any.
+  const bool global = clip_global_ && clip_norm_ > 0.0f;
+  sir::Value* sqnorm = nullptr;
+  if (global) {
+    sir::Operation* s_op = block.appendOp("sc_mem.param");
+    s_op->setAttribute("trainable", int64_t{0});
+    s_op->setAttribute("init", std::string("zeros"));
+    sqnorm = s_op->addResult("grad_sqnorm", sir::DataType::F32, sir::Shape{1});
+    for (size_t i = 0; i < ordered.size(); ++i) {
+      sir::Operation* acc = block.appendOp("sc_low.sqnorm_accum");
+      acc->addOperand(accumulate ? accs[i] : ordered[i].second);
+      acc->addOperand(sqnorm);
+    }
+    for (size_t i = 0; i < ordered.size(); ++i) {
+      sir::Operation* clip = block.appendOp("sc_low.clip_global");
+      clip->setAttribute("max_norm", clip_norm_);
+      clip->addOperand(accumulate ? accs[i] : ordered[i].second);
+      clip->addOperand(sqnorm);
+    }
+  }
+
   for (size_t i = 0; i < ordered.size(); ++i) {
     sir::Value* p = ordered[i].first;
     sir::Value* g = accumulate ? accs[i] : ordered[i].second;
@@ -48,8 +70,8 @@ std::expected<void, std::string> OptimizerSynthesizer::Run(
     // able to blow up the parameters (or poison AdamW's moment state).
     // Fused (v12) it rides the step op: the step consumes the clipped
     // gradient without a separate pass rewriting it in place.
-    const bool fused = fuse_clip_ && clip_norm_ > 0.0f;
-    if (clip_norm_ > 0.0f && !fused) {
+    const bool fused = fuse_clip_ && clip_norm_ > 0.0f && !global;
+    if (clip_norm_ > 0.0f && !fused && !global) {
       sir::Operation* clip = block.appendOp("sc_low.clip_norm");
       clip->setAttribute("max_norm", clip_norm_);
       clip->addOperand(g);
@@ -85,6 +107,8 @@ std::expected<void, std::string> OptimizerSynthesizer::Run(
     // The accumulator restarts from zero for the next G micro-batches.
     if (accumulate) block.appendOp("sc_low.zero")->addOperand(g);
   }
+  // The global sum restarts from zero for the next step.
+  if (global) block.appendOp("sc_low.zero")->addOperand(sqnorm);
   return {};
 }
 

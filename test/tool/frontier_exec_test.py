@@ -768,6 +768,13 @@ MATRIX = [
      ["--clip-norm", "0.5", "--lr-schedule", "cosine", "--warmup", "2",
       "--min-lr-factor", "0.1", "--steps", "8"]),
     ("mlp_unfused", "mlp.smf", "class.sds", 8, ["--no-fuse-epilogue"]),
+    # The global clip (#190, plan v24), with a threshold low enough to bind:
+    # every squared norm into one float, every gradient scaled by one factor;
+    # and under gradient accumulation, where both ride the step program.
+    ("mlp_clip_global", "mlp.smf", "class.sds", 8,
+     ["--clip-mode", "global", "--clip-norm", "0.05"]),
+    ("dec_clip_global_accum", "decoder.smf", "decoder_corpus.sds", 12,
+     ["--clip-mode", "global", "--clip-norm", "0.05", "--grad-accum", "2"]),
     ("mlp_mse_sgd", "mlp.smf", "dense.sds", 8,
      ["--loss", "mse", "--optimizer", "sgd", "--weight-decay", "0.01",
       "--clip-norm", "0.5"]),                       # the fused SGD clip

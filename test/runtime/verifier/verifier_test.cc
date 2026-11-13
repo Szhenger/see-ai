@@ -1024,6 +1024,32 @@ TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
     clip.in[1] = bad;
     refused(clip, up::kSeeuVersion, "clip_norm threshold");
   }
+  // The global clip (#190, v24): the threshold held as kClipNorm's is, the
+  // one-float slot in bounds and apart from g, and both opcodes refused
+  // below v24.
+  up::UpdateInstruction acc;
+  acc.opcode = static_cast<uint16_t>(up::OpCode::kSqNormAccum);
+  acc.in[0] = up::MakeArenaRef(0);
+  acc.in[1] = up::MakeArenaRef(64);
+  acc.out[0] = 16;
+  EXPECT_OK(ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion));
+  refused(acc, up::kSeeuGlobalClipVersion - 1, "global clip opcode 53");
+  up::UpdateInstruction aliased = acc;
+  aliased.in[1] = up::MakeArenaRef(32);  // inside g
+  refused(aliased, up::kSeeuVersion, "alias");
+  up::UpdateInstruction global;
+  global.opcode = static_cast<uint16_t>(up::OpCode::kClipGlobal);
+  global.in[0] = up::MakeArenaRef(0);
+  global.in[1] = up::MakeArenaRef(64);
+  global.in[2] = f32(1.0f);
+  global.out[0] = 16;
+  EXPECT_OK(ValidateInstruction(global, kArena, kRodata, up::kSeeuVersion));
+  refused(global, up::kSeeuGlobalClipVersion - 1, "global clip opcode 54");
+  for (const uint64_t bad : {f32(0.0f), f32(-1.0f), f32(nan), f32(INFINITY),
+                             f32(1.0f) | (uint64_t{1} << 32)}) {
+    global.in[2] = bad;
+    refused(global, up::kSeeuVersion, "global clip threshold");
+  }
   // The distillation temperature (F17 / F10): the KL words' low half, at
   // every version — both softmaxes divide by it.
   up::UpdateInstruction fwd;

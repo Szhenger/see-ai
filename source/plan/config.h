@@ -68,9 +68,12 @@ struct OptimizerSpec {
   float beta2 = 0.999f;
   float eps = 1e-8f;
   float weight_decay = 0.01f;
-  // Per-tensor L2 gradient clipping applied before each optimizer step;
-  // 0 disables (no clip instructions are emitted).
+  // L2 gradient clipping applied before each optimizer step; 0 disables (no
+  // clip instructions are emitted). Per tensor by default; `clip_global`
+  // (#190, plan v24) measures one norm over every trainable gradient and
+  // scales them all by the one factor it implies.
   float clip_norm = 0.0f;
+  bool clip_global = false;
   LrSchedule lr_schedule = LrSchedule::kConstant;
   uint64_t warmup_steps = 0;
   // The cosine floor as a fraction of lr. 0.1 (E8, #91), not 0: a floor of
