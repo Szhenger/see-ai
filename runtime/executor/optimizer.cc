@@ -16,9 +16,10 @@ namespace up = seeml::update;
 
 namespace {
 
-/// ||g||_2 with one f64 partial per chunk, combined in chunk order — the
-/// reduction ClipNorm has always run, shared with the fused steps.
-double L2Norm(const float* g, size_t n) {
+/// ||g||_2^2 with one f64 partial per chunk, combined in chunk order — the
+/// reduction ClipNorm has always run, shared with the fused steps and the
+/// global clip's accumulation.
+double L2Squared(const float* g, size_t n) {
   const size_t grain = kGrainCheap;
   double partials[up::kMaxParallelChunks] = {};
   up::ParallelFor(n, grain, [&](size_t b, size_t e, size_t chunk) {
@@ -30,8 +31,10 @@ double L2Norm(const float* g, size_t n) {
   double sq = 0.0;
   const size_t chunks = up::ParallelChunkCount(n, grain);
   for (size_t c = 0; c < chunks; ++c) sq += partials[c];
-  return std::sqrt(sq);
+  return sq;
 }
+
+double L2Norm(const float* g, size_t n) { return std::sqrt(L2Squared(g, n)); }
 
 /// The factor ClipNorm multiplies g by, or exactly 1 where it leaves g
 /// alone (multiplying by 1.0f is the identity on every float, so the fused
@@ -56,6 +59,22 @@ bool ClipNorm(float* g, size_t n, float max_norm) {
   // element to NaN and a zero cap scaled them to zero.
   if (!std::isfinite(max_norm) || !(max_norm > 0.0f)) return false;
   const double norm = L2Norm(g, n);
+  if (!std::isfinite(norm)) return false;
+  if (norm <= static_cast<double>(max_norm) || norm == 0.0) return true;
+  const float s = static_cast<float>(static_cast<double>(max_norm) / norm);
+  up::ParallelFor(n, kGrainCheap, [&](size_t b, size_t e, size_t) {
+    for (size_t i = b; i < e; ++i) g[i] *= s;
+  });
+  return true;
+}
+
+void SqNormAccum(const float* g, size_t n, float* acc) {
+  acc[0] = static_cast<float>(static_cast<double>(acc[0]) + L2Squared(g, n));
+}
+
+bool ClipGlobal(float* g, size_t n, const float* acc, float max_norm) {
+  if (!std::isfinite(max_norm) || !(max_norm > 0.0f)) return false;
+  const double norm = std::sqrt(static_cast<double>(acc[0]));
   if (!std::isfinite(norm)) return false;
   if (norm <= static_cast<double>(max_norm) || norm == 0.0) return true;
   const float s = static_cast<float>(static_cast<double>(max_norm) / norm);

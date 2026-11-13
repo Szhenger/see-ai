@@ -126,6 +126,7 @@ enum Pipe : int {
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
   kPReduceRows, kPLnFwd, kPLnBwd, kPRmsFwd, kPRmsBwd,
   kPClipPartials, kPClipFinish, kPClipApply, kPSgdClip, kPAdamWClip,
+  kPSqNormFinish, kPClipGlobalScale,
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
   kPXentFwd, kPXentFinish, kPXentBwd,
   kPXentMaskedFwd, kPXentMaskedFinish, kPXentMaskedCount, kPXentMaskedBwd,
@@ -166,7 +167,7 @@ const char* const kPipeNames[kPipeCount] = {
     "k_reduce_rows",
     "k_layernorm_fwd", "k_layernorm_bwd", "k_rmsnorm_fwd", "k_rmsnorm_bwd",
     "k_clip_partials", "k_clip_finish", "k_clip_apply", "k_sgd_clip",
-    "k_adamw_clip", "k_rope_fwd",
+    "k_adamw_clip", "k_sqnorm_finish", "k_clip_global_scale", "k_rope_fwd",
     "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
     "k_xent_fwd", "k_xent_finish", "k_xent_bwd",
     "k_xent_masked_fwd", "k_xent_masked_finish", "k_xent_masked_count",
@@ -584,6 +585,8 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kSgdStep:
     case up::OpCode::kAdamWStep:
     case up::OpCode::kClipNorm:
+    case up::OpCode::kSqNormAccum:
+    case up::OpCode::kClipGlobal:
       return ins.out[0] <= kMax;
     case up::OpCode::kRopeTable:
       return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
@@ -1133,6 +1136,8 @@ bool OverwritesWhatItWrites(up::OpCode op) {
     case up::OpCode::kGemmAccNN:
     case up::OpCode::kAccumulate:
     case up::OpCode::kClipNorm:
+    case up::OpCode::kSqNormAccum:
+    case up::OpCode::kClipGlobal:
     case up::OpCode::kSgdStep:
     case up::OpCode::kAdamWStep:
     case up::OpCode::kAttnDQTiled:
@@ -1687,6 +1692,28 @@ std::expected<void, std::string> MetalBackend::Encode(
       ref(0, ins.in[0]);
       a.n = u32(ins.out[0]);
       EncodeClipScale(a, ins.in[1], /*slot=*/0);
+      Dispatch(kPClipApply, a, a.n, kElementwiseGroup, true);
+      return {};
+    }
+    case up::OpCode::kSqNormAccum: {  // v24, #190: the CPU's chunk geometry
+      ref(0, ins.in[0]); ref(1, ins.in[1]);
+      a.n = u32(ins.out[0]);
+      a.k = static_cast<uint32_t>(
+          up::ParallelChunkGrain(a.n, kernels::kGrainCheap));
+      a.m = static_cast<uint32_t>(
+          up::ParallelChunkCount(a.n, kernels::kGrainCheap));
+      Dispatch(kPClipPartials, a, a.m, kElementwiseGroup, true);
+      Dispatch(kPSqNormFinish, a, 1, 1, true);
+      return {};
+    }
+    case up::OpCode::kClipGlobal: {  // v24, #190: kClipNorm's refusals
+      const float cap = BitsToF32(ins.in[2]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
+      ref(0, ins.in[0]); ref(1, ins.in[1]);
+      a.n = u32(ins.out[0]);
+      a.f[0] = cap;
+      Dispatch(kPClipGlobalScale, a, 1, 1, true);
       Dispatch(kPClipApply, a, a.n, kElementwiseGroup, true);
       return {};
     }

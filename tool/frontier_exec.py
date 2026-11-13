@@ -412,6 +412,12 @@ class Plan:
                 if op == 28 and not positive(ins.src[1]):
                     raise PlanError(f"{where}: the clip_norm threshold must "
                                     "be a finite positive float")
+                if op in (53, 54) and self.version < formats.SEEU_GLOBAL_CLIP_VERSION:
+                    raise PlanError(f"{where}: global clip opcode {op} in a "
+                                    f"pre-v{formats.SEEU_GLOBAL_CLIP_VERSION} plan")
+                if op == 54 and not positive(ins.src[2]):
+                    raise PlanError(f"{where}: the global clip threshold must "
+                                    "be a finite positive float")
                 if op in (17, 18) and ins.out[1] != 0:
                     if self.version < 12:
                         raise PlanError(f"{where}: an optimizer step carries "
@@ -1795,6 +1801,22 @@ def _clip(m, x, ins, step):
     m.write(ins.src[0], g * _clip_factor(x, g, bits_f32(ins.src[1])))
 
 
+def _sqnorm_accum(m, x, ins, step):
+    """v24 (#190): the slot gains this gradient's squared norm."""
+    g = m.read(ins.src[0], (ins.out[0],))
+    m.write(ins.src[1], m.read(ins.src[1], (1,)) + x.sum(g * g, 0))
+
+
+def _clip_global(m, x, ins, step):
+    """v24 (#190): g scaled by min(1, limit / sqrt(slot)) — the one factor
+    every gradient of the step shares."""
+    g = m.read(ins.src[0], (ins.out[0],))
+    norm = x.sqrt(m.read(ins.src[1], (1,)))
+    limit = bits_f32(ins.src[2])
+    m.write(ins.src[0], g * x.where(norm > limit, limit / x.maximum(norm, 1e-30),
+                                    1.0 + 0.0 * norm))
+
+
 def _step_gradient(m, x, ins):
     """The gradient an optimizer step consumes: under a fused clip (plan
     v12, threshold bits in out[1]) the clipped gradient, which is never
@@ -2053,6 +2075,7 @@ INTERPRETER = {
     50: _attn_bwd_tiled("dv"),
     43: _gemm_nn("<u2"), 44: _gemm_nt("<u2"), 45: _rope_table,
     46: _fused_map, 51: _xent_masked_fwd, 52: _xent_masked_bwd,
+    53: _sqnorm_accum, 54: _clip_global,
 }
 assert sorted(INTERPRETER) == sorted(OPCODES)
 

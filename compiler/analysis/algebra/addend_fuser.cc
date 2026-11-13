@@ -34,7 +34,8 @@ int64_t InnerDim(const sir::Operation& gemm, std::string_view form) {
 /// effectful set, minus storage declarations (which execute nothing).
 bool MutatesInPlace(const sir::Operation& op) {
   const std::string_view m = op.mnemonic();
-  return m == "sc_low.clip_norm" || m == "sc_low.sgd_step" ||
+  return m == "sc_low.clip_norm" || m == "sc_low.sqnorm_accum" ||
+         m == "sc_low.clip_global" || m == "sc_low.sgd_step" ||
          m == "sc_low.adamw_step" || m == "sc_low.gemm_acc" ||
          m == "sc_low.accumulate" || m == "sc_low.zero" ||
          m == "sc_low.attn_dq_tiled";

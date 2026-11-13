@@ -1245,6 +1245,29 @@ kernel void k_clip_finish(KSIG, device float* scratch [[buffer(3)]],
   }
   scratch[256] = (norm <= p.f[0] || norm == 0.0f) ? 1.0f : p.f[0] / norm;
 }
+// The global clip (#190, plan v24). k_sqnorm_finish folds k_clip_partials'
+// chunk sums (in chunk order) into the one-float slot in ref slot 1;
+// k_clip_global_scale turns that slot into the factor k_clip_apply uses,
+// raising the refusal flag on a non-finite norm as k_clip_finish does.
+kernel void k_sqnorm_finish(KSIG, device float* scratch [[buffer(3)]],
+                            uint t [[thread_position_in_grid]]) {
+  if (t != 0) return;
+  float sq = 0.0f;
+  for (uint c = 0; c < p.m; ++c) sq += scratch[c];
+  WF(1)[0] += sq;
+}
+kernel void k_clip_global_scale(KSIG, device float* scratch [[buffer(3)]],
+                                device float* flag [[buffer(7)]],
+                                uint t [[thread_position_in_grid]]) {
+  if (t != 0) return;
+  const float norm = sqrt(RF(1)[0]);
+  if (!isfinite(norm)) {
+    flag[0] = 1.0f;
+    scratch[256] = 1.0f;
+    return;
+  }
+  scratch[256] = (norm <= p.f[0] || norm == 0.0f) ? 1.0f : p.f[0] / norm;
+}
 kernel void k_clip_apply(KSIG, device float* scratch [[buffer(3)]],
                          device const float* flag [[buffer(7)]],
                          uint g [[thread_position_in_grid]]) {

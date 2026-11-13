@@ -63,6 +63,14 @@ std::vector<UpdateInstruction> EvalProgramOf(const CompiledUpdate& compiled) {
   return instrs;
 }
 
+std::vector<UpdateInstruction> StepProgramOf(const CompiledUpdate& compiled) {
+  const PlanHeader h = HeaderOf(compiled);
+  std::vector<UpdateInstruction> instrs(h.step_instr_count);
+  std::memcpy(instrs.data(), compiled.plan.data() + h.step_instr_offset,
+              h.step_instr_count * sizeof(UpdateInstruction));
+  return instrs;
+}
+
 size_t CountOpcode(const std::vector<UpdateInstruction>& instrs, OpCode oc) {
   size_t n = 0;
   for (const UpdateInstruction& ins : instrs)
@@ -1642,6 +1650,66 @@ TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
                         b.plan.data() + hb.train_instr_offset,
                         ha.train_instr_count * sizeof(UpdateInstruction)),
             0);
+}
+
+TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
+  // #190: under clip_mode global the optimizer program is every
+  // kSqNormAccum, then every kClipGlobal (one per adapter tensor, all on the
+  // one slot), then the steps with no fused clip, then the slot zeroed; with
+  // gradient accumulation all of it is the step program.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  for (const uint32_t accum : {1u, 2u}) {
+    UpdateConfig config = BaseConfig(kBatch);
+    config.optimizer.clip_norm = 0.5f;
+    config.optimizer.clip_global = true;
+    config.grad_accum_steps = accum;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+    const PlanHeader h = HeaderOf(c);
+    EXPECT_EQ(h.version, kSeeuVersion);
+    const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
+    std::vector<OpCode> ops;
+    for (const UpdateInstruction& ins : program) ops.push_back(static_cast<OpCode>(ins.opcode));
+    const auto first = [&](OpCode op) {
+      return std::find(ops.begin(), ops.end(), op) - ops.begin();
+    };
+    const auto last = [&](OpCode op) {
+      return ops.rend() - std::find(ops.rbegin(), ops.rend(), op) - 1;
+    };
+    const size_t tensors = c.params.size();
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), OpCode::kSqNormAccum),
+              static_cast<long>(tensors));
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), OpCode::kClipGlobal),
+              static_cast<long>(tensors));
+    EXPECT_EQ(std::count(ops.begin(), ops.end(), OpCode::kClipNorm), 0);
+    EXPECT_TRUE(last(OpCode::kSqNormAccum) < first(OpCode::kClipGlobal));
+    EXPECT_TRUE(last(OpCode::kClipGlobal) < first(OpCode::kAdamWStep));
+    uint64_t slot = 0;
+    for (const UpdateInstruction& ins : program) {
+      const auto op = static_cast<OpCode>(ins.opcode);
+      if (op == OpCode::kAdamWStep) EXPECT_EQ(ins.out[1], 0u);  // no fused clip
+      if (op == OpCode::kSqNormAccum || op == OpCode::kClipGlobal) {
+        if (slot == 0) slot = ins.in[1];
+        EXPECT_EQ(ins.in[1], slot);
+      }
+      if (op == OpCode::kClipGlobal)
+        EXPECT_EQ(ins.in[2], uint64_t{std::bit_cast<uint32_t>(0.5f)});
+    }
+    // The slot is zeroed after the last step.
+    const UpdateInstruction& tail = program.back();
+    EXPECT_EQ(static_cast<OpCode>(tail.opcode), OpCode::kFill);
+    EXPECT_EQ(tail.in[0], slot);
+    if (accum > 1)
+      for (const UpdateInstruction& ins : TrainProgramOf(c))
+        EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSqNormAccum);
+  }
+  // Per tensor stays the default, and stays the plan it was.
+  UpdateConfig per_tensor = BaseConfig(kBatch);
+  per_tensor.optimizer.clip_norm = 0.5f;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate p, UpdateCompiler(per_tensor).Compile(model));
+  for (const UpdateInstruction& ins : TrainProgramOf(p)) {
+    EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSqNormAccum);
+    EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kClipGlobal);
+  }
 }
 
 TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {

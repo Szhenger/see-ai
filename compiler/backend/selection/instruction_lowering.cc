@@ -372,6 +372,17 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
       ins.in[0] = ref(op->operand(0));
       ins.in[1] = F32Bits(op->getAttrAs<float>("max_norm").value_or(0.0f));
       ins.out[0] = vol(op->operand(0));
+    } else if (m == "sc_low.sqnorm_accum") {  // v24, #190
+      set(OpCode::kSqNormAccum);
+      ins.in[0] = ref(op->operand(0));  // g
+      ins.in[1] = ref(op->operand(1));  // the one-float sum
+      ins.out[0] = vol(op->operand(0));
+    } else if (m == "sc_low.clip_global") {  // v24, #190
+      set(OpCode::kClipGlobal);
+      ins.in[0] = ref(op->operand(0));
+      ins.in[1] = ref(op->operand(1));
+      ins.in[2] = F32Bits(op->getAttrAs<float>("max_norm").value_or(0.0f));
+      ins.out[0] = vol(op->operand(0));
     } else if (m == "sc_high.scale" || m == "sc_low.scale") {
       set(OpCode::kScale);
       ins.in[0] = ref(op->operand(0));

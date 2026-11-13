@@ -285,6 +285,12 @@ std::expected<void, std::string> ValidateInstructionImpl(
         "masked cross-entropy opcode " + std::to_string(ins.opcode) +
         " in a pre-v" + std::to_string(up::kSeeuDataContractVersion) +
         " plan");
+  if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSqNormAccum) ||
+       ins.opcode == static_cast<uint16_t>(up::OpCode::kClipGlobal)) &&
+      plan_version < up::kSeeuGlobalClipVersion)
+    return diag::validating::Error(
+        "global clip opcode " + std::to_string(ins.opcode) + " in a pre-v" +
+        std::to_string(up::kSeeuGlobalClipVersion) + " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kAccumulate) &&
       plan_version < up::kSeeuGradAccumVersion)
     return diag::validating::Error(
@@ -446,6 +452,16 @@ std::expected<void, std::string> ValidateInstructionImpl(
       if (auto r = clip_threshold_ok(ins.in[1], "clip_norm threshold"); !r)
         return r;
       if (!ref_ok(ins.in[0], d0, true)) return fail();
+      return disjoint();
+    case up::OpCode::kSqNormAccum:  // v24: reads g, adds into its slot
+      if (!ref_ok(ins.in[0], d0, false) || !ref_ok(ins.in[1], 1, true))
+        return fail();
+      return disjoint();
+    case up::OpCode::kClipGlobal:  // v24: reads the slot, scales g in place
+      if (auto r = clip_threshold_ok(ins.in[2], "global clip threshold"); !r)
+        return r;
+      if (!ref_ok(ins.in[0], d0, true) || !ref_ok(ins.in[1], 1, false))
+        return fail();
       return disjoint();
     case up::OpCode::kReduceRows:
       if (!MulOk(d0, d1, &mn)) return fail();
