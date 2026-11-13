@@ -388,6 +388,11 @@ UpdateConfig BaseConfig(int64_t batch) {
   config.lora.rank = 4;
   config.lora.alpha = 8.0f;
   config.lora.seed = 7;
+  // The pre-#151 optimizer defaults, pinned: these suites' numerics (and the
+  // scenarios tuned on them) predate the 2026-11-13 flip.
+  config.optimizer.lr = 1e-3f;
+  config.optimizer.lr_schedule = update::LrSchedule::kConstant;
+  config.optimizer.warmup_steps = 0;
   return config;
 }
 

@@ -1,0 +1,15 @@
+seeml-update: backend metal (Apple M5, rodata copied, relaxed GEMMs on tensor ops)
+seeml-update: step 30  validation loss 4.006272 (best 4.006272 at step 30)
+seeml-update: step 60  validation loss 3.832383 (best 3.832383 at step 60)
+seeml-update: step 90  validation loss 3.697067 (best 3.697067 at step 90)
+seeml-update: step 120  validation loss 3.696200 (best 3.696200 at step 120)
+seeml-update: step 150  validation loss 3.663178 (best 3.663178 at step 150)
+seeml-update: step 180  validation loss 3.624784 (best 3.624784 at step 180)
+seeml-update: step 210  validation loss 3.574135 (best 3.574135 at step 210)
+seeml-update: step 240  validation loss 3.736626 (best 3.574135 at step 210)
+seeml-update: step 270  validation loss 3.775003 (best 3.574135 at step 210)
+seeml-update: restored the best state (step 210, validation loss 3.574135); the last state (step 300) scored 3.791190
+seeml-update: validation loss 4.627349 -> 3.574135 [backend metal]
+seeml-update: best state at step 210 (validation loss 3.574135); last state 3.791190; 9 periodic evaluation(s)
+  validation loss, start   4.6273 nats                   the held-out loss before training
+  validation loss, end     3.5741 nats                   the held-out loss of the state the gate weighed

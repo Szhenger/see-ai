@@ -114,9 +114,9 @@ inline constexpr Field kFields[] = {
      "per_tensor|global",
      "what the clip measures: each tensor's own norm, or one over them all"},
     {"lr_schedule", "--lr-schedule", Kind::kEnum, 0, 0, 0, 0, false, false,
-     "const|cosine", "learning-rate schedule"},
+     "cosine|const", "learning-rate schedule (cosine, the default, or const)"},
     {"warmup", "--warmup", Kind::kUInt, 0, kStepsMax, 0, 0, false, false, "",
-     "linear warmup steps (cosine only); shorter than steps"},
+     "linear warmup steps (cosine only; default 5 % of steps); shorter than steps"},
     {"min_lr_factor", "--min-lr-factor", Kind::kFloat, 0, 0, 0.0, 1.0, false,
      false, "", "the cosine floor as a fraction of lr (cosine only)"},
     {"allow_zero_lr", "--allow-zero-lr", Kind::kBool, 0, 0, 0, 0, false, false,
@@ -442,7 +442,8 @@ inline std::expected<void, std::string> Apply(const Values& values,
       if (set(knob) && !(std::string_view(knob) == "allow_zero_lr" &&
                          !c.optimizer.allow_zero_lr))
         return needs(knob, "applies to lr_schedule cosine only");
-  if (cosine && c.optimizer.warmup_steps >= c.default_steps)
+  if (cosine && c.optimizer.warmup_steps != kWarmupAuto &&
+      c.optimizer.warmup_steps >= c.default_steps)
     return needs("warmup", "(" + std::to_string(c.optimizer.warmup_steps) +
                                " steps) must be shorter than steps (" +
                                std::to_string(c.default_steps) + ")");
@@ -530,7 +531,9 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"lr_schedule",
        c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup ? "cosine"
                                                                 : "const"},
-      {"warmup", std::to_string(c.optimizer.warmup_steps)},
+      {"warmup", c.optimizer.warmup_steps == kWarmupAuto
+                     ? std::string("auto")
+                     : std::to_string(c.optimizer.warmup_steps)},
       {"min_lr_factor", bits(c.optimizer.min_lr_factor)},
       {"allow_zero_lr", yes(c.optimizer.allow_zero_lr)},
       {"quantize_base", yes(c.quantize_base)},

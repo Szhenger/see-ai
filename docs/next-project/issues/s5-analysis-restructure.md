@@ -107,6 +107,20 @@ sweep on data that does not overfit in 300 steps (alpha / sqrt(r)); a
 global-norm clip (clipping); more data (the rate: the longer horizon is
 measured and does not carry it).
 
+## Status 2026-11-13, the flip
+
+The search went on past the three practice candidates
+(`docs/benchmarks.md`, "The search, continued, and the flip";
+`docs/ledger/defaults-2026-11-13/`). **lr 2e-3 with cosine decay and a 5 %
+warmup beats lr 1e-3 constant at every row it was held to** — rank 8 at
+seeds 42 / 7 / 123 (−0.020 / −0.030 / −0.037 nats committed), rank 4
+(−0.030) and rank 16 (−0.030) — and is now the default (`lr`, `lr_schedule`,
+and `warmup` left to 5 % of the budget, `kWarmupAuto`). Plans compiled with
+`--lr 1e-3 --lr-schedule const` are the old plans (identity on 17 fixtures).
+Clipping stays off (per tensor and global, #190, both neutral under AdamW)
+and α/r stays the scale. Acceptance 1 holds with SeeAI rows; the frontier
+harness's torch / MLX-LM rows still train constant schedules.
+
 ## Acceptance
 
 - Every fixture compiles to a bit-identical plan before and after the move

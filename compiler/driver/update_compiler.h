@@ -174,7 +174,12 @@ AttentionKind DecideAttention(const TrainingFootprint& footprint,
 
 class UpdateCompiler {
  public:
-  explicit UpdateCompiler(UpdateConfig config) : config_(std::move(config)) {}
+  // The config as compiled: an unwritten warmup resolved against the budget
+  // (#151), so every rule, the header and the recipe hash see one number.
+  explicit UpdateCompiler(UpdateConfig config) : config_(std::move(config)) {
+    config_.optimizer.warmup_steps =
+        ResolvedWarmup(config_.optimizer, config_.default_steps);
+  }
 
   /// `teacher` may be null; it is required for kKLDistill / kXEntPlusKL.
   /// The teacher must share the source model's input dimensionality.

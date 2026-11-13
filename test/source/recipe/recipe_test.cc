@@ -182,12 +182,27 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
   EXPECT_EQ(c.lora.target_filters.size(), 2u);
   // The cosine schedule's knobs, and warmup < steps.
   c = {};
-  EXPECT_ERROR_CONTAINS(Apply({{"warmup", "3"}}, {}, &c),
+  // (#151: cosine is the default, so the knobs need a written const.)
+  EXPECT_ERROR_CONTAINS(Apply({{"lr_schedule", "const"}, {"warmup", "3"}}, {}, &c),
                         "--warmup (recipe field warmup) applies to lr_schedule "
                         "cosine only");
   c = {};
-  EXPECT_ERROR_CONTAINS(Apply({{"allow_zero_lr", "true"}}, {}, &c),
-                        "applies to lr_schedule cosine only");
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"lr_schedule", "const"}, {"allow_zero_lr", "true"}}, {}, &c),
+      "applies to lr_schedule cosine only");
+  c = {};
+  // The defaults (#151): cosine with the warmup left to the budget.
+  EXPECT_OK(Apply({}, {}, &c));
+  EXPECT_TRUE(c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup);
+  EXPECT_EQ(c.optimizer.lr, 2e-3f);
+  EXPECT_EQ(c.optimizer.warmup_steps, kWarmupAuto);
+  EXPECT_EQ(ResolvedWarmup(c.optimizer, 300), 15u);
+  EXPECT_EQ(ResolvedWarmup(c.optimizer, 1000), 50u);
+  c.optimizer.lr_schedule = LrSchedule::kConstant;
+  EXPECT_EQ(ResolvedWarmup(c.optimizer, 1000), 0u);
+  c = {};
+  EXPECT_OK(Apply({{"warmup", "0"}}, {}, &c));
+  EXPECT_EQ(ResolvedWarmup(c.optimizer, 1000), 0u);  // a written 0 stays
   c = {};
   EXPECT_OK(Apply({{"allow_zero_lr", "false"}}, {}, &c));
   c = {};
@@ -224,7 +239,9 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
       Apply({{"lora_rank", "4"}, {"targets", ","}}, {}, &kept),
       "must name at least one weight");
   EXPECT_EQ(recipe::ResolvedText(kept), before);
-  EXPECT_ERROR_CONTAINS(Apply({{"lora_rank", "4"}, {"warmup", "3"}}, {}, &kept),
+  EXPECT_ERROR_CONTAINS(Apply({{"lora_rank", "4"}, {"lr_schedule", "const"},
+                               {"warmup", "3"}},
+                              {}, &kept),
                         "applies to lr_schedule cosine only");
   EXPECT_EQ(recipe::ResolvedText(kept), before);
   // The library path's bounds.

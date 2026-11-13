@@ -61,9 +61,19 @@ struct LoRASpec {
   std::vector<std::string> target_filters;
 };
 
+// The warmup when none is written (#151): resolved at compile time to 5 % of
+// the step budget under the cosine schedule (0 under the constant one) —
+// the 15-of-300 the defaults measurement ran. An explicit warmup, 0
+// included, is kept as written.
+inline constexpr uint64_t kWarmupAuto = ~uint64_t{0};
+
+// The defaults (#151, measured 2026-11-13; docs/benchmarks.md, "The
+// best-practice defaults, measured"): lr 2e-3 with cosine decay and a 5 %
+// warmup committed a lower held-out loss than lr 1e-3 constant on SmolLM-135M
+// at three adapter seeds (rank 8) and at ranks 4 and 16.
 struct OptimizerSpec {
   OptimizerKind kind = OptimizerKind::kAdamW;
-  float lr = 1e-3f;
+  float lr = 2e-3f;
   float beta1 = 0.9f;
   float beta2 = 0.999f;
   float eps = 1e-8f;
@@ -74,8 +84,8 @@ struct OptimizerSpec {
   // scales them all by the one factor it implies.
   float clip_norm = 0.0f;
   bool clip_global = false;
-  LrSchedule lr_schedule = LrSchedule::kConstant;
-  uint64_t warmup_steps = 0;
+  LrSchedule lr_schedule = LrSchedule::kCosineWithWarmup;
+  uint64_t warmup_steps = kWarmupAuto;
   // The cosine floor as a fraction of lr. 0.1 (E8, #91), not 0: a floor of
   // zero makes the schedule's last step — and, before the horizon followed
   // the run, every step past it — train at LR 0, moving nothing while
@@ -98,6 +108,12 @@ struct ExportReport {
   bool logits_parity = false;         // the logits-parity check was run
   float logits_parity_max_delta = 0.0f;
 };
+
+/// The warmup a spec trains with: kWarmupAuto resolved against the budget.
+inline uint64_t ResolvedWarmup(const OptimizerSpec& o, uint64_t default_steps) {
+  if (o.warmup_steps != kWarmupAuto) return o.warmup_steps;
+  return o.lr_schedule == LrSchedule::kCosineWithWarmup ? default_steps / 20 : 0;
+}
 
 struct UpdateConfig {
   int64_t batch = 32;
