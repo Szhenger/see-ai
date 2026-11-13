@@ -27,6 +27,7 @@
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
 #include "source/plan/metadata.h"
+#include "source/tokenizer/tokenizer_format.h"
 #include "source/recipe/recipe.h"
 
 namespace seeml::update {
@@ -751,6 +752,21 @@ Status Compilation::StructuralPasses() {
                                    "hoisted the RoPE angles into " +
                                        std::to_string(*tables) +
                                        " table(s)");
+               return {};
+             });
+    // The attention segment mask (#191, plan v25): before the snapshot, so
+    // the eval program masks too.
+    if (config_.segment_mask)
+      pm.Add("segment-mask",
+             [this](sir::Block& b) -> std::expected<void, std::string> {
+               auto head = tokenizer::ReadSmtkHead(source.tokenizer);
+               if (source.tokenizer.empty() || !head || head->eos_id < 0)
+                 return std::unexpected(std::string(
+                     "segment mask: the model's tokenizer section names no "
+                     "EOS id to find document boundaries by"));
+               auto masked = SegmentMasker(build.input, head->eos_id).Run(b);
+               if (!masked) return std::unexpected(masked.error());
+               facts.segment_masked_ops = *masked;
                return {};
              });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
@@ -1556,6 +1572,8 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
       {"fuse-elementwise", "stages run per block, in program order",
        "nothing fused", facts.chain_fusions > 0},
       {"dce", "removes ops nothing reads", "nothing dead", facts.dce_removed > 0},
+      {"segment-mask", "same reductions; other documents' keys masked",
+       "no attention op: nothing masked", facts.segment_masked_ops > 0},
       {"rematerialize", "same opcode over the same operands",
        "nothing recomputed", remat_on},
   };

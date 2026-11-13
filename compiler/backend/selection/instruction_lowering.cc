@@ -325,6 +325,24 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
         // default); the fallback only covers SIR built by hand in tests.
         ins.out[2] = F32Bits(
             op->getAttrAs<float>("base").value_or(kSmfDefaultRopeBase));
+      } else if (m == "sc_high.attention" && op->numOperands() == 4) {
+        // The segment mask (v25, #191): the starts are the fourth operand,
+        // the geometry packed into one word to free a slot for them.
+        if (op->hasAttribute("tiled")) {
+          error = "the segment mask covers the cached attention family only";
+          break;
+        }
+        set(OpCode::kAttnFwdSeg);
+        ins.in[0] = ref(op->operand(0));
+        ins.in[1] = ref(op->operand(1));
+        ins.in[2] = ref(op->operand(2));
+        ins.in[3] = ref(op->result(0));
+        ins.out[0] = ref(op->result(1));
+        ins.out[1] = PackAttnGeometry(static_cast<uint64_t>(rows / seq),
+                                      static_cast<uint64_t>(seq),
+                                      static_cast<uint64_t>(heads),
+                                      static_cast<uint64_t>(width / heads));
+        ins.out[2] = ref(op->operand(3));
       } else if (m == "sc_high.attention") {
         // Tiled (v15): the same slots, the stats row where the cache was.
         set(op->hasAttribute("tiled") ? OpCode::kAttnFwdTiled
@@ -372,6 +390,19 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
       ins.in[0] = ref(op->operand(0));
       ins.in[1] = F32Bits(op->getAttrAs<float>("max_norm").value_or(0.0f));
       ins.out[0] = vol(op->operand(0));
+    } else if (m == "sc_low.segment_starts") {  // v25, #191
+      set(OpCode::kSegmentStarts);
+      const sir::Value* tokens = op->operand(0);
+      const int64_t seq = op->getAttrAs<int64_t>("seq").value_or(0);
+      const int64_t t = tokens->shape().dims.at(0);
+      if (seq <= 0 || t % seq != 0) {
+        error = "malformed sequence geometry on 'sc_low.segment_starts'";
+        break;
+      }
+      ins.in[0] = ref(tokens);
+      ins.in[1] = ref(op->result(0));
+      ins.out[0] = pack32(t / seq, seq);
+      ins.out[1] = static_cast<uint64_t>(op->getAttrAs<int64_t>("eos").value_or(0));
     } else if (m == "sc_low.sqnorm_accum") {  // v24, #190
       set(OpCode::kSqNormAccum);
       ins.in[0] = ref(op->operand(0));  // g

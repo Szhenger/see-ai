@@ -285,6 +285,12 @@ std::expected<void, std::string> ValidateInstructionImpl(
         "masked cross-entropy opcode " + std::to_string(ins.opcode) +
         " in a pre-v" + std::to_string(up::kSeeuDataContractVersion) +
         " plan");
+  if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSegmentStarts) ||
+       ins.opcode == static_cast<uint16_t>(up::OpCode::kAttnFwdSeg)) &&
+      plan_version < up::kSeeuSegmentMaskVersion)
+    return diag::validating::Error(
+        "segment mask opcode " + std::to_string(ins.opcode) + " in a pre-v" +
+        std::to_string(up::kSeeuSegmentMaskVersion) + " plan");
   if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSqNormAccum) ||
        ins.opcode == static_cast<uint16_t>(up::OpCode::kClipGlobal)) &&
       plan_version < up::kSeeuGlobalClipVersion)
@@ -604,6 +610,28 @@ std::expected<void, std::string> ValidateInstructionImpl(
       if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
           !ref_ok(ins.in[2], td, false) || !ref_ok(ins.in[3], td, true) ||
           !ref_ok(ins.out[0], pn, true))
+        return fail();
+      return disjoint();
+    }
+    case up::OpCode::kSegmentStarts: {  // v25: i32 tokens in, i32 starts out
+      const uint64_t B = d0 >> 32, S = d0 & 0xFFFFFFFFu;
+      uint64_t t = 0;
+      if (B == 0 || S == 0 || !MulOk(B, S, &t)) return fail();
+      if (d1 > 0x7FFFFFFFu)
+        return diag::validating::Error("segment EOS id is not a token id");
+      if (!ref_ok(ins.in[0], t, false) || !ref_ok(ins.in[1], t, true))
+        return fail();
+      return disjoint();
+    }
+    case up::OpCode::kAttnFwdSeg: {  // v25: kAttnFwd, packed, plus starts
+      const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
+      uint64_t td = 0, pn = 0, t = 0;
+      if (!attn_geometry((g.B << 32) | g.S, (g.H << 32) | g.d, &td, &pn) ||
+          !MulOk(g.B, g.S, &t))
+        return fail();
+      if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
+          !ref_ok(ins.in[2], td, false) || !ref_ok(ins.in[3], td, true) ||
+          !ref_ok(ins.out[0], pn, true) || !ref_ok(d2, t, false))
         return fail();
       return disjoint();
     }

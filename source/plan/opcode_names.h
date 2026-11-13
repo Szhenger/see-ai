@@ -19,7 +19,7 @@ namespace seeml::update {
 
 /// The highest opcode value; the manifest walks 0..kOpCodeMax.
 inline constexpr uint16_t kOpCodeMax =
-    static_cast<uint16_t>(OpCode::kClipGlobal);
+    static_cast<uint16_t>(OpCode::kAttnFwdSeg);
 
 /// The opcode's name, or nullptr for a value that is not an OpCode.
 inline const char* OpCodeName(uint16_t opcode) {
@@ -125,6 +125,8 @@ inline const char* OpCodeName(uint16_t opcode) {
     case OpCode::kSoftmaxXEntMaskedBwd: return "softmax_xent_masked.bwd";
     case OpCode::kSqNormAccum: return "sqnorm.accum";
     case OpCode::kClipGlobal: return "clip.global";
+    case OpCode::kSegmentStarts: return "segment.starts";
+    case OpCode::kAttnFwdSeg: return "attn.fwd.seg";
     case OpCode::kFusedMap:
       return "fused.map";
   }

@@ -171,8 +171,13 @@ void RopeTable(float* table, size_t S, size_t d, float base);
 // with the causal mask admitting j <= i. P is written for the backward
 // primitives (masked entries are exactly 0).
 void AttnFwd(const float* q, const float* k, const float* v, float* o,
-             float* probs, size_t B, size_t S, size_t H, size_t d);
+             float* probs, size_t B, size_t S, size_t H, size_t d,
+             const int32_t* starts = nullptr);
 // Backward primitives (dispatched in this order by the compiled stream):
+// The segment mask (#191, plan v25): starts[b*S + t] = the first position of
+// t's document in window b (one past the last `eos` strictly before t).
+void SegmentStarts(const int32_t* tokens, int32_t* starts, size_t B, size_t S,
+                   int32_t eos);
 void AttnDP(const float* dout, const float* v, float* dp, size_t B, size_t S,
             size_t H, size_t d);             // dP = dO V^T
 void AttnDV(const float* probs, const float* dout, float* dv, size_t B,

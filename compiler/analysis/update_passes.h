@@ -41,6 +41,7 @@
 #include "compiler/analysis/statistics/attention_tiling.h"  // IWYU pragma: export
 #include "compiler/analysis/algebra/chain_fuser.h"    // IWYU pragma: export
 #include "compiler/analysis/algebra/rope_table.h"     // IWYU pragma: export
+#include "compiler/analysis/algebra/segment_mask.h"     // IWYU pragma: export
 #include "compiler/analysis/calculus/rematerializer.h"  // IWYU pragma: export
 #include "compiler/analysis/algebra/lora_grafter.h"   // IWYU pragma: export
 #include "compiler/analysis/algebra/merge_builder.h"  // IWYU pragma: export

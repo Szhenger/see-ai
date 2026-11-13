@@ -141,6 +141,7 @@ void PrintUsage() {
                "  [--val-frac F] [--split-seed S]  the held-out split, compiled\n"
                "                      from the corpus and named in the plan\n"
                "  [--masked-loss]     the cross-entropy over target positions\n"
+               "  [--segment-mask]    no attention across a window's documents\n"
                "                      alone (labels of -1 ignored); implied by\n"
                "                      a --data corpus that carries a mask\n"
                "  [--steps N]\n"

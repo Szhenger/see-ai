@@ -1031,6 +1031,11 @@ class NumpyBackend:
         out[self.np.arange(idx.shape[0]), idx] = 1.0
         return out
 
+    def host(self, array):
+        """A host NumPy array as this backend's tensor (v25 masks and the
+        i32 bit patterns stored as f32)."""
+        return self.np.asarray(array).astype(self.compute)
+
     def causal(self, s):
         return self.np.tril(self.np.ones((s, s), self.compute))
 
@@ -1122,6 +1127,10 @@ class TorchBackend:
     def one_hot(self, idx, width):
         return self.torch.nn.functional.one_hot(idx.long(), width).to(
             self.compute)
+
+    def host(self, array):
+        return self.torch.from_numpy(array.copy()).to(dtype=self.compute,
+                                                      device=self.dev)
 
     def causal(self, s):
         return self.torch.tril(self.torch.ones(s, s, dtype=self.compute,
@@ -1221,6 +1230,9 @@ class MlxBackend:
     def one_hot(self, idx, width):
         return (self.mx.arange(width)[None, :] == idx[:, None]).astype(
             self.compute)
+
+    def host(self, array):
+        return self.mx.array(array).astype(self.compute)
 
     def causal(self, s):
         return self.mx.tril(self.mx.ones((s, s), dtype=self.compute))
@@ -1904,6 +1916,44 @@ def _attn_fwd(m, x, ins, step):
     m.write(ins.src[3], _rows(x, x.matmul(probs, v), b, s, h, d))
 
 
+def _segment_starts(m, x, ins, step):
+    """v25 (#191): every position's document start, one past the last EOS
+    strictly before it — written as the i32 bits the runtime writes."""
+    import numpy as np
+    b, s = hi_lo(ins.out[0])
+    eos = int(ins.out[1])
+    tokens = np.asarray(m.read(ins.src[0], (b * s,), "<i4").tolist()).reshape(b, s)
+    starts = np.zeros((b, s), "<i4")
+    for bi in range(b):
+        start = 0
+        for t in range(s):
+            starts[bi, t] = start
+            if tokens[bi, t] == eos:
+                start = t + 1
+    m.write(ins.src[1], x.host(starts.reshape(-1).view("<f4")))
+
+
+def _attn_fwd_seg(m, x, ins, step):
+    """v25 (#191): kAttnFwd with keys before each row's document start
+    masked as the causal ones are."""
+    import numpy as np
+    word = ins.out[1]
+    b, s, h, d = word >> 48, (word >> 32) & 0xFFFF, (word >> 16) & 0xFFFF, word & 0xFFFF
+    q, k, v = (_heads(x, m.read(ref, (b * s, h * d)), b, s, h, d)
+               for ref in ins.src[:3])
+    starts = np.asarray(m.read(ins.out[2], (b * s,), "<i4").tolist()).reshape(b, s)
+    keep = np.zeros((b, 1, s, s), "<f4")
+    for bi in range(b):
+        for i in range(s):
+            keep[bi, 0, i, int(starts[bi, i]):i + 1] = 1.0
+    mask = x.host(keep)
+    scores = x.matmul(q, x.perm(k, (0, 1, 3, 2))) / math.sqrt(d)
+    scores = x.where(mask > 0.0, scores, scores * 0.0 - 1e30)
+    probs = _softmax(x, scores) * mask  # masked entries are exactly zero
+    m.write(ins.out[0], probs.reshape((b * h * s, s)))
+    m.write(ins.src[3], _rows(x, x.matmul(probs, v), b, s, h, d))
+
+
 def _attn_dp(m, x, ins, step):
     (b, s), (h, d) = hi_lo(ins.out[0]), hi_lo(ins.out[1])
     dout = _heads(x, m.read(ins.src[0], (b * s, h * d)), b, s, h, d)
@@ -2075,7 +2125,7 @@ INTERPRETER = {
     50: _attn_bwd_tiled("dv"),
     43: _gemm_nn("<u2"), 44: _gemm_nt("<u2"), 45: _rope_table,
     46: _fused_map, 51: _xent_masked_fwd, 52: _xent_masked_bwd,
-    53: _sqnorm_accum, 54: _clip_global,
+    53: _sqnorm_accum, 54: _clip_global, 55: _segment_starts, 56: _attn_fwd_seg,
 }
 assert sorted(INTERPRETER) == sorted(OPCODES)
 
