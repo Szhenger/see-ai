@@ -1183,7 +1183,7 @@ class DifferentialSuite(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             self.assertEqual(fx.main(["run", plan, "--corpus", corpus,
-                                      "--steps", "30", "--report", report,
+                                      "--steps", "60", "--report", report,
                                       "--log-every", "0"]), 0)
         with open(report) as f:
             ran = json.load(f)

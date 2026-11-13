@@ -1,0 +1,74 @@
+{
+ "model": "SmolLM-135M",
+ "setting": "docs_corpus, --val-frac 0.1, batch 512 x 128, int8 base, 300 steps, eval every 30, Metal",
+ "host": "Apple M5; battery + Low Power Mode for most rows, AC for the last: no step time is quoted",
+ "baselines (lr 1e-3 const, alpha/r)": {
+  "r8 s42": 3.639602,
+  "r8 s7": 3.636921,
+  "r8 s123": 3.64387,
+  "r4 s42": 3.6802,
+  "r16 s42": 3.603999
+ },
+ "rows": [
+  {
+   "row": "r16_lr2e3cos",
+   "best_step": 210,
+   "val_committed": 3.574135,
+   "val_step300": 3.79119
+  },
+  {
+   "row": "r4_lr2e3cos",
+   "best_step": 210,
+   "val_committed": 3.65048,
+   "val_step300": 3.705034
+  },
+  {
+   "row": "r8_gclip1",
+   "best_step": 210,
+   "val_committed": 3.640272,
+   "val_step300": 3.708498
+  },
+  {
+   "row": "r8_lr2e3",
+   "best_step": 210,
+   "val_committed": 3.626632,
+   "val_step300": 4.028508
+  },
+  {
+   "row": "r8_lr2e3cos",
+   "best_step": 210,
+   "val_committed": 3.620143,
+   "val_step300": 3.73605
+  },
+  {
+   "row": "r8_lr2e3cos_s123",
+   "best_step": 210,
+   "val_committed": 3.607385,
+   "val_step300": 3.727765
+  },
+  {
+   "row": "r8_lr2e3cos_s7",
+   "best_step": 210,
+   "val_committed": 3.607162,
+   "val_step300": 3.728189
+  },
+  {
+   "row": "r8_lr5e4",
+   "best_step": 210,
+   "val_committed": 3.704616,
+   "val_step300": 3.722668
+  },
+  {
+   "row": "r8_rs_lr5e4",
+   "best_step": 210,
+   "val_committed": 3.647556,
+   "val_step300": 3.723592
+  },
+  {
+   "row": "r8_wd01",
+   "best_step": 210,
+   "val_committed": 3.640611,
+   "val_step300": 3.711572
+  }
+ ]
+}

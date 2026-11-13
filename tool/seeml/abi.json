@@ -151,7 +151,7 @@
     {"name": "lr", "flag": "--lr", "kind": "float", "min": 0, "max": 10, "min_open": true, "max_open": false},
     {"name": "weight_decay", "flag": "--weight-decay", "kind": "float", "min": 0, "max": 10, "min_open": false, "max_open": false},
     {"name": "clip_norm", "flag": "--clip-norm", "kind": "float", "min": 0, "max": 1e+06, "min_open": false, "max_open": false},
-    {"name": "lr_schedule", "flag": "--lr-schedule", "kind": "enum", "choices": "const|cosine"},
+    {"name": "lr_schedule", "flag": "--lr-schedule", "kind": "enum", "choices": "cosine|const"},
     {"name": "warmup", "flag": "--warmup", "kind": "uint", "min": 0, "max": 1099511627776},
     {"name": "min_lr_factor", "flag": "--min-lr-factor", "kind": "float", "min": 0, "max": 1, "min_open": false, "max_open": false},
     {"name": "allow_zero_lr", "flag": "--allow-zero-lr", "kind": "bool"},

@@ -19,9 +19,9 @@
 //                                      the adapter scale: alpha / r (the
 //                                      default) or alpha / sqrt(r)
 //       [--targets substr,substr]      restrict adapters to matching weights
-//       [--optimizer adamw|sgd] [--lr 1e-3] [--weight-decay 0.01]
+//       [--optimizer adamw|sgd] [--lr 2e-3] [--weight-decay 0.01]
 //       [--clip-norm 0]                per-tensor L2 gradient clip (0 = off)
-//       [--lr-schedule const|cosine]   runtime LR schedule
+//       [--lr-schedule cosine|const]   runtime LR schedule (cosine; warmup 5 % of steps)
 //       [--warmup 0]                   warmup steps (cosine schedule)
 //       [--min-lr-factor 0.1]          cosine floor as a fraction of --lr
 //       [--allow-zero-lr]              permit --min-lr-factor 0 (the last
@@ -128,7 +128,7 @@ void PrintUsage() {
                "  [--lora-scaling alpha_over_r|alpha_over_sqrt_r]  the adapter scale\n"
                "  [--targets substr,...] [--optimizer adamw|sgd] [--lr LR]\n"
                "  [--weight-decay WD] [--clip-norm C]\n"
-               "  [--lr-schedule const|cosine] [--warmup N] [--allow-zero-lr]\n"
+               "  [--lr-schedule cosine|const] [--warmup N] [--allow-zero-lr]\n"
                "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
                "  [--precision f32|certified-bf16]\n"
                "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"

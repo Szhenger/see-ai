@@ -663,7 +663,7 @@ class DiskModeEndToEndTest(unittest.TestCase):
         done = subprocess.run(
             [COMPILER, "--source", os.path.join(GOLDEN, "eps6.smf"),
              "--out", other_pkg, "--data-batch", "4", "--loss", "mse",
-             "--no-embed"], capture_output=True, text=True)
+             "--steps", "4", "--no-embed"], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         rc, err, _ = self.run_update(
             "--plan", os.path.join(other_pkg, pu.PLAN_FILE))

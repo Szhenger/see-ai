@@ -1669,6 +1669,30 @@ The design's audit of `source/plan/config.h` against frontier LoRA practice name
 
   The default's best state is still the best any row reaches, by 0.09–0.15 nats; the lower rates never get there, they plateau above it. What the lower rates buy is the other end: the default overfits from step 210 and is at 6.46 by step 1,200, where lr 1e-4 cosine has barely moved off its floor. SeeAI commits the best state it evaluated, so with a held-out split the default's collapse costs nothing; **without a split** (no `--val-frac`, the gate has nothing to weigh) a long run at the default commits its last state. That is a claim about the gate, not about the default: the fix it points at is refusing, or warning on, a long horizon with no split — not a lower rate that is worse wherever the split is there.
 
+**The search, continued (2026-11-13), and the flip.** None of the three practice defaults beat lr 1e-3 constant, so the search went on around it, at the same setting (300 steps, the split scored every 30). The committed state, then step 300:
+
+| row (rank 8, seed 42 unless stated) | committed [step] | step 300 |
+|---|---|---|
+| lr 1e-3 constant (the old default) | 3.6396 [210] | 3.7123 |
+| lr 5e-4 constant | 3.7046 [210] | 3.7227 |
+| lr 2e-3 constant | 3.6266 [210] | 4.0285 |
+| **lr 2e-3 cosine, warmup 15** | **3.6201** [210] | 3.7361 |
+| weight decay 0.1 | 3.6406 [210] | 3.7116 |
+| α/√r at lr 5e-4 | 3.6476 [210] | 3.7236 |
+| global-norm clip 1.0 (#190) | 3.6403 [210] | 3.7085 |
+
+lr 2e-3 constant reaches a lower minimum than the default but overfits past it (4.03 at step 300); with cosine decay it keeps the lower minimum and loses most of the overfit. Held to more seeds and ranks, each against its own baseline:
+
+| row | old default (lr 1e-3 constant) | lr 2e-3 cosine, warmup 5 % | difference |
+|---|---|---|---|
+| rank 8, seed 42 | 3.6396 | 3.6201 | −0.020 |
+| rank 8, seed 7 | 3.6369 | 3.6072 | −0.030 |
+| rank 8, seed 123 | 3.6439 | 3.6074 | −0.037 |
+| rank 4, seed 42 | 3.6802 | 3.6505 | −0.030 |
+| rank 16, seed 42 | 3.6040 | 3.5741 | −0.030 |
+
+Five for five, by 0.020–0.037 nats, so **the defaults are now lr 2e-3, cosine, warmup 5 % of the step budget** (`kWarmupAuto`, resolved at compile time; an explicit `--warmup`, 0 included, is kept). Two costs, stated: at step 300 the new schedule sits 0.02–0.06 nats above the old one's step 300 (its minimum is earlier and lower; the best-state gate commits the minimum), and a run shorter than its warmup is refused where it used to train (`model_update --steps 10` on a default 1,000-step plan, whose warmup is 50). Clipping stays off — per tensor or global (#190), the clip is neutral under AdamW at this setting — and α/r stays the scale. The torch and MLX-LM rows of the frontier harness still run constant schedules; they are not part of this claim.
+
 **What these rows are not.** One model, one corpus, two horizons. They are SeeAI rows only: the torch and MLX-LM rows of the frontier harness were not run at these settings (`tool/frontier_run.py` now takes `--scaling`, with the compiler's default, so a reference row can scale as an α/√r plan does). **The host was on battery with Low Power Mode on**; the losses do not depend on that (the baseline reproduces bit for bit), the step times do, and none is quoted as a result.
 
 ## Tier C — Memory (the gate that refuses compiles)
