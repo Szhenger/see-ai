@@ -1526,31 +1526,55 @@ Status Compilation::BindMerge() {
 // the one decision that lets a backend reorder a reduction — under the
 // numerics certificate the package must then carry.
 std::vector<uint8_t> Compilation::BuildMetadata() {
+  // One line per pass that ran, saying what it did IN THIS PLAN (S5 #151): a
+  // pass that rewrote nothing says so, rather than the reason it would give
+  // had it acted. `did` is that pass's own count from the facts; `why` is
+  // the reason when it acted, `idle` when it did not.
   struct Reason {
-    std::string_view pass, why;
+    std::string_view pass, why, idle;
+    bool did;
   };
-  static constexpr Reason kExactPasses[] = {
-      {"attention-tiling", "same expressions; probabilities recomputed"},
-      {"lora-graft", "adds the adapter path; B is zero at step 0"},
-      {"rope-table", "angles hoisted; the kernels' own recurrence"},
-      {"autodiff", "adds the backward; the forward is untouched"},
-      {"optimizer", "adds the update; the forward is untouched"},
-      {"fuse-gemm-epilogue", "bias and activation inside the GEMM's loop"},
-      {"fuse-gemm-addend", "d + s over the complete dot product"},
-      {"fuse-elementwise", "stages run per block, in program order"},
-      {"dce", "removes ops nothing reads"},
-      {"rematerialize", "same opcode over the same operands"},
+  const bool tiled =
+      attention_decision.tiled && attention_decision.attention_ops > 0;
+  const Reason kExactPasses[] = {
+      {"attention-tiling", "same expressions; probabilities recomputed",
+       attention_decision.attention_ops == 0 ? "no attention op: nothing tiled"
+                                             : "the cached family: no op rewritten",
+       tiled},
+      {"lora-graft", "adds the adapter path; B is zero at step 0",
+       "no adapter grafted", !adapters.empty()},
+      {"rope-table", "angles hoisted; the kernels' own recurrence",
+       "no rotary op: nothing hoisted", facts.rope_tables > 0},
+      {"autodiff", "adds the backward; the forward is untouched", "", true},
+      {"optimizer", "adds the update; the forward is untouched", "", true},
+      {"fuse-gemm-epilogue", "bias and activation inside the GEMM's loop",
+       "nothing fused", facts.epilogue_fusions > 0},
+      {"fuse-gemm-addend", "d + s over the complete dot product",
+       "nothing fused", facts.addend_fusions > 0},
+      {"fuse-elementwise", "stages run per block, in program order",
+       "nothing fused", facts.chain_fusions > 0},
+      {"dce", "removes ops nothing reads", "nothing dead", facts.dce_removed > 0},
+      {"rematerialize", "same opcode over the same operands",
+       "nothing recomputed", remat_on},
   };
   std::vector<LedgerEntry> ledger;
   for (const PassTiming& t : timings)
     for (const Reason& r : kExactPasses)
       if (t.name == r.pass)
-        ledger.push_back(MakeLedgerEntry(r.pass, kLedgerExact, 0, r.why));
-  if (relaxed_gemms + relaxed_attention != 0)
+        ledger.push_back(
+            MakeLedgerEntry(r.pass, kLedgerExact, 0, r.did ? r.why : r.idle));
+  // The one pass that changes arithmetic: the precision assignment puts
+  // frozen-weight GEMMs and tiled attention on relaxed kernels, and the
+  // reason says how many of each.
+  if (relaxed_gemms + relaxed_attention != 0) {
+    char why[56];
+    std::snprintf(why, sizeof(why), "%llu GEMM + %llu attention relaxed; certificate",
+                  static_cast<unsigned long long>(relaxed_gemms),
+                  static_cast<unsigned long long>(relaxed_attention));
     ledger.push_back(MakeLedgerEntry(
         "precision", kLedgerReordered,
-        static_cast<uint32_t>(relaxed_gemms + relaxed_attention),
-        "relaxed kernels; needs the numerics certificate"));
+        static_cast<uint32_t>(relaxed_gemms + relaxed_attention), why));
+  }
   // The RESOLVED recipe is what is hashed (S4 #150): the request with every
   // decision the compile took written in — which attention family the plan
   // runs, whether it rematerializes, whether the loss is masked, which

@@ -828,7 +828,8 @@ class DifferentialSuite(unittest.TestCase):
                      if f.endswith((".smf", ".sds")) else f for f in flags]
             done = subprocess.run(
                 [COMPILER, "--source", os.path.join(cls.dir, model), "--out",
-                 out, "--data-batch", str(batch), "--no-embed"] + flags,
+                 out, "--data-batch", str(batch), "--no-embed", "--report",
+                 os.path.join(out, "report.json")] + flags,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if done.returncode != 0:
                 raise AssertionError(f"{name}: compile failed\n{done.stdout}")
@@ -1012,6 +1013,43 @@ class DifferentialSuite(unittest.TestCase):
                 with self.subTest(backend=backend, plan=name):
                     status, _, log = self.diff(name, "--backend", backend)
                     self.assertEqual(status, 0, log)
+
+    def test_the_analysis_screen_is_the_probes_work(self):
+        """S5 #151 acceptance 3: the analysis screen's forward / backward /
+        optimizer work is what seeml-plan-probe --profile says the plan's
+        eval, train and step sections do — the probe counting the
+        instructions it ran, the compiler counting the plan it emitted."""
+        work = os.path.join(self.dir, "probe_work")
+        os.makedirs(work, exist_ok=True)
+        for name in ("mlp_accum", "mlp_xent_kl", "dec_q8_accum", "dec_tiled"):
+            with self.subTest(plan=name):
+                plan_path, _, model = self.plans[name]
+                plan = fx.Plan.load(plan_path)
+                arena = os.path.join(work, name + ".in")
+                with open(arena, "wb") as f:
+                    f.write(plan.initial_arena())
+
+                def probed(section):
+                    done = subprocess.run(
+                        [PROBE, "--plan", plan_path, "--section", section,
+                         "--arena-in", arena, "--arena-out",
+                         os.path.join(work, name + ".out"), "--profile", "1",
+                         "--source", model],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    p = json.loads(done.stdout)
+                    return p["gemm_flops"] + p["attention_flops"]
+                with open(os.path.join(os.path.dirname(plan_path),
+                                       "report.json")) as f:
+                    screen = json.load(f)["screens"]["analysis"]
+                forward = probed("eval")
+                self.assertGreater(forward, 0)
+                self.assertEqual(screen["flops_forward"], forward)
+                self.assertEqual(screen["flops_forward"] + screen["flops_backward"],
+                                 probed("train"))
+                step = probed("step") if plan.step_instr_count else 0
+                self.assertEqual(screen["flops_optimizer"], step)
 
     def test_the_probe_is_strict_about_arguments_and_paths(self):
         plan, _, _ = self.plans["mlp_mse_sgd"]
