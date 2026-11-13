@@ -88,6 +88,28 @@ class ParityTest(unittest.TestCase):
         self.assertEqual(fr.parity_problems(
             base + [a_row("SeeML", "f32 math, int8 base", val_loss=[4.7024, 4.0])]), [])
 
+    def test_the_scale_is_one_across_the_rows(self):
+        # Rule 2: --scaling is the compiler's --lora-scaling, same default.
+        args = fr.build_parser().parse_args(
+            ["torch", "--model-dir", "m", "--corpus", "c", "--report", "r"])
+        self.assertEqual(args.scaling, "alpha_over_r")
+        self.assertEqual(fr.lora_scale(args), 2.0)
+        args.scaling = "alpha_over_sqrt_r"
+        self.assertAlmostEqual(fr.lora_scale(args), 16 / 8 ** 0.5)
+        # The SeeAI report prints the scale with %g: the same scale.
+        torch_rs = a_row("torch.compile", "f32", config={"scale": fr.lora_scale(args)})
+        seeml_rs = a_row("SeeML", "f32 math, int8 base", val_loss=[4.7024, 4.0],
+                         config={"scale": 5.65685})
+        self.assertEqual(fr.parity_problems([torch_rs, seeml_rs]), [])
+        # A row at alpha / r beside one at alpha / sqrt(r) is two comparisons.
+        seeml_r = dict(seeml_rs, config={"scale": 2.0})
+        scale = fr.parity_problems([torch_rs, seeml_r])
+        self.assertEqual(len(scale), 1, scale)
+        self.assertIn("scale their adapters differently", scale[0])
+        # A row that records no scale (an older report) is unknown, not a mismatch.
+        self.assertEqual(fr.parity_problems([torch_rs, a_row("SeeML", "f32 math, int8 base",
+                                                             val_loss=[4.7024, 4.0])]), [])
+
 
 class SplitTest(unittest.TestCase):
     @unittest.skipIf(np is None, "needs NumPy")

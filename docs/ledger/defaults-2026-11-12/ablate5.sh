@@ -12,7 +12,8 @@ build() {
   d="$OUT/$1"; shift
   rm -rf "$d"; mkdir -p "$d"
   "$COMPILER" --source "$SRC/smollm.smf" --out "$d/pkg" --data "$FRONTIER/docs_corpus.txt" --val-frac 0.1 --data-batch 512 --lora-rank 8 --lora-alpha 16 --quantize-base --steps 1200 --report "$d/compile.json" --build "$@" > "$d/compile.log" 2>&1
-  echo "$(basename "$d") compile rc=$?"
+  rc=$?
+  echo "$(basename "$d") compile rc=$rc"
 }
 run() {
   d="$OUT/$1"

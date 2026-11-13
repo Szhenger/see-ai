@@ -93,7 +93,8 @@ inline constexpr Field kFields[] = {
     {"lora_rank", "--lora-rank", Kind::kUInt, 1, kLoraRankMax, 0, 0, false,
      false, "", "adapter rank r"},
     {"lora_alpha", "--lora-alpha", Kind::kFloat, 0, 0, 0.0, 1e6, true, false,
-     "", "adapter scale numerator: the update is (alpha / r) A B"},
+     "", "adapter scale numerator: the update is (alpha / r) A B, or (alpha / "
+     "sqrt(r)) A B under lora_scaling alpha_over_sqrt_r"},
     {"lora_scaling", "--lora-scaling", Kind::kEnum, 0, 0, 0, 0, false, false,
      "alpha_over_r|alpha_over_sqrt_r",
      "the adapter scale: alpha / r, or rank-stabilized alpha / sqrt(r)"},

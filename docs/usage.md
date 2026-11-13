@@ -158,6 +158,7 @@ analysis — what the passes did
   ops out                  4,426 ops                     the training SIR after every pass, as lowered
   adapters                 211                           LoRA adapters grafted, one per targeted matmul weight
   rank                     8                             r, each adapter's inner width
+  adapter scale            2 = alpha / r                 what each adapter's delta is multiplied by, and the rule that set it
   trainable                3,024,384                     the sum of r·(k + m) over the adapters
   trainable share          1.717 %                       trainable ÷ the model's parameters
   epilogue fusions         0                             bias and activation chains folded into a GEMM
@@ -170,7 +171,7 @@ analysis — what the passes did
 backend — the plan it emitted
   train program            2,887 instructions            one micro-batch: forward, backward, optimizer
   eval program             907 instructions              the forward and the loss, for validation
-  merge program            422 instructions              each adapter's delta, (alpha ÷ r)·A·B
+  merge program            422 instructions              each adapter's delta, s·A·B at its adapter scale s
   arena                    1,576,898,688 B (1.5 GiB)     the one allocation the device makes
   rodata                   262,048,512 B (249.9 MiB)     frozen weights packed into the plan
   plan file                298,631,168 B (284.8 MiB)     the sealed .seeu

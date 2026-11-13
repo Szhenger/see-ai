@@ -122,7 +122,7 @@ A: [K, r]      B: [r, M]      with r ≪ K, M   (default r = 8)
 ΔW = (α/r) · A @ B
 ```
 
-Count the parameters: `r·(K + M)` instead of `K·M`. For our 1024×1024 example with r = 8, that's 16,384 trainable parameters instead of 1,048,576 — a **64× reduction** — and the frozen `W` never needs a gradient at all. The scale `α/r` (defaults α = 16, r = 8, so 2.0) decouples the learning-rate tuning from the choice of rank.
+Count the parameters: `r·(K + M)` instead of `K·M`. For our 1024×1024 example with r = 8, that's 16,384 trainable parameters instead of 1,048,576 — a **64× reduction** — and the frozen `W` never needs a gradient at all. The scale `α/r` (defaults α = 16, r = 8, so 2.0) decouples the learning-rate tuning from the choice of rank. `--lora-scaling alpha_over_sqrt_r` swaps it for rank-stabilized LoRA's `α/√r` (opt-in: measured in [benchmarks](benchmarks.md#the-best-practice-defaults-measured-s5-151-2026-11-12), and not the default); wherever this document writes `α/r` below, read the scale that rule sets.
 
 `LoraGrafter` (`analysis/algebra/`) applies this to every eligible site: an `sc_high.matmul` whose weight-side operand is a frozen `sc_mem.weight`, excluding the teacher (`t::` prefix) and, optionally, filtered by `--targets` substring match. At each site, where the graph computed `C = X @ W`, it splices in:
 

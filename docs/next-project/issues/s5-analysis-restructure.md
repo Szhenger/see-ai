@@ -95,7 +95,7 @@ flipped**, each for its row. *alpha / sqrt(r)* is a recipe field
 rank 8 on three seeds (−0.013 to −0.033) and at rank 4 (−0.031), loses at
 rank 16 (+0.085), and its step-300 state is worse at every rank and seed —
 a larger scale overfitting a small corpus faster, not the rank-stabilized
-claim. *Clip 1.0* matches the baseline to the fifth decimal (and the clip
+claim. *Clip 1.0* matches the baseline within 0.0003 nats (and the clip
 is per tensor, not the practice's global norm). *lr 1e-4 / 2e-4 with
 cosine + warmup* ends 0.36 / 0.21 nats above the baseline at 300 steps, and
 at 1,200 steps still never reaches the default's best state (3.787 / 3.732

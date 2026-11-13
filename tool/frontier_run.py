@@ -36,9 +36,11 @@ was written down (the 2026-09-22 Frontier Harness report, §6):
   2. Adapted set: the seven projections of every layer AND the LM head —
      SeeAI's `--hf` importer writes the tied head as its own weight and
      adapts it. Rank and the scale (--scaling, as the compiler's
-     --lora-scaling: alpha / r by default, or alpha / sqrt(r)) are the plan's. The adapter parameter
-     count of every row must equal the SeeAI report's up to the k/v
-     expansion SeeAI's GQA-to-MHA repeat implies (`expected_adapter_params`).
+     --lora-scaling: alpha / r by default, or alpha / sqrt(r)) are the
+     plan's, and every row that records its scale must record the same
+     one. The adapter parameter count of every row must equal the SeeAI
+     report's up to the k/v expansion SeeAI's GQA-to-MHA repeat implies
+     (`expected_adapter_params`).
   3. Optimizer: AdamW with BIAS CORRECTION (mlx.optimizers.AdamW defaults to
      none, which triples the first update), weight decay 0.01, constant LR,
      no clipping (SeeAI clips per tensor, so any clip breaks parity).
@@ -358,14 +360,15 @@ def cmd_torch(args):
     for prm in model.parameters():
         prm.requires_grad_(False)
     gen = torch.Generator().manual_seed(args.lora_seed)
+    scale = lora_scale(args)
     adapters = 0
     for layer in model.model.layers:
         for parent in (layer.self_attn, layer.mlp):
             for name, mod in list(parent.named_children()):
                 if name in TARGETS and isinstance(mod, nn.Linear):
-                    setattr(parent, name, LoRALinear(mod, args.rank, lora_scale(args), gen))
+                    setattr(parent, name, LoRALinear(mod, args.rank, scale, gen))
                     adapters += 1
-    model.lm_head = LoRALinear(model.lm_head, args.rank, lora_scale(args), gen)  # rule 2
+    model.lm_head = LoRALinear(model.lm_head, args.rank, scale, gen)  # rule 2
     adapters += 1
     model.to(args.device).train()
     params = [q for q in model.parameters() if q.requires_grad]
@@ -440,7 +443,7 @@ def cmd_torch(args):
         model_dir=args.model_dir, torch=torch.__version__, compile=bool(args.compile),
         threads=threads, records_digest=records_digest(records),
         records={"total": len(records), "train": len(train_rec), "val": len(val_rec)},
-        config=dict(rank=args.rank, alpha=args.alpha, scale=lora_scale(args),
+        config=dict(rank=args.rank, alpha=args.alpha, scale=scale,
                     lr=args.lr, weight_decay=args.weight_decay, optimizer="adamw",
                     bias_correction=True, schedule="const", clip=0, batch_records=args.batch,
                     seq_len=args.seq_len, tokens_per_step=tokens, steps=args.steps,
@@ -717,7 +720,10 @@ def cmd_seeml(args):
         host_key=compile_report.get("kernel_policy", {}).get("host_key"),
         device=(quality or runs[0])["device"], threads=args.threads,
         config=dict(steps=args.quality_steps, tokens_per_step=tokens,
-                    lo=args.lo, hi=args.hi, repeats=args.repeats),
+                    lo=args.lo, hi=args.hi, repeats=args.repeats,
+                    # rule 2: the scale the compiler grafted (one per plan).
+                    scale=compile_report["adapters"][0]["scale"]
+                    if compile_report["adapters"] else None),
         records_digest=sds_records_digest(args.data),
         adapters=len(compile_report["adapters"]),
         adapter_params=sum(a["rank"] * (a["k"] + a["m"]) for a in compile_report["adapters"]),
@@ -766,6 +772,14 @@ def parity_problems(rows, geom=None, rank=None, val0_tol=0.02):
     tokens = {r.get("tokens_per_step") for r in rows}
     if len(tokens) > 1:
         problems.append(f"rows train different tokens per step: {sorted(tokens)}")
+    # Rule 2's scale. A row that records none (an older report) is unknown,
+    # not a mismatch; the SeeAI report prints it to six digits (%g), so the
+    # rows agree to a relative 1e-5.
+    scales = [r["config"]["scale"] for r in rows
+              if isinstance(r.get("config"), dict) and r["config"].get("scale") is not None]
+    if scales and max(scales) - min(scales) > 1e-5 * max(abs(x) for x in scales):
+        problems.append("rows scale their adapters differently: "
+                        f"{sorted({round(x, 6) for x in scales})}")
     if geom and rank:
         for r in rows:
             got = r.get("adapter_params")

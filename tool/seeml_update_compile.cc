@@ -15,6 +15,9 @@
 //       [--distill-weight 0.5]         KL weight for the composite loss
 //       [--temperature 2.0]            distillation temperature
 //       [--lora-rank 8] [--lora-alpha 16] [--lora-seed 42]
+//       [--lora-scaling alpha_over_r|alpha_over_sqrt_r]
+//                                      the adapter scale: alpha / r (the
+//                                      default) or alpha / sqrt(r)
 //       [--targets substr,substr]      restrict adapters to matching weights
 //       [--optimizer adamw|sgd] [--lr 1e-3] [--weight-decay 0.01]
 //       [--clip-norm 0]                per-tensor L2 gradient clip (0 = off)

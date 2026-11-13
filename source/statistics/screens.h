@@ -247,7 +247,7 @@ inline constexpr StatRow kBackendRows[] = {
     {"eval_instructions", "eval program", StatKind::kCount, "instructions",
      "the forward and the loss, for validation"},
     {"merge_instructions", "merge program", StatKind::kCount, "instructions",
-     "each adapter's delta, (alpha ÷ r)·A·B"},
+     "each adapter's delta, s·A·B at its adapter scale s"},
     {"step_instructions", "step program", StatKind::kCount, "instructions",
      "the optimizer step after G micro-batches", screens_detail::kO},
     {"arena_bytes", "arena", StatKind::kBytes, "B",
