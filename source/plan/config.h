@@ -84,8 +84,8 @@ struct OptimizerSpec {
   // scales them all by the one factor it implies.
   float clip_norm = 0.0f;
   bool clip_global = false;
-  LrSchedule lr_schedule = LrSchedule::kConstant;
-  uint64_t warmup_steps = 0;
+  LrSchedule lr_schedule = LrSchedule::kCosineWithWarmup;
+  uint64_t warmup_steps = kWarmupAuto;
   // The cosine floor as a fraction of lr. 0.1 (E8, #91), not 0: a floor of
   // zero makes the schedule's last step — and, before the horizon followed
   // the run, every step past it — train at LR 0, moving nothing while

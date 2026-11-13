@@ -19,11 +19,11 @@
 //                                      the adapter scale: alpha / r (the
 //                                      default) or alpha / sqrt(r)
 //       [--targets substr,substr]      restrict adapters to matching weights
-//       [--optimizer adamw|sgd] [--lr 1e-3] [--weight-decay 0.01]
+//       [--optimizer adamw|sgd] [--lr 2e-3] [--weight-decay 0.01]
 //       [--clip-norm 0]                L2 gradient clip (0 = off)
 //       [--clip-mode per_tensor|global] each tensor's norm, or one over all (#190)
-//       [--lr-schedule const|cosine]   runtime LR schedule
-//       [--warmup 0]                   warmup steps (cosine schedule)
+//       [--lr-schedule cosine|const]   runtime LR schedule (cosine; warmup 5 % of steps)
+//       [--warmup N]                   warmup steps (cosine schedule; default 5 % of --steps)
 //       [--min-lr-factor 0.1]          cosine floor as a fraction of --lr
 //       [--allow-zero-lr]              permit --min-lr-factor 0 (the last
 //                                      step then trains at LR 0)
