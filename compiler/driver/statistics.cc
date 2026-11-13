@@ -317,7 +317,11 @@ void FillBackend(const CompileFacts& f, const UpdateConfig& config,
            static_cast<double>(t.work.FlopsPerStep()) /
                (config.gpu_peak_gflops * 1e6));
   }
-  {
+  // The target (S6 #152): a cross-compile names the key its kernel policy
+  // came from, and claims no GPU it cannot see; otherwise this host.
+  if (!config.target_host.empty()) {
+    be.Set("target", config.target_host + " (--target-host); GPU not described");
+  } else {
     const HostArchInfo host = DetectHostArch();
     be.Set("target", HostKey(host) + "; GPU " +
                          (host.gpu_family.empty() ? std::string("none")

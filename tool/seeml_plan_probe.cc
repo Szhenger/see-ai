@@ -46,7 +46,9 @@
 // instruction, wall time accumulated per opcode and, for the GEMM family,
 // per shape; one JSON object on stdout, largest first. Flushing per
 // instruction serializes a GPU backend, so the numbers attribute time,
-// they do not predict the unprofiled step.
+// they do not predict the unprofiled step. The object also states the
+// section's work per execution (gemm_flops, attention_flops — plan_work.h,
+// the unit of the compiler's analysis screen; S5 #151).
 //
 // The extents come from DescribeInstruction — the bounds proof itself — so
 // the trace can never claim less than the instruction was allowed to write.
@@ -93,6 +95,7 @@
 #include "source/identity/version.h"
 #include "source/parallel/parallel_for.h"
 #include "source/plan/update_types.h"
+#include "source/statistics/plan_work.h"
 #include "tool/probe_trace.h"
 
 namespace {
@@ -505,11 +508,17 @@ std::string ProfileProgram(rt::ExecutorBackend& backend,
     return a.second.first > b.second.first;
   });
   const double n = static_cast<double>(runs);
+  // The section's work, per execution, in the unit the compiler's screens
+  // use (S5 #151 acceptance 3): GEMM 2*M*N*K and attention FLOPs of the
+  // instructions this probe just ran (source/statistics/plan_work.h).
+  const std::span<const up::UpdateInstruction> stream(program.instructions);
   std::printf("{\"backend\": \"%s\", \"executions\": %" PRIu64
               ", \"ms_per_execution\": %.4f, \"relaxed_executions\": %" PRIu64
+              ", \"gemm_flops\": %" PRIu64 ", \"attention_flops\": %" PRIu64
               ", \"rows\": [",
               backend.name(), runs, total / n,
-              backend.relaxed_executions() - relaxed_after_warmup);
+              backend.relaxed_executions() - relaxed_after_warmup,
+              up::GemmFlops(stream), up::AttentionFlops(stream));
   for (size_t i = 0; i < sorted.size(); ++i)
     std::printf("%s{\"key\": \"%s\", \"ms\": %.4f, \"calls\": %" PRIu64 "}",
                 i ? ", " : "", sorted[i].first.c_str(),

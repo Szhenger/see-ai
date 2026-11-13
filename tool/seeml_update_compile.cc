@@ -339,6 +339,7 @@ int main(int argc, char** argv) {
   }
   policy_request.table_path = args.TakeValue("--kernel-policy");
   policy_request.target_host = args.TakeValue("--target-host");
+  if (policy_request.target_host) config.target_host = *policy_request.target_host;
 
   const auto report_path = args.TakeValue("--report");
   const bool no_embed = args.Take("--no-embed");

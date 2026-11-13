@@ -199,6 +199,10 @@ struct UpdateConfig {
   // from a measured, host-keyed kernel-policy table (tool/autotune.py) or
   // an explicit --gemm-tiles; the K tile must be a multiple of 4 (the
   // kernel's unroll width), which the driver checks before assembly.
+  // The host key the kernel policy was looked up under when the compile
+  // targets another machine (--target-host); empty = this host. Read by the
+  // backend screen's target row only: no plan byte depends on it.
+  std::string target_host;
   uint32_t gemm_tile_k = 0;
   uint32_t gemm_tile_n = 0;
   // The target's peak arithmetic rate in GFLOP/s, as the user states it

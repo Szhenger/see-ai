@@ -144,7 +144,9 @@ longer clearly worth it. End to end: `dec_wide` 1,808 → 2,637 tok/s (8T)
 and 390 → 622 (1T); the SmolLM-135M-shaped `tok_smollm135m_q8` fixture
 196 → 269 tok/s on the CPU backend, losses identical to the last printed
 digit. `seeml-plan-probe --profile N` attributes a plan's step per opcode
-and GEMM shape: on `dec_wide` the GEMM family is now ~65% of the step and
+and GEMM shape (and, since 2026-11-13, states the section's work —
+`gemm_flops`, `attention_flops`, per execution, the unit of the compiler's
+analysis screen, which `frontier_exec_test` holds equal to it): on `dec_wide` the GEMM family is now ~65% of the step and
 the attention family ~24% — the f64 score reductions of #77 and the S²
 cache of E11 (#94) are where the next CPU kernel dollar goes, not GEMM.
 

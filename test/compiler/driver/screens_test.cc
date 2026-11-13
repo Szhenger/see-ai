@@ -17,6 +17,7 @@
 #include <variant>
 #include <vector>
 
+#include "compiler/backend/architecture/host_arch.h"
 #include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
 #include "source/plan/update_types.h"
@@ -181,6 +182,22 @@ TEST(CompileScreens, TheActivationsSavedAreTheLoweredPlans) {
               U(plain.screens.analysis, "saved_activation_bytes"));
   EXPECT_TRUE(U(remat.screens.analysis, "saved_activation_bytes") <=
               remat.transient_size);
+}
+
+TEST(CompileScreens, TheTargetIsTheOneThePolicyWasReadFor) {
+  // S6 #152: a cross-compile (--target-host) names the key its kernel policy
+  // came from and claims no GPU; a native compile names this host; the
+  // plan's bytes are the same either way.
+  SmfModel model = MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
+  UpdateConfig config = BaseConfig(16);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate native, UpdateCompiler(config).Compile(model));
+  EXPECT_TRUE(T(native.screens.backend, "target")
+                  .starts_with(HostKey(DetectHostArch()) + "; GPU "));
+  config.target_host = "apple_m9_10p6e";
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate cross, UpdateCompiler(config).Compile(model));
+  EXPECT_EQ(T(cross.screens.backend, "target"),
+            std::string("apple_m9_10p6e (--target-host); GPU not described"));
+  EXPECT_TRUE(native.plan == cross.plan);
 }
 
 TEST(CompileScreens, TheNumbersAreThePlansOwn) {
