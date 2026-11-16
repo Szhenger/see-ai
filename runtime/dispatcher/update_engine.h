@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "runtime/gating/gate.h"
 #include "runtime/loader/plan_loader.h"
 #include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
@@ -477,18 +478,8 @@ class UpdateEngine {
     uint64_t train_samples = 0;
     uint64_t val_samples = 0;
   } binding_;
-  bool has_val_initial_ = false;          // the source model's score
-  bool val_initial_has_accuracy_ = false;
-  float val_initial_loss_ = 0.0f;
-  float val_initial_accuracy_ = 0.0f;
-  bool has_best_ = false;
-  uint64_t best_step_ = 0;
-  float best_loss_ = 0.0f;
-  float best_accuracy_ = 0.0f;
-  uint32_t stale_evals_ = 0;
-  std::vector<uint8_t> best_state_;
+  GateState gate_;  // the source model's score, the best state, patience
   double eval_seconds_ = 0.0;  // accumulated by EvaluateMetrics
-  void SnapshotBest(uint64_t step, float loss, float accuracy);
   uint64_t num_classes_ = 0;              // softmax width, 0 = no class loss
   uint64_t vocab_bound_ = 0;              // narrowest embedding table, 0 = none
   bool merged_ = false;

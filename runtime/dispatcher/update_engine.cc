@@ -354,13 +354,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   horizon_ = 0;
   merged_ = false;
   binding_ = {};
-  has_val_initial_ = val_initial_has_accuracy_ = false;
-  val_initial_loss_ = val_initial_accuracy_ = 0.0f;
-  has_best_ = false;
-  best_step_ = 0;
-  best_loss_ = best_accuracy_ = 0.0f;
-  stale_evals_ = 0;
-  best_state_.clear();
+  gate_.Reset();
   return {};
 }
 
@@ -809,14 +803,14 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   eval_seconds_ = 0.0;
   if (options.validation) {
     report.has_validation = true;
-    if (resumed && has_val_initial_) {
+    if (resumed && gate_.has_val_initial) {
       // The gate's "before" is the SOURCE model's score, which only the
       // first run could measure: a resumed run that re-measured would score
       // the resumed adapter as its baseline and reject an update that
       // merely held steady over the resumed segment.
-      report.val_initial_loss = val_initial_loss_;
-      report.has_val_accuracy = val_initial_has_accuracy_;
-      report.val_initial_accuracy = val_initial_accuracy_;
+      report.val_initial_loss = gate_.val_initial_loss;
+      report.has_val_accuracy = gate_.val_initial_has_accuracy;
+      report.val_initial_accuracy = gate_.val_initial_accuracy;
     } else {
       auto v = EvaluateMetrics(*options.validation);
       if (!v) return std::unexpected(v.error());
@@ -829,10 +823,10 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
                      "stored source-model score; the gate's baseline is the "
                      "resumed state's loss %.6f\n",
                      v->loss);
-      has_val_initial_ = true;
-      val_initial_loss_ = v->loss;
-      val_initial_has_accuracy_ = v->has_accuracy;
-      val_initial_accuracy_ = v->accuracy;
+      gate_.has_val_initial = true;
+      gate_.val_initial_loss = v->loss;
+      gate_.val_initial_has_accuracy = v->has_accuracy;
+      gate_.val_initial_accuracy = v->accuracy;
     }
     if (track_best) {
       report.best_tracked = true;
@@ -843,7 +837,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       // source model's score but no best (the first run did not track)
       // starts from the resumed segment, not the source: scoring it as
       // the source would let any later state between the two displace it.
-      if (!has_best_) {
+      if (!gate_.has_best) {
         float start_loss = report.val_initial_loss;
         float start_accuracy = report.val_initial_accuracy;
         if (resumed) {
@@ -852,7 +846,8 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
           start_loss = v->loss;
           start_accuracy = v->accuracy;
         }
-        SnapshotBest(step_, start_loss, start_accuracy);
+        gate_.Snapshot(arena_, header_.persistent_size, step_, start_loss,
+                       start_accuracy);
       }
     }
   }
@@ -960,20 +955,16 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         auto v = EvaluateMetrics(*options.validation);
         if (!v) return std::unexpected(v.error());
         ++report.evaluations;
-        if (v->loss < best_loss_) {
-          SnapshotBest(step_, v->loss, v->accuracy);
-        } else {
-          ++stale_evals_;
-          out_of_patience =
-              options.patience > 0 && stale_evals_ >= options.patience;
-        }
+        out_of_patience =
+            gate_.Observe(arena_, header_.persistent_size, step_, v->loss,
+                          v->accuracy, options.patience);
         if (options.log_every)
           std::fprintf(stderr,
                        "seeml-update: step %llu  validation loss %.6f "
                        "(best %.6f at step %llu)\n",
                        static_cast<unsigned long long>(step_), v->loss,
-                       best_loss_,
-                       static_cast<unsigned long long>(best_step_));
+                       gate_.best_loss,
+                       static_cast<unsigned long long>(gate_.best_step));
       }
       if (options.checkpoint_every && !options.checkpoint_path.empty() &&
           step_ % options.checkpoint_every == 0) {
@@ -1007,24 +998,25 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
     report.val_last_loss = v->loss;
     report.val_last_accuracy = v->accuracy;
     if (track_best) {
-      if (v->loss < best_loss_) SnapshotBest(step_, v->loss, v->accuracy);
+      if (v->loss < gate_.best_loss)
+        gate_.Snapshot(arena_, header_.persistent_size, step_, v->loss,
+                       v->accuracy);
       // Leave the best evaluated state in the arena: it is what RunMerge
       // and CommitToModel will ship. A checkpoint written after this
       // carries it as both payloads.
-      if (best_step_ != step_) {
-        std::memcpy(arena_, best_state_.data(), best_state_.size());
+      if (gate_.RestoreBest(arena_, step_)) {
         if (options.log_every)
           std::fprintf(stderr,
                        "seeml-update: restored the best state (step %llu, "
                        "validation loss %.6f); the last state (step %llu) "
                        "scored %.6f\n",
-                       static_cast<unsigned long long>(best_step_),
-                       best_loss_, static_cast<unsigned long long>(step_),
+                       static_cast<unsigned long long>(gate_.best_step),
+                       gate_.best_loss, static_cast<unsigned long long>(step_),
                        v->loss);
       }
-      report.best_step = best_step_;
-      report.val_final_loss = best_loss_;
-      report.val_final_accuracy = best_accuracy_;
+      report.best_step = gate_.best_step;
+      report.val_final_loss = gate_.best_loss;
+      report.val_final_accuracy = gate_.best_accuracy;
     } else {
       report.val_final_loss = v->loss;
       report.val_final_accuracy = v->accuracy;
@@ -1084,15 +1076,6 @@ double UpdateEngine::RealRowLoss(uint64_t real, const uint8_t* label_slot,
   // each of its real rows (the duplicates' influence on that mean remains;
   // documented in docs/runtime.md).
   return static_cast<double>(LossValue()) * static_cast<double>(real);
-}
-
-void UpdateEngine::SnapshotBest(uint64_t step, float loss, float accuracy) {
-  best_state_.assign(arena_, arena_ + header_.persistent_size);
-  has_best_ = true;
-  best_step_ = step;
-  best_loss_ = loss;
-  best_accuracy_ = accuracy;
-  stale_evals_ = 0;
 }
 
 std::expected<void, std::string> UpdateEngine::RunMerge() {
@@ -1252,19 +1235,19 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
   record.shuffle_origin = binding_.shuffle_origin;
   record.train_samples = binding_.train_samples;
   record.val_samples = binding_.val_samples;
-  record.has_val_initial = has_val_initial_;
-  record.has_accuracy = val_initial_has_accuracy_;
-  record.val_initial_loss = val_initial_loss_;
-  record.val_initial_accuracy = val_initial_accuracy_;
-  record.has_best = has_best_;
-  record.best_step = best_step_;
-  record.best_loss = best_loss_;
-  record.best_accuracy = best_accuracy_;
-  record.stale_evals = stale_evals_;
+  record.has_val_initial = gate_.has_val_initial;
+  record.has_accuracy = gate_.val_initial_has_accuracy;
+  record.val_initial_loss = gate_.val_initial_loss;
+  record.val_initial_accuracy = gate_.val_initial_accuracy;
+  record.has_best = gate_.has_best;
+  record.best_step = gate_.best_step;
+  record.best_loss = gate_.best_loss;
+  record.best_accuracy = gate_.best_accuracy;
+  record.stale_evals = gate_.stale_evals;
   // The best payload is written only while it differs from the segment
   // being saved: at the moment of a new best the two are the same bytes,
   // and a resume rebuilds the copy from the main payload.
-  if (has_best_ && best_step_ != step_) record.best_payload = best_state_;
+  if (gate_.has_best && gate_.best_step != step_) record.best_payload = gate_.best_state;
   return SaveCheckpointRecord(path, header_.plan_hash, record, arena_,
                               header_.persistent_size, stats);
 }
@@ -1280,23 +1263,23 @@ std::expected<void, std::string> UpdateEngine::LoadCheckpoint(
   binding_.shuffle_origin = record->shuffle_origin;
   binding_.train_samples = record->train_samples;
   binding_.val_samples = record->val_samples;
-  has_val_initial_ = record->has_val_initial;
-  val_initial_has_accuracy_ = record->has_accuracy;
-  val_initial_loss_ = record->val_initial_loss;
-  val_initial_accuracy_ = record->val_initial_accuracy;
-  has_best_ = record->has_best;
-  best_step_ = record->best_step;
-  best_loss_ = record->best_loss;
-  best_accuracy_ = record->best_accuracy;
-  stale_evals_ = record->stale_evals;
+  gate_.has_val_initial = record->has_val_initial;
+  gate_.val_initial_has_accuracy = record->has_accuracy;
+  gate_.val_initial_loss = record->val_initial_loss;
+  gate_.val_initial_accuracy = record->val_initial_accuracy;
+  gate_.has_best = record->has_best;
+  gate_.best_step = record->best_step;
+  gate_.best_loss = record->best_loss;
+  gate_.best_accuracy = record->best_accuracy;
+  gate_.stale_evals = record->stale_evals;
   // The best payload, or — when the checkpoint was written at a new best —
   // the main payload, which is the same bytes.
-  if (!has_best_)
-    best_state_.clear();
+  if (!gate_.has_best)
+    gate_.best_state.clear();
   else if (!record->best_payload.empty())
-    best_state_ = std::move(record->best_payload);
+    gate_.best_state = std::move(record->best_payload);
   else
-    best_state_.assign(arena_, arena_ + header_.persistent_size);
+    gate_.best_state.assign(arena_, arena_ + header_.persistent_size);
   // The restored persistent segment replaces the adapter state any earlier
   // RunMerge materialized deltas from; committing those would patch deltas
   // that no longer match the parameters.

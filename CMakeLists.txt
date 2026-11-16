@@ -168,6 +168,7 @@ add_library(seeml_update_rt STATIC
     runtime/storage/checkpoint.cc
     runtime/loader/contract.cc
     runtime/loader/plan_loader.cc
+    runtime/gating/gate.cc
     runtime/dispatcher/update_engine.cc
 )
 target_link_libraries(seeml_update_rt PUBLIC seeml_parallel)
