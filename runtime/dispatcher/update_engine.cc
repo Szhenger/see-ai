@@ -822,6 +822,18 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   float last_losses[kMaxWindow] = {};
   if (options.record_loss_curve) report.loss_curve.reserve(steps);
 
+  // N12 (2026-11-16 review, D4): the checkpoint of the evaluation that
+  // spent the patience is written before the loop below breaks, so a resume
+  // from it starts with the patience already spent. It stops where the
+  // uninterrupted run stopped — no step, straight to the bracketing
+  // evaluation and the best-state restore that run made — rather than
+  // training on to its next evaluation, where it could adopt a best state
+  // the uninterrupted run never saw.
+  if (track_best && options.patience > 0 &&
+      gate_.stale_evals >= options.patience) {
+    report.stopped_by_patience = true;
+    steps = 0;
+  }
   const uint64_t start = step_;
   uint64_t executed = 0;
   double step_seconds = 0.0;  // the steps alone (S0 #146)

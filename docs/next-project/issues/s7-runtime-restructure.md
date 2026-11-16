@@ -45,3 +45,44 @@ resume (N12). Design: [`docs/next-project/seeai.md`](https://github.com/Szhenger
 - F07, N03, N04, N05, N12 reproductions refused or corrected, with tests.
 - `model_update` prints the runtime screen by default; `seeml-bench` rows
   carry the same struct.
+
+## Status (2026-11-16, PR #200)
+
+Acceptance met. Moves only; each was verified on its own:
+
+- the nine committed-model hashes (fixtures, checkpoint/resume, a split
+  patience run, int8, global clip, Metal, SmolLM-135M on Metal) are the
+  pre-move baseline's;
+- 33 C++ suites, the Python tool suites, plan identity.
+
+| Move | Where | What it holds |
+|---|---|---|
+| 1 loader | `runtime/loader/` | `DecodePlan` (header, metadata, programs, the eval tail, the scans F07 fixed), `AllocateArena`, the plan contract (moved from `dispatcher/`) |
+| 2 gating | `runtime/gating/` | `GateState`: the source model's score, the best state, patience |
+| 3 profiler | `runtime/profiler/` | `StepTimings`, `ScanPhases`, `FillRuntimeScreen`; `seeml-bench` thread rows carry the same screen under `"runtime"` |
+| 4 host | `runtime/host/update_main.cc` | the generated main, out of the compiler's string literal; the emitter reads and vendors it |
+| 5 platform | `source/platform/` | `file_map.h`, `memory.h`, `durable.h`: header-only, POSIX |
+| 6 N12 | `dispatcher/update_engine.cc` | a resume whose checkpoint spent the patience stops where the uninterrupted run did |
+
+The six moves cover the acceptance items as follows:
+
+- **Identical behaviour:** the committed hashes above.
+- **F07, N03, N04, N05:** corrected with tests under #143 (CR residuals,
+  #183).
+- **N12:** `UpdateEngineBest.AResumeWithSpentPatienceStopsWhereTheRunStopped`
+  fails without the fix (the resume trains one more step) and passes with
+  it.
+- **The shared screen:** `model_update` prints the runtime screen, and
+  `seeml-bench` rows carry the same struct (`test/tool/bench_runtime_test.py`).
+
+Design text not delivered here, for a follow-up issue:
+
+- **host:** cooperative cancellation (`TrainOptions::should_stop` exists,
+  but nothing sets it from a signal); a thread and affinity policy.
+- **pipeline:** the device raw-text feeder that calls the vendored
+  tokenizer and ingest.
+- **profiler:** energy per token; the `SEEML_STEP_TIMING` and
+  `SEEML_METAL_PROFILE` sites still sit in the dispatcher and the Metal
+  backend.
+- **platform:** the storage writer's sidecar writes, renames and lock still
+  call the OS directly; the Win32 commit proof (§9).
