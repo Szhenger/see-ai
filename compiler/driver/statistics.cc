@@ -1,4 +1,5 @@
 #include "compiler/driver/statistics.h"
+#include "runtime/executor/metal_backend.h"
 
 #include <cinttypes>
 #include <cmath>
@@ -326,6 +327,16 @@ void FillBackend(const CompileFacts& f, const UpdateConfig& config,
     be.Set("target", HostKey(host) + "; GPU " +
                          (host.gpu_family.empty() ? std::string("none")
                                                   : host.gpu_family));
+    const update_rt::MetalDeviceInfo gpu = update_rt::DescribeMetalDevice();
+    if (gpu.present) {
+      std::string what = gpu.name;
+      if (gpu.apple_family > 0)
+        what += ", Apple" + std::to_string(gpu.apple_family) + " family";
+      what += gpu.metal4 ? ", Metal 4" : ", Metal 3 or earlier";
+      be.Set("gpu_device", what);
+      be.Set("gpu_working_set_bytes", gpu.working_set_bytes);
+    }
+    if (host.gpu_cores > 0) be.Set("gpu_cores", host.gpu_cores);
   }
   be.Set("kernel_policy",
          r.gemm_tile_k == 0 && r.gemm_tile_n == 0

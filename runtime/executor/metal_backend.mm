@@ -2186,6 +2186,28 @@ bool MetalBackendAvailable() {
   }
 }
 
+MetalDeviceInfo DescribeMetalDevice() {
+  MetalDeviceInfo info;
+  @autoreleasepool {
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (device == nil) return info;
+    info.present = true;
+    info.name = device.name ? std::string(device.name.UTF8String) : "unknown";
+    // The family enums by value (MTLGPUFamilyApple1 = 1001 ..., Metal3 = 5001,
+    // Metal4 = 5002), so a newer device than this SDK names still answers:
+    // an unknown value is simply unsupported.
+    for (int n = 16; n >= 1; --n)
+      if ([device supportsFamily:(MTLGPUFamily)(1000 + n)]) {
+        info.apple_family = n;
+        break;
+      }
+    info.metal4 = [device supportsFamily:(MTLGPUFamily)5002];
+    info.working_set_bytes = device.recommendedMaxWorkingSetSize;
+    info.threadgroup_memory_bytes = device.maxThreadgroupMemoryLength;
+  }
+  return info;
+}
+
 std::expected<std::unique_ptr<ExecutorBackend>, std::string>
 CreateMetalBackend() {
   return MetalBackend::Create();

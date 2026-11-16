@@ -33,6 +33,9 @@ struct HostArchInfo {
   // ("Apple M5 GPU"); empty where the host has none the runtime can use.
   // Not part of the host key: the kernel-policy table tunes CPU GEMM tiles.
   std::string gpu_family;
+  // The GPU's core count (IOKit's AGXAccelerator "gpu-core-count" on Apple
+  // silicon); 0 where the host does not report one.
+  uint64_t gpu_cores = 0;
 };
 
 /// The host identity a measured kernel-policy table is keyed on

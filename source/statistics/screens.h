@@ -279,6 +279,17 @@ inline constexpr StatRow kBackendRows[] = {
     {"target", "target", StatKind::kText, "",
      "the compiling host's key and its GPU family",
      screens_detail::kV | screens_detail::kX},
+    // The GPU half of the target (S6 #152): what the build host's Metal
+    // device reports. Volatile — a fact about the host, not the plan.
+    {"gpu_device", "target GPU", StatKind::kText, "",
+     "the Metal device: name, Apple GPU family, Metal 4 support",
+     screens_detail::kO | screens_detail::kX},
+    {"gpu_cores", "GPU cores", StatKind::kCount, "",
+     "the GPU's core count, as IOKit reports it",
+     screens_detail::kO | screens_detail::kX},
+    {"gpu_working_set_bytes", "GPU working set", StatKind::kBytes, "B",
+     "the device's recommended working set: the memory a plan may keep "
+     "resident on the GPU", screens_detail::kO | screens_detail::kX},
     {"kernel_policy", "kernel policy", StatKind::kText, "",
      "the CPU GEMM tiles the header carries", screens_detail::kX},
     {"plan_hash", "plan hash", StatKind::kText, "",

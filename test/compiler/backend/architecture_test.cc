@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "compiler/backend/architecture/host_arch.h"
+#include "runtime/executor/metal_backend.h"
 #include "compiler/backend/architecture/kernel_policy_table.h"
 #include "source/plan/schema.h"
 #include "test/framework/seetest.h"
@@ -34,6 +35,34 @@ TEST(HostArch, DetectionYieldsUsableGeometry) {
   EXPECT_GE(arch.physical_cores, 1u);
   EXPECT_GE(arch.cache_line_bytes, 32u);
   EXPECT_FALSE(arch.cpu_model.empty());
+}
+
+TEST(HostArch, TheGpuHalfOfTheTargetIsWhatTheDeviceReports) {
+  // S6 #152: the Metal device's name, Apple family and Metal 4 support, and
+  // the GPU core count, where the host has a GPU the runtime can use;
+  // nothing claimed where it has none.
+  const HostArchInfo host = DetectHostArch();
+  const seeml::update_rt::MetalDeviceInfo gpu =
+      seeml::update_rt::DescribeMetalDevice();
+  if (!gpu.present) {
+    EXPECT_EQ(gpu.apple_family, 0);
+    EXPECT_FALSE(gpu.metal4);
+    return;
+  }
+  EXPECT_FALSE(gpu.name.empty());
+  EXPECT_TRUE(gpu.working_set_bytes > 0);
+  EXPECT_TRUE(gpu.threadgroup_memory_bytes > 0);
+  EXPECT_TRUE(gpu.apple_family >= 0);
+  if (gpu.apple_family < 7) {
+    // A Metal device outside the Apple-silicon families (M1 is Apple7):
+    // the paravirtual GPU of a macOS virtual machine — the hosted CI
+    // runner reports family 0 and IOKit has no GPU core count for it — or
+    // a discrete GPU. It reports what it has; no core count is claimed.
+    return;
+  }
+#if defined(__APPLE__) && defined(__aarch64__)
+  EXPECT_TRUE(host.gpu_cores > 0);  // the Apple-silicon GPU's own count
+#endif
 }
 
 TEST(HostArch, HostKeyIsPureCanonicalAndOneLine) {

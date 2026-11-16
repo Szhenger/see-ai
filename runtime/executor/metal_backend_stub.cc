@@ -10,6 +10,7 @@
 namespace seeml::update_rt {
 
 bool MetalBackendAvailable() { return false; }
+MetalDeviceInfo DescribeMetalDevice() { return {}; }
 
 std::expected<std::unique_ptr<ExecutorBackend>, std::string>
 CreateMetalBackend() {
