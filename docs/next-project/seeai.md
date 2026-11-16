@@ -129,7 +129,7 @@ build host is not the device.
 
 ## §6 Runtime — nine roles, in lifecycle order
 
-*The directory renames landed on 2026-09-24 (PR #157): verifier, pipeline, dispatcher, storage; host, loader, gating and profiler exist as contract READMEs until S7 extracts their code from the dispatcher. The prose below names the tree after the renames.*
+*The directory renames landed on 2026-09-24 (PR #157): verifier, pipeline, dispatcher, storage. S7 (#153, 2026-11-16) extracted host, loader, gating and profiler from the dispatcher and the compiler, and created `source/platform/`. The prose below names the tree after both.*
 
 **host** (package entry: generated main, flags, exit codes, cooperative
 cancellation; thread and affinity policy) → **loader** (map the plan, seal
@@ -143,11 +143,14 @@ and backends behind the executor seam) → **gating** (evaluate before/after,
 best state, patience, exit 0 or 3) → **storage** (checkpoints, the durable
 atomic commit) — **profiler** throughout (step split, per-kernel spans, peak
 RSS, energy per token; measured beside predicted) and **diagnostics**
-cross-cutting. Today `dispatcher/update_engine.cc` still holds the loader,
-the gate and the profiler together; `verifier/`, `pipeline/` and `storage/`
-are in place. Shared infrastructure outside: `source/parallel` (the deterministic
-pool), `source/plan`, `source/identity`, and a `source/platform/` seam to be
-created.
+cross-cutting. Since S7, every role has its own directory: the generated main
+is `host/update_main.cc`, `loader/` decodes the plan and allocates the arena,
+`gating/` holds the best state and patience, and `profiler/` fills the runtime
+screen. The dispatcher keeps the train loop. Shared infrastructure outside:
+`source/parallel` (the deterministic pool), `source/plan`, `source/identity`,
+and the `source/platform/` seam (file mapping, memory queries, durable replace;
+POSIX). Still open: cancellation and an affinity policy in host, the device
+raw-text feeder in pipeline, energy per token in profiler.
 
 ## §7 Python's five roles
 

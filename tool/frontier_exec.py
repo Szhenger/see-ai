@@ -850,7 +850,7 @@ class Corpus:
         return self.inputs[ids].tobytes(), self.labels[ids].tobytes()
 
     def check(self, plan):
-        """VerifyFeederContract (runtime/dispatcher/contract.cc), mirrored
+        """VerifyFeederContract (runtime/loader/contract.cc), mirrored
         rule for rule (CR2 #143 F47): the geometry, the label kind and
         width, and every staged value's bound — class labels below the
         narrowest softmax width, token ids below the narrowest table (and

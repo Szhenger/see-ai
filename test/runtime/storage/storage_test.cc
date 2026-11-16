@@ -17,7 +17,7 @@
 #include "runtime/storage/checkpoint.h"
 #include "runtime/storage/durable_io.h"
 #include "source/identity/hash.h"
-#include "runtime/dispatcher/contract.h"
+#include "runtime/loader/contract.h"
 #include "test/framework/seetest.h"
 #include "test/support/child_process.h"
 #include "test/support/scoped_temp_dir.h"

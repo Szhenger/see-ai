@@ -53,6 +53,12 @@
 //                                 a peak the harness guessed is not a
 //                                 standard).
 //
+// Every thread row also nests `runtime` (S7 #153): the runtime screen
+// model_update prints, filled by the same function from that width's last
+// timed run. Its measured step is that one run's wall time over its steps
+// (not the regression slope of `step_ms`), its peak RSS is the process's
+// (cumulative across fixtures, as above), and its verdict is "measured".
+//
 // Everything is pinned: fixture seeds, dataset seeds, thread widths (via
 // SetParallelThreadCount, overriding SEEML_THREADS). Medians of --repeats
 // runs. Argument parsing is strict, as in seeml-update-compile: an unknown
@@ -66,6 +72,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <expected>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -77,12 +84,14 @@
 #include "compiler/diagnostics/logger.h"
 #include "compiler/driver/update_compiler.h"
 #include "runtime/dispatcher/update_engine.h"
+#include "runtime/profiler/runtime_screen.h"
 #include "runtime/executor/update_kernels.h"
 #include "source/identity/version.h"
 #include "source/parallel/parallel_for.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/plan_work.h"
-#include "source/statistics/process.h"
+#include "source/platform/memory.h"
+#include "source/statistics/screens.h"
 #include "test/support/builders.h"
 #include "tool/energy_meter.h"
 
@@ -98,7 +107,7 @@ double MsSince(Clock::time_point t0) {
 }
 
 /// OS-observed peak resident set of this process, in bytes — the shared
-/// reading (source/statistics/process.h), so the device's runtime screen
+/// reading (source/platform/memory.h), so the device's runtime screen
 /// and these rows agree (S0 #146).
 uint64_t PeakRssBytes() { return up::PeakRssBytes(); }
 
@@ -723,6 +732,10 @@ int main(int argc, char** argv) {
     // an unprivileged reader sees on macOS 26; whole-SoC either way).
     seeml::bench::EnergyMeter energy;
     std::string energy_domain;
+    // The runtime screen's input-blind loss, a property of the fixture's
+    // corpus: one pass over its labels, not one per thread width.
+    std::optional<double> label_entropy;
+    if (engine.header().label_kind == 1) label_entropy = data->LabelEntropyNats();
     bool first_thread = true;
     for (uint64_t t : threads) {
       up::SetParallelThreadCount(t);
@@ -733,6 +746,7 @@ int main(int argc, char** argv) {
         note(*r);
 
       std::vector<double> per_step_ms, lifecycle_ms, energy_j_per_step;
+      std::optional<rt::TrainReport> last_run;  // the runtime screen's run
       engine.ResetStepTimings();
       for (uint64_t rep = 0; rep < *repeats; ++rep) {
         energy.Start();
@@ -749,6 +763,7 @@ int main(int argc, char** argv) {
         const seeml::bench::EnergyReading e_hi = energy.Stop();
         if (!r_hi) return Fail(f->name + (": " + r_hi.error()));
         note(*r_hi);
+        last_run = *r_hi;
         const double slope = (wall_hi - wall_lo) /
                              static_cast<double>(*hi - *lo);
         per_step_ms.push_back(slope);
@@ -816,6 +831,17 @@ int main(int argc, char** argv) {
                      ", \"energy_j_per_step\": %.5f, \"energy_j_per_token\": "
                      "%.7f",
                      j_step, j_step / static_cast<double>(f->batch_rows));
+      }
+      // The runtime screen (S7 #153): the very struct model_update prints,
+      // filled from this thread count's last timed run — the plan's numbers
+      // beside what that run measured. The bench gates nothing: its verdict
+      // is "measured".
+      if (last_run) {
+        seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);
+        rt::FillRuntimeScreen(runtime_screen, engine, *last_run, peak_gflops,
+                              "measured", label_entropy);
+        std::fprintf(out, ",\n              \"runtime\": %s",
+                     runtime_screen.Json(14).c_str());
       }
       std::fprintf(out, "}");
       first_thread = false;

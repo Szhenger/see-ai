@@ -87,7 +87,7 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   // the build script compiles them from the package directory, never from
   // the repository checkout.
   for (const char* rel :
-       {"runtime/dispatcher/update_engine.cc", "runtime/dispatcher/contract.cc",
+       {"runtime/dispatcher/update_engine.cc", "runtime/loader/contract.cc",
         "runtime/executor/update_kernels.h", "runtime/executor/gemm.cc",
         "runtime/executor/elementwise.cc", "runtime/executor/activation.cc",
         "runtime/executor/normalization.cc", "runtime/executor/loss.cc",
@@ -430,18 +430,26 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     // runs both through a built runner).
     EXPECT_STR_CONTAINS(main_tu, "if (!flags.resume) resumed_from.reset();");
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseF64Strict(s, out)");
+    // S7 #153: the rows are the profiler's, filled by the vendored
+    // FillRuntimeScreen that seeml-bench shares.
+    EXPECT_STR_CONTAINS(main_tu, "seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,");
     // CR4 #145, the storage role's rows: only for a run that saved a
     // checkpoint, the bytes and the fsyncs as means over its checkpoints.
-    EXPECT_STR_CONTAINS(main_tu, "if (report->checkpoints > 0) {");
-    EXPECT_STR_CONTAINS(main_tu,
-                        "runtime_screen.Set(\"checkpoints\", report->checkpoints);");
-    EXPECT_STR_CONTAINS(main_tu,
-                        "report->checkpoint_bytes / report->checkpoints");
-    EXPECT_STR_CONTAINS(main_tu,
-                        "static_cast<double>(report->checkpoint_fsyncs) /");
+    const std::string screen_cc =
+        ReadText(out_dir + "/runtime/profiler/runtime_screen.cc");
+    EXPECT_STR_CONTAINS(screen_cc, "if (report.checkpoints > 0) {");
+    EXPECT_STR_CONTAINS(screen_cc,
+                        "runtime_screen.Set(\"checkpoints\", report.checkpoints);");
+    EXPECT_STR_CONTAINS(screen_cc,
+                        "report.checkpoint_bytes / report.checkpoints");
+    EXPECT_STR_CONTAINS(screen_cc,
+                        "static_cast<double>(report.checkpoint_fsyncs) /");
     for (const char* header :
          {"source/statistics/screen.h", "source/statistics/screens.h",
-          "source/statistics/plan_work.h", "source/statistics/process.h",
+          "source/statistics/plan_work.h", "source/platform/memory.h",
+          "runtime/profiler/step_timings.h",
+          "runtime/profiler/runtime_screen.h",
+          "runtime/profiler/runtime_screen.cc",
           "source/contract/split.h", "source/language/dataset_format.h",
           "source/recipe/recipe.h", "source/recipe/run_flags.h"}) {
       bool vendored = false;

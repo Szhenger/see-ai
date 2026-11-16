@@ -1958,6 +1958,51 @@ TEST(UpdateEngineBest, PatienceStopsARunThatStoppedImproving) {
   EXPECT_TRUE(Persistent(e) == Persistent(fresh));
 }
 
+// N12 (2026-11-16 review, D4): the checkpoint of the evaluation that spent
+// the patience is written before the run stops, so it carries the spent
+// patience. A process killed right after that write resumes from it, and
+// must stop where the uninterrupted run stopped — not train on to its next
+// evaluation, where it could adopt a best state that run never saw.
+TEST(UpdateEngineBest, AResumeWithSpentPatienceStopsWhereTheRunStopped) {
+  using namespace best_state;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("patience.ckpt");
+
+  UpdateEngine straight;
+  ASSERT_OK(straight.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d1 = TrainSet(), v1 = ValSet();
+  TrainOptions o = Quiet();
+  o.validation = &v1;
+  o.eval_every = 1;
+  o.patience = 3;
+  o.checkpoint_path = ckpt;
+  o.checkpoint_every = 1;
+  ASSERT_OK_AND_ASSIGN(auto whole, straight.Train(d1, 200, o));
+  ASSERT_TRUE(whole.stopped_by_patience);
+  ASSERT_LT(whole.steps, 200u);
+  const std::vector<uint8_t> want = Persistent(straight);
+
+  // The last checkpoint is the stopping step's: the state a kill right
+  // after its write leaves behind.
+  UpdateEngine resumed;
+  ASSERT_OK(resumed.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d2 = TrainSet(), v2 = ValSet();
+  TrainOptions ropt = o;
+  ropt.validation = &v2;
+  ropt.checkpoint_every = 0;
+  ropt.resume = true;
+  ASSERT_OK_AND_ASSIGN(auto rest, resumed.Train(d2, 0, ropt));
+  EXPECT_EQ(rest.steps, 0u);
+  EXPECT_TRUE(rest.stopped_by_patience);
+  EXPECT_EQ(resumed.step(), whole.steps);
+  EXPECT_EQ(rest.best_step, whole.best_step);
+  EXPECT_EQ(rest.val_final_loss, whole.val_final_loss);
+  EXPECT_EQ(rest.val_last_loss, whole.val_last_loss);
+  EXPECT_TRUE(Persistent(resumed) == want);
+}
+
 TEST(UpdateEngineBest, AutoEvaluatesEveryTenthOfTheRun) {
   using namespace best_state;
   const std::vector<uint8_t> plan = OverfitPlan();

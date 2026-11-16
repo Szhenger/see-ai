@@ -88,7 +88,7 @@
 #include <utility>
 #include <vector>
 
-#include "runtime/dispatcher/contract.h"
+#include "runtime/loader/contract.h"
 #include "runtime/executor/backend.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"

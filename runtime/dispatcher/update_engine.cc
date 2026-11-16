@@ -20,12 +20,14 @@
 #include "runtime/storage/checkpoint.h"
 #include "runtime/storage/durable_io.h"
 #include "runtime/diagnostics/executing/error.h"
-#include "runtime/dispatcher/contract.h"
+#include "runtime/loader/contract.h"
+#include "runtime/loader/plan_loader.h"
 #include "runtime/executor/backend.h"
 #include "runtime/pipeline/batch_pipeline.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
-#include "source/identity/host_memory.h"
+#include "source/platform/file_map.h"
+#include "source/platform/memory.h"
 #include "source/parallel/parallel_for.h"
 
 namespace seeml::update_rt {
@@ -51,28 +53,6 @@ kernels::GemmTiles UpdateEngine::gemm_tiles() const {
   return KernelPolicyOf(header_).gemm_tiles;
 }
 
-UpdateEngine::Mapping::~Mapping() { Release(); }
-
-UpdateEngine::Mapping::Mapping(Mapping&& other) noexcept
-    : data(std::exchange(other.data, nullptr)),
-      bytes(std::exchange(other.bytes, 0)) {}
-
-UpdateEngine::Mapping& UpdateEngine::Mapping::operator=(
-    Mapping&& other) noexcept {
-  if (this != &other) {
-    Release();
-    data = std::exchange(other.data, nullptr);
-    bytes = std::exchange(other.bytes, 0);
-  }
-  return *this;
-}
-
-void UpdateEngine::Mapping::Release() {
-  if (data) ::munmap(const_cast<uint8_t*>(data), bytes);
-  data = nullptr;
-  bytes = 0;
-}
-
 std::expected<void, std::string> UpdateEngine::BindSourceModel(
     const std::string& source_model_path) {
   if (!arena_) return diag::executing::Error("no plan loaded");
@@ -80,25 +60,19 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
   // Map the file read-only: the eval program reads the f32 weights in place
   // (the page cache serves them; nothing is copied), and the hash below is
   // taken over the very bytes the kernels will read.
-  const int fd = ::open(source_model_path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return diag::executing::Error("cannot open the source model '" +
-                                  source_model_path + "'");
-  struct stat st {};
-  if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
-    ::close(fd);
-    return diag::executing::Error("cannot size the source model '" +
-                                  source_model_path + "'");
-  }
-  const auto bytes = static_cast<size_t>(st.st_size);
-  void* map = ::mmap(nullptr, bytes, PROT_READ, MAP_PRIVATE, fd, 0);
-  ::close(fd);
-  if (map == MAP_FAILED)
-    return diag::executing::Error("cannot map the source model '" +
-                                  source_model_path + "'");
-  Mapping candidate;
-  candidate.data = static_cast<const uint8_t*>(map);
-  candidate.bytes = bytes;
+  auto mapped = platform::MapFile(source_model_path,
+                                  platform::MapAccess::kReadOnly,
+                                  /*require_regular=*/false);
+  if (!mapped)
+    return diag::executing::Error(
+        std::string(mapped.error().stage == platform::MapFailure::kOpen
+                        ? "cannot open"
+                    : mapped.error().stage == platform::MapFailure::kSize
+                        ? "cannot size"
+                        : "cannot map") +
+        " the source model '" + source_model_path + "'");
+  platform::FileMapping candidate = std::move(*mapped);
+  const size_t bytes = candidate.bytes;
   if (up::ContentHash64(candidate.data, bytes) != header_.source_model_hash)
     return diag::executing::Error(
         "source model does not match the plan's source_model_hash — "
@@ -205,17 +179,6 @@ std::expected<void, std::string> UpdateEngine::LoadFromFile(
 
 std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
     const std::string& path) {
-  const int fd = ::open(path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return diag::executing::Error("cannot open the update plan '" + path +
-                                  "' (" + std::strerror(errno) + ")");
-  struct stat st {};
-  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
-    ::close(fd);
-    return diag::executing::Error("cannot size the update plan '" + path +
-                                  "' (not a non-empty regular file)");
-  }
-  const auto bytes = static_cast<size_t>(st.st_size);
   // MAP_PRIVATE with PROT_WRITE: copy-on-write, so the file is never
   // modified through the mapping and a stray write costs one private page
   // instead of the package — the same protection the .incbin embedding's
@@ -224,15 +187,19 @@ std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
   // which is what the Metal backend asks before wrapping the frozen
   // weights zero-copy; the page cache backs them, so a multi-GB plan costs
   // no copy and no second resident image.
-  void* map = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE,
-                     fd, 0);
-  ::close(fd);
-  if (map == MAP_FAILED)
-    return diag::executing::Error("cannot map the update plan '" + path +
-                                  "' (" + std::strerror(errno) + ")");
-  Mapping candidate;
-  candidate.data = static_cast<const uint8_t*>(map);
-  candidate.bytes = bytes;
+  auto mapped = platform::MapFile(path, platform::MapAccess::kCopyOnWrite,
+                                  /*require_regular=*/true);
+  if (!mapped) {
+    const platform::MapFailure f = mapped.error();
+    if (f.stage == platform::MapFailure::kSize)
+      return diag::executing::Error("cannot size the update plan '" + path +
+                                    "' (not a non-empty regular file)");
+    return diag::executing::Error(
+        std::string(f.stage == platform::MapFailure::kOpen ? "cannot open"
+                                                           : "cannot map") +
+        " the update plan '" + path + "' (" + std::strerror(f.err) + ")");
+  }
+  platform::FileMapping candidate = std::move(*mapped);
   // Validate the candidate first: a rejected file must leave the previous
   // plan (borrowed, owned or mapped) exactly as it was. The candidate's
   // destructor unmaps it on the error path; the error names the contract
@@ -251,246 +218,17 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // passed. A failed re-Load must leave the previous plan fully usable —
   // not a half-overwritten mixture of two plans that the `if (!arena_)`
   // guards would happily execute.
-  up::PlanHeader header{};
-  if (plan_size < sizeof(header))
-    return diag::executing::Error("plan smaller than its header");
-  std::memcpy(&header, plan, sizeof(header));
-  if (header.magic != up::kSeeuMagic)
-    return diag::executing::Error("bad plan magic");
-  // Version negotiation (schema.h): additive format bumps stay readable,
-  // semantic breaks raise the floor, unknown-future formats are rejected.
-  // Checked on the freshly decoded local header — the header_ member still
-  // holds whatever plan was loaded before this call.
-  if (header.version < up::kSeeuOldestReadable ||
-      header.version > up::kSeeuVersion)
-    return diag::executing::Error(
-        "unsupported plan version " + std::to_string(header.version) +
-        " (this runtime reads v" + std::to_string(up::kSeeuOldestReadable) +
-        "..v" + std::to_string(up::kSeeuVersion) + ")");
-
-  // Integrity: the plan hashes over itself with the hash field zeroed.
-  // A flipped bit anywhere — header, instructions, frozen weights — fails
-  // here instead of surfacing as silent numerical garbage on-device.
-  {
-    constexpr size_t kHashAt = offsetof(up::PlanHeader, plan_hash);
-    if (up::PlanSelfHash(plan, plan_size, kHashAt) != header.plan_hash)
-      return diag::executing::Error(
-          "plan hash mismatch — the .seeu blob is corrupt");
-  }
-
-  // Plan boundary: the header must be self-consistent with the blob (and
-  // its I/O slots with the arena) before any section is decoded. The
-  // contract also proves every section size overflow-free, so the byte
-  // counts below are plain multiplies.
-  if (auto ok = VerifyPlanContract(header, plan_size); !ok)
-    return std::unexpected(ok.error());
-  // The metadata section (v23): the manifest words and the ledger, held to
-  // the plan they sit in before anything reads them.
-  up::DecodedMetadata metadata;
-  if (auto why = up::PlanMetadataViolation(header, plan, plan_size, &metadata))
-    return diag::executing::Error(*why);
-  const uint64_t train_bytes =
-      header.train_instr_count * sizeof(up::UpdateInstruction);
-  const uint64_t merge_bytes =
-      header.merge_instr_count * sizeof(up::UpdateInstruction);
-  const uint64_t eval_bytes =
-      header.eval_instr_count * sizeof(up::UpdateInstruction);
-  const uint64_t emit_bytes = header.emit_count * sizeof(up::EmitEntry);
-
-  // Decode the instruction streams once; per-step execution touches only the
-  // decoded vectors and the arena. An empty section (the step program of a
-  // plan that does not accumulate) decodes to an empty vector whose data()
-  // is null — memcpy's arguments are declared non-null even for a zero
-  // length, so the copy is skipped, not called.
-  auto decode = [&](auto& out, uint64_t offset, uint64_t bytes) {
-    if (bytes) std::memcpy(out.data(), plan + offset, bytes);
-  };
-  std::vector<up::UpdateInstruction> train(header.train_instr_count);
-  decode(train, header.train_instr_offset, train_bytes);
-  std::vector<up::UpdateInstruction> merge(header.merge_instr_count);
-  decode(merge, header.merge_instr_offset, merge_bytes);
-  std::vector<up::UpdateInstruction> eval(header.eval_instr_count);
-  decode(eval, header.eval_instr_offset, eval_bytes);
-  std::vector<up::UpdateInstruction> step(header.step_instr_count);
-  decode(step, header.step_instr_offset,
-         header.step_instr_count * sizeof(up::UpdateInstruction));
-  std::vector<up::EmitEntry> emit(header.emit_count);
-  decode(emit, header.emit_table_offset, emit_bytes);
-
-  // Executor boundary: every operand ref of every instruction is
-  // bounds-proven by the validator and every emit entry targets the arena —
-  // after this, Execute() dispatches the programs blindly.
-  if (auto ok = VerifyExecutorContract(
-          train, merge, eval, step, emit,
-          std::span<const uint8_t>(plan + header.rodata_offset,
-                                   header.rodata_size),
-          header);
-      !ok)
-    return std::unexpected(ok.error());
-
-  // Softmax class-width discipline (the kernels index rows of this width
-  // with raw dataset labels). Every program must agree on the forward
-  // width — train and eval are the label-consuming ones, and a softmax in
-  // the merge or step program is a crafted plan's, whose narrower rows the
-  // labels bounded by another program's width would index past (CR2
-  // #143 F07: the check walked train and eval alone) — and a class-label
-  // plan with no softmax at all would leave labels entirely unvalidated,
-  // so it is rejected. Scanned on the freshly decoded local streams and
-  // the local header — the members still describe whatever plan was loaded
-  // before this call, and nothing may be committed until every contract
-  // has passed.
-  uint64_t fwd_classes = 0;
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program)
-      if (static_cast<up::OpCode>(ins.opcode) ==
-              up::OpCode::kSoftmaxXEntFwd ||
-          static_cast<up::OpCode>(ins.opcode) ==
-              up::OpCode::kSoftmaxXEntMaskedFwd) {
-        if (fwd_classes != 0 && fwd_classes != ins.out[1])
-          return diag::executing::Error(
-              "plan softmax class widths disagree across programs");
-        fwd_classes = ins.out[1];
-      }
-  if (header.label_kind == 1 && fwd_classes == 0)
-    return diag::executing::Error(
-        "class-label plan carries no softmax cross-entropy — its labels "
-        "could never be validated");
-
-  // The accuracy metric reads the probabilities the eval program's softmax
-  // already materializes (its in[3] write); no extra compute or arena space
-  // is spent. Plans without a class-label softmax report loss only.
-  // Scanned on the freshly decoded local stream — like everything here,
-  // committed to members only after every contract has passed.
-  uint64_t eval_probs_ref = up::kNullRef;
-  uint64_t eval_softmax_rows = 0;
-  uint64_t eval_softmax_cols = 0;
-  // The eval program's loss instruction, when the loss slot is exactly one
-  // row-separable loss (G13, #97): the wrapped duplicates of a final
-  // partial batch can then be excluded from the reported loss exactly, as
-  // they already are from accuracy. A composite loss (xent + KL, pure KL)
-  // is not row-separable from what the program keeps; it is weighted.
-  EvalTail eval_tail;
-  // The source model extent the programs read (v17: the eval program's
-  // f32 weights; v21: every program's, in an adapter-only plan): the file
-  // bound at BindSourceModel must cover it. The contract proved every
-  // source ref against kSourceSpaceLimit; this recovers the real
-  // requirement.
-  uint64_t source_required = 0;
-  bool train_reads_source = false, merge_reads_source = false;
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program)
-      if (auto ex = DescribeInstruction(ins, header.arena_size,
-                                        header.rodata_size, header.version,
-                                        /*allow_source=*/true))
-        for (size_t i = 0; i < ex->count; ++i)
-          if (ex->ranges[i].source) {
-            source_required =
-                std::max(source_required,
-                         ex->ranges[i].off + ex->ranges[i].bytes);
-            if (program == &train || program == &step)
-              train_reads_source = true;
-            else if (program == &merge)
-              merge_reads_source = true;
-          }
-  for (const up::UpdateInstruction& ins : eval) {
-    const auto op = static_cast<up::OpCode>(ins.opcode);
-    if (op == up::OpCode::kSoftmaxXEntFwd ||
-        op == up::OpCode::kSoftmaxXEntMaskedFwd) {
-      eval_probs_ref = ins.in[3];
-      eval_softmax_rows = ins.out[0];
-      eval_softmax_cols = ins.out[1];
-      if (ins.in[2] == header.loss_ref && ins.out[0] == header.batch)
-        eval_tail = {op == up::OpCode::kSoftmaxXEntFwd ? EvalTail::kXent
-                                                        : EvalTail::kXentMasked,
-                     ins.in[3], ins.in[1], ins.out[1]};
-    } else if (op == up::OpCode::kMseFwd && ins.in[2] == header.loss_ref &&
-               header.batch > 0 && ins.out[0] % header.batch == 0) {
-      eval_tail = {EvalTail::kMse, ins.in[0], ins.in[1],
-                   ins.out[0] / header.batch};
-    }
-  }
-
-  // Class count for validating class-index labels at Train() time. The raw
-  // dataset labels feed every softmax kernel in every program, so the check
-  // must hold for the narrowest width anywhere — not just the train
-  // program's last softmax, which would leave a narrower eval softmax
-  // indexing past its validated rows.
-  uint64_t num_classes = 0;
-  // Every program, the step program included (CR2 #143 F07): a softmax
-  // anywhere narrows the bound the feeder enforces on every staged label.
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program) {
-      const auto op = static_cast<up::OpCode>(ins.opcode);
-      if (op != up::OpCode::kSoftmaxXEntFwd &&
-          op != up::OpCode::kSoftmaxXEntBwd &&
-          op != up::OpCode::kSoftmaxXEntMaskedFwd &&
-          op != up::OpCode::kSoftmaxXEntMaskedBwd)
-        continue;
-      const uint64_t classes = ins.out[1];
-      if (classes != 0 && (num_classes == 0 || classes < num_classes))
-        num_classes = classes;
-    }
-
-  // Token-native plans (v7): the vocab bound plays the role class labels'
-  // softmax width plays — every staged token indexes embedding rows, so the
-  // narrowest table anywhere is the runtime bound the feeder contract will
-  // enforce, and a token plan with NO embedding would leave the ids
-  // entirely unvalidated (and meaningless), so it is rejected. Sequence
-  // geometry must divide the batch: staging serves whole records.
-  uint64_t vocab_bound = 0;
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program)
-      if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kEmbedFwd) {
-        const uint64_t vocab = ins.out[1] >> 32;
-        if (vocab != 0 && (vocab_bound == 0 || vocab < vocab_bound))
-          vocab_bound = vocab;
-      }
-  if (header.input_kind > 1)
-    return diag::executing::Error("unknown plan input kind " +
-                                  std::to_string(header.input_kind));
-  if (header.input_kind == 1) {
-    if (vocab_bound == 0)
-      return diag::executing::Error(
-          "token plan carries no embedding — its token ids could never be "
-          "validated");
-    if (header.seq_len == 0 || header.batch % header.seq_len != 0)
-      return diag::executing::Error(
-          "token plan sequence length must be nonzero and divide the batch");
-  }
-
-  // The single allocation of the update: the pre-planned arena. Its size was
-  // known at compile time — the device's resource contract.
-  // Bound before rounding: on a 32-bit host a u64 arena_size past SIZE_MAX
-  // would otherwise truncate into a small allocation the validator's
-  // (u64) bounds proof does not cover — the feeder guards the same class.
-  // Page-aligned (kArenaAlignment) so a GPU backend can wrap it as a
-  // zero-copy shared buffer; on the CPU path the alignment changes the
-  // allocation's address and nothing else.
-  if (header.arena_size > SIZE_MAX - kArenaAlignment)
-    return diag::executing::Error(
-        "plan arena of " + std::to_string(header.arena_size) +
-        " bytes exceeds this host's address space");
-  // An arena the host cannot hold is refused before the allocation is
-  // attempted: the executing fuzzer (CR3 #144 F22) reached aligned_alloc
-  // with a header asking for exabytes — an abort under the sanitizer, and
-  // on an overcommitting host a lazy success that dies at the first touch.
-  // A host that reports no memory (an unknown platform) is bounded by the
-  // allocation's own failure, as before.
-  if (const uint64_t host = up::DetectHostMemoryBytes();
-      host != 0 && header.arena_size > host)
-    return diag::executing::Error(
-        "plan arena of " + std::to_string(header.arena_size) +
-        " bytes exceeds this host's memory (" + std::to_string(host) +
-        " bytes)");
-  const size_t arena_bytes =
-      (static_cast<size_t>(header.arena_size) + (kArenaAlignment - 1)) &
-      ~size_t{kArenaAlignment - 1};
-  uint8_t* arena = static_cast<uint8_t*>(
-      std::aligned_alloc(kArenaAlignment, arena_bytes));
-  if (!arena) return diag::executing::Error("arena allocation failed");
-  std::memset(arena, 0, arena_bytes);
-  std::memcpy(arena, plan + header.persist_init_offset,
-              header.persist_init_size);
+  // The loader (S7 #153): every container and executor rule, the decode
+  // and the scans, then the one arena — all into locals; members are only
+  // assigned in the commit block at the end.
+  auto decoded = DecodePlan(plan, plan_size);
+  if (!decoded) return std::unexpected(decoded.error());
+  DecodedPlan& d = *decoded;
+  const up::PlanHeader& header = d.header;
+  auto allocated = AllocateArena(header, plan);
+  if (!allocated) return std::unexpected(allocated.error());
+  uint8_t* arena = allocated->data;
+  const size_t arena_bytes = allocated->bytes;
 
   // Executor boundary, second half: the backend must accept the address
   // spaces (a GPU backend wraps them as device-visible buffers here). A
@@ -532,49 +270,35 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   arena_ = arena;
   arena_bytes_ = arena_bytes;
   header_ = header;
-  metadata_ = std::move(metadata);
-  train_program_ = std::move(train);
-  merge_program_ = std::move(merge);
-  eval_program_ = std::move(eval);
-  step_program_ = std::move(step);
+  metadata_ = std::move(d.metadata);
+  train_program_ = std::move(d.train);
+  merge_program_ = std::move(d.merge);
+  eval_program_ = std::move(d.eval);
+  step_program_ = std::move(d.step);
   grad_accum_ = std::max<uint64_t>(1, header.grad_accum_steps);
 #ifdef SEEML_STEP_TIMING
-  // Phase boundaries for the step-latency split (docs/benchmarks.md, Tier
-  // A): the forward pass ends after the LAST loss-forward instruction
-  // (kXEntPlusKL emits two, adjacent), and the optimizer phase starts at
-  // the FIRST clip/step instruction — everything between is the backward
-  // sweep. A missing family degrades to an empty range, never a bad split.
-  train_bwd_begin_ = train_program_.size();
-  train_opt_begin_ = train_program_.size();
-  for (size_t i = 0; i < train_program_.size(); ++i) {
-    const auto op = static_cast<up::OpCode>(train_program_[i].opcode);
-    if (op == up::OpCode::kSoftmaxXEntFwd ||
-        op == up::OpCode::kSoftmaxXEntMaskedFwd || op == up::OpCode::kMseFwd ||
-        op == up::OpCode::kKLDistillFwd)
-      train_bwd_begin_ = i + 1;
-    if ((op == up::OpCode::kClipNorm || op == up::OpCode::kSqNormAccum ||
-         op == up::OpCode::kClipGlobal || op == up::OpCode::kSgdStep ||
-         op == up::OpCode::kAdamWStep) &&
-        train_opt_begin_ == train_program_.size())
-      train_opt_begin_ = i;
+  // Phase boundaries for the step-latency split (the profiler's scan).
+  {
+    const PhaseBoundaries phases = ScanPhases(train_program_);
+    train_bwd_begin_ = phases.bwd_begin;
+    train_opt_begin_ = phases.opt_begin;
   }
-  if (train_opt_begin_ < train_bwd_begin_) train_opt_begin_ = train_bwd_begin_;
   timings_ = {};
 #endif
-  emit_table_ = std::move(emit);
-  num_classes_ = num_classes;
-  vocab_bound_ = vocab_bound;
-  eval_probs_ref_ = eval_probs_ref;
-  eval_softmax_rows_ = eval_softmax_rows;
-  eval_softmax_cols_ = eval_softmax_cols;
-  eval_tail_ = eval_tail;
+  emit_table_ = std::move(d.emit);
+  num_classes_ = d.num_classes;
+  vocab_bound_ = d.vocab_bound;
+  eval_probs_ref_ = d.eval_probs_ref;
+  eval_softmax_rows_ = d.eval_softmax_rows;
+  eval_softmax_cols_ = d.eval_softmax_cols;
+  eval_tail_ = d.eval_tail;
   // A new plan needs its own source binding: the old file (if any) was
   // verified against another plan's hash.
   if (source_.data) (void)backend_->BindSource(nullptr, 0);
   source_.Release();
-  source_required_ = source_required;
-  train_reads_source_ = train_reads_source;
-  merge_reads_source_ = merge_reads_source;
+  source_required_ = d.source_required;
+  train_reads_source_ = d.train_reads_source;
+  merge_reads_source_ = d.merge_reads_source;
   plan_ = plan;
   plan_size_ = plan_size;
   rodata_ = plan + header.rodata_offset;
@@ -582,13 +306,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   horizon_ = 0;
   merged_ = false;
   binding_ = {};
-  has_val_initial_ = val_initial_has_accuracy_ = false;
-  val_initial_loss_ = val_initial_accuracy_ = 0.0f;
-  has_best_ = false;
-  best_step_ = 0;
-  best_loss_ = best_accuracy_ = 0.0f;
-  stale_evals_ = 0;
-  best_state_.clear();
+  gate_.Reset();
   return {};
 }
 
@@ -1037,14 +755,14 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   eval_seconds_ = 0.0;
   if (options.validation) {
     report.has_validation = true;
-    if (resumed && has_val_initial_) {
+    if (resumed && gate_.has_val_initial) {
       // The gate's "before" is the SOURCE model's score, which only the
       // first run could measure: a resumed run that re-measured would score
       // the resumed adapter as its baseline and reject an update that
       // merely held steady over the resumed segment.
-      report.val_initial_loss = val_initial_loss_;
-      report.has_val_accuracy = val_initial_has_accuracy_;
-      report.val_initial_accuracy = val_initial_accuracy_;
+      report.val_initial_loss = gate_.val_initial_loss;
+      report.has_val_accuracy = gate_.val_initial_has_accuracy;
+      report.val_initial_accuracy = gate_.val_initial_accuracy;
     } else {
       auto v = EvaluateMetrics(*options.validation);
       if (!v) return std::unexpected(v.error());
@@ -1057,10 +775,10 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
                      "stored source-model score; the gate's baseline is the "
                      "resumed state's loss %.6f\n",
                      v->loss);
-      has_val_initial_ = true;
-      val_initial_loss_ = v->loss;
-      val_initial_has_accuracy_ = v->has_accuracy;
-      val_initial_accuracy_ = v->accuracy;
+      gate_.has_val_initial = true;
+      gate_.val_initial_loss = v->loss;
+      gate_.val_initial_has_accuracy = v->has_accuracy;
+      gate_.val_initial_accuracy = v->accuracy;
     }
     if (track_best) {
       report.best_tracked = true;
@@ -1071,7 +789,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       // source model's score but no best (the first run did not track)
       // starts from the resumed segment, not the source: scoring it as
       // the source would let any later state between the two displace it.
-      if (!has_best_) {
+      if (!gate_.has_best) {
         float start_loss = report.val_initial_loss;
         float start_accuracy = report.val_initial_accuracy;
         if (resumed) {
@@ -1080,7 +798,8 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
           start_loss = v->loss;
           start_accuracy = v->accuracy;
         }
-        SnapshotBest(step_, start_loss, start_accuracy);
+        gate_.Snapshot(arena_, header_.persistent_size, step_, start_loss,
+                       start_accuracy);
       }
     }
   }
@@ -1103,6 +822,18 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   float last_losses[kMaxWindow] = {};
   if (options.record_loss_curve) report.loss_curve.reserve(steps);
 
+  // N12 (2026-11-16 review, D4): the checkpoint of the evaluation that
+  // spent the patience is written before the loop below breaks, so a resume
+  // from it starts with the patience already spent. It stops where the
+  // uninterrupted run stopped — no step, straight to the bracketing
+  // evaluation and the best-state restore that run made — rather than
+  // training on to its next evaluation, where it could adopt a best state
+  // the uninterrupted run never saw.
+  if (track_best && options.patience > 0 &&
+      gate_.stale_evals >= options.patience) {
+    report.stopped_by_patience = true;
+    steps = 0;
+  }
   const uint64_t start = step_;
   uint64_t executed = 0;
   double step_seconds = 0.0;  // the steps alone (S0 #146)
@@ -1188,20 +919,16 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         auto v = EvaluateMetrics(*options.validation);
         if (!v) return std::unexpected(v.error());
         ++report.evaluations;
-        if (v->loss < best_loss_) {
-          SnapshotBest(step_, v->loss, v->accuracy);
-        } else {
-          ++stale_evals_;
-          out_of_patience =
-              options.patience > 0 && stale_evals_ >= options.patience;
-        }
+        out_of_patience =
+            gate_.Observe(arena_, header_.persistent_size, step_, v->loss,
+                          v->accuracy, options.patience);
         if (options.log_every)
           std::fprintf(stderr,
                        "seeml-update: step %llu  validation loss %.6f "
                        "(best %.6f at step %llu)\n",
                        static_cast<unsigned long long>(step_), v->loss,
-                       best_loss_,
-                       static_cast<unsigned long long>(best_step_));
+                       gate_.best_loss,
+                       static_cast<unsigned long long>(gate_.best_step));
       }
       if (options.checkpoint_every && !options.checkpoint_path.empty() &&
           step_ % options.checkpoint_every == 0) {
@@ -1235,24 +962,25 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
     report.val_last_loss = v->loss;
     report.val_last_accuracy = v->accuracy;
     if (track_best) {
-      if (v->loss < best_loss_) SnapshotBest(step_, v->loss, v->accuracy);
+      if (v->loss < gate_.best_loss)
+        gate_.Snapshot(arena_, header_.persistent_size, step_, v->loss,
+                       v->accuracy);
       // Leave the best evaluated state in the arena: it is what RunMerge
       // and CommitToModel will ship. A checkpoint written after this
       // carries it as both payloads.
-      if (best_step_ != step_) {
-        std::memcpy(arena_, best_state_.data(), best_state_.size());
+      if (gate_.RestoreBest(arena_, step_)) {
         if (options.log_every)
           std::fprintf(stderr,
                        "seeml-update: restored the best state (step %llu, "
                        "validation loss %.6f); the last state (step %llu) "
                        "scored %.6f\n",
-                       static_cast<unsigned long long>(best_step_),
-                       best_loss_, static_cast<unsigned long long>(step_),
+                       static_cast<unsigned long long>(gate_.best_step),
+                       gate_.best_loss, static_cast<unsigned long long>(step_),
                        v->loss);
       }
-      report.best_step = best_step_;
-      report.val_final_loss = best_loss_;
-      report.val_final_accuracy = best_accuracy_;
+      report.best_step = gate_.best_step;
+      report.val_final_loss = gate_.best_loss;
+      report.val_final_accuracy = gate_.best_accuracy;
     } else {
       report.val_final_loss = v->loss;
       report.val_final_accuracy = v->accuracy;
@@ -1312,15 +1040,6 @@ double UpdateEngine::RealRowLoss(uint64_t real, const uint8_t* label_slot,
   // each of its real rows (the duplicates' influence on that mean remains;
   // documented in docs/runtime.md).
   return static_cast<double>(LossValue()) * static_cast<double>(real);
-}
-
-void UpdateEngine::SnapshotBest(uint64_t step, float loss, float accuracy) {
-  best_state_.assign(arena_, arena_ + header_.persistent_size);
-  has_best_ = true;
-  best_step_ = step;
-  best_loss_ = loss;
-  best_accuracy_ = accuracy;
-  stale_evals_ = 0;
 }
 
 std::expected<void, std::string> UpdateEngine::RunMerge() {
@@ -1480,19 +1199,19 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
   record.shuffle_origin = binding_.shuffle_origin;
   record.train_samples = binding_.train_samples;
   record.val_samples = binding_.val_samples;
-  record.has_val_initial = has_val_initial_;
-  record.has_accuracy = val_initial_has_accuracy_;
-  record.val_initial_loss = val_initial_loss_;
-  record.val_initial_accuracy = val_initial_accuracy_;
-  record.has_best = has_best_;
-  record.best_step = best_step_;
-  record.best_loss = best_loss_;
-  record.best_accuracy = best_accuracy_;
-  record.stale_evals = stale_evals_;
+  record.has_val_initial = gate_.has_val_initial;
+  record.has_accuracy = gate_.val_initial_has_accuracy;
+  record.val_initial_loss = gate_.val_initial_loss;
+  record.val_initial_accuracy = gate_.val_initial_accuracy;
+  record.has_best = gate_.has_best;
+  record.best_step = gate_.best_step;
+  record.best_loss = gate_.best_loss;
+  record.best_accuracy = gate_.best_accuracy;
+  record.stale_evals = gate_.stale_evals;
   // The best payload is written only while it differs from the segment
   // being saved: at the moment of a new best the two are the same bytes,
   // and a resume rebuilds the copy from the main payload.
-  if (has_best_ && best_step_ != step_) record.best_payload = best_state_;
+  if (gate_.has_best && gate_.best_step != step_) record.best_payload = gate_.best_state;
   return SaveCheckpointRecord(path, header_.plan_hash, record, arena_,
                               header_.persistent_size, stats);
 }
@@ -1508,23 +1227,23 @@ std::expected<void, std::string> UpdateEngine::LoadCheckpoint(
   binding_.shuffle_origin = record->shuffle_origin;
   binding_.train_samples = record->train_samples;
   binding_.val_samples = record->val_samples;
-  has_val_initial_ = record->has_val_initial;
-  val_initial_has_accuracy_ = record->has_accuracy;
-  val_initial_loss_ = record->val_initial_loss;
-  val_initial_accuracy_ = record->val_initial_accuracy;
-  has_best_ = record->has_best;
-  best_step_ = record->best_step;
-  best_loss_ = record->best_loss;
-  best_accuracy_ = record->best_accuracy;
-  stale_evals_ = record->stale_evals;
+  gate_.has_val_initial = record->has_val_initial;
+  gate_.val_initial_has_accuracy = record->has_accuracy;
+  gate_.val_initial_loss = record->val_initial_loss;
+  gate_.val_initial_accuracy = record->val_initial_accuracy;
+  gate_.has_best = record->has_best;
+  gate_.best_step = record->best_step;
+  gate_.best_loss = record->best_loss;
+  gate_.best_accuracy = record->best_accuracy;
+  gate_.stale_evals = record->stale_evals;
   // The best payload, or — when the checkpoint was written at a new best —
   // the main payload, which is the same bytes.
-  if (!has_best_)
-    best_state_.clear();
+  if (!gate_.has_best)
+    gate_.best_state.clear();
   else if (!record->best_payload.empty())
-    best_state_ = std::move(record->best_payload);
+    gate_.best_state = std::move(record->best_payload);
   else
-    best_state_.assign(arena_, arena_ + header_.persistent_size);
+    gate_.best_state.assign(arena_, arena_ + header_.persistent_size);
   // The restored persistent segment replaces the adapter state any earlier
   // RunMerge materialized deltas from; committing those would patch deltas
   // that no longer match the parameters.

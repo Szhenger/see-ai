@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "runtime/gating/gate.h"
+#include "source/platform/file_map.h"
+#include "runtime/loader/plan_loader.h"
+#include "runtime/profiler/step_timings.h"
 #include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "runtime/executor/backend.h"
@@ -123,22 +127,6 @@ struct EvalMetrics {
   float loss = 0.0f;
   float accuracy = 0.0f;
   bool has_accuracy = false;
-};
-
-/// Accumulated wall-clock split of the training instruction stream, per
-/// phase: forward (stream start through the loss forward), backward, and
-/// clip + optimizer. Populated only when the runtime is built with
-/// -DSEEML_STEP_TIMING (the benchmark-harness build; see
-/// docs/benchmarks.md) — in every other build all fields stay zero and no
-/// clock is read inside the step, so the shipped runtime is untouched.
-/// The fields are unconditional so the header is identical under both
-/// builds (no ODR hazard between differently-configured objects).
-struct StepTimings {
-  uint64_t steps = 0;         // optimizer steps accumulated (G grad
-                              // executions each under accumulation)
-  double fwd_seconds = 0.0;
-  double bwd_seconds = 0.0;
-  double opt_seconds = 0.0;
 };
 
 struct TrainReport {
@@ -414,21 +402,10 @@ class UpdateEngine {
   [[maybe_unused]] size_t train_bwd_begin_ = 0;  // first instr after loss fwd
   [[maybe_unused]] size_t train_opt_begin_ = 0;  // first clip/optimizer instr
   std::vector<uint8_t> owned_plan_;       // LoadFromFile: a heap copy
-  // An mmap'd file region owned by the engine: unmapped on Release, on
-  // destruction, or when a move-assignment supersedes it. Move-only, so
-  // the mapping can be handed over (`member = std::move(candidate)`)
-  // without a second owner ever unmapping it.
-  struct Mapping {
-    const uint8_t* data = nullptr;
-    size_t bytes = 0;
-    Mapping() = default;
-    Mapping(const Mapping&) = delete;
-    Mapping& operator=(const Mapping&) = delete;
-    Mapping(Mapping&& other) noexcept;
-    Mapping& operator=(Mapping&& other) noexcept;
-    ~Mapping();
-    void Release();
-  };
+  // An mmap'd file region owned by the engine (the platform seam's,
+  // source/platform/file_map.h): unmapped on Release, on destruction, or
+  // when a move-assignment supersedes it.
+  using Mapping = seeml::platform::FileMapping;
   // LoadFromFileMapped: the plan file's private mapping (#158), released
   // with the engine or when another load supersedes it.
   Mapping plan_map_;
@@ -476,18 +453,8 @@ class UpdateEngine {
     uint64_t train_samples = 0;
     uint64_t val_samples = 0;
   } binding_;
-  bool has_val_initial_ = false;          // the source model's score
-  bool val_initial_has_accuracy_ = false;
-  float val_initial_loss_ = 0.0f;
-  float val_initial_accuracy_ = 0.0f;
-  bool has_best_ = false;
-  uint64_t best_step_ = 0;
-  float best_loss_ = 0.0f;
-  float best_accuracy_ = 0.0f;
-  uint32_t stale_evals_ = 0;
-  std::vector<uint8_t> best_state_;
+  GateState gate_;  // the source model's score, the best state, patience
   double eval_seconds_ = 0.0;  // accumulated by EvaluateMetrics
-  void SnapshotBest(uint64_t step, float loss, float accuracy);
   uint64_t num_classes_ = 0;              // softmax width, 0 = no class loss
   uint64_t vocab_bound_ = 0;              // narrowest embedding table, 0 = none
   bool merged_ = false;
@@ -499,12 +466,7 @@ class UpdateEngine {
   // exactly for a lone cross-entropy (a = probs, b = labels, width =
   // classes) or MSE (a = pred, b = target, width = elements per row),
   // by real-row weight for a composite loss.
-  struct EvalTail {
-    enum Kind { kWeighted, kXent, kMse, kXentMasked } kind = kWeighted;
-    uint64_t a = seeml::update::kNullRef;
-    uint64_t b = seeml::update::kNullRef;
-    uint64_t width = 0;
-  } eval_tail_;
+  EvalTail eval_tail_;  // the loader's (runtime/loader/plan_loader.h)
   double RealRowLoss(uint64_t real, const uint8_t* label_slot,
                      uint64_t* counted) const;
   uint64_t eval_probs_ref_ = seeml::update::kNullRef;

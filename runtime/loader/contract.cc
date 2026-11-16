@@ -1,4 +1,4 @@
-#include "runtime/dispatcher/contract.h"
+#include "runtime/loader/contract.h"
 
 #include <cmath>
 #include <cstring>

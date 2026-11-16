@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "compiler/driver/update_compiler.h"
-#include "runtime/dispatcher/contract.h"
+#include "runtime/loader/contract.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/plan/update_types.h"
 #include "test/framework/seetest.h"
