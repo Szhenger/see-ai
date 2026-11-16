@@ -1,4 +1,8 @@
 #include "compiler/backend/architecture/host_arch.h"
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
+#endif
 
 #include "source/plan/schema.h"  // kDefaultGemmPanelFloats
 
@@ -124,6 +128,29 @@ bool PanelExceedsBytes(size_t a, size_t b, uint64_t cap_bytes) {
 
 }  // namespace
 
+#if defined(__APPLE__)
+/// The GPU core count IOKit reports for the SoC's accelerator, or 0.
+uint64_t AppleGpuCores() {
+  uint64_t cores = 0;
+  io_service_t service = IOServiceGetMatchingService(
+      kIOMainPortDefault, IOServiceMatching("AGXAccelerator"));
+  if (service == IO_OBJECT_NULL) return 0;
+  CFTypeRef value = IORegistryEntryCreateCFProperty(
+      service, CFSTR("gpu-core-count"), kCFAllocatorDefault, 0);
+  if (value != nullptr) {
+    if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+      int64_t n = 0;
+      if (CFNumberGetValue(static_cast<CFNumberRef>(value), kCFNumberSInt64Type, &n) &&
+          n > 0)
+        cores = static_cast<uint64_t>(n);
+    }
+    CFRelease(value);
+  }
+  IOObjectRelease(service);
+  return cores;
+}
+#endif
+
 HostArchInfo DetectHostArch() {
   HostArchInfo info;
 
@@ -154,6 +181,7 @@ HostArchInfo DetectHostArch() {
   if (info.cpu_model.starts_with("Apple "))
     info.gpu_family = info.cpu_model + " GPU";
 #endif
+  info.gpu_cores = AppleGpuCores();
   info.l1d_bytes = SysctlU64("hw.l1dcachesize");
   info.l2_bytes = SysctlU64("hw.l2cachesize");
   if (uint64_t cores = SysctlU64("hw.physicalcpu"); cores > 0)

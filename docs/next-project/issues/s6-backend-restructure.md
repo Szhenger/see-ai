@@ -82,6 +82,33 @@ the MSE opcode drop and the attention segment operand of design item 2
 (the conv lowering is gone; the MSE drop was deferred to its own issue);
 scheduling stays gated on F8 (#139).
 
+## Status 2026-11-16
+
+The design items left by the 2026-11-12 status, closed on
+`claude/v100b-s6-close`:
+
+- **Packaging** vendors the tokenizer and the text ingest (sanitize,
+  deduplicate, encode, pack) and **compiles and links them** into every
+  `model_update` (`NativeEmitter.ThePackageCompilesTheTokenizerAndTheTextIngest`).
+  Before, `byte_level_bpe.cc` was vendored and never compiled and
+  `text_ingest` was not vendored at all (review 2026-11-16, D3). The
+  runner's raw-text feeder that calls them is S7's pipeline (#153).
+- **The GPU half of the target description:** the Metal device's name, its
+  highest Apple GPU family, Metal 4 support and recommended working set
+  (`DescribeMetalDevice`, beside `MetalBackendAvailable`), and the GPU core
+  count from IOKit (`HostArchInfo::gpu_cores`), on the backend screen as
+  volatile rows — "Apple M5, Apple10 family, Metal 4", 10 cores, 11.8 GiB on
+  the reference host. No plan byte depends on them. The peak stays the
+  stated `--gpu-peak-gflops`: a compile-time GPU benchmark would measure the
+  build host, not the device.
+- **Design item 2's ISA residue is handed off:** dropping the MSE opcodes
+  to #193 (a decision), the attention segment operand's tiled family to
+  #191 (step 2). Conv had no opcode to drop.
+
+Acceptance 1 and 2 hold as before (plan identity on 17 fixtures;
+`test/tool/driver_shape_test.py`). Acceptance 3's predicted-vs-measured line
+is printed; its 2026-11-12 numbers were taken on battery.
+
 ## Acceptance
 
 - Bit-identical `.seeu` and packages for every fixture before and after the

@@ -151,6 +151,32 @@ TEST(NativeEmitter, EmitsCompletePackage) {
               std::filesystem::perms::none);
 }
 
+TEST(NativeEmitter, ThePackageCompilesTheTokenizerAndTheTextIngest) {
+  // S6 #152: the tokenizer and the text ingest (sanitize, deduplicate,
+  // encode, pack) the device re-runs on its own text are vendored into the
+  // package AND compiled and linked by its build script — a vendored file
+  // that nothing compiles proves nothing.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(6, 10, 3, 1);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  const std::string out_dir = (dir.path() / "pkg").string();
+  std::filesystem::create_directories(out_dir);
+  ASSERT_OK_AND_ASSIGN(EmitPaths paths,
+                       EmitNativePackage(compiled.plan, out_dir, RepoRoot()));
+  for (const char* f : {"source/tokenizer/byte_level_bpe.cc",
+                        "source/tokenizer/byte_level_bpe.h",
+                        "source/tokenizer/text_ingest.cc",
+                        "source/tokenizer/text_ingest.h",
+                        "source/tokenizer/unicode_tables.h",
+                        "source/language/dataset_format.h"})
+    EXPECT_TRUE(std::filesystem::exists(out_dir + "/" + f));
+  const std::string script = ReadText(paths.build_script);
+  EXPECT_STR_CONTAINS(script, "-c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o");
+  EXPECT_STR_CONTAINS(script, "-c source/tokenizer/text_ingest.cc -o text_ingest.o");
+  EXPECT_STR_CONTAINS(script, "byte_level_bpe.o text_ingest.o");
+}
+
 TEST(NativeEmitter, SkipsTheDecimalTUOnRequest) {
   ScopedTempDir dir;
   SmfModel model = MakeMlp(6, 10, 3, 4);

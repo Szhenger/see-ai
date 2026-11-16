@@ -1,6 +1,7 @@
 #ifndef SEEML_RUNTIME_EXECUTOR_METAL_BACKEND_H_
 #define SEEML_RUNTIME_EXECUTOR_METAL_BACKEND_H_
 
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <string>
@@ -22,6 +23,21 @@ namespace seeml::update_rt {
 
 /// Whether this runtime carries the Metal backend AND a device exists.
 bool MetalBackendAvailable();
+
+/// What the build host's Metal device is (S6 #152, the GPU half of the target
+/// description): its name, the highest Apple GPU family it supports, whether it
+/// reports the Metal 4 family, its recommended working set and threadgroup
+/// memory. Empty (`present` false) where no device or no Metal build exists.
+/// The compiler states it on the backend screen; no plan byte depends on it.
+struct MetalDeviceInfo {
+  bool present = false;
+  std::string name;
+  int apple_family = 0;  // N of MTLGPUFamilyAppleN, 0 = none reported
+  bool metal4 = false;
+  uint64_t working_set_bytes = 0;
+  uint64_t threadgroup_memory_bytes = 0;
+};
+MetalDeviceInfo DescribeMetalDevice();
 
 /// Builds the Metal backend, JIT-compiling the kernel library for the
 /// default device. Fails with a one-line reason where unavailable.

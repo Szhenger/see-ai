@@ -102,7 +102,7 @@ if [ "$(uname)" = "Darwin" ]; then
   echo "  OBJCXX runtime/executor/metal_gemm.mm"
   eval "$CXX $FLAGS -x objective-c++ -fobjc-arc -c runtime/executor/metal_gemm.mm -o build/rt_metal_gemm.o"
   METAL_OBJS="build/rt_metal_gemm.o"
-  METAL_LDFLAGS="-framework Metal -framework Foundation"
+  METAL_LDFLAGS="-framework Metal -framework Foundation -framework IOKit -framework CoreFoundation"
   BENCH_LDFLAGS="-framework CoreFoundation"
 fi
 # The Metal executor backend (G1b) exists on Darwin unless SEEML_NO_METAL is

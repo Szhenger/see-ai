@@ -1017,11 +1017,14 @@ constexpr const char* kVendoredSources[] = {
     "source/statistics/screen.h",         "source/statistics/screens.h",
     "source/statistics/plan_work.h",      "source/statistics/process.h",
     "source/parallel/parallel_for.h",     "source/parallel/parallel_for.cc",
-    // The data path (S2 #148): the SDS format the feeder reads and the
-    // tokenizer the device re-runs on its own text.
+    // The data path (S2 #148): the SDS format the feeder reads, and the
+    // tokenizer and text ingest (sanitize, deduplicate, encode, pack) the
+    // device re-runs on its own text — vendored and compiled into every
+    // package (S6 #152); the runner's raw-text feeder is S7's (#153).
     "source/language/dataset_format.h",
     "source/tokenizer/tokenizer_format.h", "source/tokenizer/unicode_tables.h",
     "source/tokenizer/byte_level_bpe.h",   "source/tokenizer/byte_level_bpe.cc",
+    "source/tokenizer/text_ingest.h",      "source/tokenizer/text_ingest.cc",
 };
 
 std::string BuildScript(bool relaxed_plan) {
@@ -1122,6 +1125,8 @@ std::string BuildScript(bool relaxed_plan) {
   s += "fi\n";
   s += "$CXX $FLAGS -c update_main.cc -o update_main.o\n";
   s += "$CXX $FLAGS -c source/parallel/parallel_for.cc -o parallel_for.o\n";
+  s += "$CXX $FLAGS -c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o\n";
+  s += "$CXX $FLAGS -c source/tokenizer/text_ingest.cc -o text_ingest.o\n";
   s += "for unit in executor/gemm executor/elementwise executor/activation "
        "executor/normalization executor/loss executor/optimizer "
        "executor/attention executor/backend executor/cpu_backend "
@@ -1164,6 +1169,7 @@ std::string BuildScript(bool relaxed_plan) {
        "activation.o normalization.o loss.o optimizer.o attention.o "
        "backend.o cpu_backend.o $METAL_OBJ "
        "parallel_for.o durable_io.o plan_validator.o checkpoint.o "
+       "byte_level_bpe.o text_ingest.o "
        "$METAL_LDFLAGS $ACCEL_LDFLAGS -o model_update\n";
   s += "# The .o files are intermediates; the deliverable is the binary (and,\n";
   s += "# in the disk mode, the plan file beside it).\n";
