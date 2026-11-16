@@ -1144,6 +1144,36 @@ TEST(SegmentMask, NoRowSeesAnotherDocumentAndUnmaskedRowsKeepTheirBits) {
   EXPECT_BITWISE_EQ_F32(pu, pz);
 }
 
+TEST(SegmentMask, StartsOutsideTheRowAreClampedNotFollowed) {
+  // Review 2026-11-16 D1: a start below 0 or past the row is a loop bound
+  // the kernel never follows — it clamps into [0, i]. Under ASan (CI's job)
+  // an unclamped start of S + 100 or of -5 would write past the P row.
+  const size_t B = 1, S = 4, H = 1, d = 2, D = H * d;
+  std::vector<float> q(B * S * D, 0.5f), kk(B * S * D, 0.25f), v(B * S * D);
+  for (size_t t = 0; t < v.size(); ++t) v[t] = static_cast<float>(t);
+  auto run = [&](const std::vector<int32_t>& st) {
+    std::vector<float> o(B * S * D), p(B * H * S * S + 64, -7.0f);  // + a canary
+    k::AttnFwd(q.data(), kk.data(), v.data(), o.data(), p.data(), B, S, H, d,
+               st.data());
+    return std::make_pair(o, p);
+  };
+  auto canary_intact = [&](const std::vector<float>& p) {
+    for (size_t t = B * H * S * S; t < p.size(); ++t)
+      if (p[t] != -7.0f) return false;
+    return true;
+  };
+  // Garbage, and what it clamps to: start 0 for the negatives, the row
+  // itself (its own key only) for the ones past it.
+  const auto [og, pg] = run({-5, 104, -2147483647 - 1, 2147483647});
+  const auto [oc, pc] = run({0, 1, 0, 3});
+  EXPECT_TRUE(canary_intact(pg));  // nothing written past the P cache
+  EXPECT_BITWISE_EQ_F32(oc, og);
+  EXPECT_BITWISE_EQ_F32(pc, pg);
+  // A row clamped to its own key attends to itself alone.
+  EXPECT_EQ(pg[1 * S + 1], 1.0f);
+  EXPECT_EQ(pg[3 * S + 3], 1.0f);
+}
+
 TEST(ClipGlobal, EveryTensorSharesTheOneFactorAndTheJointNormLandsOnTheCap) {
   // #190: ||a||^2 = 169, ||b||^2 = 25 — one norm, sqrt(194), over both; a
   // cap of 1 scales both by the same 1 / sqrt(194), so the update keeps its

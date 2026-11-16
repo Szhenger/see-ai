@@ -1584,6 +1584,19 @@ TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
   ExpectRangeClose("the masked output", *twin, o, B * S * D, 1e-5, 1e-5);
   ExpectRangeClose("the masked probabilities", *twin, p, B * H * S * S, 1e-5,
                    1e-5);
+  // Garbage starts (review 2026-11-16 D1): both backends clamp them into
+  // [0, i] alike — the same probabilities, no write outside the P cache.
+  {
+    std::vector<float> bad = arena;
+    const int32_t garbage[] = {-5, 104, -2147483647 - 1, 2147483647, 3, 0, 9, 1,
+                               0, 0, 0, 0, 0, 0, 0, 0};
+    std::memcpy(bad.data() + st, garbage, sizeof(garbage));
+    auto clamped = RunTwin({fwd}, bad, std::vector<uint8_t>(64, 0));
+    ASSERT_OK(clamped);
+    ExpectRangeClose("clamped probabilities", *clamped, p, B * H * S * S, 1e-5,
+                     1e-5);
+    ExpectRangeClose("clamped output", *clamped, o, B * S * D, 1e-5, 1e-5);
+  }
   // Row 6 of window 0 starts at 6 (EOS at 5): keys 0..5 are exact zeros.
   for (uint32_t h = 0; h < H; ++h)
     for (uint32_t j = 0; j < 6; ++j) {

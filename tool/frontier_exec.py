@@ -1945,7 +1945,8 @@ def _attn_fwd_seg(m, x, ins, step):
     keep = np.zeros((b, 1, s, s), "<f4")
     for bi in range(b):
         for i in range(s):
-            keep[bi, 0, i, int(starts[bi, i]):i + 1] = 1.0
+            # Clamped into [0, i] as the kernels clamp (review D1).
+            keep[bi, 0, i, min(max(int(starts[bi, i]), 0), i):i + 1] = 1.0
     mask = x.host(keep)
     scores = x.matmul(q, x.perm(k, (0, 1, 3, 2))) / math.sqrt(d)
     scores = x.where(mask > 0.0, scores, scores * 0.0 - 1e30)

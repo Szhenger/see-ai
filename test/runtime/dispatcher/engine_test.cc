@@ -355,6 +355,56 @@ TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
                         "without token input");
 }
 
+TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
+  // Review 2026-11-16 D1: kAttnFwdSeg uses each start as a loop bound. Its
+  // starts operand must be a range a kSegmentStarts of the same program
+  // wrote, with nothing written over it since.
+  namespace up = seeml::update;
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.arena_size = 8192;
+  header.rodata_size = 0;
+  const uint64_t B = 1, S = 4, H = 1, d = 2;
+  up::UpdateInstruction seg{};
+  seg.opcode = static_cast<uint16_t>(up::OpCode::kSegmentStarts);
+  seg.in[0] = up::MakeArenaRef(0);     // tokens: 4 i32
+  seg.in[1] = up::MakeArenaRef(64);    // starts: 4 i32
+  seg.out[0] = (B << 32) | S;
+  seg.out[1] = 7;
+  up::UpdateInstruction fwd{};
+  fwd.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwdSeg);
+  fwd.in[0] = up::MakeArenaRef(128);
+  fwd.in[1] = up::MakeArenaRef(192);
+  fwd.in[2] = up::MakeArenaRef(256);
+  fwd.in[3] = up::MakeArenaRef(320);
+  fwd.out[0] = up::MakeArenaRef(384);  // P: 16 floats
+  fwd.out[1] = up::PackAttnGeometry(B, S, H, d);
+  fwd.out[2] = up::MakeArenaRef(64);
+  const std::vector<uint8_t> rodata;
+  auto verify = [&](std::vector<up::UpdateInstruction> train,
+                    std::vector<up::UpdateInstruction> eval = {}) {
+    return VerifyExecutorContract(train, {}, eval, {}, {}, rodata, header);
+  };
+  EXPECT_OK(verify({seg, fwd}));
+  EXPECT_OK(verify({seg, fwd, fwd}));  // read twice, written once
+  // Starts nobody wrote, read before they are written, or read in another
+  // program than the one that wrote them: refused.
+  up::UpdateInstruction elsewhere = fwd;
+  elsewhere.out[2] = up::MakeArenaRef(512);
+  EXPECT_ERROR_CONTAINS(verify({seg, elsewhere}), "segment-masked attention");
+  EXPECT_ERROR_CONTAINS(verify({fwd, seg}), "segment-masked attention");
+  EXPECT_ERROR_CONTAINS(verify({seg}, {fwd}), "segment-masked attention");
+  // A write over the starts in between (here: a fill of the range) retires
+  // them; a second kSegmentStarts re-establishes them.
+  up::UpdateInstruction fill{};
+  fill.opcode = static_cast<uint16_t>(up::OpCode::kFill);
+  fill.in[0] = up::MakeArenaRef(64);
+  fill.in[1] = 0x40000000u;  // 2.0f: a start of 1073741824 as i32 bits
+  fill.out[0] = 4;
+  EXPECT_ERROR_CONTAINS(verify({seg, fill, fwd}), "segment-masked attention");
+  EXPECT_OK(verify({seg, fill, seg, fwd}));
+}
+
 TEST(EngineContract, FeederContractMatchesCorpusToPlanGeometry) {
   up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 2);
   ASSERT_OK_AND_ASSIGN(

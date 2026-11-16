@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -199,7 +200,16 @@ void AttnFwd(const float* q, const float* k, const float* v, float* o,
       float* prow = probs + u * S;
       // The segment mask (v25): keys before this row's document start are
       // masked as the causal ones are; with no starts, every row starts at 0.
-      const size_t j0 = starts ? static_cast<size_t>(starts[b * S + i]) : 0;
+      // Clamped into [0, i] (review 2026-11-16 D1): the contract binds the
+      // starts to a kSegmentStarts result, whose values are positions, and
+      // the kernel holds the bound itself besides — no value read from the
+      // arena is ever a loop bound unchecked. A compiled plan's starts are
+      // already in range, so the clamp changes no bit of it.
+      size_t j0 = 0;
+      if (starts) {
+        const int32_t s0 = starts[b * S + i];
+        j0 = s0 <= 0 ? 0 : std::min(static_cast<size_t>(s0), i);
+      }
       // Scores for the causal prefix j <= i, then a stable row softmax.
       DotRun(qi, k + b * S * D + h * d, D, i + 1, d, dots);
       for (size_t j = 0; j < j0; ++j) prow[j] = 0.0f;  // segment mask
