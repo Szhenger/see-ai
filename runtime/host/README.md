@@ -19,14 +19,37 @@ It holds the host role:
   exporter report. Exit 4 when a requested output failed after the commit
   landed.
 
-Exit codes: 0 committed, 1 a runtime or input failure, 2 a usage error,
-3 rejected by the gate, 4 committed with a failed output.
+Exit codes:
 
-Not here yet:
+- 0 committed;
+- 1 a runtime or input failure;
+- 2 a usage error;
+- 3 rejected by the gate;
+- 4 committed with a failed output;
+- 5 stopped by SIGINT or SIGTERM. The model is untouched, and with
+  `--checkpoint` the stop is checkpointed, so `--resume` finishes the run.
 
-- cooperative cancellation (`TrainOptions::should_stop` exists, but nothing
-  sets it);
-- a thread and affinity policy (`SEEML_THREADS` is read by the pool).
+**Cancellation (#202 item 1):**
+
+- **The signal:** a SIGINT or SIGTERM sets an atomic flag, which the engine
+  polls once per step through `TrainOptions::should_stop`. The handlers are
+  installed just before training, so a signal during load keeps its default
+  action, since there is nothing to checkpoint yet. A second signal kills
+  (`SA_RESETHAND`).
+- **The stop:** the run stops at the step boundary and writes a checkpoint
+  there before anything else touches the arena. It skips the closing
+  evaluation, and the gate never sees the partial update: `--force`
+  cannot commit it.
+- **The resume:** resuming from that checkpoint commits the bytes the
+  uninterrupted run commits (`test/tool/runner_stop_test.py`).
+
+**Threads:** `--threads N` sets the worker pool, over `$SEEML_THREADS` and
+the hardware's count, before the plan loads. The runtime screen records the
+width in its `threads` row. Every width computes the same bits.
+
+Not here yet: a QoS or affinity policy for the workers. It would change
+every absolute timing in the shared pool, so it waits for a host that can be
+measured cleanly (#202).
 
 It is not compiled into any library of the tree (it defines `main`). Every
 package build compiles it, and so do the emitter tests and the end-to-end

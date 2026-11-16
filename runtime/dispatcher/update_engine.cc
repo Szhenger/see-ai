@@ -855,6 +855,24 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
     for (uint64_t s = start; s < start + steps; ++s) {
       if (options.should_stop && options.should_stop()) {
         report.stopped_early = true;
+        // #202 item 1: a stop (the host's SIGINT/SIGTERM) leaves a
+        // checkpoint of the state it stopped at, so a resume finishes the
+        // run the uninterrupted one ran. Written HERE, at the step boundary
+        // the poll sits on and before the bracketing evaluation below could
+        // snapshot a best at a step the uninterrupted run never evaluated or
+        // restore one into the arena — either would put a different run in
+        // the checkpoint (N12's failure, again). Skipped when this step's
+        // periodic checkpoint already holds this state, or when no step ran.
+        if (executed > 0 && !options.checkpoint_path.empty() &&
+            !(options.checkpoint_every &&
+              step_ % options.checkpoint_every == 0)) {
+          DurableWriteStats written;
+          if (auto r = SaveCheckpoint(options.checkpoint_path, &written); !r)
+            return std::unexpected(r.error());
+          ++report.checkpoints;
+          report.checkpoint_bytes += written.bytes;
+          report.checkpoint_fsyncs += written.fsyncs;
+        }
         break;
       }
       step_ = s + 1;  // 1-indexed timestep for AdamW bias correction
@@ -956,7 +974,12 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   report.final_avg_loss =
       last_n ? static_cast<float>(last_sum / last_n) : report.initial_avg_loss;
 
-  if (options.validation) {
+  // A stopped run is not weighed (#202 item 1): the host commits nothing and
+  // the resume re-enters from the checkpoint written at the stop, so the
+  // bracketing evaluation would cost a validation pass for a verdict no one
+  // reads — and its best-state restore would leave the arena holding a state
+  // other than the one checkpointed.
+  if (options.validation && !report.stopped_early) {
     auto v = EvaluateMetrics(*options.validation);
     if (!v) return std::unexpected(v.error());
     report.val_last_loss = v->loss;

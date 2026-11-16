@@ -1,5 +1,7 @@
 #include "runtime/profiler/runtime_screen.h"
 
+#include "source/parallel/parallel_for.h"
+
 #include <cstdio>
 #include <string>
 
@@ -78,17 +80,23 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
   if (report.has_validation) {
     runtime_screen.Set("validation_loss_first",
                        static_cast<double>(report.val_initial_loss));
-    runtime_screen.Set("validation_loss_last",
-                       static_cast<double>(report.val_final_loss));
+    // A stopped run (#202) never scored its end state.
+    if (!report.stopped_early)
+      runtime_screen.Set("validation_loss_last",
+                         static_cast<double>(report.val_final_loss));
   }
   // The input-blind reference is a cross-entropy over the labels the
   // plan trains on: a plan that stages none (distillation, whose loss is a
   // KL) has no such level — the caller passes none.
   if (label_entropy) runtime_screen.Set("label_entropy", *label_entropy);
-  if (report.has_val_accuracy)
+  if (report.has_val_accuracy && !report.stopped_early)
     runtime_screen.Set("validation_accuracy",
                        static_cast<double>(report.val_final_accuracy));
   runtime_screen.Set("verdict", std::string(verdict));
+  // The pool width this run used (#202 item 1): a throughput knob, never a
+  // numerics one, recorded so a measured step is read at its width.
+  runtime_screen.Set("threads",
+                     static_cast<uint64_t>(seeml::update::ParallelThreadCount()));
 }
 
 }  // namespace seeml::update_rt
