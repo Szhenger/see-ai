@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "runtime/loader/plan_loader.h"
 #include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "runtime/executor/backend.h"
@@ -499,12 +500,7 @@ class UpdateEngine {
   // exactly for a lone cross-entropy (a = probs, b = labels, width =
   // classes) or MSE (a = pred, b = target, width = elements per row),
   // by real-row weight for a composite loss.
-  struct EvalTail {
-    enum Kind { kWeighted, kXent, kMse, kXentMasked } kind = kWeighted;
-    uint64_t a = seeml::update::kNullRef;
-    uint64_t b = seeml::update::kNullRef;
-    uint64_t width = 0;
-  } eval_tail_;
+  EvalTail eval_tail_;  // the loader's (runtime/loader/plan_loader.h)
   double RealRowLoss(uint64_t real, const uint8_t* label_slot,
                      uint64_t* counted) const;
   uint64_t eval_probs_ref_ = seeml::update::kNullRef;

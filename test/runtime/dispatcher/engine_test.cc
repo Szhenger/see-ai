@@ -13,7 +13,7 @@
 #include <string>
 
 #include "compiler/driver/update_compiler.h"
-#include "runtime/dispatcher/contract.h"
+#include "runtime/loader/contract.h"
 #include "source/contract/plan_contract.h"
 #include "runtime/dispatcher/update_engine.h"
 #include "source/identity/hash.h"

@@ -1,5 +1,5 @@
-#ifndef SEEML_RUNTIME_DISPATCHER_CONTRACT_H_
-#define SEEML_RUNTIME_DISPATCHER_CONTRACT_H_
+#ifndef SEEML_RUNTIME_LOADER_CONTRACT_H_
+#define SEEML_RUNTIME_LOADER_CONTRACT_H_
 
 #include <cstdint>
 #include <expected>
@@ -82,4 +82,4 @@ namespace seeml::update_rt {
 
 }  // namespace seeml::update_rt
 
-#endif  // SEEML_RUNTIME_DISPATCHER_CONTRACT_H_
+#endif  // SEEML_RUNTIME_LOADER_CONTRACT_H_

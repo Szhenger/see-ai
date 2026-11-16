@@ -122,7 +122,8 @@ compile runtime/pipeline/batch_pipeline.cc      batch_pipeline.o
 compile runtime/storage/durable_io.cc       durable_io.o
 compile runtime/verifier/plan_validator.cc   plan_validator.o
 compile runtime/storage/checkpoint.cc       checkpoint.o
-compile runtime/dispatcher/contract.cc            engine_contract.o
+compile runtime/loader/contract.cc                engine_contract.o
+compile runtime/loader/plan_loader.cc             plan_loader.o
 compile runtime/dispatcher/update_engine.cc       update_engine.o
 compile tool/seeml_update_compile.cc          seeml_update_compile.o
 compile tool/seeml_seeu_dump.cc               seeml_seeu_dump.o
@@ -161,7 +162,7 @@ LIBS="build/model_format.o build/model_reader.o build/export_report.o build/mode
       $METAL_OBJS \
       build/dataset.o \
       build/batch_pipeline.o build/durable_io.o build/plan_validator.o \
-      build/checkpoint.o build/engine_contract.o build/update_engine.o \
+      build/checkpoint.o build/engine_contract.o build/plan_loader.o build/update_engine.o \
       build/parallel_for.o build/tokenizer_bpe.o build/tokenizer_ingest.o"
 TESTING="build/seetest_registry.o build/seetest_main.o \
          build/scoped_temp_dir.o build/fixtures_models.o \

@@ -166,7 +166,8 @@ add_library(seeml_update_rt STATIC
     runtime/storage/durable_io.cc
     runtime/verifier/plan_validator.cc
     runtime/storage/checkpoint.cc
-    runtime/dispatcher/contract.cc
+    runtime/loader/contract.cc
+    runtime/loader/plan_loader.cc
     runtime/dispatcher/update_engine.cc
 )
 target_link_libraries(seeml_update_rt PUBLIC seeml_parallel)

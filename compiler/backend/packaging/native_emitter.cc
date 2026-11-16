@@ -985,7 +985,8 @@ int main(int argc, char** argv) {
 // the deliverable.
 constexpr const char* kVendoredSources[] = {
     "runtime/dispatcher/update_engine.h",     "runtime/dispatcher/update_engine.cc",
-    "runtime/dispatcher/contract.h",          "runtime/dispatcher/contract.cc",
+    "runtime/loader/contract.h",          "runtime/loader/contract.cc",
+    "runtime/loader/plan_loader.h",       "runtime/loader/plan_loader.cc",
     "runtime/executor/update_kernels.h",  "runtime/executor/kernel_policy.h",
     "runtime/executor/gemm.cc",           "runtime/executor/elementwise.cc",
     "runtime/executor/activation.cc",     "runtime/executor/normalization.cc",
@@ -1131,7 +1132,7 @@ std::string BuildScript(bool relaxed_plan) {
        "executor/normalization executor/loss executor/optimizer "
        "executor/attention executor/backend executor/cpu_backend "
        "pipeline/dataset pipeline/batch_pipeline verifier/plan_validator "
-       "storage/durable_io storage/checkpoint dispatcher/contract "
+       "storage/durable_io storage/checkpoint loader/contract loader/plan_loader "
        "dispatcher/update_engine; do\n";
   s += "  $CXX $FLAGS -c \"runtime/$unit.cc\" -o \"$(basename $unit).o\"\n";
   s += "done\n";
@@ -1165,7 +1166,7 @@ std::string BuildScript(bool relaxed_plan) {
        "-o metal_backend_stub.o\n";
   s += "fi\n";
   s += "$CXX $FLAGS update_main.o update_plan_embedded.o update_engine.o "
-       "contract.o dataset.o batch_pipeline.o gemm.o elementwise.o "
+       "contract.o plan_loader.o dataset.o batch_pipeline.o gemm.o elementwise.o "
        "activation.o normalization.o loss.o optimizer.o attention.o "
        "backend.o cpu_backend.o $METAL_OBJ "
        "parallel_for.o durable_io.o plan_validator.o checkpoint.o "

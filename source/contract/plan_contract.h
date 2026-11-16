@@ -16,7 +16,7 @@
 // corpus's header-level shape. No engine, no dataset, no diagnostics unit:
 // each returns the violated rule's reason, or nothing, and each caller
 // reports it under its own unit — the runtime's loader and feeder
-// (runtime/dispatcher/contract.cc), the compiler's backend contract on the
+// (runtime/loader/contract.cc), the compiler's backend contract on the
 // plan it has just emitted (compiler/driver/contract.cc), and the plan probe
 // through the runtime's wrapper. One statement of the rules, so no copy of
 // them can skip one: the review's F07, N03-N05 and F58 were each a copy

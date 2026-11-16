@@ -87,7 +87,7 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   // the build script compiles them from the package directory, never from
   // the repository checkout.
   for (const char* rel :
-       {"runtime/dispatcher/update_engine.cc", "runtime/dispatcher/contract.cc",
+       {"runtime/dispatcher/update_engine.cc", "runtime/loader/contract.cc",
         "runtime/executor/update_kernels.h", "runtime/executor/gemm.cc",
         "runtime/executor/elementwise.cc", "runtime/executor/activation.cc",
         "runtime/executor/normalization.cc", "runtime/executor/loss.cc",
