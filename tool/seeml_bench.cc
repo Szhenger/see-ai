@@ -90,7 +90,7 @@
 #include "source/parallel/parallel_for.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/plan_work.h"
-#include "source/statistics/process.h"
+#include "source/platform/memory.h"
 #include "source/statistics/screens.h"
 #include "test/support/builders.h"
 #include "tool/energy_meter.h"
@@ -107,7 +107,7 @@ double MsSince(Clock::time_point t0) {
 }
 
 /// OS-observed peak resident set of this process, in bytes — the shared
-/// reading (source/statistics/process.h), so the device's runtime screen
+/// reading (source/platform/memory.h), so the device's runtime screen
 /// and these rows agree (S0 #146).
 uint64_t PeakRssBytes() { return up::PeakRssBytes(); }
 

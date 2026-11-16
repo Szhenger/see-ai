@@ -446,7 +446,7 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
                         "static_cast<double>(report.checkpoint_fsyncs) /");
     for (const char* header :
          {"source/statistics/screen.h", "source/statistics/screens.h",
-          "source/statistics/plan_work.h", "source/statistics/process.h",
+          "source/statistics/plan_work.h", "source/platform/memory.h",
           "runtime/profiler/step_timings.h",
           "runtime/profiler/runtime_screen.h",
           "runtime/profiler/runtime_screen.cc",

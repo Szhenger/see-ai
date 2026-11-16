@@ -26,7 +26,8 @@
 #include "runtime/pipeline/batch_pipeline.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
-#include "source/identity/host_memory.h"
+#include "source/platform/file_map.h"
+#include "source/platform/memory.h"
 #include "source/parallel/parallel_for.h"
 
 namespace seeml::update_rt {
@@ -52,28 +53,6 @@ kernels::GemmTiles UpdateEngine::gemm_tiles() const {
   return KernelPolicyOf(header_).gemm_tiles;
 }
 
-UpdateEngine::Mapping::~Mapping() { Release(); }
-
-UpdateEngine::Mapping::Mapping(Mapping&& other) noexcept
-    : data(std::exchange(other.data, nullptr)),
-      bytes(std::exchange(other.bytes, 0)) {}
-
-UpdateEngine::Mapping& UpdateEngine::Mapping::operator=(
-    Mapping&& other) noexcept {
-  if (this != &other) {
-    Release();
-    data = std::exchange(other.data, nullptr);
-    bytes = std::exchange(other.bytes, 0);
-  }
-  return *this;
-}
-
-void UpdateEngine::Mapping::Release() {
-  if (data) ::munmap(const_cast<uint8_t*>(data), bytes);
-  data = nullptr;
-  bytes = 0;
-}
-
 std::expected<void, std::string> UpdateEngine::BindSourceModel(
     const std::string& source_model_path) {
   if (!arena_) return diag::executing::Error("no plan loaded");
@@ -81,25 +60,19 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
   // Map the file read-only: the eval program reads the f32 weights in place
   // (the page cache serves them; nothing is copied), and the hash below is
   // taken over the very bytes the kernels will read.
-  const int fd = ::open(source_model_path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return diag::executing::Error("cannot open the source model '" +
-                                  source_model_path + "'");
-  struct stat st {};
-  if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
-    ::close(fd);
-    return diag::executing::Error("cannot size the source model '" +
-                                  source_model_path + "'");
-  }
-  const auto bytes = static_cast<size_t>(st.st_size);
-  void* map = ::mmap(nullptr, bytes, PROT_READ, MAP_PRIVATE, fd, 0);
-  ::close(fd);
-  if (map == MAP_FAILED)
-    return diag::executing::Error("cannot map the source model '" +
-                                  source_model_path + "'");
-  Mapping candidate;
-  candidate.data = static_cast<const uint8_t*>(map);
-  candidate.bytes = bytes;
+  auto mapped = platform::MapFile(source_model_path,
+                                  platform::MapAccess::kReadOnly,
+                                  /*require_regular=*/false);
+  if (!mapped)
+    return diag::executing::Error(
+        std::string(mapped.error().stage == platform::MapFailure::kOpen
+                        ? "cannot open"
+                    : mapped.error().stage == platform::MapFailure::kSize
+                        ? "cannot size"
+                        : "cannot map") +
+        " the source model '" + source_model_path + "'");
+  platform::FileMapping candidate = std::move(*mapped);
+  const size_t bytes = candidate.bytes;
   if (up::ContentHash64(candidate.data, bytes) != header_.source_model_hash)
     return diag::executing::Error(
         "source model does not match the plan's source_model_hash — "
@@ -206,17 +179,6 @@ std::expected<void, std::string> UpdateEngine::LoadFromFile(
 
 std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
     const std::string& path) {
-  const int fd = ::open(path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return diag::executing::Error("cannot open the update plan '" + path +
-                                  "' (" + std::strerror(errno) + ")");
-  struct stat st {};
-  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
-    ::close(fd);
-    return diag::executing::Error("cannot size the update plan '" + path +
-                                  "' (not a non-empty regular file)");
-  }
-  const auto bytes = static_cast<size_t>(st.st_size);
   // MAP_PRIVATE with PROT_WRITE: copy-on-write, so the file is never
   // modified through the mapping and a stray write costs one private page
   // instead of the package — the same protection the .incbin embedding's
@@ -225,15 +187,19 @@ std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
   // which is what the Metal backend asks before wrapping the frozen
   // weights zero-copy; the page cache backs them, so a multi-GB plan costs
   // no copy and no second resident image.
-  void* map = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE,
-                     fd, 0);
-  ::close(fd);
-  if (map == MAP_FAILED)
-    return diag::executing::Error("cannot map the update plan '" + path +
-                                  "' (" + std::strerror(errno) + ")");
-  Mapping candidate;
-  candidate.data = static_cast<const uint8_t*>(map);
-  candidate.bytes = bytes;
+  auto mapped = platform::MapFile(path, platform::MapAccess::kCopyOnWrite,
+                                  /*require_regular=*/true);
+  if (!mapped) {
+    const platform::MapFailure f = mapped.error();
+    if (f.stage == platform::MapFailure::kSize)
+      return diag::executing::Error("cannot size the update plan '" + path +
+                                    "' (not a non-empty regular file)");
+    return diag::executing::Error(
+        std::string(f.stage == platform::MapFailure::kOpen ? "cannot open"
+                                                           : "cannot map") +
+        " the update plan '" + path + "' (" + std::strerror(f.err) + ")");
+  }
+  platform::FileMapping candidate = std::move(*mapped);
   // Validate the candidate first: a rejected file must leave the previous
   // plan (borrowed, owned or mapped) exactly as it was. The candidate's
   // destructor unmaps it on the error path; the error names the contract

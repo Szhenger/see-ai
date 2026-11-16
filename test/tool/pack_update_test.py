@@ -121,7 +121,10 @@ class SeamTest(unittest.TestCase):
         self.assertIn("const unsigned char kSeemlUpdatePlan[1] = {0};", emitter)
         self.assertIn("const size_t kSeemlUpdatePlanSize = 0;", emitter)
         self.assertIn("> update_plan_none.cc", emitter)
-        self.assertIn("kSeemlUpdatePlanSize > 0", emitter)
+        # The driver (S7 #153: runtime/host/update_main.cc, which the
+        # emitter vendors as the package's update_main.cc) keys the mode.
+        driver = repo_file("runtime/host/update_main.cc")
+        self.assertIn("kSeemlUpdatePlanSize > 0", driver)
 
     def test_stub_symbols_match_the_generated_drivers_externs(self):
         emitter = repo_file("compiler/backend/packaging/native_emitter.cc")
@@ -135,11 +138,11 @@ class SeamTest(unittest.TestCase):
         # The disk mode's contract (#158): the packer leaves PLAN_FILE
         # beside the binary, and the generated driver maps exactly that
         # name from its own directory (or --plan FILE).
-        emitter = repo_file("compiler/backend/packaging/native_emitter.cc")
-        self.assertIn(f'kPlanFileName = "{pu.PLAN_FILE}"', emitter)
-        self.assertIn('ExecutableDir(argv[0]) + "/" + kPlanFileName', emitter)
-        self.assertIn('"--plan"', emitter)
-        self.assertIn("LoadFromFileMapped(plan_path)", emitter)
+        driver = repo_file("runtime/host/update_main.cc")  # S7 #153
+        self.assertIn(f'kPlanFileName = "{pu.PLAN_FILE}"', driver)
+        self.assertIn('ExecutableDir(argv[0]) + "/" + kPlanFileName', driver)
+        self.assertIn('"--plan"', driver)
+        self.assertIn("LoadFromFileMapped(plan_path)", driver)
 
     def test_plan_magic_matches_the_plan_schema(self):
         schema = repo_file("source/plan/schema.h")

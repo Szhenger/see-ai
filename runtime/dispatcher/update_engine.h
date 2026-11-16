@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "runtime/gating/gate.h"
+#include "source/platform/file_map.h"
 #include "runtime/loader/plan_loader.h"
 #include "runtime/profiler/step_timings.h"
 #include "source/plan/metadata.h"
@@ -401,21 +402,10 @@ class UpdateEngine {
   [[maybe_unused]] size_t train_bwd_begin_ = 0;  // first instr after loss fwd
   [[maybe_unused]] size_t train_opt_begin_ = 0;  // first clip/optimizer instr
   std::vector<uint8_t> owned_plan_;       // LoadFromFile: a heap copy
-  // An mmap'd file region owned by the engine: unmapped on Release, on
-  // destruction, or when a move-assignment supersedes it. Move-only, so
-  // the mapping can be handed over (`member = std::move(candidate)`)
-  // without a second owner ever unmapping it.
-  struct Mapping {
-    const uint8_t* data = nullptr;
-    size_t bytes = 0;
-    Mapping() = default;
-    Mapping(const Mapping&) = delete;
-    Mapping& operator=(const Mapping&) = delete;
-    Mapping(Mapping&& other) noexcept;
-    Mapping& operator=(Mapping&& other) noexcept;
-    ~Mapping();
-    void Release();
-  };
+  // An mmap'd file region owned by the engine (the platform seam's,
+  // source/platform/file_map.h): unmapped on Release, on destruction, or
+  // when a move-assignment supersedes it.
+  using Mapping = seeml::platform::FileMapping;
   // LoadFromFileMapped: the plan file's private mapping (#158), released
   // with the engine or when another load supersedes it.
   Mapping plan_map_;

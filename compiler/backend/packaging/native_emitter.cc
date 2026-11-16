@@ -159,12 +159,14 @@ constexpr const char* kVendoredSources[] = {
     "source/plan/bf16.h",
     "source/plan/instruction.h",          "source/plan/schema.h",
     "source/plan/metadata.h",
-    "source/identity/hash.h",             "source/identity/host_memory.h",
+    "source/identity/hash.h",
+    "source/platform/memory.h",           "source/platform/file_map.h",
+    "source/platform/durable.h",
     "source/contract/bounds.h",           "source/contract/plan_contract.h",
     "source/contract/split.h",
     "source/recipe/recipe.h",             "source/recipe/run_flags.h",
     "source/statistics/screen.h",         "source/statistics/screens.h",
-    "source/statistics/plan_work.h",      "source/statistics/process.h",
+    "source/statistics/plan_work.h",
     "source/parallel/parallel_for.h",     "source/parallel/parallel_for.cc",
     // The data path (S2 #148): the SDS format the feeder reads, and the
     // tokenizer and text ingest (sanitize, deduplicate, encode, pack) the

@@ -10,7 +10,7 @@
 #include "runtime/loader/contract.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
-#include "source/identity/host_memory.h"
+#include "source/platform/memory.h"
 
 namespace seeml::update_rt {
 

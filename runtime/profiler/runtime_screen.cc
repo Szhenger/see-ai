@@ -4,7 +4,7 @@
 #include <string>
 
 #include "source/statistics/plan_work.h"
-#include "source/statistics/process.h"
+#include "source/platform/memory.h"
 #include "source/statistics/screens.h"
 
 namespace seeml::update_rt {

@@ -1,5 +1,7 @@
 #include "runtime/storage/durable_io.h"
 
+#include "source/platform/durable.h"
+
 #include <span>
 
 #include "runtime/diagnostics/persisting/error.h"
@@ -104,17 +106,9 @@ std::expected<void, std::string> WriteFileDurable(
   if (::close(fd) != 0) return fail(-1, "close of '" + tmp + "' failed");
   if (std::rename(tmp.c_str(), path.c_str()) != 0)
     return fail(-1, "atomic rename to '" + path + "' failed");
-  // Persist the rename itself.
-  const size_t slash = path.find_last_of('/');
-  const std::string dir = slash == std::string::npos
-                              ? std::string(".")
-                              : path.substr(0, slash == 0 ? 1 : slash);
-  const int dfd = ::open(dir.c_str(), O_RDONLY);
-  if (dfd >= 0) {
-    // Best effort: some filesystems reject directory fsync.
-    if (::fsync(dfd) == 0) ++cost.fsyncs;
-    ::close(dfd);
-  }
+  // Persist the rename itself (best effort: some filesystems reject a
+  // directory fsync).
+  if (platform::SyncParentDirectory(path)) ++cost.fsyncs;
   if (stats) *stats = cost;
   return {};
 #else
@@ -446,17 +440,7 @@ std::expected<void, std::string> DurableFileEdit::Commit() {
                                    "atomic rename to '" + dest_ + "' failed");
 #endif
   committed_ = true;
-#ifndef _WIN32
-  const size_t slash = dest_.find_last_of('/');
-  const std::string dir = slash == std::string::npos
-                              ? std::string(".")
-                              : dest_.substr(0, slash == 0 ? 1 : slash);
-  const int dfd = ::open(dir.c_str(), O_RDONLY);
-  if (dfd >= 0) {
-    ::fsync(dfd);  // best effort: some filesystems reject directory fsync
-    ::close(dfd);
-  }
-#endif
+  (void)platform::SyncParentDirectory(dest_);  // best effort
   return {};
 }
 

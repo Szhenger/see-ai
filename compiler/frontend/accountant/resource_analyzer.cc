@@ -1,7 +1,7 @@
 #include "compiler/frontend/accountant/resource_analyzer.h"
 
 #include "source/contract/bounds.h"
-#include "source/identity/host_memory.h"
+#include "source/platform/memory.h"
 #include "source/plan/instruction.h"
 
 #include <algorithm>
@@ -306,7 +306,7 @@ uint64_t EstimateLoraDeltaBytes(const SmfModel& model,
 }
 
 uint64_t DetectLocalMemoryBytes() {
-  // One query, shared with the runtime's load (source/identity/host_memory.h).
+  // One query, shared with the runtime's load (source/platform/memory.h).
   return DetectHostMemoryBytes();
 }
 

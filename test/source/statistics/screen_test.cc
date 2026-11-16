@@ -16,7 +16,7 @@
 #include "compiler/driver/update_compiler.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/plan_work.h"
-#include "source/statistics/process.h"
+#include "source/platform/memory.h"
 #include "source/statistics/screen.h"
 #include "test/framework/seetest.h"
 #include "test/support/builders.h"
