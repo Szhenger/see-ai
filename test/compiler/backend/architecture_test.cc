@@ -50,11 +50,18 @@ TEST(HostArch, TheGpuHalfOfTheTargetIsWhatTheDeviceReports) {
     return;
   }
   EXPECT_FALSE(gpu.name.empty());
-  EXPECT_TRUE(gpu.apple_family >= 7);  // Apple silicon: M1 is Apple7
   EXPECT_TRUE(gpu.working_set_bytes > 0);
   EXPECT_TRUE(gpu.threadgroup_memory_bytes > 0);
+  EXPECT_TRUE(gpu.apple_family >= 0);
+  if (gpu.apple_family < 7) {
+    // A Metal device outside the Apple-silicon families (M1 is Apple7):
+    // the paravirtual GPU of a macOS virtual machine — the hosted CI
+    // runner reports family 0 and IOKit has no GPU core count for it — or
+    // a discrete GPU. It reports what it has; no core count is claimed.
+    return;
+  }
 #if defined(__APPLE__) && defined(__aarch64__)
-  EXPECT_TRUE(host.gpu_cores > 0);
+  EXPECT_TRUE(host.gpu_cores > 0);  // the Apple-silicon GPU's own count
 #endif
 }
 
