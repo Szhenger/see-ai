@@ -127,6 +127,14 @@ jobs:
             "$t" || fail=1
           done
           exit $fail
+      # S7 #153: seeml-bench rows carry the runtime screen model_update prints.
+      # This job builds seeml-bench (SEEML_BENCH=1), so the test must run, not
+      # skip; the test is standard-library Python.
+      - name: seeml-bench rows carry the runtime screen
+        run: |
+          python3 -m unittest discover -s test/tool -p 'bench_runtime_test.py' -v 2>&1 | tee bench_rt.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ! grep -q "skipped" bench_rt.log
 
   # --- Determinism: identical bits at every pool width -----------------------
   # SEEML_THREADS pins the global worker pool. The bitwise assertions inside
