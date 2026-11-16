@@ -9,6 +9,7 @@
 
 #include "runtime/gating/gate.h"
 #include "runtime/loader/plan_loader.h"
+#include "runtime/profiler/step_timings.h"
 #include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 #include "runtime/executor/backend.h"
@@ -125,22 +126,6 @@ struct EvalMetrics {
   float loss = 0.0f;
   float accuracy = 0.0f;
   bool has_accuracy = false;
-};
-
-/// Accumulated wall-clock split of the training instruction stream, per
-/// phase: forward (stream start through the loss forward), backward, and
-/// clip + optimizer. Populated only when the runtime is built with
-/// -DSEEML_STEP_TIMING (the benchmark-harness build; see
-/// docs/benchmarks.md) — in every other build all fields stay zero and no
-/// clock is read inside the step, so the shipped runtime is untouched.
-/// The fields are unconditional so the header is identical under both
-/// builds (no ODR hazard between differently-configured objects).
-struct StepTimings {
-  uint64_t steps = 0;         // optimizer steps accumulated (G grad
-                              // executions each under accumulation)
-  double fwd_seconds = 0.0;
-  double bwd_seconds = 0.0;
-  double opt_seconds = 0.0;
 };
 
 struct TrainReport {

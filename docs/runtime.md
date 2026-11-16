@@ -18,7 +18,7 @@ runtime/
   executor/     the kernel library the dispatcher executes
   gating/       the accept-or-refuse decision (contract only until S7)
   storage/      durable state — checkpoints, atomic commits
-  profiler/     instrumentation and the runtime screen (contract only until S7)
+  profiler/     the step split and the runtime screen model_update and seeml-bench share
   diagnostics/  error handling, partitioned by process
 ```
 

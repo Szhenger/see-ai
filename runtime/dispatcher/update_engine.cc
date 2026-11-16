@@ -311,26 +311,12 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   step_program_ = std::move(d.step);
   grad_accum_ = std::max<uint64_t>(1, header.grad_accum_steps);
 #ifdef SEEML_STEP_TIMING
-  // Phase boundaries for the step-latency split (docs/benchmarks.md, Tier
-  // A): the forward pass ends after the LAST loss-forward instruction
-  // (kXEntPlusKL emits two, adjacent), and the optimizer phase starts at
-  // the FIRST clip/step instruction — everything between is the backward
-  // sweep. A missing family degrades to an empty range, never a bad split.
-  train_bwd_begin_ = train_program_.size();
-  train_opt_begin_ = train_program_.size();
-  for (size_t i = 0; i < train_program_.size(); ++i) {
-    const auto op = static_cast<up::OpCode>(train_program_[i].opcode);
-    if (op == up::OpCode::kSoftmaxXEntFwd ||
-        op == up::OpCode::kSoftmaxXEntMaskedFwd || op == up::OpCode::kMseFwd ||
-        op == up::OpCode::kKLDistillFwd)
-      train_bwd_begin_ = i + 1;
-    if ((op == up::OpCode::kClipNorm || op == up::OpCode::kSqNormAccum ||
-         op == up::OpCode::kClipGlobal || op == up::OpCode::kSgdStep ||
-         op == up::OpCode::kAdamWStep) &&
-        train_opt_begin_ == train_program_.size())
-      train_opt_begin_ = i;
+  // Phase boundaries for the step-latency split (the profiler's scan).
+  {
+    const PhaseBoundaries phases = ScanPhases(train_program_);
+    train_bwd_begin_ = phases.bwd_begin;
+    train_opt_begin_ = phases.opt_begin;
   }
-  if (train_opt_begin_ < train_bwd_begin_) train_opt_begin_ = train_bwd_begin_;
   timings_ = {};
 #endif
   emit_table_ = std::move(d.emit);
