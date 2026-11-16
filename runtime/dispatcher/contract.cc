@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <vector>
 #include <string>
 
 #include "runtime/diagnostics/executing/error.h"
@@ -64,7 +65,17 @@ std::expected<void, std::string> VerifyExecutorContract(
   // header carries kDataFlagMaskedLoss — the flag is what lets the feeder
   // stage -1 labels, and a plain kernel would index a row with -1.
   bool saw_masked = false;
-  for (const auto* program : {&train, &merge, &eval, &step})
+  // The segment starts (v25, #191; review 2026-11-16 D1): kAttnFwdSeg uses
+  // each start as a loop bound, so its starts operand must be the very range
+  // a kSegmentStarts of the same program wrote — whose values are positions
+  // by construction — with no instruction writing it in between. Per
+  // program: the ranges written by kSegmentStarts and still intact.
+  struct StartsRange {
+    uint64_t ref, off, bytes;
+  };
+  std::vector<StartsRange> starts_live;
+  for (const auto* program : {&train, &merge, &eval, &step}) {
+    starts_live.clear();
     for (const up::UpdateInstruction& ins : *program) {
       // The eval program may read the source model file from v17; every
       // program may from v21 (an adapter-only plan's frozen weights live
@@ -176,6 +187,29 @@ std::expected<void, std::string> VerifyExecutorContract(
       // rodata vector the kernels multiply in blindly — N floats in the
       // forward (NN), K in the dX GEMM (NT): each is a finite positive
       // float (CR1 #142 F33). The validator proved the vector in bounds.
+      if (op == up::OpCode::kAttnFwdSeg) {
+        bool bound = false;
+        for (const StartsRange& s : starts_live) bound |= s.ref == ins.out[2];
+        if (!bound)
+          return diag::executing::Error(
+              "segment-masked attention reads starts no segment_starts of the "
+              "same program wrote (or one written over since)");
+      }
+      // Any write over a live starts range retires it; kSegmentStarts then
+      // (re)establishes the range it writes.
+      for (size_t t = 0; t < extents->count; ++t) {
+        const OperandExtent& r = extents->ranges[t];
+        if (!r.write || r.rodata || r.source) continue;
+        std::erase_if(starts_live, [&](const StartsRange& s) {
+          return r.off < s.off + s.bytes && s.off < r.off + r.bytes;
+        });
+      }
+      if (op == up::OpCode::kSegmentStarts) {
+        const uint64_t positions =
+            (ins.out[0] >> 32) * (ins.out[0] & 0xFFFFFFFFu);
+        starts_live.push_back({ins.in[1], up::RefOffset(ins.in[1]),
+                               positions * sizeof(int32_t)});
+      }
       if ((op == up::OpCode::kGemmNNQ8 || op == up::OpCode::kGemmNTQ8) &&
           (ins.flags & up::kFlagQ8ColScale)) {
         const uint64_t count =
@@ -192,6 +226,7 @@ std::expected<void, std::string> VerifyExecutorContract(
         }
       }
     }
+  }
 
   if ((header.data_flags & up::kDataFlagMaskedLoss) != 0 && !saw_masked)
     return diag::executing::Error(

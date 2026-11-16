@@ -1377,7 +1377,9 @@ kernel void k_attn_softmax(KSIG, uint g [[thread_position_in_grid]],
   uint j0 = 0u;
   if (p.flags & 1u) {
     const uint b = r / (p.H * S);
-    j0 = (uint)((device const int*)(RBASE(1) + p.off[1]))[(ulong)b * S + i];
+    // Clamped into [0, i] as the CPU kernel clamps (review 2026-11-16 D1).
+    const int s0 = ((device const int*)(RBASE(1) + p.off[1]))[(ulong)b * S + i];
+    j0 = s0 <= 0 ? 0u : min((uint)s0, i);
   }
   for (uint j = lane; j < j0; j += 32u) row[j] = 0.0f;
   float m = -INFINITY;
