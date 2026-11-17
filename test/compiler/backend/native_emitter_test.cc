@@ -451,6 +451,8 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
           "runtime/profiler/runtime_screen.h",
           "runtime/profiler/energy_meter.h",
           "runtime/profiler/kernel_profile.h",
+          "source/language/model_format.h",
+          "source/language/smf_preamble.h",
           "runtime/profiler/runtime_screen.cc",
           "source/contract/split.h", "source/language/dataset_format.h",
           "source/recipe/recipe.h", "source/recipe/run_flags.h"}) {

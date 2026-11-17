@@ -174,6 +174,7 @@ constexpr const char* kVendoredSources[] = {
     // device re-runs on its own text — vendored and compiled into every
     // package (S6 #152); the runner's raw-text feeder is S7's (#153).
     "source/language/dataset_format.h",
+    "source/language/model_format.h",     "source/language/smf_preamble.h",
     "source/tokenizer/tokenizer_format.h", "source/tokenizer/unicode_tables.h",
     "source/tokenizer/byte_level_bpe.h",   "source/tokenizer/byte_level_bpe.cc",
     "source/tokenizer/text_ingest.h",      "source/tokenizer/text_ingest.cc",

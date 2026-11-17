@@ -2,6 +2,7 @@
 // The on-device model update program: train LoRA adapters against local
 // data, gate on held-out validation, merge deltas, commit durably.
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -11,6 +12,10 @@
 #include <csignal>
 #include <cstring>
 #include <limits>
+#include <fstream>
+#include <vector>
+#include <iterator>
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -26,10 +31,14 @@
 #include "runtime/profiler/runtime_screen.h"
 #include "runtime/pipeline/dataset.h"
 #include "source/contract/split.h"
+#include "source/identity/hash.h"
+#include "source/language/smf_preamble.h"
 #include "source/parallel/parallel_for.h"
 #include "source/recipe/recipe.h"
 #include "source/recipe/run_flags.h"
 #include "source/statistics/screens.h"
+#include "source/tokenizer/byte_level_bpe.h"
+#include "source/tokenizer/text_ingest.h"
 
 // The plan, in one of two package modes (#158). Embedded: the .incbin stub
 // or the decimal TU defines these as the plan bytes and their count. Disk:
@@ -137,7 +146,7 @@ bool ParseF64(const char* s, double* out) {
 }
 
 constexpr const char* kUsage =
-    "usage: model_update --model <source.smf> --data <corpus.sds>"
+    "usage: model_update --model <source.smf> --data <corpus.sds|text.txt|docs.jsonl>"
     " [--out updated.smf] [--steps N] [--seed S]"
     " [--val-frac F] [--checkpoint ckpt] [--checkpoint-every N]"
     " [--resume] [--loss-log curve.csv] [--backend cpu|metal|auto]"
@@ -147,6 +156,11 @@ constexpr const char* kUsage =
     "  --threads N: the worker-pool width (default: $SEEML_THREADS, else\n"
     "  the hardware's); 1 runs serially. A throughput knob only: every\n"
     "  width computes the same bits.\n"
+    "  --data: a pre-tokenized corpus (.sds), or raw text ingested on the\n"
+    "  device with the model's own tokenizer section (which must be the\n"
+    "  plan's): a .txt is one document, a .jsonl one {\"text\"} or\n"
+    "  {\"prompt\", \"response\"} per line. The run is the run on the SDS\n"
+    "  the compiler would write from the same text.\n"
     "  --peak-gflops G: the target's peak in GFLOP/s, for the runtime\n"
     "  screen's predicted step and utilization (default: the compile's).\n"
     "  --plan FILE: the update plan to run. A package built without an\n"
@@ -223,6 +237,114 @@ bool ArgsOk(int argc, char** argv) {
     }
   }
   return true;
+}
+
+/// The --data file's extension, lowercased ("" when it has none).
+std::string DataExtension(const std::string& path) {
+  const size_t slash = path.find_last_of("/\\");
+  const size_t dot = path.find_last_of('.');
+  if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+    return "";
+  std::string ext = path.substr(dot + 1);
+  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext;
+}
+
+/// Raw text on the device (#202 item 2): a .txt (one document) or a .jsonl
+/// (one {"text"} or {"prompt", "response"} per line) through the vendored
+/// ingest — sanitize, deduplicate, encode, pack — with the model's own
+/// tokenizer section, which must be the one the plan was compiled with. The
+/// dataset is the one the canonical SDS of that ingest loads as: the same
+/// records, the same mask, the same content hash (a plan compiled from the
+/// same text pins exactly that hash), so the run is the SDS run.
+std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
+    const std::string& model_path, const std::string& data_path,
+    const std::string& ext, const seeml::update::PlanHeader& header) {
+  namespace tk = seeml::tokenizer;
+  if (header.input_kind != 1)
+    return std::unexpected(
+        "a feature plan takes no raw text: --data needs its pre-tokenized .sds");
+  if (header.tokenizer_hash == 0)
+    return std::unexpected(
+        "the plan names no tokenizer: raw text needs a model exported with "
+        "its tokenizer section (or pass the pre-tokenized .sds)");
+  std::ifstream model(model_path, std::ios::binary);
+  if (!model) return std::unexpected("cannot open --model '" + model_path + "'");
+  model.seekg(0, std::ios::end);
+  const std::streamoff end = model.tellg();
+  if (end <= 0) return std::unexpected("cannot size --model '" + model_path + "'");
+  const uint64_t model_size = static_cast<uint64_t>(end);
+  std::vector<uint8_t> prefix(static_cast<size_t>(
+      std::min<uint64_t>(model_size, seeml::update::kSmfPreambleMaxBytes)));
+  model.seekg(0);
+  if (!model.read(reinterpret_cast<char*>(prefix.data()),
+                  static_cast<std::streamsize>(prefix.size())))
+    return std::unexpected("cannot read --model '" + model_path + "'");
+  auto pre = seeml::update::ReadSmfPreamble(prefix.data(), prefix.size(),
+                                            model_size);
+  if (!pre) return std::unexpected("--model '" + model_path + "': " + pre.error());
+  if (pre->tokenizer_size == 0)
+    return std::unexpected("--model '" + model_path +
+                           "' carries no tokenizer section: raw text needs one");
+  std::vector<uint8_t> section(static_cast<size_t>(pre->tokenizer_size));
+  model.seekg(static_cast<std::streamoff>(pre->tokenizer_offset));
+  if (!model.read(reinterpret_cast<char*>(section.data()),
+                  static_cast<std::streamsize>(section.size())))
+    return std::unexpected("cannot read the tokenizer section of '" +
+                           model_path + "'");
+  const uint64_t tokenizer_hash =
+      seeml::update::ContentHash64(section.data(), section.size());
+  if (tokenizer_hash != header.tokenizer_hash) {
+    char buf[160];
+    std::snprintf(buf, sizeof buf,
+                  "the model's tokenizer section (%016llx) is not the one the "
+                  "plan was compiled with (%016llx)",
+                  (unsigned long long)tokenizer_hash,
+                  (unsigned long long)header.tokenizer_hash);
+    return std::unexpected(std::string(buf));
+  }
+  auto tok = tk::ByteLevelBpe::Load(section);
+  if (!tok) return std::unexpected("tokenizer section: " + tok.error());
+
+  std::ifstream in(data_path, std::ios::binary);
+  if (!in) return std::unexpected("cannot open --data '" + data_path + "'");
+  std::string text((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  if (in.bad()) return std::unexpected("cannot read --data '" + data_path + "'");
+  std::vector<tk::Document> documents;
+  tk::IngestOptions options;
+  options.seq_len = header.seq_len;
+  if (ext == "txt") {
+    options.one_document = true;
+    documents.push_back({std::move(text), {}, false});
+  } else {
+    auto docs = tk::DocumentsFromJsonl(text);
+    if (!docs) return std::unexpected(data_path + ": " + docs.error());
+    documents = std::move(*docs);
+  }
+  auto ingest = tk::Ingest(*tok, tokenizer_hash, documents, options);
+  if (!ingest) return std::unexpected(ingest.error());
+  const tk::IngestManifest& m = ingest->manifest;
+  std::fprintf(stderr,
+               "seeml-update: ingested '%s': %llu of %llu document(s) kept "
+               "(%llu empty, %llu duplicate, %llu degenerate dropped); %llu "
+               "window(s) of %llu, %llu remainder token(s) dropped; corpus "
+               "%016llx\n",
+               data_path.c_str(), (unsigned long long)m.documents_kept,
+               (unsigned long long)m.documents_in,
+               (unsigned long long)m.dropped_empty,
+               (unsigned long long)m.dropped_duplicate,
+               (unsigned long long)m.dropped_degenerate,
+               (unsigned long long)m.windows,
+               (unsigned long long)header.seq_len,
+               (unsigned long long)m.remainder_tokens,
+               (unsigned long long)ingest->corpus_hash);
+  auto ds = seeml::update_rt::Dataset::FromTokens(
+      std::move(ingest->ids), m.windows, header.seq_len,
+      std::move(ingest->mask), tokenizer_hash);
+  if (!ds) return std::unexpected(ds.error());
+  ds->set_content_hash(ingest->corpus_hash);
+  return std::move(*ds);
 }
 
 }  // namespace
@@ -489,7 +611,12 @@ int main(int argc, char** argv) {
                (unsigned long long)engine.header().persistent_size);
 
   const auto t_data0 = std::chrono::steady_clock::now();
-  auto dataset = seeml::update_rt::Dataset::LoadFromFile(data);
+  // --data: a pre-tokenized .sds, or raw text (#202 item 2) ingested here
+  // with the model's own tokenizer.
+  const std::string data_ext = DataExtension(data);
+  auto dataset = data_ext == "txt" || data_ext == "jsonl"
+                     ? LoadRawText(model, data, data_ext, engine.header())
+                     : seeml::update_rt::Dataset::LoadFromFile(data);
   if (!dataset) {
     std::fprintf(stderr, "data: %s\n", dataset.error().c_str());
     return 1;
