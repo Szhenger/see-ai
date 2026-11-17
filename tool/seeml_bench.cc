@@ -84,6 +84,7 @@
 #include "compiler/diagnostics/logger.h"
 #include "compiler/driver/update_compiler.h"
 #include "runtime/dispatcher/update_engine.h"
+#include "runtime/profiler/energy_meter.h"
 #include "runtime/profiler/runtime_screen.h"
 #include "runtime/executor/update_kernels.h"
 #include "source/identity/version.h"
@@ -93,7 +94,6 @@
 #include "source/platform/memory.h"
 #include "source/statistics/screens.h"
 #include "test/support/builders.h"
-#include "tool/energy_meter.h"
 
 namespace {
 
@@ -730,7 +730,7 @@ int main(int argc, char** argv) {
     // the same regression as the step time — the lifecycle's energy
     // cancels — on the first domain both readings carry (the GPU's is what
     // an unprivileged reader sees on macOS 26; whole-SoC either way).
-    seeml::bench::EnergyMeter energy;
+    rt::EnergyMeter energy;
     std::string energy_domain;
     // The runtime screen's input-blind loss, a property of the fixture's
     // corpus: one pass over its labels, not one per thread width.
@@ -747,23 +747,25 @@ int main(int argc, char** argv) {
 
       std::vector<double> per_step_ms, lifecycle_ms, energy_j_per_step;
       std::optional<rt::TrainReport> last_run;  // the runtime screen's run
+      std::optional<rt::EnergyReading> last_energy;  // and its energy
       engine.ResetStepTimings();
       for (uint64_t rep = 0; rep < *repeats; ++rep) {
         energy.Start();
         const auto t_lo = Clock::now();
         auto r_lo = engine.Train(*data, *lo, quiet);
         const double wall_lo = MsSince(t_lo);
-        const seeml::bench::EnergyReading e_lo = energy.Stop();
+        const rt::EnergyReading e_lo = energy.Stop();
         if (!r_lo) return Fail(f->name + (": " + r_lo.error()));
         note(*r_lo);
         energy.Start();
         const auto t_hi = Clock::now();
         auto r_hi = engine.Train(*data, *hi, quiet);
         const double wall_hi = MsSince(t_hi);
-        const seeml::bench::EnergyReading e_hi = energy.Stop();
+        const rt::EnergyReading e_hi = energy.Stop();
         if (!r_hi) return Fail(f->name + (": " + r_hi.error()));
         note(*r_hi);
         last_run = *r_hi;
+        last_energy = e_hi;
         const double slope = (wall_hi - wall_lo) /
                              static_cast<double>(*hi - *lo);
         per_step_ms.push_back(slope);
@@ -772,8 +774,8 @@ int main(int argc, char** argv) {
         // compute only on the Metal backend: a CPU run has no number.
         if (backend_resolved == "metal") {
           const char* domain = "GPU Energy";
-          const double j_lo = seeml::bench::EnergyMeter::Domain(e_lo, domain);
-          const double j_hi = seeml::bench::EnergyMeter::Domain(e_hi, domain);
+          const double j_lo = rt::EnergyMeter::Domain(e_lo, domain);
+          const double j_hi = rt::EnergyMeter::Domain(e_hi, domain);
           if (j_lo >= 0.0 && j_hi > j_lo) {
             energy_j_per_step.push_back((j_hi - j_lo) /
                                         static_cast<double>(*hi - *lo));
@@ -839,7 +841,8 @@ int main(int argc, char** argv) {
       if (last_run) {
         seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);
         rt::FillRuntimeScreen(runtime_screen, engine, *last_run, peak_gflops,
-                              "measured", label_entropy);
+                              "measured", label_entropy,
+                              last_energy ? &*last_energy : nullptr);
         std::fprintf(out, ",\n              \"runtime\": %s",
                      runtime_screen.Json(14).c_str());
       }

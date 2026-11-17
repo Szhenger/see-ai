@@ -1,7 +1,11 @@
-// Energy per token on macOS for seeml-bench (F6 #134, design item 2): the
-// SoC's energy counters over an interval, read through IOReport — the
-// library behind powermetrics — by an unprivileged process, opened at run
-// time (dlopen: no link-time dependency, and the bench builds everywhere).
+// Energy on macOS (F6 #134 for seeml-bench; the profiler's since #202, so
+// model_update's runtime screen carries it too): the SoC's energy counters
+// over an interval, read through IOReport — the library behind powermetrics
+// — by an unprivileged process, opened at run time (dlopen: no link-time
+// dependency on IOReport). It needs CoreFoundation, whose headers need
+// clang: the real meter is compiled for Apple clang only (a package built
+// there links CoreFoundation), and everywhere else it is the stub that
+// reports itself unavailable.
 //
 // The counters are cumulative per SoC domain (CPU, GPU, ANE, DRAM, ...) in
 // the "Energy Model" channel group; Start() and Stop() sample them and
@@ -15,20 +19,26 @@
 // fails the bench. The bench takes the step-time regression for energy
 // too: (hi run - lo run) / extra steps is the energy per step, the
 // lifecycle removed.
-#ifndef SEEML_TOOL_ENERGY_METER_H_
-#define SEEML_TOOL_ENERGY_METER_H_
+#ifndef SEEML_RUNTIME_PROFILER_ENERGY_METER_H_
+#define SEEML_RUNTIME_PROFILER_ENERGY_METER_H_
 
 #include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && defined(__clang__)
+#define SEEML_ENERGY_IOREPORT 1
+#else
+#define SEEML_ENERGY_IOREPORT 0
+#endif
+
+#if SEEML_ENERGY_IOREPORT
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
 #endif
 
-namespace seeml::bench {
+namespace seeml::update_rt {
 
 struct EnergyReading {
   bool available = false;
@@ -47,7 +57,7 @@ class EnergyMeter {
   const std::string& reason() const { return reason_; }
 
   void Start() {
-#if defined(__APPLE__)
+#if SEEML_ENERGY_IOREPORT
     if (!lib_) return;
     if (start_) CFRelease(start_);
     start_ = create_samples_(sub_, channels_, nullptr);
@@ -57,7 +67,7 @@ class EnergyMeter {
   EnergyReading Stop() {
     EnergyReading out;
     out.reason = reason_;
-#if defined(__APPLE__)
+#if SEEML_ENERGY_IOREPORT
     if (!lib_ || !start_) {
       if (out.reason.empty()) out.reason = "meter not started";
       return out;
@@ -108,7 +118,7 @@ class EnergyMeter {
   }
 
  private:
-#if defined(__APPLE__)
+#if SEEML_ENERGY_IOREPORT
   using CopyChannelsInGroup = CFDictionaryRef (*)(CFStringRef, CFStringRef,
                                                   uint64_t, uint64_t, uint64_t);
   using CreateSubscription = void* (*)(void*, CFMutableDictionaryRef,
@@ -200,6 +210,6 @@ class EnergyMeter {
   std::string reason_;
 };
 
-}  // namespace seeml::bench
+}  // namespace seeml::update_rt
 
-#endif  // SEEML_TOOL_ENERGY_METER_H_
+#endif  // SEEML_RUNTIME_PROFILER_ENERGY_METER_H_

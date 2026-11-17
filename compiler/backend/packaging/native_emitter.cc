@@ -134,7 +134,8 @@ constexpr const char* kVendoredSources[] = {
     "runtime/loader/plan_loader.h",       "runtime/loader/plan_loader.cc",
     "runtime/gating/gate.h",              "runtime/gating/gate.cc",
     "runtime/profiler/step_timings.h",
-    "runtime/profiler/runtime_screen.h",  "runtime/profiler/runtime_screen.cc",
+    "runtime/profiler/runtime_screen.h",
+    "runtime/profiler/energy_meter.h",  "runtime/profiler/runtime_screen.cc",
     "runtime/executor/update_kernels.h",  "runtime/executor/kernel_policy.h",
     "runtime/executor/gemm.cc",           "runtime/executor/elementwise.cc",
     "runtime/executor/activation.cc",     "runtime/executor/normalization.cc",
@@ -315,13 +316,21 @@ std::string BuildScript(bool relaxed_plan) {
   s += "  $CXX $FLAGS -c runtime/executor/metal_backend_stub.cc "
        "-o metal_backend_stub.o\n";
   s += "fi\n";
+  // The profiler's energy meter (#202) reads IOReport through
+  // CoreFoundation where the compiler is Apple clang (energy_meter.h's own
+  // condition), independent of SEEML_NO_METAL; elsewhere it is a stub.
+  s += "ENERGY_LDFLAGS=\"\"\n";
+  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && \"$CXX\" --version 2>/dev/null "
+       "| grep -qi clang; then\n";
+  s += "  ENERGY_LDFLAGS=\"-framework CoreFoundation\"\n";
+  s += "fi\n";
   s += "$CXX $FLAGS update_main.o update_plan_embedded.o update_engine.o "
        "contract.o plan_loader.o gate.o runtime_screen.o dataset.o batch_pipeline.o gemm.o elementwise.o "
        "activation.o normalization.o loss.o optimizer.o attention.o "
        "backend.o cpu_backend.o $METAL_OBJ "
        "parallel_for.o durable_io.o plan_validator.o checkpoint.o "
        "byte_level_bpe.o text_ingest.o "
-       "$METAL_LDFLAGS $ACCEL_LDFLAGS -o model_update\n";
+       "$METAL_LDFLAGS $ACCEL_LDFLAGS $ENERGY_LDFLAGS -o model_update\n";
   s += "# The .o files are intermediates; the deliverable is the binary (and,\n";
   s += "# in the disk mode, the plan file beside it).\n";
   s += "rm -f ./*.o\n";

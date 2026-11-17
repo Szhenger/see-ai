@@ -95,8 +95,9 @@ compile runtime/executor/cpu_backend.cc       rt_cpu_backend.o
 # ObjC++ front end rejects it) — the rest of the tree is standard C++23.
 METAL_OBJS=""
 METAL_LDFLAGS=""
-# The bench's energy meter (tool/energy_meter.h, F6 #134) reads IOReport
-# through CoreFoundation on Darwin; the library itself is opened at run time.
+# The profiler's energy meter (runtime/profiler/energy_meter.h, F6 #134,
+# #202) reads IOReport through CoreFoundation on Darwin; METAL_LDFLAGS links
+# it into every binary; the library itself is opened at run time.
 BENCH_LDFLAGS=""
 if [ "$(uname)" = "Darwin" ]; then
   echo "  OBJCXX runtime/executor/metal_gemm.mm"

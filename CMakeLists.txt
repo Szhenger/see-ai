@@ -139,6 +139,11 @@ target_link_libraries(seeml_update PUBLIC seeml_sir seeml_parallel seeml_tokeniz
 # PRIVATE: no header of seeml_update exposes the runtime; a static
 # library's private dependency still reaches the executables that link it.
 target_link_libraries(seeml_update PRIVATE seeml_update_rt)
+# The profiler's energy meter (#202) reads IOReport through CoreFoundation
+# under Apple clang; the runtime library carries the dependency itself.
+if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_link_libraries(seeml_update_rt PUBLIC "-framework CoreFoundation")
+endif()
 # The GPU half of the target description (S6 #152): host_arch reads the GPU
 # core count through IOKit on Apple hosts.
 if(APPLE)

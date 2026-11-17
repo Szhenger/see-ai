@@ -579,9 +579,13 @@ int main(int argc, char** argv) {
     return g_stop_requested.load(std::memory_order_acquire);
   };
   InstallStopHandlers();
+  // The energy of the training run (#202 item 3), for the runtime screen.
+  seeml::update_rt::EnergyMeter energy_meter;
+  energy_meter.Start();
   const auto t_train0 = std::chrono::steady_clock::now();
   auto report = engine.Train(*dataset, steps, options);
   const double train_s = since(t_train0);
+  const seeml::update_rt::EnergyReading energy = energy_meter.Stop();
   if (!report) {
     std::fprintf(stderr, "train: %s\n", report.error().c_str());
     return 1;
@@ -693,7 +697,8 @@ int main(int argc, char** argv) {
     std::optional<double> entropy;
     if (engine.header().label_kind == 1) entropy = dataset->LabelEntropyNats();
     seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,
-                                        peak_gflops, verdict, entropy);
+                                        peak_gflops, verdict, entropy,
+                                        &energy);
   }
   std::fputs(runtime_screen.Text(/*verbose=*/false).c_str(), stderr);
   double merge_s = 0.0, commit_s = 0.0;
