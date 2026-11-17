@@ -95,15 +95,14 @@ compile runtime/executor/cpu_backend.cc       rt_cpu_backend.o
 # ObjC++ front end rejects it) — the rest of the tree is standard C++23.
 METAL_OBJS=""
 METAL_LDFLAGS=""
-# The bench's energy meter (tool/energy_meter.h, F6 #134) reads IOReport
-# through CoreFoundation on Darwin; the library itself is opened at run time.
-BENCH_LDFLAGS=""
+# The profiler's energy meter (runtime/profiler/energy_meter.h, F6 #134,
+# #202) reads IOReport through CoreFoundation on Darwin; METAL_LDFLAGS links
+# it into every binary; the library itself is opened at run time.
 if [ "$(uname)" = "Darwin" ]; then
   echo "  OBJCXX runtime/executor/metal_gemm.mm"
   eval "$CXX $FLAGS -x objective-c++ -fobjc-arc -c runtime/executor/metal_gemm.mm -o build/rt_metal_gemm.o"
   METAL_OBJS="build/rt_metal_gemm.o"
   METAL_LDFLAGS="-framework Metal -framework Foundation -framework IOKit -framework CoreFoundation"
-  BENCH_LDFLAGS="-framework CoreFoundation"
 fi
 # The Metal executor backend (G1b) exists on Darwin unless SEEML_NO_METAL is
 # on (1; a falsy value — 0, off, no, false, empty — leaves it built)
@@ -193,7 +192,7 @@ if seeml_bench_enabled; then
   eval "$CXX $FLAGS -c tool/seeml_bench.cc -o build/seeml_bench.o"
   eval "$CXX -pthread build/seeml_bench.o build/fixtures_models.o \
         build/fixtures_corpora.o build/fixtures_probes.o \
-        $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS $BENCH_LDFLAGS -o build/seeml-bench"
+        $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o build/seeml-bench"
 fi
 
 for suite in \

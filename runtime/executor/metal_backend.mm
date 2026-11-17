@@ -1,3 +1,4 @@
+#include "runtime/profiler/kernel_profile.h"
 #include "runtime/executor/metal_backend.h"
 
 #import <Foundation/Foundation.h>
@@ -11,8 +12,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <array>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <cstdint>
@@ -283,8 +282,8 @@ class MetalBackend final : public ExecutorBackend {
 
   ~MetalBackend() override {
     (void)Flush();
-    if (profile_) PrintProfile();
-    if (spans_) PrintSpans();
+    if (profile_) profile_log_.Print(stderr, lowrank_fused_, lowrank_dropped_);
+    if (spans_) span_log_.Print(stderr, lowrank_fused_, lowrank_dropped_);
   }
 
   const char* name() const override { return "metal"; }
@@ -371,8 +370,6 @@ class MetalBackend final : public ExecutorBackend {
                            uint32_t m, uint32_t n, uint32_t k, float alpha);
   std::expected<void, std::string> Encode(const up::UpdateInstruction& ins,
                                           const StepParams& params);
-  void PrintProfile() const;
-  void PrintSpans() const;
 
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
@@ -448,15 +445,13 @@ class MetalBackend final : public ExecutorBackend {
   // CPU-resident instructions by wall clock; a table on stderr at
   // destruction. Diagnostic only — it serializes the stream.
   const bool profile_ = EnvFlag("SEEML_METAL_PROFILE");
-  struct ProfRow { double seconds = 0; uint64_t count = 0; };
-  std::map<std::string, ProfRow> prof_;
+  KernelProfile profile_log_;  // the profiler's table (#202)
   std::string prof_pipes_;  // every kernel the current instruction dispatched
   double last_gpu_seconds_ = 0;
   // Forward and backward passes seen, counted at the loss opcodes (11 / 51
   // / 13 / 15 forward, 12 / 52 / 14 / 16 backward): the profile header prints them
   // so a reader sees how a run weights the two (F9 #140 — a run with
   // validation on is 7:1 forward).
-  uint64_t fwd_passes_ = 0, bwd_passes_ = 0;
   // scratch_ holds kScratchFloats floats at creation (the clip partials);
   // the loss forward needs one float per row and grows it on demand.
   size_t scratch_floats_ = 0;
@@ -500,8 +495,7 @@ class MetalBackend final : public ExecutorBackend {
       const up::UpdateInstruction& base, const up::UpdateInstruction& lr,
       bool drop_c);
   const bool spans_ = EnvFlag("SEEML_METAL_SPANS");
-  struct SpanRow { uint64_t dispatches; double gpu_seconds, wall_seconds; };
-  std::vector<SpanRow> spans_rows_;
+  SpanLog span_log_;  // the profiler's span rows (#202)
   std::chrono::steady_clock::time_point cb_t0_;
   uint64_t cb_dispatches_ = 0;
   void NoteDispatch(Pipe pipe) {
@@ -1977,11 +1971,11 @@ std::expected<void, std::string> MetalBackend::Execute(
       if (op == up::OpCode::kSoftmaxXEntFwd ||
           op == up::OpCode::kSoftmaxXEntMaskedFwd ||
           op == up::OpCode::kMseFwd || op == up::OpCode::kKLDistillFwd)
-        ++fwd_passes_;
+        profile_log_.CountPass(/*forward=*/true);
       else if (op == up::OpCode::kSoftmaxXEntBwd ||
                op == up::OpCode::kSoftmaxXEntMaskedBwd ||
                op == up::OpCode::kMseBwd || op == up::OpCode::kKLDistillBwd)
-        ++bwd_passes_;
+        profile_log_.CountPass(/*forward=*/false);
     }
     const InstructionExtents* ex = ExtentsOf(ins);
     if (!ex && op != up::OpCode::kNop)
@@ -2021,11 +2015,10 @@ std::expected<void, std::string> MetalBackend::Execute(
       if (!profile_) return cpu_->Execute(ins, params);
       const auto t0 = std::chrono::steady_clock::now();
       auto r = cpu_->Execute(ins, params);
-      ProfRow& row = prof_["cpu opcode " + std::to_string(ins.opcode)];
-      row.seconds += std::chrono::duration<double>(
-                         std::chrono::steady_clock::now() - t0)
-                         .count();
-      row.count++;
+      profile_log_.Add("cpu opcode " + std::to_string(ins.opcode),
+                       std::chrono::duration<double>(
+                           std::chrono::steady_clock::now() - t0)
+                           .count());
       return r;
     }
     if (auto r = EnsureEncoder(); !r) return r;
@@ -2050,10 +2043,9 @@ std::expected<void, std::string> MetalBackend::Execute(
       };
       const up::UpdateInstruction& keyed =
           role >= 0 ? program_[static_cast<size_t>(role)] : ins;
-      ProfRow& row = prof_[prof_pipes_ + " " + dim(keyed.out[0]) + "x" +
-                           dim(keyed.out[1]) + "x" + dim(keyed.out[2])];
-      row.seconds += last_gpu_seconds_;
-      row.count++;
+      profile_log_.Add(prof_pipes_ + " " + dim(keyed.out[0]) + "x" +
+                           dim(keyed.out[1]) + "x" + dim(keyed.out[2]),
+                       last_gpu_seconds_);
     }
     return {};
   }
@@ -2072,11 +2064,10 @@ std::expected<void, std::string> MetalBackend::Flush() {
     const uint64_t dispatches = cb_dispatches_;
     if (profile_) last_gpu_seconds_ = cmd_.GPUEndTime - cmd_.GPUStartTime;
     if (spans_)
-      spans_rows_.push_back(
-          {cb_dispatches_, cmd_.GPUEndTime - cmd_.GPUStartTime,
-           std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                         cb_t0_)
-               .count()});
+      span_log_.Add(cb_dispatches_, cmd_.GPUEndTime - cmd_.GPUStartTime,
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - cb_t0_)
+                        .count());
     enc_ = nil;
     cmd_ = nil;
     pending_reads_.clear();
@@ -2110,71 +2101,6 @@ std::expected<void, std::string> MetalBackend::Flush() {
     }
     return {};
   }
-}
-
-void MetalBackend::PrintProfile() const {
-  std::vector<std::pair<std::string, ProfRow>> rows(prof_.begin(), prof_.end());
-  std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
-    return a.second.seconds > b.second.seconds;
-  });
-  double total = 0;
-  for (const auto& r : rows) total += r.second.seconds;
-  std::fprintf(stderr,
-               "metal profile: %.3f s over %zu keys; %llu forward pass(es), "
-               "%llu backward pass(es) (counted at the loss opcodes)\n",
-               total, rows.size(), (unsigned long long)fwd_passes_,
-               (unsigned long long)bwd_passes_);
-  if (lowrank_fused_)
-    std::fprintf(stderr,
-                 "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
-                 "store dropped (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 "
-                 "keeps the pairs apart)\n",
-                 (unsigned long long)lowrank_fused_,
-                 (unsigned long long)lowrank_dropped_);
-  for (const auto& r : rows)
-    std::fprintf(stderr, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
-                 r.second.seconds,
-                 total > 0 ? 100.0 * r.second.seconds / total : 0.0,
-                 (unsigned long long)r.second.count,
-                 1e6 * r.second.seconds / (double)r.second.count,
-                 r.first.c_str());
-}
-
-void MetalBackend::PrintSpans() const {
-  double gpu = 0, wall = 0;
-  uint64_t dispatches = 0;
-  for (const SpanRow& s : spans_rows_) {
-    gpu += s.gpu_seconds;
-    wall += s.wall_seconds;
-    dispatches += s.dispatches;
-  }
-  std::fprintf(stderr,
-               "metal spans: %zu command buffer(s), %llu dispatch(es); GPU "
-               "busy %.3f s, CPU wall %.3f s, outside the GPU %.3f s "
-               "(%.1f%% of the wall; %.2f us per dispatch)\n",
-               spans_rows_.size(), (unsigned long long)dispatches, gpu, wall,
-               wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
-               dispatches ? 1e6 * (wall - gpu) / (double)dispatches : 0.0);
-  if (lowrank_fused_)
-    std::fprintf(stderr,
-                 "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
-                 "store dropped\n",
-                 (unsigned long long)lowrank_fused_,
-                 (unsigned long long)lowrank_dropped_);
-  // Per buffer size: the train, eval and merge programs are told apart by
-  // their dispatch counts (one buffer per ExecuteRange).
-  std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall
-  for (const SpanRow& s : spans_rows_) {
-    auto& v = by_size[s.dispatches];
-    v[0] += 1; v[1] += s.gpu_seconds; v[2] += s.wall_seconds;
-  }
-  for (const auto& [n, v] : by_size)
-    std::fprintf(stderr,
-                 "  %7llu dispatches x %4.0f: GPU %8.3f ms, wall %8.3f ms, "
-                 "outside %7.3f ms (%.1f%%) per buffer\n",
-                 (unsigned long long)n, v[0], 1e3 * v[1] / v[0],
-                 1e3 * v[2] / v[0], 1e3 * (v[2] - v[1]) / v[0],
-                 v[2] > 0 ? 100.0 * (v[2] - v[1]) / v[2] : 0.0);
 }
 
 }  // namespace

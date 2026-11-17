@@ -3,9 +3,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <bit>
-#ifdef SEEML_STEP_TIMING
-#include <chrono>
-#endif
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -276,15 +273,8 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   eval_program_ = std::move(d.eval);
   step_program_ = std::move(d.step);
   grad_accum_ = std::max<uint64_t>(1, header.grad_accum_steps);
-#ifdef SEEML_STEP_TIMING
-  // Phase boundaries for the step-latency split (the profiler's scan).
-  {
-    const PhaseBoundaries phases = ScanPhases(train_program_);
-    train_bwd_begin_ = phases.bwd_begin;
-    train_opt_begin_ = phases.opt_begin;
-  }
-  timings_ = {};
-#endif
+  // The step-latency split's phase boundaries (the profiler's, #202).
+  profiler_.Bind(train_program_);
   emit_table_ = std::move(d.emit);
   num_classes_ = d.num_classes;
   vocab_bound_ = d.vocab_bound;
@@ -315,47 +305,21 @@ std::expected<void, std::string> UpdateEngine::Execute(
   return ExecuteRange(program, 0, program.size());
 }
 
-/// Executes the training stream, split at the phase boundaries scanned by
-/// Initialize, accumulating per-phase wall clock into timings_. Compiled to
-/// a plain Execute() unless the runtime is built with -DSEEML_STEP_TIMING
-/// (the benchmark-harness build), so the shipped runtime never reads a
-/// clock inside the step.
-/// The optimizer program under gradient accumulation; charged to the
-/// optimizer phase of the step-timing split.
+/// The optimizer program under gradient accumulation; the profiler charges
+/// it to the optimizer phase of the step-timing split (#202).
 std::expected<void, std::string> UpdateEngine::ExecuteStepProgram() {
-#ifdef SEEML_STEP_TIMING
-  using clock = std::chrono::steady_clock;
-  const auto t0 = clock::now();
-  auto r = Execute(step_program_);
-  timings_.opt_seconds += std::chrono::duration<double>(clock::now() - t0).count();
-  return r;
-#else
-  return Execute(step_program_);
-#endif
+  return profiler_.StepProgram([&] { return Execute(step_program_); });
 }
 
+/// The training stream. The profiler (#202) splits it at the phase
+/// boundaries it scanned at bind and clocks each phase in -DSEEML_STEP_TIMING
+/// builds (the benchmark harness); every other build runs it as one range,
+/// so the shipped runtime never reads a clock inside the step.
 std::expected<void, std::string> UpdateEngine::ExecuteTrainProgram() {
-#ifdef SEEML_STEP_TIMING
-  using clock = std::chrono::steady_clock;
-  const auto t0 = clock::now();
-  if (auto r = ExecuteRange(train_program_, 0, train_bwd_begin_); !r) return r;
-  const auto t1 = clock::now();
-  if (auto r = ExecuteRange(train_program_, train_bwd_begin_, train_opt_begin_);
-      !r)
-    return r;
-  const auto t2 = clock::now();
-  if (auto r = ExecuteRange(train_program_, train_opt_begin_,
-                            train_program_.size());
-      !r)
-    return r;
-  const auto t3 = clock::now();
-  timings_.fwd_seconds += std::chrono::duration<double>(t1 - t0).count();
-  timings_.bwd_seconds += std::chrono::duration<double>(t2 - t1).count();
-  timings_.opt_seconds += std::chrono::duration<double>(t3 - t2).count();
-  return {};
-#else
-  return Execute(train_program_);
-#endif
+  return profiler_.TrainProgram(
+      train_program_.size(), [&](size_t begin, size_t end) {
+        return ExecuteRange(train_program_, begin, end);
+      });
 }
 
 std::expected<void, std::string> UpdateEngine::ExecuteRange(
@@ -432,9 +396,7 @@ void UpdateEngine::ExecuteTrainOnce() {
   // adapter parameters, so deltas materialized by an earlier RunMerge are
   // stale and commit must re-merge first.
   merged_ = false;
-#ifdef SEEML_STEP_TIMING
-  ++timings_.steps;
-#endif
+  profiler_.CountStep();
   if (auto r = ExecuteTrainProgram(); !r) {
     // A verification hook, not a product path: the CPU backend never fails,
     // and a GPU failure here is a bug the test must not paper over.
@@ -901,9 +863,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
                           std::chrono::steady_clock::now() - step_t0)
                           .count();
       ++executed;
-#ifdef SEEML_STEP_TIMING
-      ++timings_.steps;  // one optimizer step: G grad executions + the step
-#endif
+      profiler_.CountStep();  // one optimizer step: G grad executions + the step
 
       const float loss = static_cast<float>(loss_sum /
                                             static_cast<double>(grad_accum_));

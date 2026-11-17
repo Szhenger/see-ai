@@ -16,15 +16,6 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-#else
-#include <io.h>
-#include <windows.h>
-#endif
-
 namespace seeml::update_rt {
 
 namespace up = seeml::update;
@@ -39,11 +30,7 @@ namespace {
 /// ever reads a sidecar it did not just create.
 std::string UniqueTmpPath(const std::string& path) {
   static std::atomic<uint64_t> counter{0};
-#ifndef _WIN32
-  const unsigned long pid = static_cast<unsigned long>(::getpid());
-#else
-  const unsigned long pid = static_cast<unsigned long>(::GetCurrentProcessId());
-#endif
+  const unsigned long pid = static_cast<unsigned long>(platform::ProcessId());
   return path + ".tmp." + std::to_string(pid) + "." +
          std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
@@ -67,94 +54,55 @@ std::expected<void, std::string> WriteFileDurable(
     DurableWriteStats* stats) {
   const std::string tmp = UniqueTmpPath(path);
   DurableWriteStats cost;
-#ifndef _WIN32
-  const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0)
+  // Every OS call is the platform seam's (#202 item 4); the discipline is
+  // this function's: every byte's write status checked (no buffer whose
+  // final flush nobody sees), the data synced before the replace, a replace
+  // that installs over an existing file, and the replace itself persisted.
+  const platform::FileHandle f = platform::CreateForWrite(tmp);
+  if (f == platform::kNoFile)
     return diag::persisting::Error(diag::persisting::kDurableIo, "cannot write '" + tmp + "'");
   // Every failure past this point removes the sidecar (CR4 #145 F08): a
   // partial temp file beside the destination is a stray no later writer
   // reuses and a reader can mistake for a checkpoint.
-  auto fail = [&](int open_fd, const std::string& what) {
-    if (open_fd >= 0) ::close(open_fd);
-    ::unlink(tmp.c_str());
+  auto fail = [&](bool open_file, const std::string& what) {
+    if (open_file) (void)platform::CloseFile(f);
+    platform::RemoveFile(tmp);
     return diag::persisting::Error(diag::persisting::kDurableIo, what);
   };
   for (const ByteSpan& part : parts) {
     size_t written = 0;
     while (written < part.size) {
-      ssize_t n;
+      int64_t n;
+      bool retry = false;
       if (const int fault =
               g_write_fault.exchange(0, std::memory_order_relaxed);
           fault != 0) {
-        errno = fault;  // the injected full disk
-        n = -1;
+        n = -1;  // the injected full disk (an injected EINTR retries)
+        retry = fault == EINTR;
       } else {
-        n = ::write(fd, part.data + written, part.size - written);
+        n = platform::WriteSome(f, part.data + written, part.size - written,
+                                &retry);
       }
       if (n < 0) {
         // A signal landing mid-write (checkpoints are large and SIGINT-era
         // stop flags are common) is a retry, not a failed update.
-        if (errno == EINTR) continue;
-        return fail(fd, "short write to '" + tmp + "'");
+        if (retry) continue;
+        return fail(true, "short write to '" + tmp + "'");
       }
       written += static_cast<size_t>(n);
     }
     cost.bytes += written;
   }
-  if (::fsync(fd) != 0) return fail(fd, "fsync of '" + tmp + "' failed");
+  if (!platform::SyncFile(f)) return fail(true, "fsync of '" + tmp + "' failed");
   ++cost.fsyncs;
-  if (::close(fd) != 0) return fail(-1, "close of '" + tmp + "' failed");
-  if (std::rename(tmp.c_str(), path.c_str()) != 0)
-    return fail(-1, "atomic rename to '" + path + "' failed");
+  if (!platform::CloseFile(f)) return fail(false, "close of '" + tmp + "' failed");
+  if (!platform::AtomicReplace(tmp, path))
+    return fail(false, "atomic rename to '" + path + "' failed");
   // Persist the rename itself (best effort: some filesystems reject a
-  // directory fsync).
+  // directory fsync; Win32 writes the move through instead).
   if (platform::SyncParentDirectory(path)) ++cost.fsyncs;
   if (stats) *stats = cost;
   return {};
-#else
-  // Raw Win32, mirroring the POSIX branch's guarantees: every byte's write
-  // status is checked (no ofstream buffer whose final flush nobody sees),
-  // FlushFileBuffers is the fsync the durability contract demands, and
-  // MoveFileEx with MOVEFILE_REPLACE_EXISTING installs over an existing
-  // file — CRT rename() refuses that, which broke every checkpoint after
-  // the first.
-  HANDLE h = ::CreateFileA(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE)
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "cannot write '" + tmp + "'");
-  // As on POSIX: every failure past the open removes the sidecar.
-  auto fail = [&](bool open_handle, const std::string& what) {
-    if (open_handle) ::CloseHandle(h);
-    ::DeleteFileA(tmp.c_str());
-    return diag::persisting::Error(diag::persisting::kDurableIo, what);
-  };
-  for (const ByteSpan& part : parts) {
-    size_t written = 0;
-    while (written < part.size) {
-      const DWORD want = static_cast<DWORD>(
-          std::min<size_t>(part.size - written, 1u << 30));
-      DWORD got = 0;
-      const bool injected =
-          g_write_fault.exchange(0, std::memory_order_relaxed) != 0;
-      if (injected ||
-          !::WriteFile(h, part.data + written, want, &got, nullptr) ||
-          got == 0)
-        return fail(true, "short write to '" + tmp + "'");
-      written += got;
-    }
-    cost.bytes += written;
-  }
-  if (!::FlushFileBuffers(h))
-    return fail(true, "fsync of '" + tmp + "' failed");
-  ++cost.fsyncs;
-  if (!::CloseHandle(h)) return fail(false, "close of '" + tmp + "' failed");
-  if (!::MoveFileExA(tmp.c_str(), path.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-    return fail(false, "atomic rename to '" + path + "' failed");
-  if (stats) *stats = cost;
-  return {};
-#endif
 }
 
 std::expected<void, std::string> WriteFileDurable(const std::string& path,
@@ -219,54 +167,26 @@ std::expected<uint64_t, std::string> HashFileContent(const std::string& path) {
 
 // --- CommitLock --------------------------------------------------------------
 
-namespace {
-
-/// Releases whichever handle kind this platform stores in CommitLock.
-void ReleaseLockHandle(intptr_t handle) {
-#ifndef _WIN32
-  if (handle >= 0) ::close(static_cast<int>(handle));  // drops the flock
-#else
-  if (handle != -1) ::CloseHandle(reinterpret_cast<HANDLE>(handle));
-#endif
-}
-
-}  // namespace
-
 std::expected<CommitLock, std::string> CommitLock::Acquire(
     const std::string& target_path) {
   CommitLock lock;
   const std::string lock_path = target_path + ".lock";
-#ifndef _WIN32
-  const int fd = ::open(lock_path.c_str(), O_RDWR | O_CREAT, 0644);
-  if (fd < 0)
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "cannot open lock '" + lock_path + "'");
-  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-    ::close(fd);
-    return diag::persisting::Error(
-        diag::persisting::kDurableIo,
-        "another update is committing to '" + target_path +
-            "' — refusing to race it");
-  }
-  lock.handle_ = fd;
-#else
-  // dwShareMode = 0 is the exclusion: a second CreateFile on the live
-  // handle fails with a sharing violation, and process death releases it —
-  // the same crash-safe, no-stale-lock contract as flock.
-  HANDLE h = ::CreateFileA(lock_path.c_str(), GENERIC_WRITE, /*share=*/0,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    if (::GetLastError() == ERROR_SHARING_VIOLATION)
+  // The platform seam's exclusive lock (#202 item 4): crash-safe, never
+  // stale — process death releases it.
+  platform::FileHandle h = platform::kNoFile;
+  switch (platform::TryLockExclusive(lock_path, &h)) {
+    case platform::LockResult::kLocked:
+      break;
+    case platform::LockResult::kHeldElsewhere:
       return diag::persisting::Error(
           diag::persisting::kDurableIo,
           "another update is committing to '" + target_path +
               "' — refusing to race it");
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "cannot open lock '" + lock_path + "'");
+    case platform::LockResult::kCannotOpen:
+      return diag::persisting::Error(diag::persisting::kDurableIo,
+                                     "cannot open lock '" + lock_path + "'");
   }
-  lock.handle_ = reinterpret_cast<intptr_t>(h);
-#endif
+  lock.handle_ = h;
   return lock;
 }
 
@@ -276,14 +196,14 @@ CommitLock::CommitLock(CommitLock&& o) noexcept : handle_(o.handle_) {
 
 CommitLock& CommitLock::operator=(CommitLock&& o) noexcept {
   if (this != &o) {
-    ReleaseLockHandle(handle_);
+    platform::ReleaseLock(handle_);
     handle_ = o.handle_;
     o.handle_ = -1;
   }
   return *this;
 }
 
-CommitLock::~CommitLock() { ReleaseLockHandle(handle_); }
+CommitLock::~CommitLock() { platform::ReleaseLock(handle_); }
 
 // --- DurableFileEdit ---------------------------------------------------------
 
@@ -369,26 +289,14 @@ void DurableFileEdit::CloseAndDiscard() {
   if (!committed_ && !tmp_.empty()) std::remove(tmp_.c_str());
 }
 
-namespace {
-bool SeekTo(std::FILE* f, uint64_t offset) {
-#ifndef _WIN32
-  return ::fseeko(f, static_cast<off_t>(offset), SEEK_SET) == 0;
-#else
-  // CRT fseek takes a 32-bit long on Windows: a commit target with weight
-  // ranges past 2 GiB would wrap the offset and patch the wrong bytes (the
-  // bounds check upstream runs on the untruncated value, so nothing trips).
-  return ::_fseeki64(f, static_cast<long long>(offset), SEEK_SET) == 0;
-#endif
-}
-}  // namespace
-
+// Seeks go through platform::SeekStream: 64-bit on every platform.
 std::expected<void, std::string> DurableFileEdit::ReadAt(uint64_t offset,
                                                          uint8_t* buf,
                                                          size_t n) {
   if (!f_ || offset > size_ || n > size_ - offset)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "edit read outside '" + tmp_ + "'");
-  if (!SeekTo(f_, offset) || std::fread(buf, 1, n, f_) != n)
+  if (!platform::SeekStream(f_, offset) || std::fread(buf, 1, n, f_) != n)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "cannot read '" + tmp_ + "'");
   return {};
@@ -400,7 +308,7 @@ std::expected<void, std::string> DurableFileEdit::WriteAt(uint64_t offset,
   if (!f_ || offset > size_ || n > size_ - offset)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "edit write outside '" + tmp_ + "'");
-  if (!SeekTo(f_, offset) || std::fwrite(buf, 1, n, f_) != n)
+  if (!platform::SeekStream(f_, offset) || std::fwrite(buf, 1, n, f_) != n)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "short write to '" + tmp_ + "'");
   return {};
@@ -418,27 +326,14 @@ std::expected<void, std::string> DurableFileEdit::Commit() {
   // replace an existing destination — CRT rename cannot on Windows, which
   // would fail every repeat commit (the exact defect WriteFileDurable's
   // Win32 branch documents).
-#ifndef _WIN32
-  if (::fsync(::fileno(f_)) != 0)
+  if (!platform::SyncStream(f_))
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "fsync of '" + tmp_ + "' failed");
   std::fclose(f_);
   f_ = nullptr;
-  if (std::rename(tmp_.c_str(), dest_.c_str()) != 0)
+  if (!platform::AtomicReplace(tmp_, dest_))
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "atomic rename to '" + dest_ + "' failed");
-#else
-  if (!::FlushFileBuffers(
-          reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f_)))))
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "fsync of '" + tmp_ + "' failed");
-  std::fclose(f_);
-  f_ = nullptr;
-  if (!::MoveFileExA(tmp_.c_str(), dest_.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-    return diag::persisting::Error(diag::persisting::kDurableIo,
-                                   "atomic rename to '" + dest_ + "' failed");
-#endif
   committed_ = true;
   (void)platform::SyncParentDirectory(dest_);  // best effort
   return {};

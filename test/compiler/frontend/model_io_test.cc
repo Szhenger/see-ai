@@ -15,6 +15,8 @@
 #include <cstdio>
 
 #include "compiler/frontend/ingressor/export_report.h"
+#include "source/identity/hash.h"
+#include "source/language/smf_preamble.h"
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "compiler/frontend/egressor/model_writer.h"
 #include "source/parallel/parallel_for.h"
@@ -451,6 +453,55 @@ TEST(Smf, TheSweepRefusesNonFiniteWeightsAndReportsRanges) {
   ASSERT_FALSE(refused.has_value());
   EXPECT_STR_CONTAINS(refused.error(), "teacher tensor '" + w->name + "'");
   EXPECT_STR_CONTAINS(refused.error(), "element 2");
+}
+
+// #202 item 2: the device's preamble reader finds what the compiler's full
+// reader finds — the seq_len and the tokenizer section's bytes (so its hash
+// is TokenizerHash()) — and refuses a truncated preamble or bad magic.
+TEST(Smf, ThePreambleReaderFindsTheTokenizerSectionLoadSmfFinds) {
+  seeml::testing::ScopedTempDir dir;
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+  model.tokenizer = {'S', 'M', 'T', 'K', 9, 8, 7, 6, 5};
+  const std::string path = dir.File("m.smf");
+  ASSERT_OK(SaveSmf(path, model));
+  ASSERT_OK_AND_ASSIGN(SmfModel loaded, LoadSmf(path));
+  std::ifstream f(path, std::ios::binary);
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                   std::istreambuf_iterator<char>());
+  ASSERT_OK_AND_ASSIGN(SmfPreamble pre,
+                       ReadSmfPreamble(bytes.data(), bytes.size(), bytes.size()));
+  EXPECT_EQ(pre.version, kSmfVersion);
+  EXPECT_EQ(pre.seq_len, loaded.seq_len);
+  ASSERT_EQ(pre.tokenizer_size, model.tokenizer.size());
+  const std::vector<uint8_t> section(
+      bytes.begin() + static_cast<std::ptrdiff_t>(pre.tokenizer_offset),
+      bytes.begin() + static_cast<std::ptrdiff_t>(pre.tokenizer_offset +
+                                                  pre.tokenizer_size));
+  EXPECT_TRUE(section == model.tokenizer);
+  EXPECT_EQ(ContentHash64(section.data(), section.size()),
+            loaded.TokenizerHash());
+
+  // Truncated anywhere inside the preamble: refused, never read past.
+  for (size_t n : {size_t{3}, size_t{12}, size_t{20}, size_t{30}})
+    EXPECT_FALSE(ReadSmfPreamble(bytes.data(), n, bytes.size()).has_value());
+  // A section that runs past the file: refused.
+  EXPECT_FALSE(ReadSmfPreamble(bytes.data(), bytes.size(),
+                               pre.tokenizer_offset + 1).has_value());
+  std::vector<uint8_t> bad = bytes;
+  bad[0] ^= 0xFF;
+  EXPECT_FALSE(ReadSmfPreamble(bad.data(), bad.size(), bad.size()).has_value());
+
+  // A model without a section reads as offset and size zero.
+  SmfModel bare = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+  const std::string bare_path = dir.File("bare.smf");
+  ASSERT_OK(SaveSmf(bare_path, bare));
+  std::ifstream g(bare_path, std::ios::binary);
+  const std::vector<uint8_t> bare_bytes((std::istreambuf_iterator<char>(g)),
+                                        std::istreambuf_iterator<char>());
+  ASSERT_OK_AND_ASSIGN(SmfPreamble bare_pre,
+                       ReadSmfPreamble(bare_bytes.data(), bare_bytes.size(),
+                                       bare_bytes.size()));
+  EXPECT_EQ(bare_pre.tokenizer_size, 0u);
 }
 
 TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {

@@ -43,6 +43,21 @@ Exit codes:
 - **The resume:** resuming from that checkpoint commits the bytes the
   uninterrupted run commits (`test/tool/runner_stop_test.py`).
 
+**Raw text (#202 item 2):** `--data` also takes a `.txt` (one document) or a
+`.jsonl` (one `{"text"}` or `{"prompt", "response"}` per line).
+
+- **The tokenizer:** the host reads the tokenizer section of `--model`,
+  finding it with `source/language/smf_preamble.h` (the preamble alone, not
+  the compiler's full reader). The section's hash must equal the plan's
+  tokenizer hash.
+- **The ingest:** the vendored ingest (sanitize, deduplicate, encode, pack)
+  builds the dataset that the compiler's canonical SDS of the same text
+  loads as: the same records, mask and content hash. A plan compiled from
+  that text pins exactly that hash, so the run is the SDS run, byte for byte
+  (`test/tool/runner_text_test.py`).
+- **Refusals:** a feature plan, or a plan that names no tokenizer, refuses
+  raw text by name.
+
 **Threads:** `--threads N` sets the worker pool, over `$SEEML_THREADS` and
 the hardware's count, before the plan loads. The runtime screen records the
 width in its `threads` row. Every width computes the same bits.

@@ -140,7 +140,18 @@ class RunnerStopTest(unittest.TestCase):
             capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr[-1500:])
         with open(report) as f:
-            self.assertEqual(json.load(f)["runtime"]["threads"], 3)
+            runtime = json.load(f)["runtime"]
+        self.assertEqual(runtime["threads"], 3)
+        # The energy rows (#202 item 3): the meter row is always there; a
+        # number only with the domain that is this run's compute, and the
+        # per-token figure is the energy over the tokens trained.
+        meter = runtime["energy_meter"]
+        if meter.startswith("IOReport "):
+            self.assertGreater(runtime["energy_joules"], 0.0)
+            self.assertGreater(runtime["energy_per_token"], 0.0)
+        else:
+            self.assertTrue(meter.startswith("unavailable: "), meter)
+            self.assertNotIn("energy_joules", runtime)
         for bad in ("0", "x", "5000"):
             with self.subTest(threads=bad):
                 r = subprocess.run(

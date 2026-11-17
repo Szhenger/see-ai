@@ -11,11 +11,19 @@ the Win32 branches the tree already had.
   by the compiler's resource contract and the loader's arena refusal.
   `PeakRssBytes`, the process's resident peak, used by the runtime screen and
   seeml-bench.
-- **`durable.h`:** `ParentDirectory` and `SyncParentDirectory`, which persist
-  a replace in its directory. Storage's two writers use them.
+- **`durable.h`:** every OS call the storage role makes (#202 item 4).
+  - The sidecar write: `CreateForWrite`, `WriteSome`, `SyncFile`,
+    `CloseFile`, `RemoveFile`.
+  - The replace: `AtomicReplace`, `ParentDirectory`, `SyncParentDirectory`.
+  - The in-place edit: `SyncStream`, `SeekStream` (64-bit).
+  - The commit lock: `TryLockExclusive`, `ReleaseLock`.
+  - `ProcessId`.
 
-Still direct OS calls elsewhere: the sidecar writes, fsyncs and renames
-inside `runtime/storage/durable_io.cc`, and its advisory lock. They are
-interleaved with the fault injection the CR4 tests drive. A Win32 port moves
-them behind this seam, together with the storage commit proof that §9 names
-as a follow-up.
+`runtime/storage/durable_io.cc` keeps the discipline (write, sync, replace,
+persist the replace) and the CR4 fault injection, which sits just before
+`WriteSome`. It makes no direct OS call.
+
+The POSIX bodies are the ones CI runs. The Win32 bodies are the ones the
+storage writer carried, moved unchanged, but no CI job builds Windows. A
+Win32 port proves them together with the storage commit proof that §9
+names as a follow-up.

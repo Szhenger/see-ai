@@ -50,7 +50,7 @@ a model loaded from a file, the f32 base the file holds, exact
 arithmetic. An int8 adapter-only package — the device quantizing the
 file's weights at load into a second allocation — is the follow-up the
 one-arena doctrine has to rule on. Energy per token: `tool/seeml/energy.py`
-(the frontier rows) and `tool/energy_meter.h` (`seeml-bench`) read
+(the frontier rows) and `tool/energy_meter.h` (`seeml-bench`; `runtime/profiler/energy_meter.h` since #202, so `model_update` reads it too) read
 IOReport's "Energy Model" counters — the library behind `powermetrics`,
 opened at run time, no root — by the step time's own regression, whole-SoC
 and stated so in every row; on this macOS 26 the GPU counter advances

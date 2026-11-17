@@ -23,6 +23,9 @@
 #include "runtime/storage/checkpoint.h"
 #include "runtime/storage/durable_io.h"
 #include "runtime/dispatcher/update_engine.h"
+#include "runtime/profiler/energy_meter.h"
+#include "runtime/profiler/runtime_screen.h"
+#include "source/statistics/screens.h"
 #include "source/identity/hash.h"
 #include "source/parallel/parallel_for.h"
 #include "compiler/frontend/ingressor/export_report.h"
@@ -967,6 +970,82 @@ TEST(UpdateEngineTrain, ShouldStopInterruptsAndLossCurveRecords) {
   for (size_t i = 5; i < 25; ++i) last += report.loss_curve[i];
   EXPECT_EQ(report.final_avg_loss, static_cast<float>(last / 20.0));
   EXPECT_TRUE(report.final_avg_loss != report.initial_avg_loss);
+}
+
+// #202 item 3: the energy rows. A GPU run reads the GPU domain over the
+// tokens trained (steps x rows per optimizer step); a cpu run never gets a
+// number — the CPU counter reaches an unprivileged reader in bursts, and the
+// GPU's moves with the display, not the update (seeml-bench's rule). No
+// domain, no number: energy_meter says why.
+TEST(RuntimeScreenEnergy, OnlyAGpuRunGetsANumberOverTheTokensTrained) {
+  auto text = [](const seeml::update::Screen& s, const char* key) {
+    const auto* v = s.Get(key);
+    return v && std::holds_alternative<std::string>(*v)
+               ? std::get<std::string>(*v)
+               : std::string("<unset>");
+  };
+  auto real = [](const seeml::update::Screen& s, const char* key) {
+    const auto* v = s.Get(key);
+    return v && std::holds_alternative<double>(*v) ? std::get<double>(*v)
+                                                   : -1.0;
+  };
+  seeml::update_rt::EnergyReading both;
+  both.available = true;
+  both.joules = {{"CPU Energy", 1.5}, {"GPU Energy", 9.0}};
+
+  seeml::update::Screen g(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(g, /*gpu_backend=*/true, 12, both);
+  EXPECT_EQ(text(g, "energy_meter"), "IOReport GPU Energy");
+  EXPECT_EQ(real(g, "energy_joules"), 9.0);
+  EXPECT_EQ(real(g, "energy_per_token"), 9.0 / 12.0);
+
+  // A cpu run: no number, even with the CPU counter showing joules.
+  seeml::update::Screen c(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(c, /*gpu_backend=*/false, 12, both);
+  EXPECT_TRUE(text(c, "energy_meter").starts_with("unavailable: a cpu run"));
+  EXPECT_EQ(c.Get("energy_joules"), nullptr);
+  EXPECT_EQ(c.Get("energy_per_token"), nullptr);
+
+  seeml::update_rt::EnergyReading cpu_only;
+  cpu_only.available = true;
+  cpu_only.joules = {{"CPU Energy", 1.5}};
+  seeml::update::Screen q(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(q, /*gpu_backend=*/true, 12, cpu_only);
+  EXPECT_EQ(text(q, "energy_meter"),
+            "unavailable: the GPU Energy counter did not move for this reader");
+  EXPECT_EQ(q.Get("energy_joules"), nullptr);
+
+  seeml::update_rt::EnergyReading none;
+  none.reason = "libIOReport not found";
+  seeml::update::Screen n(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(n, /*gpu_backend=*/true, 12, none);
+  EXPECT_EQ(text(n, "energy_meter"), "unavailable: libIOReport not found");
+}
+
+// FillRuntimeScreen passes the run's own facts: the cpu backend, and no
+// energy rows at all without a reading (the compile's own screen).
+TEST(RuntimeScreenEnergy, TheScreenPassesTheRunsBackendAndTokens) {
+  const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
+  ASSERT_FALSE(plan.empty());
+  UpdateEngine engine;
+  ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
+  ASSERT_OK_AND_ASSIGN(Dataset data, MakeClassificationData(32, kInDim, 8));
+  ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 3, Quiet()));
+  ASSERT_EQ(std::string(engine.backend_name()), "cpu");
+  seeml::update_rt::EnergyReading both;
+  both.available = true;
+  both.joules = {{"CPU Energy", 1.5}, {"GPU Energy", 9.0}};
+  seeml::update::Screen s(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillRuntimeScreen(s, engine, report, 0.0, "accepted",
+                                      std::nullopt, &both);
+  EXPECT_EQ(s.Get("energy_joules"), nullptr);
+  const auto* meter = s.Get("energy_meter");
+  ASSERT_TRUE(meter != nullptr);
+  EXPECT_TRUE(std::get<std::string>(*meter).starts_with("unavailable: a cpu run"));
+  seeml::update::Screen c(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillRuntimeScreen(c, engine, report, 0.0, "accepted",
+                                      std::nullopt);
+  EXPECT_EQ(c.Get("energy_meter"), nullptr);
 }
 
 TEST(UpdateEngineAccumulation, StepsCountOptimizerStepsAndConsumeGBatches) {

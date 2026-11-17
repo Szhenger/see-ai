@@ -1468,7 +1468,7 @@ arithmetic (the relaxed kernels read rodata weights). An int8 adapter-only
 package — the device quantizing the file's weights at load into a second
 allocation — is the follow-up the one-arena doctrine has to rule on first.
 
-**Energy per token.** `tool/seeml/energy.py` and `tool/energy_meter.h`
+**Energy per token.** `tool/seeml/energy.py` and `runtime/profiler/energy_meter.h` (in `tool/` until #202)
 read the SoC's energy counters through IOReport — the library behind
 `powermetrics`, opened at run time, no root — and the frontier rows and
 `seeml-bench` take the step time's own regression for them: the hi run's

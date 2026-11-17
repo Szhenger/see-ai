@@ -183,6 +183,13 @@ if(APPLE)
     target_link_libraries(seeml_update_rt PUBLIC
         "-framework Metal" "-framework Foundation")
 endif()
+# The profiler's energy meter (#202) reads IOReport through CoreFoundation
+# under Apple clang (energy_meter.h's own condition); the runtime library
+# carries the dependency itself. After add_library: target_link_libraries
+# refuses a target that does not exist yet.
+if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_link_libraries(seeml_update_rt PUBLIC "-framework CoreFoundation")
+endif()
 option(SEEML_NO_METAL "Build the Metal executor backend's stub on Apple hosts too (the G1a harness is unaffected)" OFF)
 # The relaxed GEMM family on the CPU (plan v18, F4): a relaxed plan's
 # f32-weight GEMMs on Accelerate's SGEMM. Off in the tree by default — the
@@ -262,12 +269,9 @@ target_compile_definitions(seeml_testing
 if(SEEML_BENCH)
     target_compile_definitions(seeml_update_rt PRIVATE SEEML_STEP_TIMING)
     add_executable(seeml-bench tool/seeml_bench.cc)
+    # The energy meter's CoreFoundation (runtime/profiler/energy_meter.h)
+    # arrives through seeml_update_rt's PUBLIC link.
     target_link_libraries(seeml-bench PRIVATE seeml_update seeml_testing)
-    if(APPLE)
-      # The energy meter (tool/energy_meter.h) reads IOReport through
-      # CoreFoundation; the library itself is opened at run time.
-      target_link_libraries(seeml-bench PRIVATE "-framework CoreFoundation")
-    endif()
 endif()
 
 function(seeml_add_test name src)

@@ -386,6 +386,18 @@ inline constexpr StatRow kRuntimeRows[] = {
     {"validation_accuracy", "validation accuracy", StatKind::kReal, "",
      "the held-out accuracy of the state the gate weighed",
      screens_detail::kO, 4},
+    // Energy (#202 item 3): IOReport's counter for the domain that is this
+    // run's compute, over the training run. Whole-SoC — every process on
+    // the machine — and only what an unprivileged reader may see.
+    {"energy_meter", "energy meter", StatKind::kText, "",
+     "the energy domain read (GPU on Metal, CPU on cpu), or why none was",
+     screens_detail::kO | screens_detail::kX},
+    {"energy_joules", "energy", StatKind::kReal, "J",
+     "that domain's energy over the training run, evaluations included",
+     screens_detail::kO | screens_detail::kX, 3},
+    {"energy_per_token", "energy per token", StatKind::kReal, "J",
+     "the energy ÷ the tokens trained (steps × rows per optimizer step)",
+     screens_detail::kO | screens_detail::kX, 7},
     {"verdict", "verdict", StatKind::kText, "",
      "the gate's decision on the update: accepted, rejected or forced; "
      "stopped when a signal ended the run before the gate; measured in a "

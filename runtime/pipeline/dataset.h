@@ -79,6 +79,10 @@ class Dataset {
     for (const int32_t id : tokens_) fn(id);
   }
   void set_tokenizer_hash(uint64_t h) { tokenizer_hash_ = h; }
+  /// A corpus built in memory from raw text (#202): the ContentHash64 of the
+  /// canonical SDS its ingest produced — the hash LoadFromFile would take of
+  /// that file, and the one a plan compiled from the same text pins.
+  void set_content_hash(uint64_t h) { content_hash_ = h; }
   /// The identity of the shuffle stream: the folded seed EnableShuffle
   /// started from, 0 when serving is sequential. Two datasets with equal
   /// origins (and sizes) serve the same permutations — what a checkpoint
