@@ -20,14 +20,24 @@ struct EnergyReading;
 /// against the plan, checkpoint cost, the losses, the input-blind loss
 /// (`label_entropy`, for a plan that trains on class labels), the accuracy
 /// and the gate's `verdict`. With an `energy` reading of the training run
-/// (#202), the energy rows: the domain that is this run's compute — the
-/// GPU's on Metal, the CPU's on cpu — or why there is none. model_update
-/// prints it; seeml-bench carries it in each row.
+/// (#202), the energy rows (FillEnergyRows). model_update prints it;
+/// seeml-bench carries it in each row.
 void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
                        const UpdateEngine& engine, const TrainReport& report,
                        double peak_gflops, std::string_view verdict,
                        std::optional<double> label_entropy,
                        const EnergyReading* energy = nullptr);
+
+/// The energy rows (#202 item 3): on a GPU run, the GPU domain's joules over
+/// the training run and per token (`tokens` = steps x rows per optimizer
+/// step); otherwise, and whenever that domain read nothing, energy_meter
+/// says why and no number is shown. A cpu run never gets a number — the
+/// seeml-bench rule: the counters are whole-SoC (the GPU's moves with the
+/// display, not the update) and an unprivileged reader sees the CPU's in
+/// bursts, a backlog landing at once (docs/benchmarks.md), so an interval's
+/// CPU joules are not the run's.
+void FillEnergyRows(seeml::update::Screen& runtime_screen, bool gpu_backend,
+                    uint64_t tokens, const EnergyReading& energy);
 
 }  // namespace seeml::update_rt
 
