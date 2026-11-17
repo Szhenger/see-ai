@@ -344,6 +344,10 @@ inline constexpr StatRow kRuntimeRows[] = {
      "the work ÷ the target peak", screens_detail::kO, 3},
     {"backend", "backend", StatKind::kText, "",
      "the executor that ran the plan", screens_detail::kO | screens_detail::kX},
+    {"threads", "threads", StatKind::kCount, "",
+     "the worker-pool width the run used (--threads, $SEEML_THREADS, or "
+     "the hardware's); measured, so the compile's screen leaves it unset",
+     screens_detail::kO | screens_detail::kX},
     {"steps", "steps", StatKind::kCount, "", "optimizer steps trained",
      screens_detail::kO},
     {"measured_step_ms", "measured step", StatKind::kReal, "ms",
@@ -383,7 +387,10 @@ inline constexpr StatRow kRuntimeRows[] = {
      "the held-out accuracy of the state the gate weighed",
      screens_detail::kO, 4},
     {"verdict", "verdict", StatKind::kText, "",
-     "the gate's decision on the update", screens_detail::kO},
+     "the gate's decision on the update: accepted, rejected or forced; "
+     "stopped when a signal ended the run before the gate; measured in a "
+     "seeml-bench row, which has no gate",
+     screens_detail::kO},
 };
 inline constexpr ScreenSpec kRuntimeScreen = {
     "runtime", "planned by the compiler, measured by the device",

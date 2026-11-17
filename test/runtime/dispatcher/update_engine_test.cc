@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -2001,6 +2002,80 @@ TEST(UpdateEngineBest, AResumeWithSpentPatienceStopsWhereTheRunStopped) {
   EXPECT_EQ(rest.val_final_loss, whole.val_final_loss);
   EXPECT_EQ(rest.val_last_loss, whole.val_last_loss);
   EXPECT_TRUE(Persistent(resumed) == want);
+}
+
+// #202 item 1: a stop (the host's SIGINT/SIGTERM) leaves a checkpoint of the
+// state it stopped at — written inside the loop, before the bracketing
+// evaluation could snapshot or restore a best — so the resume finishes the
+// run the uninterrupted one ran. The stop lands on an odd step: no periodic
+// evaluation (every 2) and no periodic checkpoint (none requested) covers
+// it, so the stop's own checkpoint is the only one there is.
+TEST(UpdateEngineBest, AStopLeavesACheckpointTheResumeFinishesFrom) {
+  using namespace best_state;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("stop.ckpt");
+
+  UpdateEngine straight;
+  ASSERT_OK(straight.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d1 = TrainSet(), v1 = ValSet();
+  TrainOptions o = Quiet();
+  o.validation = &v1;
+  o.eval_every = 2;
+  ASSERT_OK_AND_ASSIGN(auto whole, straight.Train(d1, 12, o));
+  const std::vector<uint8_t> want = Persistent(straight);
+
+  UpdateEngine first;
+  ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d2 = TrainSet(), v2 = ValSet();
+  TrainOptions cut = o;
+  cut.validation = &v2;
+  cut.checkpoint_path = ckpt;
+  cut.checkpoint_every = 0;
+  uint64_t polls = 0;
+  cut.should_stop = [&] { return polls++ == 5; };
+  ASSERT_OK_AND_ASSIGN(auto head, first.Train(d2, 12, cut));
+  EXPECT_TRUE(head.stopped_early);
+  EXPECT_EQ(head.steps, 5u);
+  EXPECT_EQ(head.checkpoints, 1u);  // the stop's own
+  EXPECT_GT(head.checkpoint_bytes, 0u);
+  ASSERT_TRUE(std::filesystem::exists(ckpt));
+
+  UpdateEngine resumed;
+  ASSERT_OK(resumed.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d3 = TrainSet(), v3 = ValSet();
+  TrainOptions ropt = o;
+  ropt.validation = &v3;
+  ropt.checkpoint_path = ckpt;
+  ropt.resume = true;
+  ASSERT_OK_AND_ASSIGN(auto rest, resumed.Train(d3, 0, ropt));
+  EXPECT_EQ(rest.steps, 7u);
+  EXPECT_EQ(rest.val_initial_loss, whole.val_initial_loss);
+  EXPECT_EQ(rest.best_step, whole.best_step);
+  EXPECT_EQ(rest.val_final_loss, whole.val_final_loss);
+  EXPECT_EQ(rest.val_last_loss, whole.val_last_loss);
+  EXPECT_TRUE(Persistent(resumed) == want);
+}
+
+// A stop that lands on a periodic checkpoint's step writes no second one.
+TEST(UpdateEngineBest, AStopOnACheckpointStepWritesNoSecond) {
+  using namespace best_state;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  UpdateEngine e;
+  ASSERT_OK(e.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d = TrainSet();
+  TrainOptions o = Quiet();
+  o.checkpoint_path = tmp.File("stop.ckpt");
+  o.checkpoint_every = 2;
+  uint64_t polls = 0;
+  o.should_stop = [&] { return polls++ == 4; };
+  ASSERT_OK_AND_ASSIGN(auto r, e.Train(d, 12, o));
+  EXPECT_TRUE(r.stopped_early);
+  EXPECT_EQ(r.steps, 4u);
+  EXPECT_EQ(r.checkpoints, 2u);  // steps 2 and 4, nothing extra at the stop
 }
 
 TEST(UpdateEngineBest, AutoEvaluatesEveryTenthOfTheRun) {
