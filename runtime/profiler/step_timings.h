@@ -3,7 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <string>
 #include <vector>
+#ifdef SEEML_STEP_TIMING
+#include <chrono>
+#endif
 
 #include "source/plan/update_types.h"
 
@@ -52,6 +57,78 @@ inline PhaseBoundaries ScanPhases(
   if (p.opt_begin < p.bwd_begin) p.opt_begin = p.bwd_begin;
   return p;
 }
+
+/// Every SEEML_STEP_TIMING site, in one place (#202 item 3): the dispatcher
+/// calls these hooks and holds no clock of its own. Built without
+/// SEEML_STEP_TIMING, each hook is the bare call it wraps — TrainProgram
+/// runs the one range [0, n), StepProgram runs the step program, CountStep
+/// does nothing — so the shipped runtime reads no clock inside the step.
+/// The macro-dependent bodies are instantiated only in the dispatcher's
+/// translation unit, which each binary builds one way; the data layout is
+/// unconditional, as StepTimings' is.
+class StepProfiler {
+ public:
+  /// The phase boundaries of a newly bound train program, and a fresh split.
+  void Bind([[maybe_unused]] const std::vector<seeml::update::UpdateInstruction>& train) {
+#ifdef SEEML_STEP_TIMING
+    phases_ = ScanPhases(train);
+    timings_ = {};
+#endif
+  }
+
+  /// Runs the train program of `n` instructions through `run(begin, end)`:
+  /// split at the phase boundaries and clocked per phase when timing.
+  template <class RunRange>
+  std::expected<void, std::string> TrainProgram(size_t n, RunRange&& run) {
+#ifdef SEEML_STEP_TIMING
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
+    if (auto r = run(size_t{0}, phases_.bwd_begin); !r) return r;
+    const auto t1 = clock::now();
+    if (auto r = run(phases_.bwd_begin, phases_.opt_begin); !r) return r;
+    const auto t2 = clock::now();
+    if (auto r = run(phases_.opt_begin, n); !r) return r;
+    const auto t3 = clock::now();
+    timings_.fwd_seconds += std::chrono::duration<double>(t1 - t0).count();
+    timings_.bwd_seconds += std::chrono::duration<double>(t2 - t1).count();
+    timings_.opt_seconds += std::chrono::duration<double>(t3 - t2).count();
+    return {};
+#else
+    return run(size_t{0}, n);
+#endif
+  }
+
+  /// Runs the optimizer program (gradient accumulation) through `run()`,
+  /// charged to the optimizer phase when timing.
+  template <class Run>
+  std::expected<void, std::string> StepProgram(Run&& run) {
+#ifdef SEEML_STEP_TIMING
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
+    auto r = run();
+    timings_.opt_seconds +=
+        std::chrono::duration<double>(clock::now() - t0).count();
+    return r;
+#else
+    return run();
+#endif
+  }
+
+  /// One optimizer step (G grad executions plus the step, under
+  /// accumulation) into the split's denominator.
+  void CountStep() {
+#ifdef SEEML_STEP_TIMING
+    ++timings_.steps;
+#endif
+  }
+
+  const StepTimings& timings() const { return timings_; }
+  void Reset() { timings_ = {}; }
+
+ private:
+  StepTimings timings_{};
+  PhaseBoundaries phases_{};
+};
 
 }  // namespace seeml::update_rt
 

@@ -363,8 +363,8 @@ class UpdateEngine {
 
   /// The step-latency accumulator (zeros unless built with
   /// -DSEEML_STEP_TIMING; reset by every successful Load).
-  StepTimings step_timings() const { return timings_; }
-  void ResetStepTimings() { timings_ = {}; }
+  StepTimings step_timings() const { return profiler_.timings(); }
+  void ResetStepTimings() { profiler_.Reset(); }
 
  private:
   /// Validates the candidate plan and commits engine state only if every
@@ -398,9 +398,8 @@ class UpdateEngine {
   // Step-latency instrumentation (SEEML_STEP_TIMING): phase boundaries of
   // the training stream, scanned once at load; zeros/unused otherwise.
   // Unconditional members keep the class layout build-independent.
-  StepTimings timings_{};
-  [[maybe_unused]] size_t train_bwd_begin_ = 0;  // first instr after loss fwd
-  [[maybe_unused]] size_t train_opt_begin_ = 0;  // first clip/optimizer instr
+  // Every step-timing site (SEEML_STEP_TIMING) is the profiler's (#202).
+  StepProfiler profiler_{};
   std::vector<uint8_t> owned_plan_;       // LoadFromFile: a heap copy
   // An mmap'd file region owned by the engine (the platform seam's,
   // source/platform/file_map.h): unmapped on Release, on destruction, or

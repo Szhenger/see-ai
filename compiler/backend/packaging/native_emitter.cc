@@ -135,7 +135,7 @@ constexpr const char* kVendoredSources[] = {
     "runtime/gating/gate.h",              "runtime/gating/gate.cc",
     "runtime/profiler/step_timings.h",
     "runtime/profiler/runtime_screen.h",
-    "runtime/profiler/energy_meter.h",  "runtime/profiler/runtime_screen.cc",
+    "runtime/profiler/energy_meter.h",  "runtime/profiler/kernel_profile.h",  "runtime/profiler/runtime_screen.cc",
     "runtime/executor/update_kernels.h",  "runtime/executor/kernel_policy.h",
     "runtime/executor/gemm.cc",           "runtime/executor/elementwise.cc",
     "runtime/executor/activation.cc",     "runtime/executor/normalization.cc",
