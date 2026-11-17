@@ -96,7 +96,7 @@ std::expected<void, std::string> WriteFileDurable(
   if (!platform::SyncFile(f)) return fail(true, "fsync of '" + tmp + "' failed");
   ++cost.fsyncs;
   if (!platform::CloseFile(f)) return fail(false, "close of '" + tmp + "' failed");
-  if (!platform::ReplaceFile(tmp, path))
+  if (!platform::AtomicReplace(tmp, path))
     return fail(false, "atomic rename to '" + path + "' failed");
   // Persist the rename itself (best effort: some filesystems reject a
   // directory fsync; Win32 writes the move through instead).
@@ -167,13 +167,6 @@ std::expected<uint64_t, std::string> HashFileContent(const std::string& path) {
 
 // --- CommitLock --------------------------------------------------------------
 
-namespace {
-
-/// Releases whichever handle kind this platform stores in CommitLock.
-void ReleaseLockHandle(intptr_t handle) { platform::ReleaseLock(handle); }
-
-}  // namespace
-
 std::expected<CommitLock, std::string> CommitLock::Acquire(
     const std::string& target_path) {
   CommitLock lock;
@@ -203,14 +196,14 @@ CommitLock::CommitLock(CommitLock&& o) noexcept : handle_(o.handle_) {
 
 CommitLock& CommitLock::operator=(CommitLock&& o) noexcept {
   if (this != &o) {
-    ReleaseLockHandle(handle_);
+    platform::ReleaseLock(handle_);
     handle_ = o.handle_;
     o.handle_ = -1;
   }
   return *this;
 }
 
-CommitLock::~CommitLock() { ReleaseLockHandle(handle_); }
+CommitLock::~CommitLock() { platform::ReleaseLock(handle_); }
 
 // --- DurableFileEdit ---------------------------------------------------------
 
@@ -296,19 +289,14 @@ void DurableFileEdit::CloseAndDiscard() {
   if (!committed_ && !tmp_.empty()) std::remove(tmp_.c_str());
 }
 
-namespace {
-bool SeekTo(std::FILE* f, uint64_t offset) {
-  return platform::SeekStream(f, offset);  // 64-bit on every platform
-}
-}  // namespace
-
+// Seeks go through platform::SeekStream: 64-bit on every platform.
 std::expected<void, std::string> DurableFileEdit::ReadAt(uint64_t offset,
                                                          uint8_t* buf,
                                                          size_t n) {
   if (!f_ || offset > size_ || n > size_ - offset)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "edit read outside '" + tmp_ + "'");
-  if (!SeekTo(f_, offset) || std::fread(buf, 1, n, f_) != n)
+  if (!platform::SeekStream(f_, offset) || std::fread(buf, 1, n, f_) != n)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "cannot read '" + tmp_ + "'");
   return {};
@@ -320,7 +308,7 @@ std::expected<void, std::string> DurableFileEdit::WriteAt(uint64_t offset,
   if (!f_ || offset > size_ || n > size_ - offset)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "edit write outside '" + tmp_ + "'");
-  if (!SeekTo(f_, offset) || std::fwrite(buf, 1, n, f_) != n)
+  if (!platform::SeekStream(f_, offset) || std::fwrite(buf, 1, n, f_) != n)
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "short write to '" + tmp_ + "'");
   return {};
@@ -343,7 +331,7 @@ std::expected<void, std::string> DurableFileEdit::Commit() {
                                    "fsync of '" + tmp_ + "' failed");
   std::fclose(f_);
   f_ = nullptr;
-  if (!platform::ReplaceFile(tmp_, dest_))
+  if (!platform::AtomicReplace(tmp_, dest_))
     return diag::persisting::Error(diag::persisting::kDurableIo,
                                    "atomic rename to '" + dest_ + "' failed");
   committed_ = true;

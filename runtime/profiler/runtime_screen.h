@@ -5,10 +5,13 @@
 #include <string_view>
 
 #include "runtime/dispatcher/update_engine.h"
-#include "runtime/profiler/energy_meter.h"
 #include "source/statistics/screen.h"
 
 namespace seeml::update_rt {
+
+// runtime/profiler/energy_meter.h; declared here so an includer of the
+// screen does not take the meter's CoreFoundation headers with it.
+struct EnergyReading;
 
 /// The runtime screen (S0 #146; the profiler's, S7 #153): the plan's own
 /// numbers — the identity manifest's hashes, the memory the device holds,

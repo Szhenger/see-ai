@@ -14,7 +14,6 @@
 #include <limits>
 #include <fstream>
 #include <vector>
-#include <iterator>
 #include <algorithm>
 #include <optional>
 #include <string>
@@ -27,7 +26,9 @@
 #endif
 
 #include "runtime/storage/checkpoint.h"
+#include "runtime/storage/durable_io.h"
 #include "runtime/dispatcher/update_engine.h"
+#include "runtime/profiler/energy_meter.h"
 #include "runtime/profiler/runtime_screen.h"
 #include "runtime/pipeline/dataset.h"
 #include "source/contract/split.h"
@@ -306,11 +307,15 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
   auto tok = tk::ByteLevelBpe::Load(section);
   if (!tok) return std::unexpected("tokenizer section: " + tok.error());
 
-  std::ifstream in(data_path, std::ios::binary);
-  if (!in) return std::unexpected("cannot open --data '" + data_path + "'");
-  std::string text((std::istreambuf_iterator<char>(in)),
-                   std::istreambuf_iterator<char>());
-  if (in.bad()) return std::unexpected("cannot read --data '" + data_path + "'");
+  // The compiler's reader (ReadFileBytes, as corpus_ingress.cc's ReadText):
+  // the size is taken first and the one read is checked, so an I/O error is
+  // a refusal, never a corpus cut short at the failing byte.
+  std::string text;
+  {
+    auto bytes = seeml::update_rt::ReadFileBytes(data_path);
+    if (!bytes) return std::unexpected("--data: " + bytes.error());
+    text.assign(bytes->begin(), bytes->end());
+  }
   std::vector<tk::Document> documents;
   tk::IngestOptions options;
   options.seq_len = header.seq_len;
@@ -321,6 +326,8 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
     auto docs = tk::DocumentsFromJsonl(text);
     if (!docs) return std::unexpected(data_path + ": " + docs.error());
     documents = std::move(*docs);
+    text.clear();
+    text.shrink_to_fit();  // the documents hold the text now
   }
   auto ingest = tk::Ingest(*tok, tokenizer_hash, documents, options);
   if (!ingest) return std::unexpected(ingest.error());

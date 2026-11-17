@@ -54,16 +54,18 @@ inline FileHandle CreateForWrite(const std::string& path) {
 #endif
 }
 
-/// One write call: the bytes written (> 0), or -1. On -1, `*retry` says the
-/// call was interrupted before writing anything (POSIX EINTR) and the
-/// caller should simply call again; anything else is a failed write.
+/// One write call of `n` > 0 bytes: the bytes written (> 0), or -1. On -1,
+/// `*retry` says the call was interrupted before writing anything (POSIX
+/// EINTR) and the caller should simply call again; anything else is a
+/// failed write — a write that took nothing included, on both platforms, so
+/// a caller looping to `n` cannot spin on it.
 inline int64_t WriteSome(FileHandle f, const uint8_t* data, size_t n,
                          bool* retry) {
   *retry = false;
 #ifndef _WIN32
   const ssize_t got = ::write(static_cast<int>(f), data, n);
-  if (got < 0) {
-    *retry = errno == EINTR;
+  if (got <= 0) {
+    *retry = got < 0 && errno == EINTR;
     return -1;
   }
   return static_cast<int64_t>(got);
@@ -104,8 +106,9 @@ inline void RemoveFile(const std::string& path) {
 
 /// Atomically installs `from` as `to`, replacing an existing `to`. POSIX
 /// rename does; CRT rename on Windows refuses an existing destination, so
-/// Win32 uses MoveFileEx (and writes the move through).
-inline bool ReplaceFile(const std::string& from, const std::string& to) {
+/// Win32 uses MoveFileEx (and writes the move through). Not "ReplaceFile":
+/// <windows.h> defines that name as a macro (ReplaceFileA / ReplaceFileW).
+inline bool AtomicReplace(const std::string& from, const std::string& to) {
 #ifndef _WIN32
   return std::rename(from.c_str(), to.c_str()) == 0;
 #else

@@ -12,8 +12,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <array>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <cstdint>

@@ -49,6 +49,16 @@ class RunnerRawTextTest(unittest.TestCase):
         from tokenizer_test import tiny_tokenizer_json
         cls.em = em
         cls.dir = tempfile.mkdtemp(prefix="seeml-runner-text-")
+        # tearDownClass does not run when setUpClass raises: clean up here,
+        # as runner_stop_test does.
+        try:
+            cls._make_fixtures(em, ts, tiny_tokenizer_json)
+        except BaseException:
+            shutil.rmtree(cls.dir, True)
+            raise
+
+    @classmethod
+    def _make_fixtures(cls, em, ts, tiny_tokenizer_json):
         tok_dir = os.path.join(cls.dir, "tok")
         os.makedirs(tok_dir)
         with open(os.path.join(tok_dir, "tokenizer.json"), "w") as f:

@@ -12,7 +12,9 @@
 // Stop() returns each domain's delta in joules. Two limits, stated in every
 // report: the counters are whole-SoC (every process on the machine), and
 // what an unprivileged reader sees is the OS's choice — on macOS 26 the
-// GPU's counter moves, the CPU's reads zero without root. The meter reports
+// GPU's counter moves with every sample, while the CPU's reads zero or
+// arrives in bursts (a backlog landing at once; tool/seeml/energy.py)
+// without root. The meter reports
 // the domains that moved; a domain that read zero is not reported, and a
 // reading with no domain is `available == false` with the reason. Off
 // Apple, or without the library or the group, it is unavailable and never

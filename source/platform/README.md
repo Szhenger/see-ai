@@ -14,7 +14,7 @@ the Win32 branches the tree already had.
 - **`durable.h`:** every OS call the storage role makes (#202 item 4).
   - The sidecar write: `CreateForWrite`, `WriteSome`, `SyncFile`,
     `CloseFile`, `RemoveFile`.
-  - The replace: `ReplaceFile`, `ParentDirectory`, `SyncParentDirectory`.
+  - The replace: `AtomicReplace`, `ParentDirectory`, `SyncParentDirectory`.
   - The in-place edit: `SyncStream`, `SeekStream` (64-bit).
   - The commit lock: `TryLockExclusive`, `ReleaseLock`.
   - `ProcessId`.

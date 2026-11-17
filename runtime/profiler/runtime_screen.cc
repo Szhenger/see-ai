@@ -1,13 +1,11 @@
 #include "runtime/profiler/runtime_screen.h"
 
 #include <algorithm>
-#include <string>
-
-#include "source/parallel/parallel_for.h"
-
 #include <cstdio>
 #include <string>
 
+#include "runtime/profiler/energy_meter.h"
+#include "source/parallel/parallel_for.h"
 #include "source/statistics/plan_work.h"
 #include "source/platform/memory.h"
 #include "source/statistics/screens.h"
@@ -100,7 +98,11 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
   if (energy) {
     // Only the domain that is this run's own compute: the counters are
     // whole-SoC, so on a CPU run the GPU's counter moves with the display,
-    // not with the update (the rule seeml-bench's energy_j_per_step keeps).
+    // not with the update. seeml-bench's energy_j_per_step is stricter: it
+    // reads the GPU's alone and gives a CPU run no number, because an
+    // unprivileged reader on macOS 26 sees the CPU's counter in bursts (a
+    // backlog landing at once; docs/benchmarks.md). A CPU number here is
+    // whole-SoC and may carry such a burst.
     const bool gpu =
         std::string_view(engine.backend_name()).starts_with("metal");
     const std::string domain = gpu ? "GPU Energy" : "CPU Energy";
@@ -121,7 +123,11 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
               (!energy->available
                    ? energy->reason
                    : "the " + domain + " counter did not move for this "
-                     "reader (the CPU's needs root on macOS 26)"));
+                     "reader" +
+                         (gpu ? std::string()
+                              : std::string(" (an unprivileged reader sees "
+                                            "the CPU's in bursts, or not at "
+                                            "all, on macOS 26)"))));
     }
   }
   // The pool width this run used (#202 item 1): a throughput knob, never a

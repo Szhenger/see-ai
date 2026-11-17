@@ -318,13 +318,20 @@ std::string BuildScript(bool relaxed_plan) {
        "-o metal_backend_stub.o\n";
   s += "fi\n";
   // The profiler's energy meter (#202) reads IOReport through
-  // CoreFoundation where the compiler is Apple clang (energy_meter.h's own
-  // condition), independent of SEEML_NO_METAL; elsewhere it is a stub.
+  // CoreFoundation where the compiler targets Apple with clang, independent
+  // of SEEML_NO_METAL; elsewhere it is a stub. The test is energy_meter.h's
+  // own condition (__APPLE__ && __clang__) asked of the compiler itself, not
+  // of the build host: a Linux host cross-compiling for Apple needs the
+  // framework, and a Mac cross-compiling for Linux must not pass it.
   s += "ENERGY_LDFLAGS=\"\"\n";
-  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && \"$CXX\" --version 2>/dev/null "
-       "| grep -qi clang; then\n";
-  s += "  ENERGY_LDFLAGS=\"-framework CoreFoundation\"\n";
-  s += "fi\n";
+  s += "CXX_MACROS=$($CXX $FLAGS -dM -E -x c++ /dev/null 2>/dev/null || true)\n";
+  s += "case \"$CXX_MACROS\" in\n";
+  s += "  *\"#define __APPLE__ \"*)\n";
+  s += "    case \"$CXX_MACROS\" in\n";
+  s += "      *\"#define __clang__ \"*) "
+       "ENERGY_LDFLAGS=\"-framework CoreFoundation\" ;;\n";
+  s += "    esac ;;\n";
+  s += "esac\n";
   s += "$CXX $FLAGS update_main.o update_plan_embedded.o update_engine.o "
        "contract.o plan_loader.o gate.o runtime_screen.o dataset.o batch_pipeline.o gemm.o elementwise.o "
        "activation.o normalization.o loss.o optimizer.o attention.o "
