@@ -12,6 +12,7 @@
 #include "source/identity/hash.h"
 #include "source/tokenizer/byte_level_bpe.h"
 #include "source/tokenizer/text_ingest.h"
+#include "source/tokenizer/tokenizer_format.h"
 
 namespace seeml::update::tokenization {
 
@@ -48,10 +49,28 @@ const char* LabelKindName(uint32_t kind) {
 /// table (every id is below the table once HoldToModel has run).
 void FillCommon(const Dataset& ds, const sema::Topology& topology,
                 uint64_t rows_per_step, uint64_t steps,
-                std::optional<uint64_t> distinct_ids, CorpusFacts& f) {
+                std::optional<uint64_t> distinct_ids, int32_t eos,
+                CorpusFacts& f) {
   f.records = ds.num_samples();
   if (ds.input_kind() == 1) {
     const uint64_t seq = ds.input_dim();
+    // The windows a segment mask changes (#191): a record of S + 1 ids
+    // whose EOS falls at an input position before the last, so that some
+    // later position's document starts after position 0. An EOS at the
+    // last input position, or as the final label, masks nothing.
+    if (eos >= 0 && seq >= 2) {
+      f.eos_known = true;
+      uint64_t at = 0;
+      bool multi = false;
+      ds.each_token([&](int32_t id) {
+        if (at + 1 < seq && id == eos) multi = true;
+        if (++at == seq + 1) {
+          if (multi) ++f.multi_document_windows;
+          at = 0;
+          multi = false;
+        }
+      });
+    }
     f.record_width = seq + 1;
     f.tokens = f.records * (seq + 1);
     f.total_tokens = f.records * seq;
@@ -184,6 +203,12 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
     uint64_t steps) {
   const std::string ext = Extension(path);
   CorpusIngress out;
+  // The EOS id of the model's tokenizer section, when it has one (-1
+  // otherwise): what a segment mask would find documents by (#191).
+  int32_t eos = -1;
+  if (!model.tokenizer.empty())
+    if (auto head = seeml::tokenizer::ReadSmtkHead(model.tokenizer))
+      eos = head->eos_id;
 
   if (ext == "sds") {
     // The corpus as given: loaded once by the feeder's own reader (which
@@ -196,7 +221,7 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
     out.from_sds = true;
     out.shape = ShapeOf(*ds, ds->content_hash());
     out.facts.kind = "sds";
-    FillCommon(*ds, topology, rows_per_step, steps, std::nullopt, out.facts);
+    FillCommon(*ds, topology, rows_per_step, steps, std::nullopt, eos, out.facts);
     out.facts.corpus_hash = out.shape.corpus_hash;
     return out;
   }
@@ -266,7 +291,7 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
   f.bidi_controls = m.sanitized.bidi_controls;
   f.remainder_tokens = m.remainder_tokens;
   f.straddling_windows = m.straddling_windows;
-  FillCommon(*ds, topology, rows_per_step, steps, m.distinct_ids, f);
+  FillCommon(*ds, topology, rows_per_step, steps, m.distinct_ids, eos, f);
   f.corpus_hash = out.shape.corpus_hash;
   return out;
 }
