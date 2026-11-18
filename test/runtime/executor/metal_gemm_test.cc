@@ -54,10 +54,8 @@ void ExpectClose(const std::vector<float>& got, const std::vector<float>& want) 
 }
 
 TEST(MetalGemm, EmittedKernelsMatchCpuReference) {
-  if (!MetalGemmRunner::Available()) {
-    std::puts("  [ note ] no Metal device; GPU dispatch untested here");
-    return;
-  }
+  if (!MetalGemmRunner::Available())
+    SKIP("no Metal device; GPU dispatch untested here");
   auto runner = MakeRunner();
   ASSERT_TRUE(runner != nullptr);
 
@@ -95,10 +93,8 @@ TEST(MetalGemm, EmittedKernelsMatchCpuReference) {
 }
 
 TEST(MetalGemm, DispatchIsReproducibleRunToRun) {
-  if (!MetalGemmRunner::Available()) {
-    std::puts("  [ note ] no Metal device; GPU dispatch untested here");
-    return;
-  }
+  if (!MetalGemmRunner::Available())
+    SKIP("no Metal device; GPU dispatch untested here");
   auto runner = MakeRunner();
   ASSERT_TRUE(runner != nullptr);
   const std::vector<float> a = RandnVector(kM * kK, 206);
@@ -118,11 +114,13 @@ TEST(MetalGemm, DispatchIsReproducibleRunToRun) {
 #else  // !__APPLE__
 
 // Metal does not exist off Apple platforms. The runner treats an empty
-// test selection as an error (exit 2), so one trivially-green test keeps
-// the uniform cross-host suite list from failing where the platform simply
-// has nothing to check.
+// test selection as an error (exit 2), so one test keeps the uniform
+// cross-host suite list from failing where the platform simply has nothing
+// to check — and it is reported SKIPPED, not green.
 namespace {
-TEST(MetalGemm, UnsupportedPlatformIsVacuouslyGreen) { EXPECT_TRUE(true); }
+TEST(MetalGemm, UnsupportedPlatformIsSkipped) {
+  SKIP("Metal exists only on Apple platforms");
+}
 }  // namespace
 
 #endif

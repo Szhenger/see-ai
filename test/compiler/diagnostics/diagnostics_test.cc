@@ -2,11 +2,14 @@
 // Diagnostics partition tests: the shared one-line diagnostic form, each
 // process module's unit registry and message shapes (tokenizing / parsing /
 // passing / updating / architecting / generating), and the architecting
-// tiling-contract validator those shapes serve.
+// tiling-contract validator those shapes serve. The last section is the
+// test harness's own diagnostic: what SeeTest reports for a SKIP().
 // =============================================================================
 
+#include <cstdlib>
 #include <expected>
 #include <string>
+#include <string_view>
 
 #include "compiler/backend/architecture/host_arch.h"
 #include "compiler/diagnostics/diagnostic.h"
@@ -151,6 +154,32 @@ TEST(Architecting, RejectsContractViolationsAsHostArch) {
   const auto r_fat = ValidateGemmTiling(fat, arch);
   EXPECT_FALSE(r_fat.has_value());
   EXPECT_NE(r_fat.error().find("exceeds half of L1d"), std::string::npos);
+}
+
+// =============================================================================
+// SeeTest's SKIP (S8 #154)
+//
+// What a skip looks like is the runner's output and exit code, which a test
+// cannot read from inside its own process: test/tool/seetest_skip_test.py
+// runs this suite with SEETEST_SELF_TEST set and pins the [  SKIPPED ]
+// lines, the summary counts and the exit code. Unset — every ordinary run —
+// neither test skips or fails, which is that test's control: the summary
+// line of a run without skips is unchanged.
+// =============================================================================
+
+bool SelfTestAsks(std::string_view what) {
+  const char* asked = std::getenv("SEETEST_SELF_TEST");
+  return asked != nullptr && what == asked;
+}
+
+TEST(SeeTest, ASkipIsReportedAndCountedApartFromThePasses) {
+  if (SelfTestAsks("skip")) SKIP("the self-test asked for a skip");
+}
+
+TEST(SeeTest, AFailureBeforeASkipStillFailsTheTest) {
+  if (!SelfTestAsks("fail-then-skip")) return;
+  ADD_FAILURE("the self-test asked for a failure");
+  SKIP("the self-test asked for a skip after a failure");
 }
 
 }  // namespace

@@ -394,8 +394,10 @@ test of the compiler-emitted GEMM source.
   test registration defeating init-order issues, GoogleTest-shaped output,
   `EXPECT_*`/`ASSERT_*` including `std::expected`-aware `_OK`/`_ERROR`
   variants and `ASSERT_OK_AND_ASSIGN`, a `--filter` with wildcard/substring
-  semantics, ANSI color via `isatty`. Exit codes: 0 pass / 1 fail / 2 usage
-  or empty selection. 25 suite executables mirror the source tree
+  semantics, ANSI color via `isatty`, and `SKIP(reason)` for a test the
+  host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
+  with its reason, apart from the passes, never a failure. Exit codes:
+  0 no test failed / 1 fail / 2 usage or empty selection. 25 suite executables mirror the source tree
   one-to-one; 345 tests at v1.2.3.
 - **Fixtures** (`test/support/`) — seeded in-process builders for models,
   corpora, and arena probes; a RAII temp-dir. There are no checked-in binary
