@@ -150,7 +150,7 @@ class FileBytes {
 /// one range: the emit table patches each tensor at its own offset.
 /// `metadata_end` is where the parsed metadata stopped; `const_tensors`
 /// indexes the model's validated constant tensors.
-std::expected<void, std::string> CheckPayloadPlacement(
+[[nodiscard]] std::expected<void, std::string> CheckPayloadPlacement(
     const SmfModel& model, const std::vector<size_t>& const_tensors,
     uint64_t tokenizer_offset, uint64_t tokenizer_size, uint64_t metadata_end,
     const std::string& path) {

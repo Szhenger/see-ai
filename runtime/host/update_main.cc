@@ -404,7 +404,7 @@ struct Gate {
 /// The command line: every flag parsed and bounds-checked, in the order
 /// that decides which usage error wins. The error is the exit code — 2 for
 /// a bad command line, 0 after --help.
-std::expected<RunArgs, int> ParseArgs(int argc, char** argv) {
+[[nodiscard]] std::expected<RunArgs, int> ParseArgs(int argc, char** argv) {
   // Strictness before convenience: ArgsOk first, so `--out -h` is a
   // missing-value error rather than a help hit on a swallowed slot. After
   // it passes, every argv slot is a known flag or a non-flag value, and
@@ -560,7 +560,8 @@ std::expected<RunArgs, int> ParseArgs(int argc, char** argv) {
 /// hashed. A flag that cannot apply is a usage error, never a silently
 /// vacuous gate. A plan file that cannot be opened fails closed here,
 /// with the package mode spelled out.
-std::optional<int> HoldFlagsToPlan(int argc, char** argv, RunArgs& args) {
+[[nodiscard]] std::optional<int> HoldFlagsToPlan(int argc, char** argv,
+                                                 RunArgs& args) {
   const std::string& plan_path = args.plan_path;
   const std::string& plan_flag = args.plan_flag;
   const std::string& checkpoint_path = args.checkpoint_path;
@@ -641,9 +642,9 @@ std::optional<int> HoldFlagsToPlan(int argc, char** argv, RunArgs& args) {
 
 /// The backend, the plan and the source model: select, load and validate,
 /// bind. An exit code when any of them refuses.
-std::optional<int> LoadPlanAndModel(const RunArgs& args,
-                                    seeml::update_rt::UpdateEngine& engine,
-                                    double* load_seconds) {
+[[nodiscard]] std::optional<int> LoadPlanAndModel(
+    const RunArgs& args, seeml::update_rt::UpdateEngine& engine,
+    double* load_seconds) {
   const std::string& plan_path = args.plan_path;
   const std::string& model = args.model;
   const bool embedded = args.embedded;
@@ -713,7 +714,7 @@ std::optional<int> LoadPlanAndModel(const RunArgs& args,
 /// gate scores the set the compile decided; --val-frac is then not a
 /// runner decision and is refused. Otherwise --val-frac splits by
 /// position as before; 0 falls back to the training-loss trend.
-std::optional<int> SplitValidation(
+[[nodiscard]] std::optional<int> SplitValidation(
     int argc, char** argv, RunArgs& args,
     const seeml::update::PlanHeader& plan_header,
     seeml::update_rt::Dataset* dataset,
@@ -767,7 +768,7 @@ std::optional<int> SplitValidation(
 /// engine refuses again for callers that skip this check. (resumed_from
 /// is set only for a checkpoint of this plan past step 0 — the engine's
 /// own condition for holding the binding.)
-std::optional<int> RefuseForeignResume(
+[[nodiscard]] std::optional<int> RefuseForeignResume(
     const RunArgs& args, const seeml::update_rt::Dataset* dataset,
     const std::optional<seeml::update_rt::Dataset>& val_set,
     const seeml::update_rt::TrainOptions& options) {
@@ -838,8 +839,8 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
 }
 
 /// --loss-log: the curve as CSV. False when it could not be written.
-bool WriteLossLog(const std::string& loss_log,
-                  const seeml::update_rt::TrainReport* report) {
+[[nodiscard]] bool WriteLossLog(
+    const std::string& loss_log, const seeml::update_rt::TrainReport* report) {
   bool outputs_ok = true;
   if (!loss_log.empty()) {
     std::FILE* f = std::fopen(loss_log.c_str(), "w");
@@ -907,8 +908,8 @@ struct ReportContext {
 
 /// --report: the JSON record, written last so it says what happened —
 /// including whether the commit landed. False when it could not be written.
-bool WriteReport(const ReportContext& context, bool committed,
-                 const char* error) {
+[[nodiscard]] bool WriteReport(const ReportContext& context, bool committed,
+                               const char* error) {
   const std::string& report_path = context.args.report_path;
   const std::string& plan_path = context.args.plan_path;
   const double min_improvement = context.args.min_improvement;

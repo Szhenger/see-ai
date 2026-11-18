@@ -85,23 +85,23 @@ struct InstructionProof {
   InstructionExtents* const extents;
   const uint64_t d0, d1, d2;  // the instruction's three out[] words
 
-  std::expected<void, std::string> Run();
+  [[nodiscard]] std::expected<void, std::string> Run();
 
   // The preamble every opcode passes, in this order.
-  std::expected<void, std::string> FlagsOk() const;
-  std::expected<void, std::string> ImmOk() const;
-  std::expected<void, std::string> VersionOk() const;
+  [[nodiscard]] std::expected<void, std::string> FlagsOk() const;
+  [[nodiscard]] std::expected<void, std::string> ImmOk() const;
+  [[nodiscard]] std::expected<void, std::string> VersionOk() const;
 
   // The operand proofs, one per opcode family. Each handles exactly the
   // opcodes Run() routes to it and refuses any other.
-  std::expected<void, std::string> Gemm();
-  std::expected<void, std::string> Elementwise();
-  std::expected<void, std::string> Normalization();
-  std::expected<void, std::string> Loss();
-  std::expected<void, std::string> OptimizerStep();
-  std::expected<void, std::string> RopeAndEmbedding();
-  std::expected<void, std::string> AttentionCached();
-  std::expected<void, std::string> AttentionTiled();
+  [[nodiscard]] std::expected<void, std::string> Gemm();
+  [[nodiscard]] std::expected<void, std::string> Elementwise();
+  [[nodiscard]] std::expected<void, std::string> Normalization();
+  [[nodiscard]] std::expected<void, std::string> Loss();
+  [[nodiscard]] std::expected<void, std::string> OptimizerStep();
+  [[nodiscard]] std::expected<void, std::string> RopeAndEmbedding();
+  [[nodiscard]] std::expected<void, std::string> AttentionCached();
+  [[nodiscard]] std::expected<void, std::string> AttentionTiled();
 
   // elem_bytes: f32/i32 operands are 4 bytes; quantized weights are 1.
   // A ref is admitted only if its extent is nonzero (every kernel
@@ -152,7 +152,7 @@ struct InstructionProof {
   // Accept only if no written range overlaps another operand's range in the
   // same address space. Called in place of a bare success return by every
   // case that records operands.
-  std::expected<void, std::string> Disjoint() const {
+  [[nodiscard]] std::expected<void, std::string> Disjoint() const {
     const OperandExtent* ranges = extents->ranges;
     const size_t num_ranges = extents->count;
     for (size_t i = 0; i < num_ranges; ++i)
@@ -185,7 +185,8 @@ struct InstructionProof {
   // "absent" (scale 1.0) and any written scale must be a finite positive
   // float — Execute() multiplies by it blindly, and a zero or NaN scale
   // would train on nothing, silently.
-  std::expected<void, std::string> KlWordOk(uint64_t word) const {
+  [[nodiscard]] std::expected<void, std::string> KlWordOk(
+      uint64_t word) const {
     const float t = std::bit_cast<float>(static_cast<uint32_t>(word));
     if (!std::isfinite(t) || t < up::kKlTemperatureMin ||
         t > up::kKlTemperatureMax)
@@ -215,15 +216,16 @@ struct InstructionProof {
   // form on the optimizer steps (v12, out[1]) is absent below v12 — a
   // nonzero word there is corruption — and from v12 on either zero or such
   // a float.
-  std::expected<void, std::string> ClipThresholdOk(uint64_t word,
-                                                   const char* what) const {
+  [[nodiscard]] std::expected<void, std::string> ClipThresholdOk(
+      uint64_t word, const char* what) const {
     const float clip = std::bit_cast<float>(static_cast<uint32_t>(word));
     if (up::HighWord(word) != 0 || !std::isfinite(clip) || clip <= 0.0f)
       return diag::validating::Error(std::string(what) +
                                      " must be a finite positive float");
     return {};
   }
-  std::expected<void, std::string> ClipWordOk(uint64_t word) const {
+  [[nodiscard]] std::expected<void, std::string> ClipWordOk(
+      uint64_t word) const {
     if (word == 0) return {};
     if (plan_version < up::kSeeuKernelBatchVersion)
       return diag::validating::Error(
@@ -966,7 +968,7 @@ std::expected<void, std::string> InstructionProof::Run() {
   return UnknownOpcode();
 }
 
-std::expected<void, std::string> ValidateInstructionImpl(
+[[nodiscard]] std::expected<void, std::string> ValidateInstructionImpl(
     const up::UpdateInstruction& ins, uint64_t arena_size,
     uint64_t rodata_size, uint32_t plan_version, bool allow_source,
     InstructionExtents* extents) {
