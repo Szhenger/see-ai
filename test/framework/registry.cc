@@ -19,6 +19,8 @@ struct TestInfo {
   TestFn fn;
   bool selected = true;
   bool failed = false;
+  bool skipped = false;
+  std::string skip_reason;
 
   std::string FullName() const { return std::string(suite) + "." + name; }
 };
@@ -46,6 +48,7 @@ bool UseColor() {
 
 const char* Green() { return UseColor() ? "\x1b[32m" : ""; }
 const char* Red() { return UseColor() ? "\x1b[31m" : ""; }
+const char* Yellow() { return UseColor() ? "\x1b[33m" : ""; }
 const char* Reset() { return UseColor() ? "\x1b[0m" : ""; }
 
 /// Glob-style match: '*' matches any (possibly empty) substring.
@@ -75,7 +78,8 @@ void PrintIndented(const std::string& message) {
 }  // namespace
 
 void RegisterTest(const char* suite, const char* name, TestFn fn) {
-  Registry().push_back({suite, name, fn, /*selected=*/true, /*failed=*/false});
+  Registry().push_back({suite, name, fn, /*selected=*/true, /*failed=*/false,
+                        /*skipped=*/false, /*skip_reason=*/{}});
 }
 
 void ReportFailure(const char* file, int line, const std::string& message) {
@@ -88,6 +92,19 @@ void ReportFailure(const char* file, int line, const std::string& message) {
     std::abort();
   }
   state.current->failed = true;
+}
+
+void ReportSkip(const char* file, int line, const std::string& reason) {
+  std::printf("%s  SKIPPED%s at %s:%d\n", Yellow(), Reset(), file, line);
+  PrintIndented(reason);
+  RunState& state = State();
+  if (!state.current) {
+    std::fprintf(stderr,
+                 "seetest: SKIP used outside a running test — aborting\n");
+    std::abort();
+  }
+  state.current->skipped = true;
+  state.current->skip_reason = reason;
 }
 
 int RunAllTests(int argc, char** argv) {
@@ -142,6 +159,7 @@ int RunAllTests(int argc, char** argv) {
               tests.size());
   const auto suite_start = std::chrono::steady_clock::now();
   size_t failed_count = 0;
+  size_t skipped_count = 0;
 
   for (TestInfo& t : tests) {
     if (!t.selected) continue;
@@ -164,6 +182,11 @@ int RunAllTests(int argc, char** argv) {
       ++failed_count;
       std::printf("[%s  FAILED  %s] %s (%lld ms)\n", Red(), Reset(),
                   t.FullName().c_str(), static_cast<long long>(elapsed));
+    } else if (t.skipped) {
+      // Not a pass: the test did not check what it exists to check.
+      ++skipped_count;
+      std::printf("[%s  SKIPPED %s] %s (%lld ms)\n", Yellow(), Reset(),
+                  t.FullName().c_str(), static_cast<long long>(elapsed));
     } else {
       std::printf("[%s       OK %s] %s (%lld ms)\n", Green(), Reset(),
                   t.FullName().c_str(), static_cast<long long>(elapsed));
@@ -176,7 +199,15 @@ int RunAllTests(int argc, char** argv) {
   std::printf("[==========] %zu test(s) ran (%lld ms total)\n", selected,
               static_cast<long long>(total));
   std::printf("[%s  PASSED  %s] %zu test(s)\n", Green(), Reset(),
-              selected - failed_count);
+              selected - failed_count - skipped_count);
+  if (skipped_count > 0) {
+    std::printf("[%s  SKIPPED %s] %zu test(s), listed below:\n", Yellow(),
+                Reset(), skipped_count);
+    for (const TestInfo& t : tests)
+      if (t.selected && t.skipped && !t.failed)
+        std::printf("[%s  SKIPPED %s] %s: %s\n", Yellow(), Reset(),
+                    t.FullName().c_str(), t.skip_reason.c_str());
+  }
   if (failed_count > 0) {
     std::printf("[%s  FAILED  %s] %zu test(s), listed below:\n", Red(), Reset(),
                 failed_count);

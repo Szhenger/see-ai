@@ -61,6 +61,7 @@ Read them in this order:
 | [docs/runtime.md](docs/runtime.md) | The on-device virtual machine: load-time validation as a safety proof, numerically stable kernels (and why naive formulas explode), deterministic parallelism, a producer-consumer pipeline, and storage that survives a power cut. |
 | [docs/formats.md](docs/formats.md) | The four binary formats on disk — bytes, offsets, magic numbers, and hashes — and why each field is there. |
 | [test/README.md](test/README.md) | How the test tree mirrors the code, and how you test calculus with arithmetic. |
+| [STYLE.md](STYLE.md) | The house style, as the code keeps it: the two dialects and where each applies, `std::expected` versus `assert`, the one-line diagnostic contract, the exit-code table, ownership, and how a test is written (and skipped). |
 | [docs/benchmarks.md](docs/benchmarks.md) | The metric program that gates frontier development: throughput, kernel, memory, lifecycle, and velocity tiers. |
 
 ## Design Principles of Software Systems

@@ -17,6 +17,12 @@
 // plane's plan reader is tested equal to it on every fixture, so the
 // most-validated format in the tree has one decoder and one checked mirror,
 // not two independent ones.
+//
+// Exit codes: 0 the plan was printed and its seal verifies; 1 the plan is
+// the problem (a file that cannot be opened or read, not a plan, a version
+// outside the readable range, a section out of bounds, a seal that does not
+// verify); 2 a bad command line (no plan file, an unknown flag, a flag
+// where the plan file belongs).
 // =============================================================================
 
 #include <cinttypes>
@@ -378,6 +384,17 @@ int main(int argc, char** argv) {
   }
   if (argc < 2) {
     std::fprintf(stderr, "usage: seeml-seeu-dump plan.seeu [--instrs | --json]\n");
+    return 2;
+  }
+  // The plan comes first. A flag in its place — a typo'd one, or a real one
+  // ahead of the file — is a bad command line (exit 2), not a file that
+  // cannot be opened (exit 1).
+  if (argv[1][0] == '-') {
+    std::fprintf(stderr,
+                 "seeml-seeu-dump: unknown argument '%s' where the plan file "
+                 "belongs\n"
+                 "usage: seeml-seeu-dump plan.seeu [--instrs | --json]\n",
+                 argv[1]);
     return 2;
   }
   bool want_instrs = false;

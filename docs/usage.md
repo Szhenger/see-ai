@@ -132,6 +132,16 @@ seeml-seeu-dump pkg/update_plan.seeu --instrs   # all three instruction streams
 
 Reading a training loop as thirty-ish opcodes of straight-line code is a genuinely instructive way to see what the compiler did — and a good sanity check that, say, your clip instructions exist.
 
+**Exit codes of the build-host tools.** `seeml-update-compile`, `seeml-seeu-dump`, `seeml-plan-probe`, `seeml-tokenize`, `seeml-abi` and `seeml-bench` share one table, so a script can tell a wrong invocation from a wrong input (`test/tool/cli_exit_codes_test.py` pins it for all six):
+
+| Code | Meaning |
+|---|---|
+| `0` | the work was done (for `seeml-seeu-dump`: the plan was printed *and* its seal verifies) |
+| `1` | the work failed: an input file that cannot be read or is not what it claims to be (a model, a recipe file, a kernel-policy table, a plan), a compile refusal, a failed write or build |
+| `2` | a bad command line, refused before any model or plan is read: an unknown flag or stray argument, a flag without its value, a value that does not parse or is outside its bound, flags that contradict each other |
+
+For `seeml-update-compile` a recipe field outside its bound is `2` whether a flag or the `--recipe` file set it (one function holds both to the bound); a recipe file that cannot be opened or parsed is `1`. One gap: `seeml-bench` is right about its command line but still exits `2`, not `1`, when a run itself fails (a fixture that does not compile, a report it cannot write). The generated `model_update` has its own, longer table — see Step 3.
+
 ## What the Compiler Tells You
 
 Every compile prints four screens — what the frontend read, what the analysis passes did, the plan the backend emitted, and the runtime as planned — and nothing else unless you ask. Each line is a number, its unit, and the clause it comes from. `--report report.json` carries the same rows by key under `"screens"`, and `build/seeml-abi` publishes their schema (each row's key, kind, unit and flags), so a tool reading a report can check what it reads. `--verbose` adds the verbose rows (the step-0 footprint's four parts, alpha, gradients, the arena's segments, each phase's time), a table of every pass with the ops after it, a table of every adapter site, and each pass's own note. `--peak-gflops G` states the target's peak and turns the work per step into a predicted step time; the compiler never guesses a peak.
@@ -277,7 +287,7 @@ With `--checkpoint` and `--checkpoint-every`, the storage role adds three rows a
 
 Each checkpoint is the plan's persistent segment behind a header, staged beside the destination, synced, renamed into place, and its directory synced: two fsyncs, or one on a filesystem that refuses a directory fsync, and one on Windows, where the rename is written through instead. The bytes are a mean because a checkpoint also carries the best state while it differs from the segment.
 
-Exit codes are the API for your update orchestrator: `0` committed, `1` runtime error, `2` bad arguments, `3` regression-gate rejection, `4` committed but `--report` or `--loss-log` could not be written. `--loss-log` writes the full per-step CSV loss curve once training completes (it is not appended live, so tail it after the run, not during).
+Exit codes are the API for your update orchestrator: `0` committed, `1` runtime error, `2` bad arguments, `3` regression-gate rejection, `4` committed but `--report` or `--loss-log` could not be written, `5` stopped by SIGINT/SIGTERM at a step boundary — nothing merged or committed, and with `--checkpoint` the run is resumable. `--loss-log` writes the full per-step CSV loss curve once training completes (it is not appended live, so tail it after the run, not during).
 
 ## Threading and Determinism
 

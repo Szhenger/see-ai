@@ -74,6 +74,13 @@
 // Every numeric flag is parsed strictly: trailing garbage, overflow, NaN/Inf,
 // or an unknown flag is a hard error, never a silent default.
 //
+// Exit codes: 0 the package was emitted; 1 the work failed (an unreadable or
+// malformed model, recipe file or policy table, a compile refusal, a failed
+// write or build); 2 a bad command line (an unknown flag, a flag without
+// its value, a recipe field outside its bound — whether a flag or the
+// recipe file set it — or flags that contradict each other), refused before
+// any model is read.
+//
 // Output: update_plan.seeu + generated TUs + vendored runtime sources +
 // build.sh; with --build, the linked self-contained `model_update` binary.
 // --no-embed leaves the plan on disk once (the .seeu) and no embedded TU:
@@ -112,9 +119,19 @@ namespace {
 
 using namespace seeml::update;
 
+/// A failure of the work itself — an unreadable or malformed input file, a
+/// compile refusal, an unwritable output: exit 1.
 int Fail(const std::string& msg) {
   std::fprintf(stderr, "seeml-update-compile: %s\n", msg.c_str());
   return 1;
+}
+
+/// A bad command line — an unknown flag, a flag without its value, a value
+/// outside its bound, flags that contradict each other: exit 2, before any
+/// model is read.
+int Usage(const std::string& msg) {
+  std::fprintf(stderr, "seeml-update-compile: %s\n", msg.c_str());
+  return 2;
 }
 
 void PrintUsage() {
@@ -258,7 +275,7 @@ std::string ShellQuote(const std::string& s) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc > 255) return Fail("too many arguments");
+  if (argc > 255) return Usage("too many arguments");
   Args args(argc, argv);
 
   if (args.Take("--help") || args.Take("-h")) {
@@ -275,9 +292,9 @@ int main(int argc, char** argv) {
   const auto out_dir = args.TakeValue("--out");
   if (!source_path || !out_dir) {
     if (const auto& m = args.MissingValue())
-      return Fail(*m + " requires a value");
+      return Usage(*m + " requires a value");
     PrintUsage();
-    return Fail("--source and --out are required");
+    return Usage("--source and --out are required");
   }
 
   UpdateConfig config;
@@ -306,8 +323,8 @@ int main(int argc, char** argv) {
       const bool set = args.Take(field.flag);
       const bool clear = args.Take(off.c_str());
       if (set && clear)
-        return Fail(std::string(field.flag) + " and " + off +
-                    " contradict each other");
+        return Usage(std::string(field.flag) + " and " + off +
+                     " contradict each other");
       if (set) recipe_values[field.name] = "true";
       if (clear) recipe_values[field.name] = "false";
     } else if (auto v = args.TakeValue(field.flag)) {
@@ -321,13 +338,13 @@ int main(int argc, char** argv) {
   if (data_path) config.data_path = *data_path;
   const auto teacher_path = args.TakeValue("--teacher");
   if (const auto& m = args.MissingValue())
-    return Fail(*m + " requires a value");
+    return Usage(*m + " requires a value");
   if (auto ok = recipe::Apply(
           recipe_values,
           {.teacher = teacher_path.has_value(), .data = data_path.has_value()},
           &config);
       !ok)
-    return Fail(ok.error());
+    return Usage(ok.error());
   config.fuse_epilogues = !args.Take("--no-fuse-epilogue");
   // Debug: the final SIR, rendered only when a destination is named.
   const auto dump_sir_path = args.TakeValue("--dump-sir");
@@ -341,7 +358,7 @@ int main(int argc, char** argv) {
   KernelPolicyRequest policy_request;
   if (auto v = args.TakeValue("--gemm-tiles")) {
     auto tiles = ParseGemmTilesFlag(*v);
-    if (!tiles) return Fail(tiles.error());
+    if (!tiles) return Usage(tiles.error());
     policy_request.explicit_tiles = *tiles;
   }
   policy_request.table_path = args.TakeValue("--kernel-policy");
@@ -360,8 +377,8 @@ int main(int argc, char** argv) {
     // every recipe float is: no whitespace, no hex, nothing non-finite.
     double peak = 0.0;
     if (!recipe::ParseF64Strict(*v, &peak) || !(peak > 0.0))
-      return Fail("--peak-gflops must be a positive number, got '" + *v +
-                  "'");
+      return Usage("--peak-gflops must be a positive number, got '" + *v +
+                   "'");
     config.peak_gflops = peak;
   }
   // The GPU half of the target description (S6 #152): the backend screen
@@ -370,34 +387,34 @@ int main(int argc, char** argv) {
   if (auto v = args.TakeValue("--gpu-peak-gflops")) {
     double peak = 0.0;
     if (!recipe::ParseF64Strict(*v, &peak) || !(peak > 0.0))
-      return Fail("--gpu-peak-gflops must be a positive number, got '" + *v +
-                  "'");
+      return Usage("--gpu-peak-gflops must be a positive number, got '" + *v +
+                   "'");
     config.gpu_peak_gflops = peak;
   }
   const bool want_build = args.Take("--build");
 
   if (const auto& m = args.MissingValue())
-    return Fail(*m + " requires a value");
+    return Usage(*m + " requires a value");
   if (auto unknown = args.FirstUnknown())
-    return Fail("unknown argument '" + *unknown + "' (see --help)");
+    return Usage("unknown argument '" + *unknown + "' (see --help)");
   // Without an embedded TU, build.sh would build the disk mode (#158)
   // regardless of the plan's size; the packer owns that choice (embed
   // below its limit, disk from it) and drives the build itself. Refuse
   // here so a --no-embed package is always packed before it is built.
   if (no_embed && want_build)
-    return Fail("--build needs the embedded plan TU that --no-embed skips; "
-                "run `python3 tool/pack_update.py <out> --build` instead (it "
-                "embeds the plan, or leaves it beside the binary above its "
-                "embed limit)");
+    return Usage("--build needs the embedded plan TU that --no-embed skips; "
+                 "run `python3 tool/pack_update.py <out> --build` instead (it "
+                 "embeds the plan, or leaves it beside the binary above its "
+                 "embed limit)");
   // A relaxed plan (v18) is buildable only beside a numerics certificate,
   // and only the Python plane issues one: --build here would link an
   // uncertified relaxed binary (2026-09-24 review, N17). The emitted
   // build.sh refuses the same way, so no path builds one by hand.
   if (want_build && config.precision == Precision::kCertifiedBf16)
-    return Fail("--build cannot certify a --precision certified-bf16 plan; "
-                "emit it, run `python3 tool/certify_numerics.py certify <out> "
-                "--corpus <corpus.sds>`, then `python3 tool/pack_update.py "
-                "<out> --build`");
+    return Usage("--build cannot certify a --precision certified-bf16 plan; "
+                 "emit it, run `python3 tool/certify_numerics.py certify <out> "
+                 "--corpus <corpus.sds>`, then `python3 tool/pack_update.py "
+                 "<out> --build`");
 
   // Resolved after the argument check so a malformed table is reported
   // against a well-formed command line. A table without this host is a

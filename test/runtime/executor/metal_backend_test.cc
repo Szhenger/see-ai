@@ -37,9 +37,12 @@ using namespace seeml::update;
 using namespace seeml::update_rt;
 using namespace seeml::testing;
 
+/// `if (Skip()) return;` opens every test that needs the device: without
+/// one the test is reported SKIPPED with this reason, not passed.
 bool Skip() {
   if (MetalBackendAvailable()) return false;
-  std::puts("  [ note ] no Metal device; the Metal backend is untested here");
+  ReportSkip(__FILE__, __LINE__,
+             "no Metal device; the Metal backend is untested here");
   return true;
 }
 
@@ -1901,7 +1904,9 @@ TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
 #else  // !__APPLE__
 
 namespace {
-TEST(MetalBackend, UnsupportedPlatformIsVacuouslyGreen) { EXPECT_TRUE(true); }
+TEST(MetalBackend, UnsupportedPlatformIsSkipped) {
+  SKIP("Metal exists only on Apple platforms");
+}
 }  // namespace
 
 #endif

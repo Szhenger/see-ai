@@ -11,7 +11,7 @@
 
 // =============================================================================
 // assert/ discipline of SeeTest: the macro surface suites write against —
-// TEST registration, boolean/binary/proximity assertions, and the
+// TEST registration, SKIP, boolean/binary/proximity assertions, and the
 // std::expected-aware forms matching the codebase's error-handling idiom.
 // EXPECT_* records the failure and continues; ASSERT_* records and returns
 // from the test function (so it must be used in the TEST body itself, not
@@ -37,6 +37,19 @@
   do {                    \
     ADD_FAILURE(msg);     \
     return;               \
+  } while (0)
+
+// --- Skips -------------------------------------------------------------------------
+
+/// The test cannot run here — the host lacks a capability it needs (a Metal
+/// device, a platform API) — so say so instead of returning green for zero
+/// work: SKIP("no Metal device"). Reported as [  SKIPPED ] with the reason,
+/// counted apart from the passes, and never a failure. Like ASSERT_*, it
+/// returns, so it belongs in the TEST body itself.
+#define SKIP(reason)                                                   \
+  do {                                                                 \
+    ::seeml::testing::ReportSkip(__FILE__, __LINE__, (reason));        \
+    return;                                                            \
   } while (0)
 
 // --- Boolean assertions ----------------------------------------------------------
