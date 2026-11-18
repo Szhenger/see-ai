@@ -211,7 +211,7 @@ std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
   for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program)
       if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kEmbedFwd) {
-        const uint64_t vocab = ins.out[1] >> 32;
+        const uint64_t vocab = up::HighWord(ins.out[1]);
         if (vocab != 0 && (vocab_bound == 0 || vocab < vocab_bound))
           vocab_bound = vocab;
       }

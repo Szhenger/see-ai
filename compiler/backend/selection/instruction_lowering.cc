@@ -28,7 +28,7 @@ uint32_t NormEpsImm(const sir::Operation& op) {
 // Two immediates in one word: (hi bits << 32) | lo bits. Used for the KL
 // temperature word, whose high half is the v8 loss scale (instruction.h).
 uint64_t F32BitsPair(float hi, float lo) {
-  return (F32Bits(hi) << 32) | F32Bits(lo);
+  return PackWords(F32Bits(hi), F32Bits(lo));
 }
 
 }  // namespace
@@ -64,7 +64,7 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
                 std::to_string(lo) + ") exceeds the 32-bit ISA dim fields";
       return 0;
     }
-    return (static_cast<uint64_t>(hi) << 32) | static_cast<uint64_t>(lo);
+    return PackWords(static_cast<uint64_t>(hi), static_cast<uint64_t>(lo));
   };
 
   for (sir::Operation* op : ops) {

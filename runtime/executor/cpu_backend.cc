@@ -172,13 +172,13 @@ float BitsToF32(uint64_t bits) {
 // The KL temperature word packs (loss_scale bits << 32) | T bits. A zero
 // high word is a pre-v8 plan: no scale was ever written, and 1.0 selects
 // the pre-change behavior (schema.h, the additive-field rule).
-float KlTemperatureOf(uint64_t word) { return BitsToF32(word & 0xFFFFFFFFu); }
+float KlTemperatureOf(uint64_t word) { return BitsToF32(up::LowWord(word)); }
 // v17: the q8 GEMM's in[3] is a ref to per-column scales, not scale bits.
 bool ColScaled(const up::UpdateInstruction& ins) {
   return (ins.flags & up::kFlagQ8ColScale) != 0;
 }
 float KlLossScaleOf(uint64_t word) {
-  const uint64_t hi = word >> 32;
+  const uint64_t hi = up::HighWord(word);
   return hi == 0 ? 1.0f : BitsToF32(hi);
 }
 
@@ -393,14 +393,14 @@ std::expected<void, std::string> CpuBackend::Execute(
       k::LayerNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       ReadPtr(ins.in[2]), WritePtr(ins.in[3]),
                       WritePtr(ins.out[1]), WritePtr(ins.out[2]),
-                      ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                      up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
                       up::NormEpsOf(ins.imm));
       break;
     case up::OpCode::kLayerNormBwd:
       k::LayerNormBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       ReadPtr(ins.in[2]), ReadPtr(ins.out[0]),
                       ReadPtr(ins.out[1]), WritePtr(ins.in[3]),
-                      ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
+                      up::HighWord(ins.out[2]), up::LowWord(ins.out[2]));
       break;
     case up::OpCode::kClipNorm: {
       // CR1 #142 F09 / F13 / F18: the threshold is a finite positive float
@@ -468,14 +468,14 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kKLDistillFwd:
       k::KLDistillFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       WritePtr(ins.in[2]), WritePtr(ins.in[3]),
-                      WritePtr(ins.out[0]), ins.out[1] >> 32,
-                      ins.out[1] & 0xFFFFFFFFu, KlTemperatureOf(ins.out[2]),
+                      WritePtr(ins.out[0]), up::HighWord(ins.out[1]),
+                      up::LowWord(ins.out[1]), KlTemperatureOf(ins.out[2]),
                       KlLossScaleOf(ins.out[2]));
       break;
     case up::OpCode::kKLDistillBwd:
       k::KLDistillBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       ReadPtr(ins.in[2]), WritePtr(ins.in[3]),
-                      ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                      up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
                       KlTemperatureOf(ins.out[1]),
                       KlLossScaleOf(ins.out[1]));
       break;
@@ -519,26 +519,28 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kRmsNormFwd:
       k::RmsNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                     WritePtr(ins.in[2]), WritePtr(ins.in[3]),
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                    up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
                     up::NormEpsOf(ins.imm));
       break;
     case up::OpCode::kRmsNormBwd:
       k::RmsNormBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                     ReadPtr(ins.in[2]), ReadPtr(ins.out[0]),
-                    WritePtr(ins.in[3]), ins.out[1] >> 32,
-                    ins.out[1] & 0xFFFFFFFFu);
+                    WritePtr(ins.in[3]), up::HighWord(ins.out[1]),
+                    up::LowWord(ins.out[1]));
       break;
     // v12: in[2] names a kRopeTable result, or is kNullRef.
     case up::OpCode::kRopeFwd:
-      k::RopeFwd(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), ins.out[0] >> 32,
-                 ins.out[0] & 0xFFFFFFFFu, ins.out[1] >> 32,
-                 ins.out[1] & 0xFFFFFFFFu, BitsToF32(ins.out[2]),
+      k::RopeFwd(ReadPtr(ins.in[0]), WritePtr(ins.in[1]),
+                 up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
+                 up::HighWord(ins.out[1]), up::LowWord(ins.out[1]),
+                 BitsToF32(ins.out[2]),
                  ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2]));
       break;
     case up::OpCode::kRopeBwd:
-      k::RopeBwd(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), ins.out[0] >> 32,
-                 ins.out[0] & 0xFFFFFFFFu, ins.out[1] >> 32,
-                 ins.out[1] & 0xFFFFFFFFu, BitsToF32(ins.out[2]),
+      k::RopeBwd(ReadPtr(ins.in[0]), WritePtr(ins.in[1]),
+                 up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
+                 up::HighWord(ins.out[1]), up::LowWord(ins.out[1]),
+                 BitsToF32(ins.out[2]),
                  ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2]));
       break;
     case up::OpCode::kFusedMap: {
@@ -547,25 +549,26 @@ std::expected<void, std::string> CpuBackend::Execute(
           nullptr,
           ins.in[1] == up::kNullRef ? nullptr : ReadPtr(ins.in[1]),
           ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2])};
-      const float imm[2] = {BitsToF32(ins.out[2]), BitsToF32(ins.out[2] >> 32)};
+      const float imm[2] = {BitsToF32(ins.out[2]),
+                            BitsToF32(up::HighWord(ins.out[2]))};
       k::FusedMap(ReadPtr(ins.in[0]), others, WritePtr(ins.in[3]), ins.out[0],
                   ins.out[1], imm);
       break;
     }
     case up::OpCode::kRopeTable:
-      k::RopeTable(WritePtr(ins.in[0]), ins.out[0] >> 32,
-                   ins.out[0] & 0xFFFFFFFFu, BitsToF32(ins.out[1]));
+      k::RopeTable(WritePtr(ins.in[0]), up::HighWord(ins.out[0]),
+                   up::LowWord(ins.out[0]), BitsToF32(ins.out[1]));
       break;
     case up::OpCode::kAttnFwd:
       k::AttnFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), ReadPtr(ins.in[2]),
                  WritePtr(ins.in[3]), WritePtr(ins.out[0]),
-                 ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu,
-                 ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
+                 up::HighWord(ins.out[1]), up::LowWord(ins.out[1]),
+                 up::HighWord(ins.out[2]), up::LowWord(ins.out[2]));
       break;
     case up::OpCode::kSegmentStarts:  // v25, #191
       k::SegmentStarts(reinterpret_cast<const int32_t*>(ReadPtr(ins.in[0])),
                        reinterpret_cast<int32_t*>(WritePtr(ins.in[1])),
-                       ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                       up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
                        static_cast<int32_t>(ins.out[1]));
       break;
     case up::OpCode::kAttnFwdSeg: {  // v25, #191
@@ -577,35 +580,35 @@ std::expected<void, std::string> CpuBackend::Execute(
     }
     case up::OpCode::kAttnDP:
       k::AttnDP(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
-                ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
+                up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
     case up::OpCode::kAttnDV:
       k::AttnDV(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
-                ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
+                up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
     case up::OpCode::kSoftmaxRowsBwd:
       k::SoftmaxRowsBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
-                        WritePtr(ins.in[2]), ins.out[0] >> 32,
-                        ins.out[0] & 0xFFFFFFFFu);
+                        WritePtr(ins.in[2]), up::HighWord(ins.out[0]),
+                        up::LowWord(ins.out[0]));
       break;
     case up::OpCode::kAttnDQ:
       k::AttnDQ(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
-                ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
+                up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
     case up::OpCode::kAttnDK:
       k::AttnDK(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
-                ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
+                up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
     case up::OpCode::kAttnFwdTiled:
       k::AttnFwdTiled(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       ReadPtr(ins.in[2]), WritePtr(ins.in[3]),
-                      WritePtr(ins.out[0]), ins.out[1] >> 32,
-                      ins.out[1] & 0xFFFFFFFFu, ins.out[2] >> 32,
-                      ins.out[2] & 0xFFFFFFFFu);
+                      WritePtr(ins.out[0]), up::HighWord(ins.out[1]),
+                      up::LowWord(ins.out[1]), up::HighWord(ins.out[2]),
+                      up::LowWord(ins.out[2]));
       break;
     case up::OpCode::kAttnFwdTiledSeg: {  // v26, #191 step 2
       const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
@@ -639,7 +642,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kEmbedFwd:
       k::EmbedFwd(reinterpret_cast<const int32_t*>(ReadPtr(ins.in[0])),
                   ReadPtr(ins.in[1]), WritePtr(ins.in[2]), ins.out[0],
-                  ins.out[1] & 0xFFFFFFFFu);
+                  up::LowWord(ins.out[1]));
       break;
   }
   return {};

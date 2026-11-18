@@ -19,7 +19,7 @@ namespace {
 /// finite and every one none names is zero.
 bool FusedProgramOk(uint64_t stages_word, uint64_t imm_word,
                     bool uses_slot[3]) {
-  if ((stages_word >> 32) != 0) return false;
+  if (up::HighWord(stages_word) != 0) return false;
   constexpr uint8_t kKnownBits = static_cast<uint8_t>(
       up::kFusedStageKindMask |
       (up::kFusedStageArgMask << up::kFusedStageArgShift) |
@@ -245,7 +245,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       return diag::validating::Error(
           std::string("kl_distill temperature must be a finite float in ") +
           up::kKlTemperatureRangeText);
-    const uint64_t hi = word >> 32;
+    const uint64_t hi = up::HighWord(word);
     if (plan_version < up::kSeeuKlScaleVersion) {
       if (hi != 0)
         return diag::validating::Error(
@@ -333,7 +333,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
   auto clip_threshold_ok = [&](uint64_t word, const char* what)
       -> std::expected<void, std::string> {
     const float clip = std::bit_cast<float>(static_cast<uint32_t>(word));
-    if ((word >> 32) != 0 || !std::isfinite(clip) || clip <= 0.0f)
+    if (up::HighWord(word) != 0 || !std::isfinite(clip) || clip <= 0.0f)
       return diag::validating::Error(std::string(what) +
                                      " must be a finite positive float");
     return {};
@@ -356,8 +356,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
   // same overflow-safe chain the kernels' loop bounds imply.
   auto attn_geometry = [&](uint64_t bs_word, uint64_t hd_word, uint64_t* td,
                            uint64_t* pn) {
-    const uint64_t B = bs_word >> 32, S = bs_word & 0xFFFFFFFFu;
-    const uint64_t H = hd_word >> 32, d = hd_word & 0xFFFFFFFFu;
+    const uint64_t B = up::HighWord(bs_word), S = up::LowWord(bs_word);
+    const uint64_t H = up::HighWord(hd_word), d = up::LowWord(hd_word);
     uint64_t t = 0, dm = 0, bhs = 0;
     if (B == 0 || S == 0 || H == 0 || d == 0) return false;
     if (!MulOk(B, S, &t) || !MulOk(H, d, &dm) || !MulOk(t, dm, td)) return false;
@@ -404,7 +404,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
       if (q8 && !(ins.flags & up::kFlagQ8ColScale)) {
         const float scale =
             std::bit_cast<float>(static_cast<uint32_t>(ins.in[3]));
-        if ((ins.in[3] >> 32) != 0 || !std::isfinite(scale) || scale <= 0.0f)
+        if (up::HighWord(ins.in[3]) != 0 || !std::isfinite(scale) ||
+            scale <= 0.0f)
           return diag::validating::Error(
               "quantized GEMM dequant scale must be a finite positive float");
       }
@@ -447,7 +448,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
         return fail();
       return disjoint();
     case up::OpCode::kLayerNormFwd: {
-      const uint64_t rows = d0 >> 32, cols = d0 & 0xFFFFFFFFu;
+      const uint64_t rows = up::HighWord(d0), cols = up::LowWord(d0);
       if (!MulOk(rows, cols, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], cols, false) ||
           !ref_ok(ins.in[2], cols, false) || !ref_ok(ins.in[3], nc, true) ||
@@ -456,7 +457,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       return disjoint();
     }
     case up::OpCode::kLayerNormBwd: {
-      const uint64_t rows = d2 >> 32, cols = d2 & 0xFFFFFFFFu;
+      const uint64_t rows = up::HighWord(d2), cols = up::LowWord(d2);
       if (!MulOk(rows, cols, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], nc, false) ||
           !ref_ok(ins.in[2], cols, false) || !ref_ok(ins.in[3], nc, true) ||
@@ -509,7 +510,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
         return fail();
       return disjoint();
     case up::OpCode::kKLDistillFwd:
-      if (!MulOk(d1 >> 32, d1 & 0xFFFFFFFFu, &nc)) return fail();
+      if (!MulOk(up::HighWord(d1), up::LowWord(d1), &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], nc, false) ||
           !ref_ok(ins.in[2], 1, true) || !ref_ok(ins.in[3], nc, true) ||
           !ref_ok(ins.out[0], nc, true))
@@ -517,7 +518,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       if (auto r = kl_word_ok(d2); !r) return r;
       return disjoint();
     case up::OpCode::kKLDistillBwd:
-      if (!MulOk(d0 >> 32, d0 & 0xFFFFFFFFu, &nc)) return fail();
+      if (!MulOk(up::HighWord(d0), up::LowWord(d0), &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], nc, false) ||
           !ref_ok(ins.in[2], 1, false) || !ref_ok(ins.in[3], nc, true))
         return fail();
@@ -542,7 +543,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       if (!ref_ok(ins.in[0], d0, true)) return fail();
       return disjoint();
     case up::OpCode::kRmsNormFwd: {
-      const uint64_t rows = d0 >> 32, cols = d0 & 0xFFFFFFFFu;
+      const uint64_t rows = up::HighWord(d0), cols = up::LowWord(d0);
       if (!MulOk(rows, cols, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], cols, false) ||
           !ref_ok(ins.in[2], nc, true) || !ref_ok(ins.in[3], rows, true))
@@ -550,7 +551,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       return disjoint();
     }
     case up::OpCode::kRmsNormBwd: {
-      const uint64_t rows = d1 >> 32, cols = d1 & 0xFFFFFFFFu;
+      const uint64_t rows = up::HighWord(d1), cols = up::LowWord(d1);
       if (!MulOk(rows, cols, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], nc, false) ||
           !ref_ok(ins.in[2], cols, false) || !ref_ok(ins.in[3], nc, true) ||
@@ -563,13 +564,13 @@ std::expected<void, std::string> ValidateInstructionImpl(
       uint64_t td = 0, pn = 0;
       if (!attn_geometry(d0, d1, &td, &pn)) return fail();
       // The rotation pairs (2c, 2c+1) require an even head width.
-      if ((d1 & 0xFFFFFFFFu) % 2 != 0) return fail();
+      if (up::LowWord(d1) % 2 != 0) return fail();
       // The rotary base rides out[2] as f32 bits (SMF v5 attr1, or the
       // lowering default). A non-finite or <= 1 base would make every
       // angle degenerate or NaN — reject it here, not as a NaN loss later.
       const float base =
           std::bit_cast<float>(static_cast<uint32_t>(ins.out[2]));
-      if ((ins.out[2] >> 32) != 0 || !std::isfinite(base) || base <= 1.0f)
+      if (up::HighWord(ins.out[2]) != 0 || !std::isfinite(base) || base <= 1.0f)
         return fail();
       if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, true))
         return fail();
@@ -582,7 +583,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
               "rope carries an angle table in a pre-v" +
               std::to_string(up::kSeeuKernelBatchVersion) + " plan");
         uint64_t table = 0;
-        if (!MulOk(d0 & 0xFFFFFFFFu, d1 & 0xFFFFFFFFu, &table) ||
+        if (!MulOk(up::LowWord(d0), up::LowWord(d1), &table) ||
             !ref_ok(ins.in[2], table, false))
           return fail();
       }
@@ -605,10 +606,10 @@ std::expected<void, std::string> ValidateInstructionImpl(
     }
     case up::OpCode::kRopeTable: {
       // out[0] = S<<32|d, out[1] = base bits; the table is S*d floats.
-      const uint64_t S = d0 >> 32, d = d0 & 0xFFFFFFFFu;
+      const uint64_t S = up::HighWord(d0), d = up::LowWord(d0);
       const float base = std::bit_cast<float>(static_cast<uint32_t>(d1));
       uint64_t table = 0;
-      if (S == 0 || d == 0 || d % 2 != 0 || (d1 >> 32) != 0 ||
+      if (S == 0 || d == 0 || d % 2 != 0 || up::HighWord(d1) != 0 ||
           !std::isfinite(base) || base <= 1.0f || !MulOk(S, d, &table))
         return fail();
       if (!ref_ok(ins.in[0], table, true)) return fail();
@@ -624,7 +625,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       return disjoint();
     }
     case up::OpCode::kSegmentStarts: {  // v25: i32 tokens in, i32 starts out
-      const uint64_t B = d0 >> 32, S = d0 & 0xFFFFFFFFu;
+      const uint64_t B = up::HighWord(d0), S = up::LowWord(d0);
       uint64_t t = 0;
       if (B == 0 || S == 0 || !MulOk(B, S, &t)) return fail();
       if (d1 > 0x7FFFFFFFu)
@@ -636,7 +637,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
     case up::OpCode::kAttnFwdSeg: {  // v25: kAttnFwd, packed, plus starts
       const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
       uint64_t td = 0, pn = 0, t = 0;
-      if (!attn_geometry((g.B << 32) | g.S, (g.H << 32) | g.d, &td, &pn) ||
+      if (!attn_geometry(up::PackWords(g.B, g.S), up::PackWords(g.H, g.d), &td,
+                         &pn) ||
           !MulOk(g.B, g.S, &t))
         return fail();
       if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
@@ -662,7 +664,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       return disjoint();
     }
     case up::OpCode::kSoftmaxRowsBwd: {
-      const uint64_t rows = d0 >> 32, cols = d0 & 0xFFFFFFFFu;
+      const uint64_t rows = up::HighWord(d0), cols = up::LowWord(d0);
       if (!MulOk(rows, cols, &nc)) return fail();
       if (!ref_ok(ins.in[0], nc, false) || !ref_ok(ins.in[1], nc, false) ||
           !ref_ok(ins.in[2], nc, true))
@@ -683,7 +685,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
       // [B*H*S, kAttnStatsWidth] — the family's geometry words.
       uint64_t td = 0, pn = 0, st = 0;
       if (!attn_geometry(d1, d2, &td, &pn)) return fail();
-      const uint64_t bhs = (d1 >> 32) * (d1 & 0xFFFFFFFFu) * (d2 >> 32);
+      const uint64_t bhs =
+          up::HighWord(d1) * up::LowWord(d1) * up::HighWord(d2);
       if (!MulOk(bhs, up::kAttnStatsWidth, &st)) return fail();
       if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
           !ref_ok(ins.in[2], td, false) || !ref_ok(ins.in[3], td, true) ||
@@ -697,7 +700,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
       // layout, the stats row where the cache was.
       const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
       uint64_t td = 0, pn = 0, st = 0, t = 0;
-      if (!attn_geometry((g.B << 32) | g.S, (g.H << 32) | g.d, &td, &pn) ||
+      if (!attn_geometry(up::PackWords(g.B, g.S), up::PackWords(g.H, g.d), &td,
+                         &pn) ||
           !MulOk(g.B * g.S * g.H, up::kAttnStatsWidth, &st) ||
           !MulOk(g.B, g.S, &t))
         return fail();
@@ -715,7 +719,8 @@ std::expected<void, std::string> ValidateInstructionImpl(
       // Geometry is the packed 16-bit word: every field must be nonzero
       // and the products must be sound.
       const auto g = up::UnpackAttnGeometry(d2);
-      const uint64_t bs = (g.B << 32) | g.S, hd = (g.H << 32) | g.d;
+      const uint64_t bs = up::PackWords(g.B, g.S),
+                     hd = up::PackWords(g.H, g.d);
       uint64_t td = 0, pn = 0, st = 0;
       if (!attn_geometry(bs, hd, &td, &pn)) return fail();
       if (!MulOk(g.B * g.S * g.H, up::kAttnStatsWidth, &st)) return fail();
@@ -734,7 +739,7 @@ std::expected<void, std::string> ValidateInstructionImpl(
       // plan); never the arena. The gather's row bound (tokens[t] < V) is
       // the FEEDER contract's runtime obligation — the extents proven here
       // are the buffers, not the indices.
-      const uint64_t vocab = d1 >> 32, dim = d1 & 0xFFFFFFFFu;
+      const uint64_t vocab = up::HighWord(d1), dim = up::LowWord(d1);
       uint64_t vd = 0, td = 0;
       if (!MulOk(vocab, dim, &vd) || !MulOk(d0, dim, &td)) return fail();
       const bool source_table = up::IsSourceRef(ins.in[1]) && allow_source &&

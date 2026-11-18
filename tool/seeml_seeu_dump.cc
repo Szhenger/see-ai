@@ -69,7 +69,7 @@ float ImmBitsToF32(uint64_t bits) {
 // The KL temperature word's high half is the v8 loss scale; zero (pre-v8)
 // reads as 1.0, mirroring the engine.
 float KlScaleOf(uint64_t word) {
-  const uint64_t hi = word >> 32;
+  const uint64_t hi = HighWord(word);
   return hi == 0 ? 1.0f : ImmBitsToF32(hi);
 }
 
@@ -267,7 +267,7 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
         PrintRef(ins.out[1]);
         PrintRef(ins.out[2]);
         std::printf("   rows/cols: %" PRIu64 " %" PRIu64 "  eps %g\n",
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                    HighWord(ins.out[0]), LowWord(ins.out[0]),
                     static_cast<double>(NormEpsOf(ins.imm)));
         break;
       case OpCode::kLayerNormBwd:
@@ -275,39 +275,39 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
         PrintRef(ins.out[0]);
         PrintRef(ins.out[1]);
         std::printf("   rows/cols: %" PRIu64 " %" PRIu64 "\n",
-                    ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
+                    HighWord(ins.out[2]), LowWord(ins.out[2]));
         break;
       case OpCode::kKLDistillFwd:
         std::printf("   p_t:");
         PrintRef(ins.out[0]);
         std::printf("   n/c: %" PRIu64 " %" PRIu64 "  T %g  scale %g\n",
-                    ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu,
-                    ImmBitsToF32(ins.out[2] & 0xFFFFFFFFu),
+                    HighWord(ins.out[1]), LowWord(ins.out[1]),
+                    ImmBitsToF32(LowWord(ins.out[2])),
                     KlScaleOf(ins.out[2]));
         break;
       case OpCode::kKLDistillBwd:
         std::printf("   n/c: %" PRIu64 " %" PRIu64 "  T %g  scale %g\n",
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                    ImmBitsToF32(ins.out[1] & 0xFFFFFFFFu),
+                    HighWord(ins.out[0]), LowWord(ins.out[0]),
+                    ImmBitsToF32(LowWord(ins.out[1])),
                     KlScaleOf(ins.out[1]));
         break;
       case OpCode::kRmsNormFwd:
         std::printf("   rows/cols: %" PRIu64 " %" PRIu64 "  eps %g\n",
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
+                    HighWord(ins.out[0]), LowWord(ins.out[0]),
                     static_cast<double>(NormEpsOf(ins.imm)));
         break;
       case OpCode::kRmsNormBwd:
         std::printf("   rstd:");
         PrintRef(ins.out[0]);
         std::printf("   rows/cols: %" PRIu64 " %" PRIu64 "\n",
-                    ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                    HighWord(ins.out[1]), LowWord(ins.out[1]));
         break;
       case OpCode::kRopeFwd:
       case OpCode::kRopeBwd:
         std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
                     " %" PRIu64 "  base %g\n",
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                    ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu,
+                    HighWord(ins.out[0]), LowWord(ins.out[0]),
+                    HighWord(ins.out[1]), LowWord(ins.out[1]),
                     ImmBitsToF32(ins.out[2]));
         break;
       case OpCode::kAttnFwd:
@@ -315,8 +315,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
         PrintRef(ins.out[0]);
         std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
                     " %" PRIu64 "\n",
-                    ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu,
-                    ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
+                    HighWord(ins.out[1]), LowWord(ins.out[1]),
+                    HighWord(ins.out[2]), LowWord(ins.out[2]));
         break;
       case OpCode::kAttnDP:
       case OpCode::kAttnDV:
@@ -324,14 +324,14 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
       case OpCode::kAttnDK:
         std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
                     " %" PRIu64 "\n",
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu,
-                    ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                    HighWord(ins.out[0]), LowWord(ins.out[0]),
+                    HighWord(ins.out[1]), LowWord(ins.out[1]));
         break;
       case OpCode::kAttnFwdTiled:
         std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
                     " %" PRIu64 "  stats: out[0]\n",
-                    ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu,
-                    ins.out[2] >> 32, ins.out[2] & 0xFFFFFFFFu);
+                    HighWord(ins.out[1]), LowWord(ins.out[1]),
+                    HighWord(ins.out[2]), LowWord(ins.out[2]));
         break;
       case OpCode::kAttnDQTiled:
       case OpCode::kAttnDKTiled:
@@ -344,11 +344,11 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
       }
       case OpCode::kSoftmaxRowsBwd:
         std::printf("   rows/cols: %" PRIu64 " %" PRIu64 "\n",
-                    ins.out[0] >> 32, ins.out[0] & 0xFFFFFFFFu);
+                    HighWord(ins.out[0]), LowWord(ins.out[0]));
         break;
       case OpCode::kEmbedFwd:
         std::printf("   rows: %" PRIu64 "  V/D: %" PRIu64 " %" PRIu64 "\n",
-                    ins.out[0], ins.out[1] >> 32, ins.out[1] & 0xFFFFFFFFu);
+                    ins.out[0], HighWord(ins.out[1]), LowWord(ins.out[1]));
         break;
       default:
         std::printf("   dims/aux: %" PRIu64 " %" PRIu64 " %" PRIu64 "\n",
