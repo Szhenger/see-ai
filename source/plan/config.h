@@ -224,7 +224,7 @@ struct UpdateConfig {
   std::string target_host;
   // The attention segment mask (#191, plan v25): no position attends to
   // another document of its packed window (documents found by the model's
-  // tokenizer EOS id). Cached attention only, for now.
+  // tokenizer EOS id). Both attention families (the tiled one since v26).
   bool segment_mask = false;
   uint32_t gemm_tile_k = 0;
   uint32_t gemm_tile_n = 0;

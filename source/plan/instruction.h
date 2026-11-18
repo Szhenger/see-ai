@@ -216,9 +216,35 @@ enum class OpCode : uint16_t {
   // the cached backward needs no operand of its own.
   kSegmentStarts = 55,  // in: tokens(i32 [B*S]), starts(i32 [B*S]); out[0]=B<<32|S, out[1]=eos id
   kAttnFwdSeg = 56,     // in: q, k, v, o; out[0]=P ref, out[1]=PackAttnGeometry, out[2]=starts ref
+  // The mask on the tiled family (#191 step 2, plan v26). The tiled
+  // backward opcodes have no free slot for a starts operand and each needs
+  // every query row's start (dK and dV walk the query rows of a key), so
+  // the forward carries the starts the way kAttnFwdSeg does and leaves each
+  // row's CLAMPED start in the fourth float of its stats row
+  // (kAttnStatsStart) — a pad until v26. Opcodes 48-50 are unchanged in
+  // encoding and read that float: a key before the row's start is skipped.
+  // kAttnFwdTiled writes 0 there, so a plan without the mask computes the
+  // bits it always did. Over finite operands the masked tiled family
+  // computes the masked cached family's bits: a skipped term is the exact
+  // +/-0 the cached kernels add, and an accumulator that starts at +0 never
+  // holds -0.
+  kAttnFwdTiledSeg = 57,  // in: q, k, v, o; out[0]=stats, out[1]=PackAttnGeometry, out[2]=starts ref
 };
 
 inline constexpr uint64_t kAttnStatsWidth = 4;
+/// The stats row's fields: the score max, 1 / the softmax denominator, the
+/// softmax-backward rowsum (the dQ pass's), and the row's document start as
+/// a float (v26; 0 when the forward carried no mask).
+inline constexpr uint64_t kAttnStatsStart = 3;
+/// The start a tiled backward kernel reads from a stats row, for query row
+/// `i`: clamped into [0, i] in the float domain before the conversion, NaN
+/// to 0, so no value an arena holds becomes a loop bound or an index
+/// unchecked (the rule kAttnFwdSeg's kernel holds for its i32 starts).
+inline uint64_t AttnStatsStart(float stored, uint64_t i) {
+  if (!(stored > 0.0f)) return 0;  // NaN, negatives and zero
+  const float cap = static_cast<float>(i);
+  return stored >= cap ? i : static_cast<uint64_t>(stored);
+}
 /// The tiled backward's one-word geometry (each field must fit 16 bits).
 inline constexpr uint64_t PackAttnGeometry(uint64_t B, uint64_t S, uint64_t H,
                                            uint64_t d) {

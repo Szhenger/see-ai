@@ -551,7 +551,7 @@ class InterpreterSelfCheck(unittest.TestCase):
             # exp(-1e30) underflowing to 0 is the point; overflow or an
             # invalid operation is the bug.
             with np.errstate(over="raise", invalid="raise"):
-                p = fx._attn_probs(x, q, k, s, d, stats, b, h)
+                p = fx._attn_probs(x, q, k, s, d, stats, b, h, x.causal(s))
             self.assertFalse(np.isnan(p).any(), x.name)
             self.assertEqual(float(p[0, 0, 0, 3]), 0.0)
             self.assertEqual(float(p[0, 0, 0, 0]), 1.0)
@@ -841,6 +841,16 @@ MATRIX = [
     # documents of a window — the starts and the masked cached forward.
     ("dec_segment", "segdec/decoder.smf", "segdec/corpus.sds", 12,
      ["--segment-mask", "--lora-rank", "4"]),
+    # The mask on the tiled family (#191 step 2, plan v26): the masked tiled
+    # forward, and the backward passes reading each row's start from the
+    # stats row — plain, then with rematerialization (the forward re-run
+    # inside the backward rewrites that row) and gradient accumulation.
+    ("dec_segment_tiled", "segdec/decoder.smf", "segdec/corpus.sds", 12,
+     ["--segment-mask", "--attention", "tiled", "--lora-rank", "4"]),
+    ("dec_segment_tiled_remat_accum", "segdec/decoder.smf",
+     "segdec/corpus.sds", 12,
+     ["--segment-mask", "--attention", "tiled", "--remat", "on",
+      "--grad-accum", "2", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
 # placeholder, kCopy a utility no pass selects, and kReduceRows the bias

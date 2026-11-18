@@ -367,6 +367,16 @@ void AttnDK(const float* ds, const float* q, float* dk, size_t B, size_t S,
 // kernels' units (a query row for the forward and dQ, a key row for dK and
 // dV), each writing only what it owns, so any thread count computes the
 // same floats.
+//
+// THE SEGMENT MASK (plan v26, #191 step 2). The forward takes the document
+// starts kAttnFwdSeg takes and scores only the keys from the row's start
+// on; it leaves the row's clamped start in the stats row's fourth float,
+// and every backward pass reads it back: dQ walks j from the start, dK and
+// dV skip the query rows whose document begins after their key. A skipped
+// term is the exact +/-0 the cached family adds for a masked entry (P is 0
+// there), and an accumulator that starts at +0 never holds -0, so over
+// finite operands the masked tiled family still computes the masked cached
+// family's bits. Without a mask the float is 0 and nothing is skipped.
 // =============================================================================
 
 namespace {
@@ -383,13 +393,14 @@ struct ChunkScratch {
   float* at(size_t chunk) { return buf.data() + chunk * width; }
 };
 
-/// scores(i, j) for j <= i into `prow`, and the row max — exactly the
-/// cached forward's first pass.
+/// scores(i, j) for j0 <= j <= i into `prow`, and the row max — exactly
+/// the cached forward's first pass (j0 = the row's document start, 0
+/// without a segment mask; a key before it is never evaluated).
 inline float ScoreRow(const float* qi, const float* k, size_t b, size_t S,
-                      size_t D, size_t h, size_t d, size_t i,
+                      size_t D, size_t h, size_t d, size_t j0, size_t i,
                       float inv_sqrt_d, float* prow) {
   float row_max = -INFINITY;
-  for (size_t j = 0; j <= i; ++j) {
+  for (size_t j = j0; j <= i; ++j) {
     const float* kj = k + (b * S + j) * D + h * d;
     double dot = 0.0;
     for (size_t c = 0; c < d; ++c) dot += static_cast<double>(qi[c]) * kj[c];
@@ -400,12 +411,12 @@ inline float ScoreRow(const float* qi, const float* k, size_t b, size_t S,
   return row_max;
 }
 
-/// p(i, j) for j <= i from the stored (m, 1/l): the floats the cached
-/// forward wrote into its P row.
+/// p(i, j) for j0 <= j <= i from the stored (m, 1/l): the floats the
+/// cached forward wrote into its P row.
 inline void ProbRow(const float* qi, const float* k, size_t b, size_t S,
-                    size_t D, size_t h, size_t d, size_t i, float inv_sqrt_d,
-                    float m, float inv_denom, float* prow) {
-  for (size_t j = 0; j <= i; ++j) {
+                    size_t D, size_t h, size_t d, size_t j0, size_t i,
+                    float inv_sqrt_d, float m, float inv_denom, float* prow) {
+  for (size_t j = j0; j <= i; ++j) {
     const float* kj = k + (b * S + j) * D + h * d;
     double dot = 0.0;
     for (size_t c = 0; c < d; ++c) dot += static_cast<double>(qi[c]) * kj[c];
@@ -435,7 +446,8 @@ inline float DProb(const float* doi, const float* vj, size_t d) {
 }  // namespace
 
 void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
-                  float* stats, size_t B, size_t S, size_t H, size_t d) {
+                  float* stats, size_t B, size_t S, size_t H, size_t d,
+                  const int32_t* starts) {
   const size_t D = H * d;
   const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(d));
   const size_t grain = RowGrain(S * (d + 4), kGrainMath);
@@ -446,18 +458,27 @@ void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
     for (size_t u = u0; u < u1; ++u) {
       const auto [b, h, i] = UnitOf(u, H, S);
       const float* qi = q + (b * S + i) * D + h * d;
-      const float row_max = ScoreRow(qi, k, b, S, D, h, d, i, inv_sqrt_d, prow);
+      // The segment mask (v26): AttnFwd's rule and AttnFwd's clamp — a key
+      // before the row's document start is never scored. The clamped start
+      // is what the backward passes read back from the stats row.
+      size_t j0 = 0;
+      if (starts) {
+        const int32_t s0 = starts[b * S + i];
+        j0 = s0 <= 0 ? 0 : std::min(static_cast<size_t>(s0), i);
+      }
+      const float row_max =
+          ScoreRow(qi, k, b, S, D, h, d, j0, i, inv_sqrt_d, prow);
       double denom = 0.0;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float e = std::exp(prow[j] - row_max);
         prow[j] = e;
         denom += e;
       }
       const float inv_denom = 1.0f / static_cast<float>(denom);
-      for (size_t j = 0; j <= i; ++j) prow[j] *= inv_denom;
+      for (size_t j = j0; j <= i; ++j) prow[j] *= inv_denom;
       float* oi = o + (b * S + i) * D + h * d;
       for (size_t c = 0; c < d; ++c) oi[c] = 0.0f;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float p = prow[j];
         const float* vj = v + (b * S + j) * D + h * d;
         for (size_t c = 0; c < d; ++c) oi[c] += p * vj[c];
@@ -466,7 +487,7 @@ void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
       st[0] = row_max;
       st[1] = inv_denom;
       st[2] = 0.0f;  // delta: the dQ pass's
-      st[3] = 0.0f;
+      st[up::kAttnStatsStart] = static_cast<float>(j0);
     }
   });
 }
@@ -490,9 +511,11 @@ void AttnDQTiled(const float* q, const float* k, const float* v,
       const float* qi = q + (b * S + i) * D + h * d;
       const float* doi = dout + (b * S + i) * D + h * d;
       float* st = stats + u * up::kAttnStatsWidth;
-      ProbRow(qi, k, b, S, D, h, d, i, inv_sqrt_d, st[0], st[1], prow);
+      // The row's document start, as the forward left it (0 unmasked).
+      const size_t j0 = up::AttnStatsStart(st[up::kAttnStatsStart], i);
+      ProbRow(qi, k, b, S, D, h, d, j0, i, inv_sqrt_d, st[0], st[1], prow);
       double dot = 0.0;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float* vj = v + (b * S + j) * D + h * d;
         dprow[j] = DProb(doi, vj, d);
         dot += static_cast<double>(dprow[j]) * prow[j];
@@ -501,7 +524,7 @@ void AttnDQTiled(const float* q, const float* k, const float* v,
       st[2] = delta;
       float* dqi = dq + (b * S + i) * D + h * d;
       for (size_t c = 0; c < d; ++c) dqi[c] = 0.0f;
-      for (size_t j = 0; j <= i; ++j) {
+      for (size_t j = j0; j <= i; ++j) {
         const float ds = prow[j] * (dprow[j] - delta);
         const float g = ds * inv_sqrt_d;
         const float* kj = k + (b * S + j) * D + h * d;
@@ -530,6 +553,8 @@ void AttnDKTiled(const float* q, const float* k, const float* v,
         const float* qi = q + (b * S + i) * D + h * d;
         const float* doi = dout + (b * S + i) * D + h * d;
         const float* st = stats + ((b * H + h) * S + i) * up::kAttnStatsWidth;
+        // Row i's document starts after key j: P(i, j) is the mask's zero.
+        if (j < up::AttnStatsStart(st[up::kAttnStatsStart], i)) continue;
         const float p = Prob(qi, kj, d, inv_sqrt_d, st[0], st[1]);
         const float ds = p * (DProb(doi, vj, d) - st[2]);
         const float g = ds * inv_sqrt_d;
@@ -556,6 +581,7 @@ void AttnDVTiled(const float* q, const float* k, const float* dout,
         const float* qi = q + (b * S + i) * D + h * d;
         const float* doi = dout + (b * S + i) * D + h * d;
         const float* st = stats + ((b * H + h) * S + i) * up::kAttnStatsWidth;
+        if (j < up::AttnStatsStart(st[up::kAttnStatsStart], i)) continue;
         const float p = Prob(qi, kj, d, inv_sqrt_d, st[0], st[1]);
         for (size_t c = 0; c < d; ++c) dvj[c] += p * doi[c];
       }

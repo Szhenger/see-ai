@@ -607,6 +607,14 @@ std::expected<void, std::string> CpuBackend::Execute(
                       ins.out[1] & 0xFFFFFFFFu, ins.out[2] >> 32,
                       ins.out[2] & 0xFFFFFFFFu);
       break;
+    case up::OpCode::kAttnFwdTiledSeg: {  // v26, #191 step 2
+      const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
+      k::AttnFwdTiled(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
+                      ReadPtr(ins.in[2]), WritePtr(ins.in[3]),
+                      WritePtr(ins.out[0]), g.B, g.S, g.H, g.d,
+                      reinterpret_cast<const int32_t*>(ReadPtr(ins.out[2])));
+      break;
+    }
     case up::OpCode::kAttnDQTiled:
     case up::OpCode::kAttnDKTiled:
     case up::OpCode::kAttnDVTiled: {

@@ -187,7 +187,8 @@ std::expected<void, std::string> VerifyExecutorContract(
       // rodata vector the kernels multiply in blindly — N floats in the
       // forward (NN), K in the dX GEMM (NT): each is a finite positive
       // float (CR1 #142 F33). The validator proved the vector in bounds.
-      if (op == up::OpCode::kAttnFwdSeg) {
+      if (op == up::OpCode::kAttnFwdSeg ||
+          op == up::OpCode::kAttnFwdTiledSeg) {  // v26: the tiled forward too
         bool bound = false;
         for (const StartsRange& s : starts_live) bound |= s.ref == ins.out[2];
         if (!bound)

@@ -98,7 +98,11 @@ std::expected<void, std::string> ValidateInstructionImpl(
          (opcode == up::OpCode::kAttnFwdTiled ||
           opcode == up::OpCode::kAttnDQTiled ||
           opcode == up::OpCode::kAttnDKTiled ||
-          opcode == up::OpCode::kAttnDVTiled));
+          opcode == up::OpCode::kAttnDVTiled)) ||
+        // v26: the masked tiled forward, relaxed as the plain one is — the
+        // backward opcodes it shares already are.
+        (plan_version >= up::kSeeuTiledSegmentMaskVersion &&
+         opcode == up::OpCode::kAttnFwdTiledSeg);
     const uint16_t allowed = static_cast<uint16_t>(
         ((opcode == up::OpCode::kGemmNN || opcode == up::OpCode::kGemmNNBF16)
              ? up::kEpilogueFlagsMask
@@ -291,6 +295,12 @@ std::expected<void, std::string> ValidateInstructionImpl(
     return diag::validating::Error(
         "segment mask opcode " + std::to_string(ins.opcode) + " in a pre-v" +
         std::to_string(up::kSeeuSegmentMaskVersion) + " plan");
+  if (ins.opcode == static_cast<uint16_t>(up::OpCode::kAttnFwdTiledSeg) &&
+      plan_version < up::kSeeuTiledSegmentMaskVersion)
+    return diag::validating::Error(
+        "tiled segment mask opcode " + std::to_string(ins.opcode) +
+        " in a pre-v" + std::to_string(up::kSeeuTiledSegmentMaskVersion) +
+        " plan");
   if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSqNormAccum) ||
        ins.opcode == static_cast<uint16_t>(up::OpCode::kClipGlobal)) &&
       plan_version < up::kSeeuGlobalClipVersion)
@@ -678,6 +688,22 @@ std::expected<void, std::string> ValidateInstructionImpl(
       if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
           !ref_ok(ins.in[2], td, false) || !ref_ok(ins.in[3], td, true) ||
           !ref_ok(ins.out[0], st, true))
+        return fail();
+      return disjoint();
+    }
+    case up::OpCode::kAttnFwdTiledSeg: {
+      // v26: kAttnFwdTiled with the geometry packed into one word and the
+      // i32 starts [B*S] read through the slot that frees — kAttnFwdSeg's
+      // layout, the stats row where the cache was.
+      const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
+      uint64_t td = 0, pn = 0, st = 0, t = 0;
+      if (!attn_geometry((g.B << 32) | g.S, (g.H << 32) | g.d, &td, &pn) ||
+          !MulOk(g.B * g.S * g.H, up::kAttnStatsWidth, &st) ||
+          !MulOk(g.B, g.S, &t))
+        return fail();
+      if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
+          !ref_ok(ins.in[2], td, false) || !ref_ok(ins.in[3], td, true) ||
+          !ref_ok(ins.out[0], st, true) || !ref_ok(d2, t, false))
         return fail();
       return disjoint();
     }

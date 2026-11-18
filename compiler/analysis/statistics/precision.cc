@@ -12,7 +12,8 @@ RelaxedCounts AssignRelaxedPrecision(std::vector<UpdateInstruction>& train) {
          op == OpCode::kGemmNNBF16 || op == OpCode::kGemmNTBF16) &&
         IsRodataRef(ins.in[1]);
     const bool tiled_attention =
-        op == OpCode::kAttnFwdTiled || op == OpCode::kAttnDQTiled ||
+        op == OpCode::kAttnFwdTiled || op == OpCode::kAttnFwdTiledSeg ||
+        op == OpCode::kAttnDQTiled ||
         op == OpCode::kAttnDKTiled || op == OpCode::kAttnDVTiled;
     if (!frozen_gemm && !tiled_attention) continue;
     ins.flags |= kFlagRelaxed;

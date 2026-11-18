@@ -603,6 +603,11 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
       return geo.B * geo.S * geo.H * geo.d <= kMax &&
              geo.B * geo.H * geo.S * 32 <= kMax;
     }
+    case up::OpCode::kAttnFwdTiledSeg: {  // v26: the packed word in out[1]
+      const auto geo = up::UnpackAttnGeometry(ins.out[1]);
+      return geo.B * geo.S * geo.H * geo.d <= kMax &&
+             geo.B * geo.H * geo.S * 32 <= kMax;
+    }
     case up::OpCode::kEmbedFwd:
       return ins.out[0] * lo(ins.out[1]) <= kMax && hi(ins.out[1]) <= kMax;
     default:
@@ -1734,13 +1739,23 @@ std::expected<void, std::string> MetalBackend::Encode(
                a.B * a.S * a.H, kElementwiseGroup);
       return {};
     }
-    case up::OpCode::kAttnFwdTiled: {
+    case up::OpCode::kAttnFwdTiled:
+    case up::OpCode::kAttnFwdTiledSeg: {
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
       ref(4, ins.out[0]);
-      a.B = hi(ins.out[1]); a.S = lo(ins.out[1]);
-      a.H = hi(ins.out[2]); a.D = lo(ins.out[2]);
+      if (op == up::OpCode::kAttnFwdTiledSeg) {
+        // v26 (#191 step 2): the geometry in the packed word, the i32
+        // starts through slot 5 — flag bit 1 tells the kernels to read them.
+        const auto geo = up::UnpackAttnGeometry(ins.out[1]);
+        ref(5, ins.out[2]);
+        a.B = u32(geo.B); a.S = u32(geo.S); a.H = u32(geo.H); a.D = u32(geo.d);
+      } else {
+        a.B = hi(ins.out[1]); a.S = lo(ins.out[1]);
+        a.H = hi(ins.out[2]); a.D = lo(ins.out[2]);
+      }
       a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
-      a.flags = TiledRowsVectorizable(a);
+      a.flags = TiledRowsVectorizable(a) |
+                (op == up::OpCode::kAttnFwdTiledSeg ? 2u : 0u);
       // The relaxed form (F3 design item 2, plan v20) when the plan permits
       // it, the products on simdgroup_matrix tiles, 32 rows a threadgroup;
       // else the blocked form (F3 step 2) for head widths the 64-float row

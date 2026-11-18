@@ -13,12 +13,14 @@
 // the previous, unrelated document. Segments are contiguous, so the mask is
 // one start per position — one past the last EOS strictly before it — which
 // one sc_low.segment_starts op computes from the token input, and every
-// cached sc_high.attention op reads as its fourth operand (keys before the
-// row's start masked as the causal ones are). It runs before the primal
+// sc_high.attention op reads as its fourth operand (keys before the row's
+// start masked as the causal ones are). It runs before the primal
 // snapshot, so the eval program masks alike, and before autodiff, whose
 // attention rule reads q, k and v alone: the cached backward consumes the
-// masked probabilities and needs nothing new. The tiled family is refused
-// (#191 step 2).
+// masked probabilities and needs nothing new, and the tiled backward
+// (plan v26) reads each row's start from the stats row its forward wrote.
+// Both families are masked, and compute the same bits masked as unmasked
+// families do.
 // =============================================================================
 
 namespace seeml::update {
@@ -27,7 +29,7 @@ class SegmentMasker {
  public:
   SegmentMasker(seeml::sir::Value* tokens, int32_t eos)
       : tokens_(tokens), eos_(eos) {}
-  /// The number of attention ops masked; an error for a tiled one.
+  /// The number of attention ops masked.
   [[nodiscard]] std::expected<size_t, std::string> Run(seeml::sir::Block& block);
 
  private:

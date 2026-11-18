@@ -328,11 +328,10 @@ std::expected<std::vector<UpdateInstruction>, std::string> LowerOps(
       } else if (m == "sc_high.attention" && op->numOperands() == 4) {
         // The segment mask (v25, #191): the starts are the fourth operand,
         // the geometry packed into one word to free a slot for them.
-        if (op->hasAttribute("tiled")) {
-          error = "the segment mask covers the cached attention family only";
-          break;
-        }
-        set(OpCode::kAttnFwdSeg);
+        // Tiled (v26): the same layout with the stats row where the cache
+        // was — the backward reads the row's start from there.
+        set(op->hasAttribute("tiled") ? OpCode::kAttnFwdTiledSeg
+                                      : OpCode::kAttnFwdSeg);
         ins.in[0] = ref(op->operand(0));
         ins.in[1] = ref(op->operand(1));
         ins.in[2] = ref(op->operand(2));

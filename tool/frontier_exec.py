@@ -1999,16 +1999,40 @@ def _attn_geometry(ins):
     return (w >> 48) & 0xFFFF, (w >> 32) & 0xFFFF, (w >> 16) & 0xFFFF, w & 0xFFFF
 
 
-def _attn_probs(x, q, k, s, d, stats, b, h):
+def _segment_keep(x, starts):
+    """The attention mask of a segment-masked row: keep[.., i, j] = 1 where
+    start(.., i) <= j <= i, with every start clamped into [0, i] as the
+    kernels clamp it. `starts` is a NumPy integer array [b, n, s] (n = 1
+    for the starts operand, the heads for a stats row); all zeros is the
+    causal mask."""
+    import numpy as np
+    s = starts.shape[-1]
+    i = np.arange(s).reshape((s, 1))
+    j = np.arange(s).reshape((1, s))
+    start = np.minimum(np.maximum(starts, 0), np.arange(s))[..., None]
+    return x.host(((j >= start) & (j <= i)).astype("<f4"))
+
+
+def _stats_starts(m, ins, b, h, s):
+    """The document starts a tiled backward reads from the stats row's
+    fourth float (v26; zeros from a forward with no mask), clamped in the
+    float domain as the kernels do — NaN and negatives to 0."""
+    import numpy as np
+    raw = np.asarray(m.read(ins.out[0], (b * h * s, formats.ATTN_STATS_WIDTH))
+                     .tolist(), dtype="<f8")[:, formats.ATTN_STATS_START]
+    raw = np.where(raw > 0.0, np.minimum(raw, float(s)), 0.0)
+    return raw.astype(np.int64).reshape((b, h, s))
+
+
+def _attn_probs(x, q, k, s, d, stats, b, h, mask):
     """P from Q, K and the stored (row max, 1/denominator) — the cached
     family's probabilities, recomputed (masked entries exactly zero).
 
     The masked scores are replaced BEFORE the exponential, as the forward
-    does: the stored max covers the causal prefix only, so a future key's
-    raw score can exceed it by more than exp's range, and inf * 0 is NaN —
-    which a mask applied afterwards cannot undo. The C++ kernels never
-    evaluate a masked entry at all."""
-    mask = x.causal(s)
+    does: the stored max covers the row's live keys only, so a masked
+    key's raw score can exceed it by more than exp's range, and inf * 0 is
+    NaN — which a mask applied afterwards cannot undo. The C++ kernels
+    never evaluate a masked entry at all."""
     scores = x.matmul(q, x.perm(k, (0, 1, 3, 2))) / math.sqrt(d)
     scores = x.where(mask > 0.0, scores, scores * 0.0 - 1e30)
     mx = stats[:, 0].reshape((b, h, s, 1))
@@ -2016,11 +2040,22 @@ def _attn_probs(x, q, k, s, d, stats, b, h):
     return x.exp(scores - mx) * inv * mask
 
 
-def _attn_fwd_tiled(m, x, ins, step):
-    (b, s), (h, d) = hi_lo(ins.out[1]), hi_lo(ins.out[2])
+def _attn_fwd_tiled_impl(m, x, ins, b, s, h, d, starts):
+    """The tiled forward; `starts` is None, or the NumPy [b, s] document
+    starts of kAttnFwdTiledSeg (v26)."""
+    import numpy as np
     q, k, v = (_heads(x, m.read(ref, (b * s, h * d)), b, s, h, d)
                for ref in ins.src[:3])
-    mask = x.causal(s)
+    n = b * h * s
+    if starts is None:
+        mask, start_col = x.causal(s), x.full(n, 0.0)
+    else:
+        clamped = np.minimum(np.maximum(starts, 0), np.arange(s))
+        mask = _segment_keep(x, clamped.reshape((b, 1, s)))
+        # What the kernels leave in the stats row: the clamped start of
+        # every (b, h, i) row, as a float.
+        start_col = x.host(np.repeat(clamped.reshape((b, 1, s)), h, axis=1)
+                           .reshape((n,)).astype("<f4"))
     scores = x.matmul(q, x.perm(k, (0, 1, 3, 2))) / math.sqrt(d)
     scores = x.where(mask > 0.0, scores, scores * 0.0 - 1e30)
     mx = x.max(scores, -1)
@@ -2028,18 +2063,34 @@ def _attn_fwd_tiled(m, x, ins, step):
     denom = x.sum(e, -1, keepdims=True)
     probs = e / denom
     m.write(ins.src[3], _rows(x, x.matmul(probs, v), b, s, h, d))
-    n = b * h * s
     m.write(ins.out[0], _stats_row(x, mx.reshape((n,)),
-                                   1.0 / denom.reshape((n,)), x.full(n, 0.0)))
+                                   1.0 / denom.reshape((n,)), x.full(n, 0.0),
+                                   start_col))
 
 
-def _stats_row(x, mx, inv, delta):
-    """[N, 4] = (row max, 1/denominator, delta, 0), flat. stack_last of two
-    [N, 2] pairs interleaves them, so the pairs are (max, delta) and
-    (1/denominator, 0): row i flattens to max, 1/den, delta, 0."""
+def _attn_fwd_tiled(m, x, ins, step):
+    (b, s), (h, d) = hi_lo(ins.out[1]), hi_lo(ins.out[2])
+    _attn_fwd_tiled_impl(m, x, ins, b, s, h, d, None)
+
+
+def _attn_fwd_tiled_seg(m, x, ins, step):
+    """v26 (#191 step 2): kAttnFwdTiled with kAttnFwdSeg's layout — the
+    geometry packed into out[1], the i32 starts read through out[2] — and
+    the row's clamped start left in the stats row."""
+    import numpy as np
+    word = ins.out[1]
+    b, s, h, d = word >> 48, (word >> 32) & 0xFFFF, (word >> 16) & 0xFFFF, word & 0xFFFF
+    starts = np.asarray(m.read(ins.out[2], (b * s,), "<i4").tolist()).reshape(b, s)
+    _attn_fwd_tiled_impl(m, x, ins, b, s, h, d, starts)
+
+
+def _stats_row(x, mx, inv, delta, start):
+    """[N, 4] = (row max, 1/denominator, delta, start), flat. stack_last of
+    two [N, 2] pairs interleaves them, so the pairs are (max, delta) and
+    (1/denominator, start): row i flattens to max, 1/den, delta, start."""
     n = mx.shape[0]
     return x.stack_last(x.stack_last(mx, delta),
-                        x.stack_last(inv, x.full(n, 0.0))).reshape(
+                        x.stack_last(inv, start)).reshape(
         (n * formats.ATTN_STATS_WIDTH,))
 
 
@@ -2049,16 +2100,21 @@ def _attn_bwd_tiled(which):
         q, k, v, dout = (_heads(x, m.read(ref, (b * s, h * d)), b, s, h, d)
                          for ref in ins.src[:4])
         stats = m.read(ins.out[0], (b * h * s, formats.ATTN_STATS_WIDTH))
-        p = _attn_probs(x, q, k, s, d, stats, b, h)
+        # v26: the row's document start rides in the stats row; zeros (the
+        # causal mask) when the forward carried no segment mask.
+        mask = _segment_keep(x, _stats_starts(m, ins, b, h, s))
+        p = _attn_probs(x, q, k, s, d, stats, b, h, mask)
         if which == "dv":
             out = x.matmul(x.perm(p, (0, 1, 3, 2)), dout)
         else:
-            dp = x.matmul(dout, x.perm(v, (0, 1, 3, 2))) * x.causal(s)
+            dp = x.matmul(dout, x.perm(v, (0, 1, 3, 2))) * mask
             if which == "dq":
                 delta = x.sum(dp * p, -1, keepdims=True)
                 # The delta column, for the dK pass that follows.
-                m.write(ins.out[0], _stats_row(x, stats[:, 0], stats[:, 1],
-                                               delta.reshape((b * h * s,))))
+                m.write(ins.out[0], _stats_row(
+                    x, stats[:, 0], stats[:, 1],
+                    delta.reshape((b * h * s,)),
+                    stats[:, formats.ATTN_STATS_START]))
             else:
                 delta = stats[:, 2].reshape((b, h, s, 1))
             ds = p * (dp - delta)
@@ -2127,6 +2183,7 @@ INTERPRETER = {
     43: _gemm_nn("<u2"), 44: _gemm_nt("<u2"), 45: _rope_table,
     46: _fused_map, 51: _xent_masked_fwd, 52: _xent_masked_bwd,
     53: _sqnorm_accum, 54: _clip_global, 55: _segment_starts, 56: _attn_fwd_seg,
+    57: _attn_fwd_tiled_seg,
 }
 assert sorted(INTERPRETER) == sorted(OPCODES)
 
