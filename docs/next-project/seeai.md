@@ -18,9 +18,15 @@ Security is applied at every layer, as in OS design: every input is assumed
 malformed or ill-intentioned, and every check the build host runs is re-run
 on the device.
 
-Scope: **language models** on consumer devices. Convolution lowering, the
-mean-squared-error loss family and feature-row datasets leave the product;
-the MLP fixtures stay only as test canaries (a subset of the LM op surface).
+Scope: **language models** on consumer devices. Convolution lowering and
+feature-row datasets leave the product; the MLP fixtures stay only as test
+canaries (a subset of the LM op surface). The mean-squared-error loss
+family was to leave with them and does not (decided 2026-11-18, #193): MSE
+stays a supported loss outside the language-model scope, and its opcodes
+(`kMseFwd` / `kMseBwd`, 13 / 14), the demo MLP and the `mlp_mse` fixtures
+stay as test canaries. As the tree stands, the SIR convolution operator
+(`compiler/frontend/operator/convolution.cc`) is still built and reached
+only by its own tests: the lowering is gone, the operator is not.
 
 ## §2 Statistics screens (the doctrine)
 
@@ -92,7 +98,9 @@ at what precision; the runtime owns the arithmetic of each op.
 | **optimization** | minimization, not compiler optimization | SGD/AdamW synthesis, the schedule and horizon, clipping, the grad-accumulation 1/G seed, 8-bit moments; screen: effective-LR curve, steps at the floor, epochs covered, predicted update-to-weight ratio at step 1 |
 
 The pass manager sits at the analysis root; `updater/` and `reviewer/`
-disappear; conv lowering is deleted. The analysis screen: trainable
+disappear; conv lowering is deleted (the SIR operator,
+`compiler/frontend/operator/convolution.cc`, is still built — §1). The
+analysis screen: trainable
 fraction, adjoints, saved-activation bytes, FLOPs forward/backward/optimizer,
 bytes removed per fusion, dead ops, the ledger.
 
@@ -113,7 +121,7 @@ against frontier LoRA practice: AdamW already; learning rate 1e-3 constant →
 |---|---|---|
 | **architecture** | target description (ISA, SIMD, cores, caches, host key; a GPU half: device family, cores, Metal 4 capability, peak); analytic tiling; reads the measured kernel-policy table | `architecture/host_arch.cc` (with the GPU tiling clamp, `GpuTilingFromHost`, since S6, 2026-11-11; the GPU half since 2026-11-16: the Metal device's name, Apple family, Metal 4 support and working set from `DescribeMetalDevice`, the core count from IOKit, on the backend screen; the peak is the stated `--gpu-peak-gflops`), `kernel_policy_table.cc` |
 | **allocation** | arena binder: three segments, SSA liveness, first-fit, rodata layout | `allocation/arena_binder.cc` |
-| **selection** | SIR op → one 64-byte instruction; ISA loses MSE and conv, gains masked xent and the attention segment operand | `selection/instruction_lowering.cc` |
+| **selection** | SIR op → one 64-byte instruction; ISA gains masked xent and the attention segment operand; it keeps MSE (`kMseFwd` / `kMseBwd`, 13 / 14 — decided 2026-11-18, #193, superseding "loses MSE") and had no conv opcode to lose | `selection/instruction_lowering.cc` |
 | **scheduling** (candidate) | instruction order for the target; earns a directory only if F8 (#139) measures the step time outside kernels as real; schedule before allocate | none — F8 measured it on 2026-10-15: the CPU is 0.6 % ahead of the GPU per step, so ordering recovers nothing; F7 step 1 (2026-10-19) then pinned the serial encoder's gap at about 3 µs per dispatch, ≈4 % of the step, below the 10 % line; the lever on the GPU is bytes per kernel, not dispatch count; scheduling stays a function inside selection — decided |
 | **assembly** | plan layout: header with the identity manifest, kernel policy and reduction-order ledger; streams; rodata written once; seeded persistent image; emit table; seal | `assembly/plan_assembly.cc` (out of the driver since S6, 2026-11-11: the persistent image, the emit table, the layout, the blob, the seal; the header's words are still the driver's, and the manifest and ledger wait on v23) |
 | **packaging** | the self-contained package: embedded plan (or, above the linker's and loader's limit, the plan beside the binary, #158), generated main, vendored runtime **plus the shared `source/` contract check, sanitizer and tokenizer**, build script | `packaging/native_emitter.cc`; Python twin `tool/pack_update.py` (S6, 2026-11-16: the tokenizer and the text ingest — sanitize, deduplicate, encode, pack — are vendored **and compiled into** `model_update`; the runner's raw-text feeder that calls them is S7's pipeline, #153) |
