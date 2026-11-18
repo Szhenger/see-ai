@@ -1014,12 +1014,76 @@ TEST(RuntimeScreenEnergy, OnlyAGpuRunGetsANumberOverTheTokensTrained) {
   EXPECT_EQ(text(q, "energy_meter"),
             "unavailable: the GPU Energy counter did not move for this reader");
   EXPECT_EQ(q.Get("energy_joules"), nullptr);
+  EXPECT_EQ(q.Get("energy_per_token"), nullptr);
 
+  // No meter to read: the meter's own reason on either backend — a host
+  // without one is not told macOS's CPU-counter rule.
   seeml::update_rt::EnergyReading none;
   none.reason = "libIOReport not found";
-  seeml::update::Screen n(seeml::update::kRuntimeScreen);
-  seeml::update_rt::FillEnergyRows(n, /*gpu_backend=*/true, 12, none);
-  EXPECT_EQ(text(n, "energy_meter"), "unavailable: libIOReport not found");
+  for (const bool gpu_backend : {true, false}) {
+    seeml::update::Screen n(seeml::update::kRuntimeScreen);
+    seeml::update_rt::FillEnergyRows(n, gpu_backend, 12, none);
+    EXPECT_EQ(text(n, "energy_meter"), "unavailable: libIOReport not found");
+    EXPECT_EQ(n.Get("energy_joules"), nullptr);
+    EXPECT_EQ(n.Get("energy_per_token"), nullptr);
+  }
+  // A meter that read the interval and saw nothing move: a cpu run is told
+  // the rule all the same (its number was never the counters' to give), a
+  // GPU run the meter's reason.
+  seeml::update_rt::EnergyReading silent;
+  silent.metered = true;
+  silent.reason = "no Energy Model counter moved for this process";
+  seeml::update::Screen sc(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(sc, /*gpu_backend=*/false, 12, silent);
+  EXPECT_TRUE(text(sc, "energy_meter").starts_with("unavailable: a cpu run"));
+  seeml::update::Screen sg(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(sg, /*gpu_backend=*/true, 12, silent);
+  EXPECT_EQ(text(sg, "energy_meter"),
+            "unavailable: no Energy Model counter moved for this process");
+  // A reading that carries no reason still says something.
+  seeml::update::Screen e(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(e, /*gpu_backend=*/false, 12,
+                                   seeml::update_rt::EnergyReading{});
+  EXPECT_EQ(text(e, "energy_meter"), "unavailable: the meter gave no reading");
+
+  // A GPU run that trained no token: the joules, and no quotient.
+  seeml::update::Screen z(seeml::update::kRuntimeScreen);
+  seeml::update_rt::FillEnergyRows(z, /*gpu_backend=*/true, 0, both);
+  EXPECT_EQ(real(z, "energy_joules"), 9.0);
+  EXPECT_EQ(z.Get("energy_per_token"), nullptr);
+}
+
+// A reading says whether there was a meter to read: never before a Start(),
+// and after one wherever the meter opened and took its first sample — the
+// line between "no meter here" and "a meter whose counters stood still".
+TEST(RuntimeScreenEnergy, AReadingIsMeteredWhereAMeterReadTheInterval) {
+  seeml::update_rt::EnergyMeter meter;
+  const seeml::update_rt::EnergyReading unstarted = meter.Stop();
+  EXPECT_FALSE(unstarted.metered);
+  EXPECT_FALSE(unstarted.available);
+  EXPECT_FALSE(unstarted.reason.empty());
+
+  meter.Start();
+  const seeml::update_rt::EnergyReading read = meter.Stop();
+  EXPECT_TRUE(read.available || !read.reason.empty());
+  if (!meter.available()) EXPECT_FALSE(read.metered);  // off Apple, no library
+  // An open meter whose Start() sampled has metered the interval (IOReport
+  // declining that first sample reads as never started).
+  EXPECT_TRUE(read.metered || !meter.available() ||
+              read.reason == "meter not started");
+}
+
+// The tokens trained: optimizer steps x the rows of one — the compiled batch
+// x the accumulation, where 0 and 1 both mean none.
+TEST(RuntimeScreenEnergy, TheTokensAreStepsTimesTheRowsOfAnOptimizerStep) {
+  PlanHeader header;
+  header.batch = 4;
+  EXPECT_EQ(seeml::update_rt::TokensTrained(header, 5), 20u);
+  header.grad_accum_steps = 1;
+  EXPECT_EQ(seeml::update_rt::TokensTrained(header, 5), 20u);
+  header.grad_accum_steps = 3;
+  EXPECT_EQ(seeml::update_rt::TokensTrained(header, 5), 60u);
+  EXPECT_EQ(seeml::update_rt::TokensTrained(header, 0), 0u);
 }
 
 // FillRuntimeScreen passes the run's own facts: the cpu backend, and no
@@ -1032,6 +1096,10 @@ TEST(RuntimeScreenEnergy, TheScreenPassesTheRunsBackendAndTokens) {
   ASSERT_OK_AND_ASSIGN(Dataset data, MakeClassificationData(32, kInDim, 8));
   ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 3, Quiet()));
   ASSERT_EQ(std::string(engine.backend_name()), "cpu");
+  // The divisor the screen hands the energy rows, from this run's own plan
+  // and report (a cpu run shows no quotient to read it from).
+  EXPECT_EQ(seeml::update_rt::TokensTrained(engine.header(), report.steps),
+            static_cast<uint64_t>(3 * kBatch));
   seeml::update_rt::EnergyReading both;
   both.available = true;
   both.joules = {{"CPU Energy", 1.5}, {"GPU Energy", 9.0}};
@@ -1039,6 +1107,7 @@ TEST(RuntimeScreenEnergy, TheScreenPassesTheRunsBackendAndTokens) {
   seeml::update_rt::FillRuntimeScreen(s, engine, report, 0.0, "accepted",
                                       std::nullopt, &both);
   EXPECT_EQ(s.Get("energy_joules"), nullptr);
+  EXPECT_EQ(s.Get("energy_per_token"), nullptr);
   const auto* meter = s.Get("energy_meter");
   ASSERT_TRUE(meter != nullptr);
   EXPECT_TRUE(std::get<std::string>(*meter).starts_with("unavailable: a cpu run"));
@@ -1046,6 +1115,19 @@ TEST(RuntimeScreenEnergy, TheScreenPassesTheRunsBackendAndTokens) {
   seeml::update_rt::FillRuntimeScreen(c, engine, report, 0.0, "accepted",
                                       std::nullopt);
   EXPECT_EQ(c.Get("energy_meter"), nullptr);
+
+  // Where a Metal device exists, the same run's screen on the GPU backend
+  // (re-bound, nothing run on it): the GPU domain over this run's tokens.
+  if (engine.SelectBackend(seeml::update_rt::BackendKind::kMetal)) {
+    seeml::update::Screen m(seeml::update::kRuntimeScreen);
+    seeml::update_rt::FillRuntimeScreen(m, engine, report, 0.0, "accepted",
+                                        std::nullopt, &both);
+    const auto* joules = m.Get("energy_joules");
+    const auto* per_token = m.Get("energy_per_token");
+    ASSERT_TRUE(joules != nullptr && per_token != nullptr);
+    EXPECT_EQ(std::get<double>(*joules), 9.0);
+    EXPECT_EQ(std::get<double>(*per_token), 9.0 / (3.0 * kBatch));
+  }
 }
 
 TEST(UpdateEngineAccumulation, StepsCountOptimizerStepsAndConsumeGBatches) {

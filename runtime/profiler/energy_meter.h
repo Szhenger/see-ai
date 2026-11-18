@@ -17,10 +17,11 @@
 // without root. The meter reports
 // the domains that moved; a domain that read zero is not reported, and a
 // reading with no domain is `available == false` with the reason. Off
-// Apple, or without the library or the group, it is unavailable and never
-// fails the bench. The bench takes the step-time regression for energy
-// too: (hi run - lo run) / extra steps is the energy per step, the
-// lifecycle removed.
+// Apple, or without the library or the group, it is unavailable — and
+// `metered == false`: no meter here, as against a meter whose counters
+// stood still — and never fails the bench. The bench takes the step-time
+// regression for energy too: (hi run - lo run) / extra steps is the energy
+// per step, the lifecycle removed.
 #ifndef SEEML_RUNTIME_PROFILER_ENERGY_METER_H_
 #define SEEML_RUNTIME_PROFILER_ENERGY_METER_H_
 
@@ -46,6 +47,10 @@ struct EnergyReading {
   bool available = false;
   std::string reason;                    // when unavailable
   std::map<std::string, double> joules;  // per domain that moved
+  // The meter was open and sampled the interval, whatever moved. False:
+  // there was no meter to read (no IOReport on this platform, no library,
+  // no channel group, never started), and `reason` is the meter's own.
+  bool metered = false;
 };
 
 class EnergyMeter {
@@ -74,6 +79,7 @@ class EnergyMeter {
       if (out.reason.empty()) out.reason = "meter not started";
       return out;
     }
+    out.metered = true;
     CFDictionaryRef end = create_samples_(sub_, channels_, nullptr);
     // A NULL sample (IOReport declined) is an unavailable reading, never a
     // NULL handed on to IOReport or CoreFoundation.

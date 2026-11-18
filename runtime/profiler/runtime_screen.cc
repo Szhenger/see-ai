@@ -96,44 +96,48 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
                        static_cast<double>(report.val_final_accuracy));
   runtime_screen.Set("verdict", std::string(verdict));
   if (energy)
-    FillEnergyRows(
-        runtime_screen,
-        std::string_view(engine.backend_name()).starts_with("metal"),
-        report.steps * engine.header().batch *
-            std::max<uint64_t>(1, engine.header().grad_accum_steps),
-        *energy);
+    FillEnergyRows(runtime_screen,
+                   engine.backend_kind() == BackendKind::kMetal,
+                   TokensTrained(engine.header(), report.steps), *energy);
   // The pool width this run used (#202 item 1): a throughput knob, never a
   // numerics one, recorded so a measured step is read at its width.
   runtime_screen.Set("threads",
                      static_cast<uint64_t>(seeml::update::ParallelThreadCount()));
 }
 
+uint64_t TokensTrained(const seeml::update::PlanHeader& header,
+                       uint64_t steps) {
+  return steps * header.batch *
+         std::max<uint64_t>(1, header.grad_accum_steps);
+}
+
 void FillEnergyRows(seeml::update::Screen& runtime_screen, bool gpu_backend,
                     uint64_t tokens, const EnergyReading& energy) {
-  if (!gpu_backend) {
-    runtime_screen.Set(
-        "energy_meter",
-        std::string("unavailable: a cpu run has no per-run energy (the CPU "
-                    "counter reaches an unprivileged reader in bursts, or "
-                    "not at all, on macOS 26)"));
-    return;
-  }
-  const double joules = EnergyMeter::Domain(energy, "GPU Energy");
+  const double joules =
+      gpu_backend ? EnergyMeter::Domain(energy, "GPU Energy") : -1.0;
   if (joules > 0.0) {
-    runtime_screen.Set("energy_meter", std::string("IOReport GPU Energy"));
+    runtime_screen.Set("energy_meter", "IOReport GPU Energy");
     runtime_screen.Set("energy_joules", joules);
     if (tokens > 0)
       runtime_screen.Set("energy_per_token",
                          joules / static_cast<double>(tokens));
     return;
   }
-  runtime_screen.Set(
-      "energy_meter",
-      "unavailable: " +
-          (!energy.available
-               ? energy.reason
-               : std::string("the GPU Energy counter did not move for this "
-                             "reader")));
+  // Why there is no number, the most basic reason first — the order of
+  // seeml-bench's `energy.unavailable`. A host with no meter to read (off
+  // Apple, no library) is told that, on either backend, not macOS's
+  // CPU-counter rule; where a meter read the interval, a cpu run is told
+  // the rule, whatever moved; and a GPU run whose domain read nothing, why.
+  const bool no_meter = !energy.metered && !energy.available;
+  std::string why;
+  if (!gpu_backend && !no_meter)
+    why = "a cpu run has no per-run energy (the CPU counter reaches an "
+          "unprivileged reader in bursts, or not at all, on macOS 26)";
+  else if (!energy.available)
+    why = energy.reason.empty() ? "the meter gave no reading" : energy.reason;
+  else
+    why = "the GPU Energy counter did not move for this reader";
+  runtime_screen.Set("energy_meter", "unavailable: " + why);
 }
 
 }  // namespace seeml::update_rt
