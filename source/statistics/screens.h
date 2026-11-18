@@ -386,11 +386,12 @@ inline constexpr StatRow kRuntimeRows[] = {
     {"validation_accuracy", "validation accuracy", StatKind::kReal, "",
      "the held-out accuracy of the state the gate weighed",
      screens_detail::kO, 4},
-    // Energy (#202 item 3): IOReport's counter for the domain that is this
-    // run's compute, over the training run. Whole-SoC — every process on
-    // the machine — and only what an unprivileged reader may see.
+    // Energy (#202 item 3): IOReport's GPU counter over the training run,
+    // on a Metal run; a cpu run has no number (the profiler's
+    // FillEnergyRows). Whole-SoC — every process on the machine — and only
+    // what an unprivileged reader may see.
     {"energy_meter", "energy meter", StatKind::kText, "",
-     "the energy domain read (GPU on Metal, CPU on cpu), or why none was",
+     "the energy domain read (the GPU's, on a Metal run), or why none was",
      screens_detail::kO | screens_detail::kX},
     {"energy_joules", "energy", StatKind::kReal, "J",
      "that domain's energy over the training run, evaluations included",

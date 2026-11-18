@@ -28,14 +28,22 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
                        std::optional<double> label_entropy,
                        const EnergyReading* energy = nullptr);
 
+/// The tokens a run trained, energy_per_token's divisor: its optimizer steps
+/// x the rows of one, the compiled batch x the accumulation (a
+/// grad_accum_steps of 0 or 1 is none).
+uint64_t TokensTrained(const seeml::update::PlanHeader& header, uint64_t steps);
+
 /// The energy rows (#202 item 3): on a GPU run, the GPU domain's joules over
-/// the training run and per token (`tokens` = steps x rows per optimizer
-/// step); otherwise, and whenever that domain read nothing, energy_meter
-/// says why and no number is shown. A cpu run never gets a number — the
-/// seeml-bench rule: the counters are whole-SoC (the GPU's moves with the
-/// display, not the update) and an unprivileged reader sees the CPU's in
-/// bursts, a backlog landing at once (docs/benchmarks.md), so an interval's
-/// CPU joules are not the run's.
+/// the training run and per token (`tokens` = TokensTrained); otherwise, and
+/// whenever that domain read nothing, energy_meter says why and no number is
+/// shown. A cpu run never gets a number — the seeml-bench rule: the counters
+/// are whole-SoC (the GPU's moves with the display, not the update) and an
+/// unprivileged reader sees the CPU's in bursts, a backlog landing at once
+/// (docs/benchmarks.md), so an interval's CPU joules are not the run's. The
+/// reason given is the most basic one, in the order of seeml-bench's
+/// `energy.unavailable`: no meter to read on this host (the meter's own
+/// reason — no IOReport on this platform, no library; `!energy.metered`),
+/// then a cpu run, then a GPU domain that read nothing.
 void FillEnergyRows(seeml::update::Screen& runtime_screen, bool gpu_backend,
                     uint64_t tokens, const EnergyReading& energy);
 
