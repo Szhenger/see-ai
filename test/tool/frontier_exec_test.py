@@ -1069,7 +1069,8 @@ class DifferentialSuite(unittest.TestCase):
         instructions it ran, the compiler counting the plan it emitted."""
         work = os.path.join(self.dir, "probe_work")
         os.makedirs(work, exist_ok=True)
-        for name in ("mlp_accum", "mlp_xent_kl", "dec_q8_accum", "dec_tiled"):
+        for name in ("mlp_accum", "mlp_xent_kl", "dec_q8_accum", "dec_tiled",
+                     "dec_segment", "dec_segment_tiled"):
             with self.subTest(plan=name):
                 plan_path, _, model = self.plans[name]
                 plan = fx.Plan.load(plan_path)
