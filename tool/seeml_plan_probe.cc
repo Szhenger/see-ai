@@ -104,11 +104,11 @@ namespace fs = std::filesystem;
 namespace up = seeml::update;
 namespace rt = seeml::update_rt;
 
-int Usage(const std::string& msg) {
+[[nodiscard]] int Usage(const std::string& msg) {
   std::fprintf(stderr, "seeml-plan-probe: %s\n", msg.c_str());
   return 2;
 }
-int Fail(const std::string& msg) {
+[[nodiscard]] int Fail(const std::string& msg) {
   std::fprintf(stderr, "seeml-plan-probe: %s\n", msg.c_str());
   return 1;
 }
@@ -121,7 +121,7 @@ class Args {
   Args(int argc, char** argv)
       : argc_(argc), argv_(argv), taken_(static_cast<size_t>(argc), false) {}
 
-  bool Take(const char* flag) {
+  [[nodiscard]] bool Take(const char* flag) {
     for (int i = 1; i < argc_; ++i)
       if (!taken_[i] && std::strcmp(argv_[i], flag) == 0) {
         taken_[i] = true;
@@ -132,7 +132,7 @@ class Args {
 
   /// The value after `flag`, consuming both slots. A following "--flag" is
   /// a missing value, not a value.
-  std::optional<std::string> TakeValue(const char* flag) {
+  [[nodiscard]] std::optional<std::string> TakeValue(const char* flag) {
     for (int i = 1; i < argc_; ++i) {
       if (taken_[i] || std::strcmp(argv_[i], flag) != 0) continue;
       if (i + 1 >= argc_ || std::strncmp(argv_[i + 1], "--", 2) == 0) {
@@ -148,7 +148,7 @@ class Args {
   const std::optional<std::string>& MissingValue() const {
     return missing_value_;
   }
-  std::optional<std::string> FirstUnknown() const {
+  [[nodiscard]] std::optional<std::string> FirstUnknown() const {
     for (int i = 1; i < argc_; ++i)
       if (!taken_[i]) return std::string(argv_[i]);
     return std::nullopt;
@@ -161,7 +161,7 @@ class Args {
   std::optional<std::string> missing_value_;
 };
 
-bool ParseU64(const std::string& s, int base, uint64_t* out) {
+[[nodiscard]] bool ParseU64(const std::string& s, int base, uint64_t* out) {
   if (s.empty() || s[0] == '-' || s[0] == '+') return false;
   errno = 0;
   char* end = nullptr;
@@ -184,7 +184,8 @@ struct Options {
 /// An input path the probe will read: it must name an existing regular
 /// file. Returns the canonical path (symlinks resolved), so the file that
 /// was classified is the file that is opened.
-std::optional<fs::path> InputFile(const std::string& arg, std::string* why) {
+[[nodiscard]] std::optional<fs::path> InputFile(
+    const std::string& arg, std::string* why) {
   std::error_code ec;
   const fs::path canonical = fs::canonical(fs::path(arg), ec);
   if (ec) {
@@ -202,7 +203,8 @@ std::optional<fs::path> InputFile(const std::string& arg, std::string* why) {
 /// exist, and the destination must be absent or a regular file — never a
 /// symlink (not followed), a directory or a device. Returns the path
 /// inside the canonical directory.
-std::optional<fs::path> OutputFile(const std::string& arg, std::string* why) {
+[[nodiscard]] std::optional<fs::path> OutputFile(
+    const std::string& arg, std::string* why) {
   std::error_code ec;
   const fs::path given(arg);
   if (!given.has_filename()) {
@@ -227,7 +229,7 @@ std::optional<fs::path> OutputFile(const std::string& arg, std::string* why) {
 }
 
 /// Parses argv into `opts`. Returns 0, or the exit code after reporting.
-int ParseOptions(int argc, char** argv, Options* opts) {
+[[nodiscard]] int ParseOptions(int argc, char** argv, Options* opts) {
   Args args(argc, argv);
   const auto plan = args.TakeValue("--plan");
   const auto section = args.TakeValue("--section");
@@ -301,7 +303,7 @@ int ParseOptions(int argc, char** argv, Options* opts) {
   return 0;
 }
 
-bool ReadFile(const fs::path& path, std::vector<uint8_t>* out) {
+[[nodiscard]] bool ReadFile(const fs::path& path, std::vector<uint8_t>* out) {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) return false;
   const std::streamoff size = f.tellg();
@@ -340,7 +342,7 @@ class StagedFile {
     Write(&value, sizeof(value));
   }
   /// Flushes, closes and renames; false if any byte failed to land.
-  bool Commit() {
+  [[nodiscard]] bool Commit() {
     stream_.close();
     if (stream_.fail()) return false;
     std::error_code ec;

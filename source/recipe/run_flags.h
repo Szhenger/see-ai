@@ -35,8 +35,8 @@ struct RunFlags {
 };
 
 /// The first rule the flags break against `header`, or nothing.
-inline std::optional<std::string> RunFlagsViolation(const PlanHeader& header,
-                                                    const RunFlags& f) {
+[[nodiscard]] inline std::optional<std::string> RunFlagsViolation(
+    const PlanHeader& header, const RunFlags& f) {
   // Review N20: a fresh run's --steps is the schedule's horizon; inside
   // the compiled warmup the cosine phase has no steps at all and the run
   // ends mid-ramp. This is the early usage error for a fresh run, from

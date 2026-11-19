@@ -108,8 +108,8 @@ std::string Sanitize(std::string_view text, bool count_only,
 /// Splits a .jsonl file into its documents: each line a JSON object with a
 /// "text" string, or a "prompt" and a "response" string (JSON string escapes
 /// decoded); a line that is neither is refused by line number.
-std::expected<std::vector<Document>, std::string> DocumentsFromJsonl(
-    std::string_view jsonl);
+[[nodiscard]] std::expected<std::vector<Document>, std::string>
+DocumentsFromJsonl(std::string_view jsonl);
 
 /// Ingests `documents` through the stages above with `tokenizer`, whose
 /// section hash is `tokenizer_hash` (0 = the corpus names none). Refuses a
@@ -117,7 +117,7 @@ std::expected<std::vector<Document>, std::string> DocumentsFromJsonl(
 /// chat document under a section without the ChatML markers, and a corpus
 /// that yields no complete window. A corpus with a chat document is
 /// masked: the SDS carries the mask and windows with no target are dropped.
-std::expected<IngestResult, std::string> Ingest(
+[[nodiscard]] std::expected<IngestResult, std::string> Ingest(
     const ByteLevelBpe& tokenizer, uint64_t tokenizer_hash,
     const std::vector<Document>& documents, const IngestOptions& options);
 

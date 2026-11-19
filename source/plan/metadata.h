@@ -122,7 +122,7 @@ struct DecodedMetadata {
 
 namespace metadata_detail {
 
-inline bool Text(const char* s, size_t n, bool allow_empty) {
+[[nodiscard]] inline bool Text(const char* s, size_t n, bool allow_empty) {
   size_t len = 0;
   while (len < n && s[len] != '\0') ++len;
   if (len == n) return false;                 // not NUL-terminated
@@ -153,7 +153,7 @@ inline uint64_t RelaxedInstructions(const uint8_t* plan, uint64_t offset,
 /// `header` has already passed PlanHeaderViolation for a blob of
 /// `plan_size` bytes. The first violated rule's reason, or nothing; `out`
 /// (optional) receives the decoded section.
-inline std::optional<std::string> PlanMetadataViolation(
+[[nodiscard]] inline std::optional<std::string> PlanMetadataViolation(
     const PlanHeader& header, const uint8_t* plan, uint64_t plan_size,
     DecodedMetadata* out = nullptr) {
   if ((header.data_flags & kDataFlagMetadata) == 0) return std::nullopt;

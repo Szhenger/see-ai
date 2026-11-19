@@ -26,13 +26,15 @@
 namespace seeml::update {
 
 namespace contract_detail {
-inline std::optional<std::string> Violation(std::string why) { return why; }
+[[nodiscard]] inline std::optional<std::string> Violation(std::string why) {
+  return why;
+}
 }  // namespace contract_detail
 
 /// The header's section table, version gates, arena relations, I/O slots
 /// and optimizer hyperparameters are self-consistent with a plan blob of
 /// `plan_size` bytes — the load contract. The first violated rule's reason.
-inline std::optional<std::string> PlanHeaderViolation(
+[[nodiscard]] inline std::optional<std::string> PlanHeaderViolation(
     const PlanHeader& header, uint64_t plan_size) {
   uint64_t train_bytes = 0, merge_bytes = 0, eval_bytes = 0, emit_bytes = 0,
            step_bytes = 0;
@@ -220,7 +222,7 @@ struct CorpusShape {
 /// The corpus's shape fits the plan's I/O slots — the feeder contract's
 /// geometry half. (Its value half — every class label and token id below
 /// the plan's widths — reads the records and stays with the feeder.)
-inline std::optional<std::string> CorpusGeometryViolation(
+[[nodiscard]] inline std::optional<std::string> CorpusGeometryViolation(
     const PlanHeader& header, const CorpusShape& corpus) {
   using contract_detail::Violation;
   // The tokenizer identity (v22): a plan bound to a tokenizer section runs

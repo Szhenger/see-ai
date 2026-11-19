@@ -38,7 +38,7 @@ inline constexpr size_t kSmfPreambleMaxBytes = 4 * 4 + 2 * (2 + 65535) + 8 + 16;
 /// Reads the preamble from the file's first `n` bytes (at least
 /// min(file_size, kSmfPreambleMaxBytes)); the tokenizer section must lie
 /// inside a file of `file_size` bytes.
-inline std::expected<SmfPreamble, std::string> ReadSmfPreamble(
+[[nodiscard]] inline std::expected<SmfPreamble, std::string> ReadSmfPreamble(
     const uint8_t* bytes, size_t n, uint64_t file_size) {
   size_t pos = 0;
   bool ok = true;

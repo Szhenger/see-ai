@@ -168,7 +168,7 @@ using Values = std::map<std::string, std::string>;
 /// Decimal digits only: no sign, no whitespace, no overflow. strtoull alone
 /// skips leading spaces and negates a "-1" into 2^64 - 1, which is how
 /// `--steps " -1"` reached the plan (review F56 / F63).
-inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
+[[nodiscard]] inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
   if (s.empty()) return false;
   uint64_t v = 0;
   for (const char c : s) {
@@ -187,7 +187,7 @@ inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
 /// because strtod also takes a hex float ("0x1p-3"), skips every isspace()
 /// prefix ("\r1", "\v1"), and stops at an embedded NUL as if the text ended
 /// there.
-inline bool ParseF64Strict(std::string_view s, double* out) {
+[[nodiscard]] inline bool ParseF64Strict(std::string_view s, double* out) {
   if (s.empty() || s.front() == '+') return false;
   for (const char c : s)
     if (!((c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' ||
@@ -233,13 +233,13 @@ inline std::string Named(const Field& f) {
   return std::string(f.flag) + " (recipe field " + f.name + ")";
 }
 
-inline std::unexpected<std::string> Refuse(const Field& f,
-                                           std::string_view value) {
+[[nodiscard]] inline std::unexpected<std::string> Refuse(
+    const Field& f, std::string_view value) {
   return std::unexpected(Named(f) + " must be " + BoundText(f) + ", got '" +
                          std::string(value) + "'");
 }
 
-inline bool InChoices(const Field& f, std::string_view v) {
+[[nodiscard]] inline bool InChoices(const Field& f, std::string_view v) {
   std::string_view rest = f.choices;
   while (!rest.empty()) {
     const size_t bar = rest.find('|');
@@ -254,9 +254,8 @@ inline bool InChoices(const Field& f, std::string_view v) {
 /// One value held to its field's kind and bound. `u` / `d` receive the
 /// parsed number for the numeric kinds; a float field's `d` is the f32 the
 /// config stores, widened, so narrowing it back is exact.
-inline std::expected<void, std::string> CheckValue(const Field& f,
-                                                   std::string_view v,
-                                                   uint64_t* u, double* d) {
+[[nodiscard]] inline std::expected<void, std::string> CheckValue(
+    const Field& f, std::string_view v, uint64_t* u, double* d) {
   switch (f.kind) {
     case Kind::kUInt:
       if (!ParseU64Strict(v, u) || *u < f.umin || *u > f.umax)
@@ -320,9 +319,8 @@ struct Inputs {
 /// values are applied to a copy that replaces it only when every rule
 /// holds, so a refused recipe never leaves half of itself behind (the
 /// target filters cleared, say, which reads as "adapt every weight").
-inline std::expected<void, std::string> Apply(const Values& values,
-                                              const Inputs& inputs,
-                                              UpdateConfig* config) {
+[[nodiscard]] inline std::expected<void, std::string> Apply(
+    const Values& values, const Inputs& inputs, UpdateConfig* config) {
   UpdateConfig c = *config;
   for (const auto& [name, text] : values) {
     const Field* f = FindField(name);
@@ -469,7 +467,8 @@ inline std::expected<void, std::string> Apply(const Values& values,
 
 /// The bounds a config built in code (the library path, no recipe) must
 /// still hold: the ones whose violation emitted an invalid plan.
-inline std::optional<std::string> ConfigViolation(const UpdateConfig& c) {
+[[nodiscard]] inline std::optional<std::string> ConfigViolation(
+    const UpdateConfig& c) {
   if (c.lora.rank < 1 || static_cast<uint64_t>(c.lora.rank) > kLoraRankMax)
     return "lora rank " + std::to_string(c.lora.rank) +
            " is outside [1, " + std::to_string(kLoraRankMax) + "]";

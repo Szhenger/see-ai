@@ -193,7 +193,7 @@ inline std::string Json(StatKind kind, const StatValue& v) {
   return "null";
 }
 
-inline bool Fits(StatKind kind, const StatValue& v) {
+[[nodiscard]] inline bool Fits(StatKind kind, const StatValue& v) {
   switch (kind) {
     case StatKind::kCount:
     case StatKind::kBytes:

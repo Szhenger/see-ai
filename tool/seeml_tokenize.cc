@@ -29,7 +29,7 @@
 
 namespace {
 
-int Usage() {
+[[nodiscard]] int Usage() {
   std::fprintf(stderr,
                "usage: seeml-tokenize model.smf --info\n"
                "       seeml-tokenize model.smf text.txt [--pieces | --lines]\n");

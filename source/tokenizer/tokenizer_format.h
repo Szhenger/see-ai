@@ -81,7 +81,7 @@ inline constexpr uint64_t kSmtkHeadBytes = sizeof(SmtkHead);
 /// Reads the head of a section: its size, magic and version are proven
 /// here; the kind, pre-tokenizer and flags are the encoder's to refuse by
 /// name. The error carries no unit prefix — the caller's is the one shown.
-inline std::expected<SmtkHead, std::string> ReadSmtkHead(
+[[nodiscard]] inline std::expected<SmtkHead, std::string> ReadSmtkHead(
     std::span<const uint8_t> section) {
   if (section.size() < kSmtkHeadBytes)
     return std::unexpected("truncated head");

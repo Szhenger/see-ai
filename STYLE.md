@@ -50,8 +50,10 @@ methods to `seeml::sir` or camelCase ones anywhere else.
   submitter; one `mmap` failure surfaces as `std::bad_alloc`).
 - **`[[nodiscard]]` on every function that returns `std::expected`**, and
   on diagnostic builders. The headers of `compiler/` and `runtime/` hold to
-  this but for five declarations; `source/` (2 uses) and `tool/` (0) do not
-  yet — new and touched declarations take it.
+  this but for five declarations; `source/` and `tool/` hold to it too, and
+  there it also covers the `…Violation` checks, the strict parsers, the
+  bounds helpers and the durable-I/O calls whose `bool` is a write's fate.
+  A result dropped on purpose (a best-effort close) says so with `(void)`.
 - Propagate with an early return:
   `if (auto r = Step(); !r) return std::unexpected(r.error());`
 

@@ -333,8 +333,9 @@ AttnCell SweepTiled(const std::vector<float>& q, const std::vector<float>& k,
   return cell;
 }
 
-int AttentionSweep(const std::vector<size_t>& threads, uint64_t repeats,
-                   const std::string& out_path) {
+[[nodiscard]] int AttentionSweep(
+    const std::vector<size_t>& threads, uint64_t repeats,
+    const std::string& out_path) {
   if (repeats == 0) repeats = 1;
   const size_t B = 1, H = 8, d = 64;
   const size_t lengths[] = {64, 256, 1024, 2048};
@@ -404,14 +405,14 @@ struct Args {
   explicit Args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) rest.emplace_back(argv[i]);
   }
-  bool Take(const std::string& flag) {
+  [[nodiscard]] bool Take(const std::string& flag) {
     auto it = std::find(rest.begin(), rest.end(), flag);
     if (it == rest.end()) return false;
     rest.erase(it);
     return true;
   }
-  std::expected<std::string, std::string> TakeValue(const std::string& flag,
-                                                    std::string def) {
+  [[nodiscard]] std::expected<std::string, std::string> TakeValue(
+      const std::string& flag, std::string def) {
     auto it = std::find(rest.begin(), rest.end(), flag);
     if (it == rest.end()) return def;
     if (it + 1 == rest.end())
@@ -422,8 +423,8 @@ struct Args {
   }
 };
 
-std::expected<uint64_t, std::string> ParseU64(const std::string& flag,
-                                              const std::string& v) {
+[[nodiscard]] std::expected<uint64_t, std::string> ParseU64(
+    const std::string& flag, const std::string& v) {
   if (v.empty()) return std::unexpected(flag + " must be a positive integer");
   uint64_t out = 0;
   for (char c : v) {
@@ -438,7 +439,7 @@ std::expected<uint64_t, std::string> ParseU64(const std::string& flag,
   return out;
 }
 
-std::expected<std::vector<std::string>, std::string> SplitCsv(
+[[nodiscard]] std::expected<std::vector<std::string>, std::string> SplitCsv(
     const std::string& flag, const std::string& v) {
   std::vector<std::string> out;
   size_t start = 0;
@@ -454,8 +455,8 @@ std::expected<std::vector<std::string>, std::string> SplitCsv(
 }
 
 /// Strict positive decimal (for --peak-gflops): the whole string must parse.
-std::expected<double, std::string> ParsePositiveF64(const std::string& flag,
-                                                    const std::string& v) {
+[[nodiscard]] std::expected<double, std::string> ParsePositiveF64(
+    const std::string& flag, const std::string& v) {
   if (v.empty()) return std::unexpected(flag + " must be a positive number");
   char* end = nullptr;
   const double out = std::strtod(v.c_str(), &end);
@@ -464,7 +465,7 @@ std::expected<double, std::string> ParsePositiveF64(const std::string& flag,
   return out;
 }
 
-int Fail(const std::string& msg) {
+[[nodiscard]] int Fail(const std::string& msg) {
   std::fprintf(stderr, "seeml-bench: %s\n", msg.c_str());
   return 2;
 }

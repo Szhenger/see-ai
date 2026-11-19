@@ -113,8 +113,8 @@ std::string EpilogueName(uint16_t flags) {
   return name;
 }
 
-bool SectionInBounds(uint64_t off, uint64_t count, uint64_t elem,
-                     uint64_t size);
+[[nodiscard]] bool SectionInBounds(
+    uint64_t off, uint64_t count, uint64_t elem, uint64_t size);
 
 uint32_t F32BitsOf(float f) {
   uint32_t u = 0;
@@ -124,8 +124,8 @@ uint32_t F32BitsOf(float f) {
 
 /// The whole plan as one JSON object (see the banner). u64 words print as
 /// integers: refs and packed dim words are exact, and kNullRef is 2^64 - 1.
-int DumpJson(const std::vector<uint8_t>& plan, const PlanHeader& h,
-             bool sealed) {
+[[nodiscard]] int DumpJson(
+    const std::vector<uint8_t>& plan, const PlanHeader& h, bool sealed) {
   if (!sealed) {
     std::fprintf(stderr, "seeml-seeu-dump: plan_hash mismatch — corrupt\n");
     return 1;
@@ -363,8 +363,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
 /// MISMATCH — and offset + count * elem can wrap in uint64 exactly for the
 /// inputs the check exists to reject (the runtime's contract.cc uses the
 /// same MulOk/RangeOk discipline).
-bool SectionInBounds(uint64_t offset, uint64_t count, uint64_t elem_bytes,
-                     uint64_t plan_size) {
+[[nodiscard]] bool SectionInBounds(
+    uint64_t offset, uint64_t count, uint64_t elem_bytes, uint64_t plan_size) {
   if (elem_bytes != 0 && count > UINT64_MAX / elem_bytes) return false;
   const uint64_t bytes = count * elem_bytes;
   return offset <= plan_size && bytes <= plan_size - offset;

@@ -35,7 +35,7 @@ struct Cursor {
            (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r'))
       ++i;
   }
-  bool Eat(char c) {
+  [[nodiscard]] bool Eat(char c) {
     Skip();
     if (i < s.size() && s[i] == c) {
       ++i;
@@ -48,7 +48,7 @@ struct Cursor {
   bool bad_escape = false;
   /// A JSON string with the escapes a name or a path needs; \u is refused
   /// (no recipe value needs one, and half-decoding one would be worse).
-  bool String(std::string* out) {
+  [[nodiscard]] bool String(std::string* out) {
     Skip();
     if (i >= s.size() || s[i] != '"') return false;
     ++i;
@@ -89,7 +89,7 @@ struct Cursor {
 /// here, eight to a reader with octal), ".5" and "1." — spellings every
 /// JSON parser refuses, so a file holding one is a recipe to this reader
 /// alone.
-inline bool IsJsonNumber(std::string_view t) {
+[[nodiscard]] inline bool IsJsonNumber(std::string_view t) {
   size_t i = 0;
   auto digits = [&] {
     const size_t from = i;
@@ -117,7 +117,7 @@ inline bool IsJsonNumber(std::string_view t) {
 /// must be its field's: a number for uint / float fields, a string for enum
 /// fields, true / false for bool fields, an array of strings for list
 /// fields.
-inline std::expected<Values, std::string> ParseRecipeFile(
+[[nodiscard]] inline std::expected<Values, std::string> ParseRecipeFile(
     std::string_view text) {
   file_detail::Cursor c{text};
   auto bad = [](const std::string& what) {

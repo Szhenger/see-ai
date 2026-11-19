@@ -122,7 +122,7 @@ using namespace seeml::update;
 
 /// A failure of the work itself — an unreadable or malformed input file, a
 /// compile refusal, an unwritable output: exit 1.
-int Fail(const std::string& msg) {
+[[nodiscard]] int Fail(const std::string& msg) {
   std::fprintf(stderr, "seeml-update-compile: %s\n", msg.c_str());
   return 1;
 }
@@ -130,7 +130,7 @@ int Fail(const std::string& msg) {
 /// A bad command line — an unknown flag, a flag without its value, a value
 /// outside its bound, flags that contradict each other: exit 2, before any
 /// model is read.
-int Usage(const std::string& msg) {
+[[nodiscard]] int Usage(const std::string& msg) {
   std::fprintf(stderr, "seeml-update-compile: %s\n", msg.c_str());
   return 2;
 }
@@ -189,7 +189,7 @@ class Args {
  public:
   Args(int argc, char** argv) : argc_(argc), argv_(argv) {}
 
-  bool Take(const char* flag) {
+  [[nodiscard]] bool Take(const char* flag) {
     for (int i = 1; i < argc_; ++i)
       if (!taken_[i] && std::strcmp(argv_[i], flag) == 0) {
         taken_[i] = true;
@@ -198,7 +198,7 @@ class Args {
     return false;
   }
 
-  std::optional<std::string> TakeValue(const char* flag) {
+  [[nodiscard]] std::optional<std::string> TakeValue(const char* flag) {
     for (int i = 1; i + 1 < argc_; ++i)
       if (!taken_[i] && std::strcmp(argv_[i], flag) == 0) {
         // A following flag is a missing value, not a value: consuming it
@@ -226,7 +226,7 @@ class Args {
   }
 
   /// Any argv slot not consumed by a Take* call is an error.
-  std::optional<std::string> FirstUnknown() const {
+  [[nodiscard]] std::optional<std::string> FirstUnknown() const {
     for (int i = 1; i < argc_; ++i)
       if (!taken_[i]) return std::string(argv_[i]);
     return std::nullopt;
