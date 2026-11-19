@@ -69,7 +69,9 @@
 // Everything is pinned: fixture seeds, dataset seeds, thread widths (via
 // SetParallelThreadCount, overriding SEEML_THREADS). Medians of --repeats
 // runs. Argument parsing is strict, as in seeml-update-compile: an unknown
-// flag, a missing value, or trailing garbage is a hard error (exit 2).
+// flag, a missing value, or trailing garbage is a hard error (exit 2), and
+// so is a --threads width outside [1, 4096] — the pool's bound, the one the
+// runner and seeml-plan-probe hold theirs to (kMaxParallelThreads).
 // =============================================================================
 
 #include <algorithm>
@@ -639,6 +641,13 @@ struct BenchHost {
   for (const auto& t : *thread_names) {
     auto n = ParseU64("--threads", t);
     if (!n) return std::unexpected(Fail(n.error()));
+    // The runner's and the probe's bound, in the runner's words: a width is
+    // that many workers spawned, whatever the host has (/code-review of
+    // #213).
+    if (*n > up::kMaxParallelThreads)
+      return std::unexpected(Fail("invalid --threads (an integer from 1 to " +
+                                  std::to_string(up::kMaxParallelThreads) +
+                                  "), got '" + t + "'"));
     threads.push_back(*n);
   }
   return threads;

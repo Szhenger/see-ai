@@ -242,7 +242,7 @@ model_update --model model.smf --data corpus.sds --out updated.smf \
 | `--patience K` | stop after K consecutive evaluations without a new best (0 = never); needs `--eval-every > 0` and a split |
 | `--report report.json` | write the backend, the gate parameters, the loss and accuracy pairs (`validation_loss[1]` is the committed state's; `best_state` carries its step, the endpoint's loss and the evaluation settings; `validation_scores` says what they score; `relaxed_executions` counts the instructions the backend ran on a relaxed kernel, 0 on the exact kernels — schema 3), the verdict and whether the commit landed as JSON (written last; an unwritable path is a warning, the exit code still carries the verdict) |
 | `--peak-gflops G` | the target's peak in GFLOP/s, for the runtime screen's predicted step and utilization (default: the compile's `--peak-gflops`, baked into the runner; unstated means no prediction) |
-| `--threads N` | the worker-pool width (default: `$SEEML_THREADS`, else the hardware's); 1 runs serially. A throughput knob only: every width computes the same bits |
+| `--threads N` | the worker-pool width, 1 to 4096 (default: `$SEEML_THREADS`, else the hardware's); 1 runs serially. A throughput knob only: every width computes the same bits |
 | `--clip-mode per_tensor\|global` (compiler) | what `--clip-norm` measures (#190, plan v24): each tensor's own norm (`per_tensor`, the default), or one norm over them all, every gradient scaled by the one factor (`global`; it needs `--clip-norm` > 0) |
 | `--force` | commit even if the gate shows no improvement |
 

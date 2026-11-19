@@ -121,6 +121,7 @@ class CliExitCodes(unittest.TestCase):
                 (*base[:-1],),                        # --arena-out without a value
                 (*base, "--section", "nowhere"),
                 (*base, "--backend", "abacus"),
+                (*base, "--threads", "4097"),         # above the pool's bound
         ):
             with self.subTest(argv=" ".join(argv)):
                 self.exits(2, "seeml-plan-probe", *argv)
@@ -199,6 +200,34 @@ class CliExitCodes(unittest.TestCase):
         # The flag ahead of --attention-sweep is the same refusal.
         done = self.exits(2, "seeml-bench", "--backend", "cpu", *base)
         self.assertIn("only, not --backend\n", done.stderr)
+        self.assertFalse(os.path.exists(out))
+
+    # --threads is a pool width, and a width is that many workers spawned:
+    # the bound is the runner's and seeml-plan-probe's (kMaxParallelThreads,
+    # source/parallel/parallel_for.h). seeml-bench had none. Every case also
+    # names a fixture that does not exist — the refusal after --threads — so
+    # no case can start a run, and which refusal speaks is the test (the
+    # harness's exit code is 2 for both).
+    @unittest.skipUnless(os.path.isfile(tool("seeml-bench")),
+                         "seeml-bench absent (a SEEML_BENCH=1 build links it)")
+    def test_bench_threads_is_held_to_the_pools_bound(self):
+        out = os.path.join(self.dir, "bench.json")
+        base = ("--out", out, "--fixtures", "no_such_fixture")
+        for width in ("4097", "1,100000000", "8,4097,2"):
+            with self.subTest(threads=width):
+                done = self.exits(2, "seeml-bench", *base, "--threads", width)
+                self.assertIn(
+                    "invalid --threads (an integer from 1 to 4096), got '"
+                    + max(width.split(","), key=int) + "'", done.stderr)
+                self.assertNotIn("no_such_fixture", done.stderr)
+        # The sweep that takes --threads holds it to the same bound.
+        done = self.exits(2, "seeml-bench", "--attention-sweep", "--out", out,
+                          "--repeats", "1", "--threads", "4097")
+        self.assertIn("an integer from 1 to 4096", done.stderr)
+        # The bound itself is a width: the next refusal is the one that speaks.
+        done = self.exits(2, "seeml-bench", *base, "--threads", "1,4096")
+        self.assertIn("unknown fixture 'no_such_fixture'", done.stderr)
+        self.assertNotIn("--threads", done.stderr)
         self.assertFalse(os.path.exists(out))
 
 

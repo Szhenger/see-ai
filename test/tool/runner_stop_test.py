@@ -162,7 +162,9 @@ class RunnerStopTest(unittest.TestCase):
                     self.args(os.path.join(self.dir, "t.smf"), "--threads", bad),
                     capture_output=True, text=True)
                 self.assertEqual(r.returncode, 2, r.stderr[-800:])
-                self.assertIn("invalid --threads", r.stderr)
+                # The bound is kMaxParallelThreads, printed from it.
+                self.assertIn(
+                    "invalid --threads (an integer from 1 to 4096)\n", r.stderr)
 
 
 if __name__ == "__main__":
