@@ -78,6 +78,14 @@ struct CorpusFacts {
   uint64_t bidi_controls = 0;
   uint64_t remainder_tokens = 0;    // ids the last partial window dropped
   uint64_t straddling_windows = 0;  // windows holding a document boundary
+  // Every token corpus, when the model's tokenizer names an EOS (#191): the
+  // records in which that id falls before the last input position — the
+  // windows holding more than one document, which is to say the windows a
+  // segment mask changes. Counted from the ids themselves, so a given SDS
+  // and the raw text it was made from agree. What `--segment-mask auto`
+  // decides on.
+  uint64_t multi_document_windows = 0;
+  bool eos_known = false;
   // Every corpus.
   uint64_t records = 0;        // samples (windows of S + 1 ids, or rows)
   uint64_t record_width = 0;   // ids per record (S + 1), or features
@@ -124,6 +132,8 @@ struct CompileFacts {
   uint64_t gradients = 0;
   uint64_t rope_tables = 0;
   uint64_t segment_masked_ops = 0;  // #191
+  bool segment_mask = false;        // the decision, and why (the screen row)
+  std::string segment_mask_why;
   uint64_t epilogue_fusions = 0;
   uint64_t addend_fusions = 0;
   uint64_t chain_fusions = 0;

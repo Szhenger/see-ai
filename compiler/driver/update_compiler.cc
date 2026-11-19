@@ -101,6 +101,8 @@ struct Compilation {
   int64_t in_dim = 0;
   std::optional<tokenization::CorpusIngress> corpus;
   bool masked_loss = false;
+  bool segment_mask = false;       // the decision (DecideSegmentMask)
+  std::string segment_mask_why;    // and its reason, for the screen
   TrainingFootprint footprint;
   AttentionKind attention = AttentionKind::kAuto;
   sir::Block block;
@@ -157,6 +159,8 @@ struct Compilation {
   Status IngestData();
   // The masked objective: asked for, or implied by the corpus.
   Status DecideMaskedLoss();
+  // The attention segment mask: asked for, refused, or decided on the corpus.
+  Status DecideSegmentMask();
   // The model as read, for the frontend screen.
   Status RecordFrontendFacts();
   // The accountant's early gate and the attention decision.
@@ -470,6 +474,51 @@ Status Compilation::DecideMaskedLoss() {
   return {};
 }
 
+Status Compilation::DecideSegmentMask() {
+  // The attention segment mask (#191): off (the default), asked for, or —
+  // under `auto` — implied by a corpus in which some window holds more than
+  // one document, as a corpus that carries a loss mask implies the masked
+  // loss. The decision reads the compile's inputs alone (the corpus --data
+  // named and the model's tokenizer section), never the host, so identical
+  // inputs give identical plan bytes; a compile with no corpus decides
+  // nothing and stays unmasked. `auto` never refuses: where it cannot mask
+  // it says why and compiles the unmasked plan.
+  int32_t eos = -1;
+  if (!source.tokenizer.empty())
+    if (auto head = tokenizer::ReadSmtkHead(source.tokenizer))
+      eos = head->eos_id;
+  switch (config_.segment_mask) {
+    case SegmentMaskKind::kOn:
+      segment_mask = true;  // a model with no EOS is refused by the pass
+      segment_mask_why = "asked for";
+      break;
+    case SegmentMaskKind::kOff:  // the default: nothing decided, no row
+      segment_mask = false;
+      segment_mask_why.clear();
+      break;
+    case SegmentMaskKind::kAuto:
+      segment_mask = false;
+      if (!corpus) {
+        segment_mask_why.clear();  // nothing to decide on, nothing to say
+      } else if (!topology->token_input) {
+        segment_mask_why = "not a token model";
+      } else if (eos < 0) {
+        segment_mask_why = "the model's tokenizer section names no EOS id";
+      } else if (corpus->facts.multi_document_windows == 0) {
+        segment_mask_why = "no window of the corpus holds more than one "
+                           "document";
+      } else {
+        segment_mask = true;
+        segment_mask_why =
+            std::to_string(corpus->facts.multi_document_windows) + " of " +
+            std::to_string(corpus->facts.records) +
+            " window(s) hold more than one document";
+      }
+      break;
+  }
+  return {};
+}
+
 Status Compilation::RecordFrontendFacts() {
   // The model as read, for the frontend screen (S0 #146). Captured before
   // any pass: the consuming compile releases the weight payloads as plan
@@ -755,8 +804,8 @@ Status Compilation::StructuralPasses() {
                return {};
              });
     // The attention segment mask (#191, plan v25): before the snapshot, so
-    // the eval program masks too.
-    if (config_.segment_mask)
+    // the eval program masks too. Whether it runs is DecideSegmentMask's.
+    if (segment_mask)
       pm.Add("segment-mask",
              [this](sir::Block& b) -> std::expected<void, std::string> {
                auto head = tokenizer::ReadSmtkHead(source.tokenizer);
@@ -1513,6 +1562,8 @@ Status Compilation::ReportSummary() {
   }
   // The screens (S0 #146): what the compile did, as numbers.
   facts.attention_ops = attention_decision.attention_ops;
+  facts.segment_mask = segment_mask;
+  facts.segment_mask_why = segment_mask_why;
   FillCompileScreens(facts, config_, result);
 
   // Backend boundary: the assembled plan must be internally consistent with
@@ -1647,6 +1698,7 @@ std::expected<CompiledUpdate, std::string> Compilation::Run() {
       &Compilation::VerifyTopology,
       &Compilation::IngestData,
       &Compilation::DecideMaskedLoss,
+      &Compilation::DecideSegmentMask,
       &Compilation::RecordFrontendFacts,
       &Compilation::ProveFootprint,
       &Compilation::BuildForwardGraph,

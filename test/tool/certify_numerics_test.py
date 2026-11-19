@@ -685,7 +685,7 @@ class CertifyPlansTest(unittest.TestCase):
         pkg = self.compile("dec_relaxed_tiled_seg",
                            os.path.join("segdec", "decoder.smf"), 12,
                            "--precision", "certified-bf16",
-                           "--attention", "tiled", "--segment-mask",
+                           "--attention", "tiled", "--segment-mask", "on",
                            "--lora-rank", "4")
         plan = fx.Plan.load(os.path.join(pkg, cn.PLAN_FILE))
         self.assertGreater(plan.relaxed_instructions, plan.relaxed_gemms)
