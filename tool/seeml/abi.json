@@ -167,7 +167,7 @@
     {"name": "val_frac", "flag": "--val-frac", "kind": "float", "min": 0, "max": 1, "min_open": true, "max_open": true},
     {"name": "split_seed", "flag": "--split-seed", "kind": "uint", "min": 0, "max": 18446744073709551615},
     {"name": "masked_loss", "flag": "--masked-loss", "kind": "bool"},
-    {"name": "segment_mask", "flag": "--segment-mask", "kind": "bool"},
+    {"name": "segment_mask", "flag": "--segment-mask", "kind": "enum", "choices": "auto|off|on"},
     {"name": "memory_budget_mib", "flag": "--memory-budget-mib", "kind": "uint", "min": 1, "max": 1099511627776}
   ]},
   "screens": {
@@ -229,6 +229,7 @@
       {"key": "chain_fusions", "kind": "count", "unit": "", "verbose": false, "volatile": false, "optional": false},
       {"key": "dce_removed", "kind": "count", "unit": "ops", "verbose": false, "volatile": false, "optional": false},
       {"key": "attention", "kind": "text", "unit": "", "verbose": false, "volatile": false, "optional": false},
+      {"key": "segment_mask", "kind": "text", "unit": "", "verbose": false, "volatile": false, "optional": true},
       {"key": "rematerialization", "kind": "text", "unit": "", "verbose": false, "volatile": false, "optional": false},
       {"key": "narrow_weights", "kind": "text", "unit": "", "verbose": false, "volatile": false, "optional": false},
       {"key": "adjoint_ops", "kind": "count", "unit": "ops", "verbose": false, "volatile": false, "optional": false},

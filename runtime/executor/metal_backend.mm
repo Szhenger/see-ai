@@ -1750,6 +1750,8 @@ std::expected<void, std::string> MetalBackend::Encode(
       } else {
         a.B = up::HighWord32(ins.out[1]); a.S = up::LowWord32(ins.out[1]);
         a.H = up::HighWord32(ins.out[2]); a.D = up::LowWord32(ins.out[2]);
+        a.B = hi(ins.out[1]); a.S = lo(ins.out[1]);
+        a.H = hi(ins.out[2]); a.D = lo(ins.out[2]);
       }
       a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
       a.flags = TiledRowsVectorizable(a) |

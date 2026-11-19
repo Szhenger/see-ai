@@ -841,6 +841,7 @@ MATRIX = [
     # documents of a window — the starts and the masked cached forward.
     ("dec_segment", "segdec/decoder.smf", "segdec/corpus.sds", 12,
      ["--segment-mask", "--lora-rank", "4"]),
+     ["--segment-mask", "on", "--lora-rank", "4"]),
     # The mask on the tiled family (#191 step 2, plan v26): the masked tiled
     # forward, and the backward passes reading each row's start from the
     # stats row — plain, then with rematerialization (the forward re-run
@@ -850,6 +851,10 @@ MATRIX = [
     ("dec_segment_tiled_remat_accum", "segdec/decoder.smf",
      "segdec/corpus.sds", 12,
      ["--segment-mask", "--attention", "tiled", "--remat", "on",
+     ["--segment-mask", "on", "--attention", "tiled", "--lora-rank", "4"]),
+    ("dec_segment_tiled_remat_accum", "segdec/decoder.smf",
+     "segdec/corpus.sds", 12,
+     ["--segment-mask", "on", "--attention", "tiled", "--remat", "on",
       "--grad-accum", "2", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
@@ -1069,7 +1074,8 @@ class DifferentialSuite(unittest.TestCase):
         instructions it ran, the compiler counting the plan it emitted."""
         work = os.path.join(self.dir, "probe_work")
         os.makedirs(work, exist_ok=True)
-        for name in ("mlp_accum", "mlp_xent_kl", "dec_q8_accum", "dec_tiled"):
+        for name in ("mlp_accum", "mlp_xent_kl", "dec_q8_accum", "dec_tiled",
+                     "dec_segment", "dec_segment_tiled"):
             with self.subTest(plan=name):
                 plan_path, _, model = self.plans[name]
                 plan = fx.Plan.load(plan_path)

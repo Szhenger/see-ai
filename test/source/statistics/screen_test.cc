@@ -212,6 +212,19 @@ TEST(PlanWork, AttentionFlopsCountTheModelProductsInBothFamilies) {
   EXPECT_EQ(AttentionFlops(tiled), 12 * macs);
   EXPECT_EQ(AttentionFlops({cached.data(), 1}), 4 * macs);
   EXPECT_EQ(GemmFlops(cached), 0u);  // never folded into the GEMM unit
+  // The segment-masked forwards (#191) are the same model work as the
+  // plain ones — the mask is no more discounted than the causal one. Both
+  // read as zero until 2026-11-18, so a masked plan's forward work, its
+  // predicted step and its utilization were understated.
+  const std::vector<UpdateInstruction> masked_cached = {
+      Ins(OpCode::kAttnFwdSeg, 0, packed, 0)};
+  const std::vector<UpdateInstruction> masked_tiled = {
+      Ins(OpCode::kAttnFwdTiledSeg, 0, packed, 0),
+      Ins(OpCode::kAttnDQTiled, 0, 0, packed),
+      Ins(OpCode::kAttnDKTiled, 0, 0, packed),
+      Ins(OpCode::kAttnDVTiled, 0, 0, packed)};
+  EXPECT_EQ(AttentionFlops(masked_cached), 4 * macs);
+  EXPECT_EQ(AttentionFlops(masked_tiled), 12 * macs);
 }
 
 TEST(PlanWork, AStepIsTheMicroBatchesOfTheTrainProgramPlusTheStepProgram) {

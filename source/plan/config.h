@@ -37,6 +37,10 @@ enum class AttentionKind : uint8_t { kAuto = 0, kCached = 1, kTiled = 2 };
 // UpdateConfig::remat.
 enum class RematKind : uint8_t { kAuto = 0, kOff = 1, kOn = 2 };
 
+// Whether a plan carries the attention segment mask (#191): see
+// UpdateConfig::segment_mask.
+enum class SegmentMaskKind : uint8_t { kAuto = 0, kOff = 1, kOn = 2 };
+
 // How the adapter's product is scaled (S5 #151). kAlphaOverRank is LoRA's
 // own s = alpha / r; kAlphaOverSqrtRank is rank-stabilized LoRA's
 // s = alpha / sqrt(r), whose update does not shrink as the rank grows.
@@ -226,6 +230,16 @@ struct UpdateConfig {
   // another document of its packed window (documents found by the model's
   // tokenizer EOS id). Both attention families (the tiled one since v26).
   bool segment_mask = false;
+  // kOn masks, and refuses a model whose tokenizer section names no EOS;
+  // kOff (the default) never masks. kAuto (#191 design item 3) decides on
+  // the corpus the compile was given: it masks when --data named one in
+  // which some window holds more than one document, and the model names an
+  // EOS to find them by — otherwise the plan is the unmasked one, and the
+  // analysis screen says which and why. The decision is a function of the
+  // inputs, never of the host. kAuto is not the default: the one measured
+  // row (docs/benchmarks.md, "The segment mask, measured") does not favour
+  // the mask, and a default is a measured claim (seeai.md §4).
+  SegmentMaskKind segment_mask = SegmentMaskKind::kOff;
   uint32_t gemm_tile_k = 0;
   uint32_t gemm_tile_n = 0;
   // The target's peak arithmetic rate in GFLOP/s, as the user states it
