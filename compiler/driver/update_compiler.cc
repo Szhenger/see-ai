@@ -472,7 +472,7 @@ Status Compilation::DecideMaskedLoss() {
 }
 
 Status Compilation::DecideSegmentMask() {
-  // The attention segment mask (#191): off (the default), asked for, or —
+  // The attention segment mask (#191): off, asked for, or —
   // under `auto` — implied by a corpus in which some window holds more than
   // one document, as a corpus that carries a loss mask implies the masked
   // loss. The decision reads the compile's inputs alone (the corpus --data
@@ -489,7 +489,7 @@ Status Compilation::DecideSegmentMask() {
       segment_mask = true;  // a model with no EOS is refused by the pass
       segment_mask_why = "asked for";
       break;
-    case SegmentMaskKind::kOff:  // the default: nothing decided, no row
+    case SegmentMaskKind::kOff:  // asked for: nothing decided, no row
       segment_mask = false;
       segment_mask_why.clear();
       break;

@@ -1773,8 +1773,8 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
   // corpus it was given holds a window with more than one document, and
   // otherwise compiles exactly the unmasked plan. The decision reads the
   // corpus and the model's tokenizer section alone; it never refuses, and
-  // the analysis screen says what it decided and why. The default stays
-  // `off` (the measured row does not favour the mask): no mask, no row.
+  // the analysis screen says what it decided and why. `auto` is the
+  // default; `off` is no mask and no row.
   const int64_t seq = 8;
   const int32_t eos = 5;
   SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, seq, 16, 41);
@@ -1802,7 +1802,7 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
   };
   auto row = [](const CompiledUpdate& c) { return c.screens.analysis.Json(0); };
   UpdateConfig cfg = BaseConfig(16);
-  EXPECT_TRUE(cfg.segment_mask == SegmentMaskKind::kOff);  // the default
+  EXPECT_TRUE(cfg.segment_mask == SegmentMaskKind::kAuto);  // the default
   cfg.segment_mask = SegmentMaskKind::kAuto;
 
   // No corpus: nothing to decide on, the unmasked plan, and no row.
