@@ -231,15 +231,17 @@ struct UpdateConfig {
   // another document of its packed window (documents found by the model's
   // tokenizer EOS id). Both attention families (the tiled one since v26).
   // kOn masks, and refuses a model whose tokenizer section names no EOS;
-  // kOff (the default) never masks. kAuto (#191 design item 3) decides on
+  // kOff never masks. kAuto (the default; #191 design item 3) decides on
   // the corpus the compile was given: it masks when --data named one in
   // which some window holds more than one document, and the model names an
   // EOS to find them by — otherwise the plan is the unmasked one, and the
   // analysis screen says which and why. The decision is a function of the
-  // inputs, never of the host. kAuto is not the default: the one measured
-  // row (docs/benchmarks.md, "The segment mask, measured") does not favour
-  // the mask, and a default is a measured claim (seeai.md §4).
-  SegmentMaskKind segment_mask = SegmentMaskKind::kOff;
+  // inputs, never of the host; a compile with no corpus never masks.
+  // The default since 2026-11-19, on the measurement (docs/benchmarks.md,
+  // "The segment mask, measured"): scored with one document in its context
+  // — the model as it is used — masked training is the better of the two
+  // on both corpora at three adapter seeds, six for six.
+  SegmentMaskKind segment_mask = SegmentMaskKind::kAuto;
   uint32_t gemm_tile_k = 0;
   uint32_t gemm_tile_n = 0;
   // The target's peak arithmetic rate in GFLOP/s, as the user states it

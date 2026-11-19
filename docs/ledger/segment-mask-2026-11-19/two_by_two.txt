@@ -1,0 +1,32 @@
+related documents: 490 chars 226516
+unrelated documents: 517 of 521 chars 226812
+related train unmasked compile rc=0
+  straddling windows       312                           records that span a document boundary (see the segment mask row
+  validation               49 of 492 records held out, seed 0, split 108e769ef0137272  the compiled held-out split: reco
+related train unmasked run rc=0
+seeml-update: best state at step 210 (validation loss 3.657988); last state 3.773422; 9 periodic evaluation(s)
+related train masked compile rc=0
+  straddling windows       312                           records that span a document boundary (see the segment mask row
+  validation               49 of 492 records held out, seed 0, split 108e769ef0137272  the compiled held-out split: reco
+  segment mask             on, 30 op(s): 309 of 492 window(s) hold more than one document  no attention across a window'
+related train masked run rc=0
+seeml-update: best state at step 210 (validation loss 3.727608); last state 3.846773; 9 periodic evaluation(s)
+related score trained=unmasked scored=unmasked compile rc=0 run rc=0 :: seeml-update: validation loss 3.657988 -> 3.698343 [backend metal]
+related score trained=unmasked scored=masked compile rc=0 run rc=0 :: seeml-update: validation loss 3.761707 -> 3.788899 [backend metal]
+related score trained=masked scored=unmasked compile rc=0 run rc=0 :: seeml-update: validation loss 3.715551 -> 3.742595 [backend metal]
+related score trained=masked scored=masked compile rc=0 run rc=0 :: seeml-update: validation loss 3.727609 -> 3.762257 [backend metal]
+unrelated train unmasked compile rc=0
+  straddling windows       379                           records that span a document boundary (see the segment mask row
+  validation               46 of 460 records held out, seed 0, split 9c39815f0952b09b  the compiled held-out split: reco
+unrelated train unmasked run rc=0
+seeml-update: best state at step 210 (validation loss 2.794272); last state 2.981688; 9 periodic evaluation(s)
+unrelated train masked compile rc=0
+  straddling windows       379                           records that span a document boundary (see the segment mask row
+  validation               46 of 460 records held out, seed 0, split 9c39815f0952b09b  the compiled held-out split: reco
+  segment mask             on, 30 op(s): 377 of 460 window(s) hold more than one document  no attention across a window'
+unrelated train masked run rc=0
+seeml-update: best state at step 210 (validation loss 2.843435); last state 3.039397; 9 periodic evaluation(s)
+unrelated score trained=unmasked scored=unmasked compile rc=0 run rc=0 :: seeml-update: validation loss 2.794272 -> 2.822936 [backend metal]
+unrelated score trained=unmasked scored=masked compile rc=0 run rc=0 :: seeml-update: validation loss 2.883318 -> 2.895230 [backend metal]
+unrelated score trained=masked scored=unmasked compile rc=0 run rc=0 :: seeml-update: validation loss 2.831925 -> 2.887174 [backend metal]
+unrelated score trained=masked scored=masked compile rc=0 run rc=0 :: seeml-update: validation loss 2.843435 -> 2.900083 [backend metal]

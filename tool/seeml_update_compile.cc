@@ -167,7 +167,7 @@ void PrintUsage() {
       "                      alone (labels of -1 ignored); implied by\n"
       "                      a --data corpus that carries a mask\n"
       "  [--segment-mask auto|off|on]  no attention across a window's\n"
-      "                      documents (default off; auto: when the\n"
+      "                      documents (default auto: when the\n"
       "                      --data corpus holds such windows)\n"
       "  [--steps N]\n"
       "  [--grad-accum G]\n"
