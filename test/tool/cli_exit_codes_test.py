@@ -170,6 +170,37 @@ class CliExitCodes(unittest.TestCase):
         self.assertFalse(os.path.exists(out))
         self.exits(0, "seeml-bench", "--version")
 
+    # --attention-sweep takes --out, --threads and --repeats only. Each flag
+    # of the fixture sweep is given a value that sweep would accept, so the
+    # one refusal a case can meet is the sweep's own — which, until the
+    # /code-review of #213, was a check no command line could reach: the
+    # flags were ignored and the sweep ran (exit 0).
+    @unittest.skipUnless(os.path.isfile(tool("seeml-bench")),
+                         "seeml-bench absent (a SEEML_BENCH=1 build links it)")
+    def test_bench_attention_sweep_refuses_the_fixture_sweeps_flags(self):
+        out = os.path.join(self.dir, "sweep.json")
+        base = ("--attention-sweep", "--out", out, "--threads", "1",
+                "--repeats", "1")
+        for flag, value in (
+                ("--steps-lo", "5"),
+                ("--steps-hi", "90"),
+                ("--fixtures", "mlp_64x512x3"),
+                ("--peak-gflops", "100"),
+                ("--backend", "cpu"),
+                ("--gemm-tiles", "64,64"),
+                ("--kernel-policy", self.absent),
+                ("--target-host", "some-host"),
+        ):
+            with self.subTest(flag=flag):
+                done = self.exits(2, "seeml-bench", *base, flag, value)
+                self.assertIn(
+                    "--attention-sweep takes --out, --threads and "
+                    f"--repeats only, not {flag}\n", done.stderr)
+        # The flag ahead of --attention-sweep is the same refusal.
+        done = self.exits(2, "seeml-bench", "--backend", "cpu", *base)
+        self.assertIn("only, not --backend\n", done.stderr)
+        self.assertFalse(os.path.exists(out))
+
 
 if __name__ == "__main__":
     unittest.main()

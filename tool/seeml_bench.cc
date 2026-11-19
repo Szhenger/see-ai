@@ -6,6 +6,13 @@
 //               [--peak-gflops F] [--backend cpu|metal|auto]
 //               [--gemm-tiles K,N | --kernel-policy table.json
 //                [--target-host KEY]] [--version]
+//   seeml-bench --attention-sweep --out sweep.json [--threads 1,8]
+//               [--repeats 3]
+//
+// --attention-sweep times the two attention families' kernels alone (see
+// AttentionSweep) and takes those three flags only: a fixture-sweep flag
+// beside it — --steps-lo, --steps-hi, --fixtures, --peak-gflops, --backend,
+// --gemm-tiles, --kernel-policy, --target-host — is refused by name (exit 2).
 //
 // The kernel policy (the CPU GEMM tiles the compiler writes into every
 // plan, v11) is resolved once, exactly as seeml-update-compile resolves
@@ -485,10 +492,28 @@ struct BenchArgs {
   rt::BackendKind backend_kind{};
 };
 
+/// The flags of the fixture sweep that `--attention-sweep` does not use.
+constexpr const char* kFixtureSweepFlags[] = {
+    "--steps-lo", "--steps-hi",   "--fixtures",      "--peak-gflops",
+    "--backend",  "--gemm-tiles", "--kernel-policy", "--target-host"};
+
 /// The command line: every flag taken and parsed, in the order that decides
 /// which refusal wins. The error is the exit code.
 [[nodiscard]] std::expected<BenchArgs, int> ParseArgs(Args& args) {
   const bool attention_sweep = args.Take("--attention-sweep");
+  // The sweep times the attention kernels alone: it compiles no fixture,
+  // selects no backend and reads no kernel policy. A fixture-sweep flag
+  // beside it is refused by name, here, while its presence is still on the
+  // line — once taken, a flag that was given and one left at its default
+  // look the same.
+  if (attention_sweep)
+    for (const char* flag : kFixtureSweepFlags)
+      if (std::find(args.rest.begin(), args.rest.end(), flag) !=
+          args.rest.end())
+        return std::unexpected(
+            Fail("--attention-sweep takes --out, --threads and --repeats "
+                 "only, not " +
+                 std::string(flag)));
   auto out_path = args.TakeValue("--out", "");
   auto threads_csv = args.TakeValue("--threads", "1,8");
   auto lo_s = args.TakeValue("--steps-lo", "20");
@@ -1073,17 +1098,18 @@ int main(int argc, char** argv) {
   auto parsed = ParseArgs(args);
   if (!parsed) return parsed.error();
   const BenchArgs& bench = *parsed;
+  // Ahead of the host: the sweep runs the kernels directly, on no backend
+  // and under no kernel policy (ParseArgs refused the flags that name one).
+  if (bench.attention_sweep) {
+    auto threads = ParseThreads(bench);
+    if (!threads) return threads.error();
+    std::vector<size_t> widths(threads->begin(), threads->end());
+    return AttentionSweep(widths, bench.repeats, bench.out_path);
+  }
   auto host = ResolveHost(bench);
   if (!host) return host.error();
   auto threads = ParseThreads(bench);
   if (!threads) return threads.error();
-  if (bench.attention_sweep) {
-    if (!args.rest.empty())
-      return Fail(
-          "--attention-sweep takes --out, --threads and --repeats only");
-    std::vector<size_t> widths(threads->begin(), threads->end());
-    return AttentionSweep(widths, bench.repeats, bench.out_path);
-  }
 
   auto selected = SelectFixtures(bench);
   if (!selected) return selected.error();
