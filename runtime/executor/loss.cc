@@ -63,12 +63,12 @@ void SoftmaxXEntBwd(const float* probs, const int32_t* labels,
   const float scale = *seed / static_cast<float>(N);
   up::ParallelFor(N, RowGrain(C, kGrainCheap),
                   [&](size_t r0, size_t r1, size_t) {
-                    for (size_t n = r0; n < r1; ++n) {
-                      for (size_t c = 0; c < C; ++c)
-                        dlogits[n * C + c] = scale * probs[n * C + c];
-                      dlogits[n * C + static_cast<size_t>(labels[n])] -= scale;
-                    }
-                  });
+    for (size_t n = r0; n < r1; ++n) {
+      for (size_t c = 0; c < C; ++c)
+        dlogits[n * C + c] = scale * probs[n * C + c];
+      dlogits[n * C + static_cast<size_t>(labels[n])] -= scale;
+    }
+  });
 }
 
 void SoftmaxXEntMaskedFwd(const float* logits, const int32_t* labels,
@@ -113,16 +113,16 @@ void SoftmaxXEntMaskedBwd(const float* probs, const int32_t* labels,
   const float scale = T ? *seed / static_cast<float>(T) : 0.0f;
   up::ParallelFor(N, RowGrain(C, kGrainCheap),
                   [&](size_t r0, size_t r1, size_t) {
-                    for (size_t n = r0; n < r1; ++n) {
-                      if (labels[n] < 0) {
-                        for (size_t c = 0; c < C; ++c) dlogits[n * C + c] = 0.0f;
-                        continue;
-                      }
-                      for (size_t c = 0; c < C; ++c)
-                        dlogits[n * C + c] = scale * probs[n * C + c];
-                      dlogits[n * C + static_cast<size_t>(labels[n])] -= scale;
-                    }
-                  });
+    for (size_t n = r0; n < r1; ++n) {
+      if (labels[n] < 0) {
+        for (size_t c = 0; c < C; ++c) dlogits[n * C + c] = 0.0f;
+        continue;
+      }
+      for (size_t c = 0; c < C; ++c)
+        dlogits[n * C + c] = scale * probs[n * C + c];
+      dlogits[n * C + static_cast<size_t>(labels[n])] -= scale;
+    }
+  });
 }
 
 void MseFwd(const float* pred, const float* target, float* loss, size_t n) {

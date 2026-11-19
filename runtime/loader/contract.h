@@ -66,8 +66,7 @@ namespace seeml::update_rt {
     std::span<const seeml::update::UpdateInstruction> eval,
     std::span<const seeml::update::UpdateInstruction> step,
     std::span<const seeml::update::EmitEntry> emit_table,
-    std::span<const uint8_t> rodata,
-    const seeml::update::PlanHeader& header);
+    std::span<const uint8_t> rodata, const seeml::update::PlanHeader& header);
 
 /// The dataset can feed this plan: batch x input_dim matches the input
 /// slot, the label kind and per-batch width match the label slot, and

@@ -35,7 +35,8 @@ std::string Extension(const std::string& path) {
   if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
     return "";
   std::string ext = path.substr(dot + 1);
-  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  for (char& c : ext)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return ext;
 }
 
@@ -91,24 +92,23 @@ void FillCommon(const Dataset& ds, const sema::Topology& topology,
     // A step reads rows_per_step token rows: rows_per_step / seq sequences.
     const double sequences_per_step =
         static_cast<double>(rows_per_step) / static_cast<double>(seq);
-    f.batches_per_epoch = sequences_per_step > 0
-                              ? static_cast<double>(f.records) / sequences_per_step
-                              : 0.0;
+    f.batches_per_epoch =
+        sequences_per_step > 0
+            ? static_cast<double>(f.records) / sequences_per_step
+            : 0.0;
     f.epochs_covered = f.records
                            ? static_cast<double>(steps) * sequences_per_step /
                                  static_cast<double>(f.records)
                            : 0.0;
   } else {
     f.record_width = ds.input_dim();
-    f.batches_per_epoch = rows_per_step
-                              ? static_cast<double>(f.records) /
-                                    static_cast<double>(rows_per_step)
-                              : 0.0;
-    f.epochs_covered = f.records
-                           ? static_cast<double>(steps) *
-                                 static_cast<double>(rows_per_step) /
-                                 static_cast<double>(f.records)
-                           : 0.0;
+    f.batches_per_epoch = rows_per_step ? static_cast<double>(f.records) /
+                                              static_cast<double>(rows_per_step)
+                                        : 0.0;
+    f.epochs_covered = f.records ? static_cast<double>(steps) *
+                                       static_cast<double>(rows_per_step) /
+                                       static_cast<double>(f.records)
+                                 : 0.0;
   }
   f.label_entropy_nats = ds.LabelEntropyNats();
   f.tokenizer_hash = ds.tokenizer_hash();
@@ -133,8 +133,9 @@ std::expected<void, std::string> HoldToModel(const Dataset& ds,
         "section (tokenizer hash mismatch)");
   if (topology.token_input) {
     if (ds.input_kind() != 1)
-      return CorpusError("the model takes token ids, but the corpus carries "
-                         "feature rows");
+      return CorpusError(
+          "the model takes token ids, but the corpus carries "
+          "feature rows");
     if (ds.input_dim() != model.seq_len)
       return CorpusError("the corpus holds " + std::to_string(ds.input_dim()) +
                          "-token records; the model's seq_len is " +
@@ -150,8 +151,9 @@ std::expected<void, std::string> HoldToModel(const Dataset& ds,
     return {};
   }
   if (ds.input_kind() != 0)
-    return CorpusError("the model takes feature rows, but the corpus carries "
-                       "token records");
+    return CorpusError(
+        "the model takes feature rows, but the corpus carries "
+        "token records");
   if (ds.input_dim() != static_cast<uint64_t>(topology.input_width))
     return CorpusError("the corpus holds " + std::to_string(ds.input_dim()) +
                        "-feature rows; the model's input width is " +
@@ -176,10 +178,10 @@ std::expected<void, std::string> HoldToModel(const Dataset& ds,
 }
 
 CorpusShape ShapeOf(const Dataset& ds, uint64_t corpus_hash) {
-  return CorpusShape{ds.input_kind(),  ds.input_dim(),
-                     ds.label_kind(),  ds.label_bytes_per_sample(),
+  return CorpusShape{ds.input_kind(),     ds.input_dim(),
+                     ds.label_kind(),     ds.label_bytes_per_sample(),
                      ds.tokenizer_hash(), ds.masked(),
-                     corpus_hash,      /*split_hash=*/0};
+                     corpus_hash,         /*split_hash=*/0};
 }
 
 }  // namespace
@@ -221,7 +223,8 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
     out.from_sds = true;
     out.shape = ShapeOf(*ds, ds->content_hash());
     out.facts.kind = "sds";
-    FillCommon(*ds, topology, rows_per_step, steps, std::nullopt, eos, out.facts);
+    FillCommon(*ds, topology, rows_per_step, steps, std::nullopt, eos,
+               out.facts);
     out.facts.corpus_hash = out.shape.corpus_hash;
     return out;
   }
@@ -232,8 +235,9 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
                        "— one {\"text\": ...} per line) or a pre-tokenized "
                        "corpus (.sds)");
   if (!topology.token_input)
-    return CorpusError("a feature model takes no raw text: --data needs a "
-                       "pre-tokenized .sds for it");
+    return CorpusError(
+        "a feature model takes no raw text: --data needs a "
+        "pre-tokenized .sds for it");
   if (model.tokenizer.empty())
     return CorpusError(
         "the model carries no tokenizer section: raw text needs one (export "
@@ -260,17 +264,17 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
     text->shrink_to_fit();  // the documents hold the text now
   }
   const uint64_t tokenizer_hash = model.TokenizerHash();
-  auto ingest = seeml::tokenizer::Ingest(*tok, tokenizer_hash, documents,
-                                         options);
+  auto ingest =
+      seeml::tokenizer::Ingest(*tok, tokenizer_hash, documents, options);
   if (!ingest) return CorpusError(ingest.error());
 
   // The dataset the feeder would serve, from the packed ids (moved, not
   // copied: the SDS bytes are the record of them): the id bound and the
   // label entropy come from it, as they do for a given SDS.
   const auto& m = ingest->manifest;
-  auto ds = Dataset::FromTokens(std::move(ingest->ids), m.windows,
-                                model.seq_len, std::move(ingest->mask),
-                                tokenizer_hash);
+  auto ds =
+      Dataset::FromTokens(std::move(ingest->ids), m.windows, model.seq_len,
+                          std::move(ingest->mask), tokenizer_hash);
   if (!ds) return CorpusError(ds.error());
   if (auto ok = HoldToModel(*ds, model, topology, labels); !ok)
     return std::unexpected(ok.error());

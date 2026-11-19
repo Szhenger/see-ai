@@ -183,9 +183,9 @@ inline constexpr uint32_t kDataFlagSplit = 1u << 2;
 // without the flag is read as every plan before v23 was.
 inline constexpr uint32_t kDataFlagMetadata = 1u << 3;
 inline constexpr uint32_t kSeeuMetadataVersion = 23;
-inline constexpr uint32_t kDataFlagsMask =
-    kDataFlagMaskedLoss | kDataFlagCorpusPinned | kDataFlagSplit |
-    kDataFlagMetadata;
+inline constexpr uint32_t kDataFlagsMask = kDataFlagMaskedLoss |
+                                           kDataFlagCorpusPinned |
+                                           kDataFlagSplit | kDataFlagMetadata;
 
 // The version that admitted source refs in every program (adapter-only).
 inline constexpr uint32_t kSeeuSourceWeightsVersion = 21;
@@ -311,8 +311,8 @@ struct PlanHeader {
   uint64_t input_ref = kNullRef;
   uint64_t input_floats = 0;  // batch * input_dim
   uint64_t label_ref = kNullRef;
-  uint64_t label_bytes = 0;   // bytes copied per batch
-  uint32_t label_kind = 0;    // 0 = none, 1 = class indices (i32), 2 = dense f32
+  uint64_t label_bytes = 0;  // bytes copied per batch
+  uint32_t label_kind = 0;   // 0 = none, 1 = class indices (i32), 2 = dense f32
   uint32_t optimizer_kind = 1;
 
   uint64_t loss_ref = kNullRef;  // scalar loss slot (read after each step)
@@ -381,8 +381,8 @@ struct PlanHeader {
 
   // --- v22: the data contract (S2 #148 / S3 #149); all zero below v22.
   uint64_t tokenizer_hash = 0;  // the SMF tokenizer section's hash; 0 = unbound
-  uint64_t corpus_hash = 0;     // the canonical corpus compiled over (provenance)
-  uint64_t split_seed = 0;      // the held-out partition's seed
+  uint64_t corpus_hash = 0;  // the canonical corpus compiled over (provenance)
+  uint64_t split_seed = 0;   // the held-out partition's seed
   uint64_t val_split_hash = 0;  // hash over the sorted held-out record indices
   uint32_t val_frac_bits = 0;   // f32 bits of the held-out fraction
   uint32_t data_flags = 0;      // kDataFlag*
@@ -396,7 +396,7 @@ struct PlanHeader {
 struct EmitEntry {
   uint64_t smf_data_offset = 0;  // absolute offset of W inside the source .smf
   uint64_t byte_size = 0;        // f32 byte length of the weight
-  uint64_t arena_offset = 0;     // where delta = (α/r)·A@B lives after RunMerge()
+  uint64_t arena_offset = 0;  // where delta = (α/r)·A@B lives after RunMerge()
 };
 
 #pragma pack(pop)
@@ -411,7 +411,8 @@ struct EmitEntry {
 // is exactly what a v22 reader takes them for. The next growth past 320
 // moves every section and is a layout change, not an additive one.
 // Compiler-enforce it rather than argue it.
-static_assert(sizeof(PlanHeader) == 320, "PlanHeader layout is part of the ABI.");
+static_assert(sizeof(PlanHeader) == 320,
+              "PlanHeader layout is part of the ABI.");
 static_assert(sizeof(EmitEntry) == 24, "EmitEntry layout is part of the ABI.");
 
 }  // namespace seeml::update

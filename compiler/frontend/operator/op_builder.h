@@ -31,35 +31,30 @@ struct OpBuilder {
     /// NCHW convolution. `filter` is [Cout, Cin/group, KH, KW]; `pads` is
     /// {top, left, bottom, right}. Result: [N, Cout, OH, OW].
     static std::unique_ptr<Operation> conv2d(
-        Value* input, Value* filter, Value* bias,
-        std::vector<int64_t> strides,
+        Value* input, Value* filter, Value* bias, std::vector<int64_t> strides,
         std::vector<int64_t> pads = {0, 0, 0, 0},
-        std::vector<int64_t> dilations = {1, 1},
-        int64_t group = 1
-    );
+        std::vector<int64_t> dilations = {1, 1}, int64_t group = 1);
 
-    static std::unique_ptr<Operation> batchNorm(
-        Value* input, Value* scale, Value* bias,
-        Value* running_mean, Value* running_var,
-        float epsilon = 1e-5f
-    );
+    static std::unique_ptr<Operation> batchNorm(Value* input, Value* scale,
+                                                Value* bias,
+                                                Value* running_mean,
+                                                Value* running_var,
+                                                float epsilon = 1e-5f);
 
     /// Result: [rows of op(A), cols of op(B)] under the transpose flags.
-    static std::unique_ptr<Operation> gemm(
-        Value* A, Value* B, Value* bias = nullptr,
-        bool trans_a = false, bool trans_b = false
-    );
+    static std::unique_ptr<Operation> gemm(Value* A, Value* B,
+                                           Value* bias = nullptr,
+                                           bool trans_a = false,
+                                           bool trans_b = false);
 
     static std::unique_ptr<Operation> relu(Value* input);
 
     /// Patch-matrix extraction over NCHW input.
     /// Result: [N * OH * OW, C * KH * KW].
-    static std::unique_ptr<Operation> im2col(
-        Value* input,
-        std::vector<int64_t> kernel_shape,
-        std::vector<int64_t> strides,
-        std::vector<int64_t> pads
-    );
+    static std::unique_ptr<Operation> im2col(Value* input,
+                                             std::vector<int64_t> kernel_shape,
+                                             std::vector<int64_t> strides,
+                                             std::vector<int64_t> pads);
 };
 
 }  // namespace seeml::sir

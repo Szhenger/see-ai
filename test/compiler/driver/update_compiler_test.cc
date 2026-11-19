@@ -126,9 +126,9 @@ TEST(UpdateCompiler, PlanHeaderContract) {
   EXPECT_EQ(h.emit_count, compiled.adapters.size());
 
   // Every section lies inside the plan blob.
-  EXPECT_LE(h.train_instr_offset +
-                h.train_instr_count * sizeof(UpdateInstruction),
-            compiled.plan.size());
+  EXPECT_LE(
+      h.train_instr_offset + h.train_instr_count * sizeof(UpdateInstruction),
+      compiled.plan.size());
   EXPECT_LE(h.rodata_offset + h.rodata_size, compiled.plan.size());
   EXPECT_LE(h.emit_table_offset + h.emit_count * sizeof(EmitEntry),
             compiled.plan.size());
@@ -372,8 +372,10 @@ TEST(UpdateCompiler, CertifiedBf16MarksOnlyTheFrozenGemmsOfTraining) {
     exact.bf16_base = storage == 2;
     UpdateConfig relaxed = exact;
     relaxed.precision = Precision::kCertifiedBf16;
-    ASSERT_OK_AND_ASSIGN(CompiledUpdate a, UpdateCompiler(exact).Compile(model));
-    ASSERT_OK_AND_ASSIGN(CompiledUpdate b, UpdateCompiler(relaxed).Compile(model));
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate a,
+                         UpdateCompiler(exact).Compile(model));
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate b,
+                         UpdateCompiler(relaxed).Compile(model));
     EXPECT_EQ(a.relaxed_gemms, 0u);
     const auto ta = TrainProgramOf(a), tb = TrainProgramOf(b);
     ASSERT_EQ(ta.size(), tb.size());
@@ -471,8 +473,9 @@ TEST(UpdateCompiler, Bf16BaseHalvesRodataAndLowersTheWideningGemms) {
   EXPECT_EQ(CountOpcode(instrs, OpCode::kGemmNTBF16), b.adapters.size() - 1);
   // The adapter GEMMs (X@A, t@B and their backward) stay f32: A and B are
   // trainable arena parameters, not frozen rodata.
-  EXPECT_EQ(CountOpcode(instrs, OpCode::kGemmNN),
-            CountOpcode(TrainProgramOf(a), OpCode::kGemmNN) - b.adapters.size());
+  EXPECT_EQ(
+      CountOpcode(instrs, OpCode::kGemmNN),
+      CountOpcode(TrainProgramOf(a), OpCode::kGemmNN) - b.adapters.size());
   EXPECT_EQ(CountOpcode(instrs, OpCode::kGemmNNQ8), 0u);
   for (const auto& ad : b.adapters) {
     EXPECT_TRUE(ad.bf16);
@@ -485,7 +488,8 @@ TEST(UpdateCompiler, Bf16BaseHalvesRodataAndLowersTheWideningGemms) {
   for (const auto& ad : b.adapters)
     weight_bytes += static_cast<uint64_t>(ad.k * ad.m) * sizeof(float);
   EXPECT_LT(b.rodata_size, a.rodata_size);
-  EXPECT_GE(a.rodata_size - b.rodata_size, weight_bytes / 2 - 64 * b.adapters.size());
+  EXPECT_GE(a.rodata_size - b.rodata_size,
+            weight_bytes / 2 - 64 * b.adapters.size());
   // One storage precision per weight.
   UpdateConfig both = BaseConfig(kBatch);
   both.bf16_base = true;
@@ -534,7 +538,8 @@ TEST(UpdateCompiler, LoraSitesCostNoActivationSizedPassOfTheirOwn) {
   UpdateConfig config = BaseConfig(kBatch);  // rank 4, alpha 8
   UpdateConfig unfolded = config;
   unfolded.fuse_gemm_addend = false;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate folded, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate folded,
+                       UpdateCompiler(config).Compile(model));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
                        UpdateCompiler(unfolded).Compile(model));
   ASSERT_EQ(folded.adapters.size(), 2u);
@@ -635,8 +640,10 @@ TEST(UpdateCompiler, PerColumnInt8ScalesKeepTheBulkOfAnOutlierWeight) {
   ASSERT_TRUE(IsRodataRef(scales_ref));
   const PlanHeader h = HeaderOf(compiled);
   const uint8_t* rodata = compiled.plan.data() + h.rodata_offset;
-  const auto* q = reinterpret_cast<const int8_t*>(rodata + RefOffset(levels_ref));
-  const auto* cs = reinterpret_cast<const float*>(rodata + RefOffset(scales_ref));
+  const auto* q =
+      reinterpret_cast<const int8_t*>(rodata + RefOffset(levels_ref));
+  const auto* cs =
+      reinterpret_cast<const float*>(rodata + RefOffset(scales_ref));
 
   float tensor_max = 0.0f;
   for (float v : wf) tensor_max = std::max(tensor_max, std::fabs(v));
@@ -920,28 +927,28 @@ TEST(UpdateCompiler, RefusesSchedulesThatWouldMisbehaveSilently) {
   EXPECT_ERROR_CONTAINS(compile([](UpdateConfig& c) { c.default_steps = 0; }),
                         "step budget must be positive");
   EXPECT_ERROR_CONTAINS(compile([&](UpdateConfig& c) {
-                          cosine(c);
-                          c.optimizer.warmup_steps = 1000;  // == the budget
-                        }),
+    cosine(c);
+    c.optimizer.warmup_steps = 1000;  // == the budget
+  }),
                         "must be shorter than the step budget");
   EXPECT_ERROR_CONTAINS(
       compile([](UpdateConfig& c) { c.optimizer.warmup_steps = 10; }),
       "cosine schedule only");
   EXPECT_ERROR_CONTAINS(compile([&](UpdateConfig& c) {
-                          cosine(c);
-                          c.optimizer.min_lr_factor = 0.0f;
-                        }),
+    cosine(c);
+    c.optimizer.min_lr_factor = 0.0f;
+  }),
                         "learning rate of zero");
   ASSERT_OK_AND_ASSIGN(CompiledUpdate zero, compile([&](UpdateConfig& c) {
-                         cosine(c);
-                         c.optimizer.min_lr_factor = 0.0f;
-                         c.optimizer.allow_zero_lr = true;  // asked for twice
-                       }));
+    cosine(c);
+    c.optimizer.min_lr_factor = 0.0f;
+    c.optimizer.allow_zero_lr = true;  // asked for twice
+  }));
   EXPECT_EQ(HeaderOf(zero).min_lr_factor, 0.0f);
   ASSERT_OK_AND_ASSIGN(CompiledUpdate normal, compile([&](UpdateConfig& c) {
-                         cosine(c);
-                         c.optimizer.warmup_steps = 999;
-                       }));
+    cosine(c);
+    c.optimizer.warmup_steps = 999;
+  }));
   EXPECT_EQ(HeaderOf(normal).min_lr_factor, 0.1f);  // the default floor
   // A constant-schedule plan records no floor: byte-identical to the plans
   // compiled before the default moved.
@@ -965,7 +972,8 @@ TEST(UpdateCompiler, RematerializationShrinksTheArenaAndLeavesEvalAlone) {
   plain.remat = RematKind::kOff;
   UpdateConfig remat = plain;
   remat.remat = RematKind::kOn;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate off, UpdateCompiler(plain).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate off,
+                       UpdateCompiler(plain).Compile(model));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate on, UpdateCompiler(remat).Compile(model));
 
   EXPECT_FALSE(off.remat_applied);
@@ -978,8 +986,7 @@ TEST(UpdateCompiler, RematerializationShrinksTheArenaAndLeavesEvalAlone) {
   EXPECT_EQ(on.persistent_size, off.persistent_size);
   EXPECT_EQ(on.io_size, off.io_size);
   EXPECT_LT(on.transient_size, off.transient_size);
-  EXPECT_EQ(on.persistent_size + on.io_size + on.transient_size,
-            on.arena_size);
+  EXPECT_EQ(on.persistent_size + on.io_size + on.transient_size, on.arena_size);
   // Every recompute is one more train instruction, none of them a GEMM.
   const auto train_off = TrainProgramOf(off);
   const auto train_on = TrainProgramOf(on);
@@ -1089,8 +1096,7 @@ TEST(UpdateCompiler, AnAdapterOnlyPlanCarriesNoRodataAndReadsTheSourceModel) {
   EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved), "narrow copies");
   config.bf16_base = false;
   config.precision = Precision::kCertifiedBf16;
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved),
-                        "exact kernels");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(saved), "exact kernels");
   // A teacher's weights live in another file than the one the runtime
   // binds: refused by name, never bound to the student's bytes at the
   // teacher's offsets.
@@ -1119,7 +1125,8 @@ TEST(UpdateCompiler, TheEvalProgramScoresThePlanByRequest) {
                        UpdateCompiler(config).Compile(saved));
   EXPECT_TRUE(shipped.scores_shipped);
   config.eval_on_plan = true;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate proxy, UpdateCompiler(config).Compile(saved));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate proxy,
+                       UpdateCompiler(config).Compile(saved));
   EXPECT_FALSE(proxy.scores_shipped);
   // The eval program of the proxy plan reads no source ref; the shipped
   // plan's does.
@@ -1249,17 +1256,17 @@ TEST(UpdateCompiler, TopologyRefusesWhatTheReviewFoundMissing) {
     model.input_name = "x";
     model.output_name = "logits";
     model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
-    model.tensors.push_back({.name = "c",
-                             .dims = {5, 4},
-                             .is_const = true,
-                             .data = seeml::testing::AsPayload(
-                                 std::vector<float>(20, 0.5f))});
+    model.tensors.push_back(
+        {.name = "c",
+         .dims = {5, 4},
+         .is_const = true,
+         .data = seeml::testing::AsPayload(std::vector<float>(20, 0.5f))});
     model.tensors.back().byte_size = 80;
-    model.tensors.push_back({.name = "w",
-                             .dims = {4, 3},
-                             .is_const = true,
-                             .data = seeml::testing::AsPayload(
-                                 std::vector<float>(12, 0.25f))});
+    model.tensors.push_back(
+        {.name = "w",
+         .dims = {4, 3},
+         .is_const = true,
+         .data = seeml::testing::AsPayload(std::vector<float>(12, 0.25f))});
     model.tensors.back().byte_size = 48;
     model.ops.push_back({SmfOpKind::kMatMul, "mm", {"c", "w"}, "logits"});
     EXPECT_ERROR_CONTAINS(UpdateCompiler(BaseConfig(kBatch)).Compile(model),
@@ -1268,8 +1275,7 @@ TEST(UpdateCompiler, TopologyRefusesWhatTheReviewFoundMissing) {
   // N19: a token model's labels are next-token classes; MSE has no
   // dataset that could satisfy its contract.
   {
-    SmfModel model =
-        seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
+    SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 16, 41);
     UpdateConfig config = BaseConfig(16);
     config.loss = LossKind::kMse;
     EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
@@ -1301,8 +1307,18 @@ TEST(UpdateCompiler, TheTokenizerSectionMustMatchTheEmbeddingAndTheHead) {
     auto u32 = [&](uint32_t x) {
       for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
     };
-    u32(0x4B544D53); u32(1); u32(1); u32(1); u32(0); u32(v); u32(0); u32(0);
-    u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu);
+    u32(0x4B544D53);
+    u32(1);
+    u32(1);
+    u32(1);
+    u32(0);
+    u32(v);
+    u32(0);
+    u32(0);
+    u32(0xFFFFFFFFu);
+    u32(0xFFFFFFFFu);
+    u32(0xFFFFFFFFu);
+    u32(0xFFFFFFFFu);
     u32(0);
     return b;
   };
@@ -1370,13 +1386,27 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
     auto u32 = [&](uint32_t v) {
       for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
     };
-    u32(0x4B544D53); u32(1); u32(1); u32(2); u32(0); u32(257); u32(0); u32(1);
-    u32(256); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0xFFFFFFFFu); u32(0);
+    u32(0x4B544D53);
+    u32(1);
+    u32(1);
+    u32(2);
+    u32(0);
+    u32(257);
+    u32(0);
+    u32(1);
+    u32(256);
+    u32(0xFFFFFFFFu);
+    u32(0xFFFFFFFFu);
+    u32(0xFFFFFFFFu);
+    u32(0);
     for (int v = 0; v < 256; ++v) {
-      b.push_back(1); b.push_back(0); b.push_back(static_cast<uint8_t>(v));
+      b.push_back(1);
+      b.push_back(0);
+      b.push_back(static_cast<uint8_t>(v));
     }
     const std::string eos = "<eos>";
-    b.push_back(static_cast<uint8_t>(eos.size())); b.push_back(0);
+    b.push_back(static_cast<uint8_t>(eos.size()));
+    b.push_back(0);
     b.insert(b.end(), eos.begin(), eos.end());
     u32(256);
     return b;
@@ -1386,7 +1416,11 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
       seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 43);
   model.tokenizer = section;
   // 40 bytes, one document: 8 windows of 5 ids, no remainder.
-  const std::string text = "abcdefghij" "klmnopqrst" "uvwxyz0123" "456789ABCD";
+  const std::string text =
+      "abcdefghij"
+      "klmnopqrst"
+      "uvwxyz0123"
+      "456789ABCD";
   UpdateConfig cfg = BaseConfig(batch);
   cfg.default_steps = 8;
   cfg.data_path = write("corpus.txt", text);
@@ -1415,8 +1449,8 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   // The same corpus given as an SDS: pinned to the same hash, nothing to
   // write; and the pin differs from a plan compiled without data.
   const std::string sds_path = write(
-      "corpus.sds", std::string(compiled->corpus_sds.begin(),
-                                compiled->corpus_sds.end()));
+      "corpus.sds",
+      std::string(compiled->corpus_sds.begin(), compiled->corpus_sds.end()));
   cfg.data_path = sds_path;
   auto again = UpdateCompiler(cfg).Compile(model);
   ASSERT_OK(again);
@@ -1445,8 +1479,9 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   EXPECT_EQ(hs.val_split_hash, SplitHash(HeldOutIndices(8, 3, 0.25f)));
   EXPECT_EQ(hs.val_split_hash, HeaderOf(*split_b).val_split_hash);
   EXPECT_EQ(split_a->plan, split_b->plan);
-  EXPECT_STR_CONTAINS(split_a->screens.frontend.Json(0),
-                      "\"validation\": \"2 of 8 records held out, seed 3, split ");
+  EXPECT_STR_CONTAINS(
+      split_a->screens.frontend.Json(0),
+      "\"validation\": \"2 of 8 records held out, seed 3, split ");
   // The epoch rows count the 6 training records: 1.5 batches per epoch,
   // 8 steps x 4 sequences / 6 records = 5.333 epochs (not the 2 / 4 of the
   // whole corpus).
@@ -1459,11 +1494,11 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   ASSERT_OK(split_c);
   EXPECT_NE(HeaderOf(*split_c).val_split_hash, hs.val_split_hash);
   cfg.data_path.clear();
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
-                        "needs the corpus");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "needs the corpus");
   cfg.data_path = sds_path;
   cfg.val_frac = 1.5f;
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "val_frac must lie");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "val_frac must lie");
   cfg.val_frac = 0.0f;
   cfg.split_seed = 0;
 
@@ -1487,7 +1522,8 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   ASSERT_OK(foreign);
   ASSERT_OK(foreign->SaveToFile(dir.File("foreign.sds")));
   cfg.data_path = dir.File("foreign.sds");
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model), "another tokenizer");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "another tokenizer");
   std::vector<uint8_t> mask(8 * 4, 1);
   auto masked = seeml::update_rt::Dataset::FromTokens(ids, 8, seq, mask,
                                                       model.TokenizerHash());
@@ -1526,8 +1562,8 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   EXPECT_NE(HeaderOf(*flagged).data_flags & kDataFlagMaskedLoss, 0u);
   EXPECT_EQ(HeaderOf(*flagged).data_flags & kDataFlagCorpusPinned, 0u);
   // A record wider than the model's seq_len, and an id past the table.
-  auto wide = seeml::update_rt::Dataset::FromTokens(std::vector<int32_t>(8 * 6, 1),
-                                                    8, seq + 1);
+  auto wide = seeml::update_rt::Dataset::FromTokens(
+      std::vector<int32_t>(8 * 6, 1), 8, seq + 1);
   ASSERT_OK(wide);
   ASSERT_OK(wide->SaveToFile(dir.File("wide.sds")));
   cfg.data_path = dir.File("wide.sds");
@@ -1549,9 +1585,9 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   // ... and on a feature model no corpus could carry one at all.
   UpdateConfig masked_feature = BaseConfig(kBatch);
   masked_feature.masked_loss = true;
-  EXPECT_ERROR_CONTAINS(
-      UpdateCompiler(masked_feature).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
-      "token models alone");
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(masked_feature)
+                            .Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
+                        "token models alone");
 
   // A feature model takes its corpus as a pre-tokenized .sds (feature
   // rows), pinned by the file's hash like a token corpus; the labels the
@@ -1562,7 +1598,8 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   ASSERT_OK(rows->SaveToFile(dir.File("rows.sds")));
   UpdateConfig feature_cfg = BaseConfig(kBatch);
   feature_cfg.data_path = dir.File("rows.sds");
-  auto pinned = UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3));
+  auto pinned =
+      UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3));
   ASSERT_OK(pinned);
   {
     std::ifstream f(dir.File("rows.sds"), std::ios::binary);
@@ -1611,10 +1648,12 @@ TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
 
   SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
   UpdateConfig config = BaseConfig(kBatch);
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
+                       UpdateCompiler(config).Compile(model));
   UpdateConfig rs = config;
   rs.lora.scaling = LoraScaling::kAlphaOverSqrtRank;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate stabilized, UpdateCompiler(rs).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate stabilized,
+                       UpdateCompiler(rs).Compile(model));
   EXPECT_NE(plain.recipe_hash, stabilized.recipe_hash);
   EXPECT_NE(HeaderOf(plain).plan_hash, HeaderOf(stabilized).plan_hash);
   EXPECT_EQ(plain.train_instruction_count, stabilized.train_instruction_count);
@@ -1663,9 +1702,9 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
     auto u32 = [&](uint32_t x) {
       for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
     };
-    for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u,
-                       static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
-                       0xFFFFFFFFu, 0u})
+    for (uint32_t x :
+         {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u, static_cast<uint32_t>(eos),
+          0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
       u32(x);
     return b;
   };
@@ -1714,8 +1753,8 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
   EXPECT_EQ(CountOpcode(TrainProgramOf(t), OpCode::kAttnFwdTiledSeg),
             CountOpcode(TrainProgramOf(tu), OpCode::kAttnFwdTiled));
   EXPECT_TRUE(CountOpcode(TrainProgramOf(t), OpCode::kAttnFwdTiledSeg) > 0);
-  for (OpCode back : {OpCode::kAttnDQTiled, OpCode::kAttnDKTiled,
-                      OpCode::kAttnDVTiled})
+  for (OpCode back :
+       {OpCode::kAttnDQTiled, OpCode::kAttnDKTiled, OpCode::kAttnDVTiled})
     EXPECT_EQ(CountOpcode(TrainProgramOf(t), back),
               CountOpcode(TrainProgramOf(tu), back));
   EXPECT_EQ(HeaderOf(t).version, seeml::update::kSeeuVersion);
@@ -1740,9 +1779,9 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
   const int32_t eos = 5;
   SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, seq, 16, 41);
   std::vector<uint8_t> head;
-  for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u,
-                     static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
-                     0xFFFFFFFFu, 0u})
+  for (uint32_t x :
+       {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u, static_cast<uint32_t>(eos),
+        0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
     for (int i = 0; i < 4; ++i) head.push_back((x >> (8 * i)) & 0xFF);
   model.tokenizer = head;
   seeml::testing::ScopedTempDir dir;
@@ -1761,9 +1800,7 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
     return CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg) +
            CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdTiledSeg);
   };
-  auto row = [](const CompiledUpdate& c) {
-    return c.screens.analysis.Json(0);
-  };
+  auto row = [](const CompiledUpdate& c) { return c.screens.analysis.Json(0); };
   UpdateConfig cfg = BaseConfig(16);
   EXPECT_TRUE(cfg.segment_mask == SegmentMaskKind::kOff);  // the default
   cfg.segment_mask = SegmentMaskKind::kAuto;
@@ -1776,16 +1813,18 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
   // A corpus with an EOS mid-window: masked, both families, and the row
   // counts the windows.
   cfg.data_path = corpus("multi.sds", 3, model);
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate multi, UpdateCompiler(cfg).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate multi,
+                       UpdateCompiler(cfg).Compile(model));
   EXPECT_TRUE(masked_ops(multi) > 0);
   EXPECT_EQ(CountOpcode(TrainProgramOf(multi), OpCode::kAttnFwd), 0u);
-  EXPECT_STR_CONTAINS(row(multi), "1 of 6 window(s) hold more than one document");
+  EXPECT_STR_CONTAINS(row(multi),
+                      "1 of 6 window(s) hold more than one document");
   UpdateConfig tiled = cfg;
   tiled.attention = AttentionKind::kTiled;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate multi_tiled,
                        UpdateCompiler(tiled).Compile(model));
-  EXPECT_TRUE(CountOpcode(TrainProgramOf(multi_tiled),
-                          OpCode::kAttnFwdTiledSeg) > 0);
+  EXPECT_TRUE(
+      CountOpcode(TrainProgramOf(multi_tiled), OpCode::kAttnFwdTiledSeg) > 0);
   // `off`, the default, over the same corpus: the unmasked plan and no row.
   UpdateConfig off = cfg;
   off.segment_mask = SegmentMaskKind::kOff;
@@ -1814,13 +1853,14 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
                         "off: no window of the corpus holds more than one");
     const auto a = TrainProgramOf(single), b = TrainProgramOf(none);
     ASSERT_EQ(a.size(), b.size());
-    EXPECT_EQ(std::memcmp(a.data(), b.data(),
-                          a.size() * sizeof(UpdateInstruction)),
-              0);
+    EXPECT_EQ(
+        std::memcmp(a.data(), b.data(), a.size() * sizeof(UpdateInstruction)),
+        0);
   }
   // The first input position is enough: positions 1.. start a new document.
   cfg.data_path = corpus("first.sds", 0, model);
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate first, UpdateCompiler(cfg).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate first,
+                       UpdateCompiler(cfg).Compile(model));
   EXPECT_TRUE(masked_ops(first) > 0);
 
   // A model whose tokenizer names no EOS: `auto` compiles unmasked and
@@ -1849,12 +1889,14 @@ TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
     config.optimizer.clip_norm = 0.5f;
     config.optimizer.clip_global = true;
     config.grad_accum_steps = accum;
-    ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
+                         UpdateCompiler(config).Compile(model));
     const PlanHeader h = HeaderOf(c);
     EXPECT_EQ(h.version, kSeeuVersion);
     const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
     std::vector<OpCode> ops;
-    for (const UpdateInstruction& ins : program) ops.push_back(static_cast<OpCode>(ins.opcode));
+    for (const UpdateInstruction& ins : program)
+      ops.push_back(static_cast<OpCode>(ins.opcode));
     const auto first = [&](OpCode op) {
       return std::find(ops.begin(), ops.end(), op) - ops.begin();
     };
@@ -1891,7 +1933,8 @@ TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
   // Per tensor stays the default, and stays the plan it was.
   UpdateConfig per_tensor = BaseConfig(kBatch);
   per_tensor.optimizer.clip_norm = 0.5f;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate p, UpdateCompiler(per_tensor).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate p,
+                       UpdateCompiler(per_tensor).Compile(model));
   for (const UpdateInstruction& ins : TrainProgramOf(p)) {
     EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kSqNormAccum);
     EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kClipGlobal);
@@ -1909,8 +1952,10 @@ TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
     const PlanHeader h = HeaderOf(c);
     if ((h.data_flags & kDataFlagMetadata) == 0)
       ADD_FAILURE("the plan carries no metadata flag");
-    if (h.version != kSeeuVersion) ADD_FAILURE("the plan is not at kSeeuVersion");
-    const auto why = PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
+    if (h.version != kSeeuVersion)
+      ADD_FAILURE("the plan is not at kSeeuVersion");
+    const auto why =
+        PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
     if (why) ADD_FAILURE(*why);
     return meta;
   };
@@ -1946,7 +1991,8 @@ TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
   // Another recipe is another hash, and so another plan.
   UpdateConfig other = BaseConfig(kBatch);
   other.optimizer.lr *= 2.0f;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate moved, UpdateCompiler(other).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate moved,
+                       UpdateCompiler(other).Compile(model));
   EXPECT_NE(moved.recipe_hash, exact.recipe_hash);
 
   // Relaxed: the precision assignment is the one reordering entry, and it
@@ -1978,7 +2024,8 @@ TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
   ASSERT_OK_AND_ASSIGN(CompiledUpdate with_report,
                        UpdateCompiler(reported).Compile(model));
   const DecodedMetadata wm = decode(with_report);
-  EXPECT_EQ(wm.meta.export_flags, kExportReportPresent | kExportTokenizerParity |
+  EXPECT_EQ(wm.meta.export_flags, kExportReportPresent |
+                                      kExportTokenizerParity |
                                       kExportLogitsParity);
   EXPECT_EQ(wm.meta.export_report_hash, 0xFEEDu);
   EXPECT_EQ(wm.meta.tokenizer_parity_ids, 1234u);

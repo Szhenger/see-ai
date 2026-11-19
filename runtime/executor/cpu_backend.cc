@@ -61,10 +61,17 @@ void AccelerateGemm(const float* A, const float* B, float* C, size_t M,
       float v = C[i * N + j];
       if (bias) v += bias[j];
       switch (act) {
-        case up::EpilogueAct::kRelu: v = k::ReluExpr(v); break;
-        case up::EpilogueAct::kGelu: v = k::GeluExpr(v); break;
-        case up::EpilogueAct::kSilu: v = k::SiluExpr(v); break;
-        case up::EpilogueAct::kNone: break;
+        case up::EpilogueAct::kRelu:
+          v = k::ReluExpr(v);
+          break;
+        case up::EpilogueAct::kGelu:
+          v = k::GeluExpr(v);
+          break;
+        case up::EpilogueAct::kSilu:
+          v = k::SiluExpr(v);
+          break;
+        case up::EpilogueAct::kNone:
+          break;
       }
       if (addend) v += addend[i * N + j];
       C[i * N + j] = v;
@@ -102,8 +109,7 @@ void AccelerateGemmQ8(const float* A, const int8_t* B, float* C, size_t M,
                       const float* col_scale, up::EpilogueAct act,
                       std::vector<float>& panel) {
   const size_t nc = std::min(
-      N, std::max({size_t{1},
-                   kAcceleratePanelFloats / std::max<size_t>(1, K),
+      N, std::max({size_t{1}, kAcceleratePanelFloats / std::max<size_t>(1, K),
                    kAccelerateMinPanelCols}));
   if (panel.size() < K * nc) panel.resize(K * nc);
   float* P = panel.data();
@@ -126,9 +132,9 @@ void AccelerateGemmQ8(const float* A, const int8_t* B, float* C, size_t M,
         }
       });
       cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                  static_cast<int>(M), static_cast<int>(w),
-                  static_cast<int>(K), 1.0f, A, static_cast<int>(K), P,
-                  static_cast<int>(w), 0.0f, C + n0, static_cast<int>(N));
+                  static_cast<int>(M), static_cast<int>(w), static_cast<int>(K),
+                  1.0f, A, static_cast<int>(K), P, static_cast<int>(w), 0.0f,
+                  C + n0, static_cast<int>(N));
     } else {
       // W read as [N, K]: the panel is rows n0:n0+w widened; a per-column
       // scale is the REDUCTION index's here (v17), applied per k.
@@ -145,20 +151,27 @@ void AccelerateGemmQ8(const float* A, const int8_t* B, float* C, size_t M,
           }
         }
       });
-      cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                  static_cast<int>(M), static_cast<int>(w),
-                  static_cast<int>(K), 1.0f, A, static_cast<int>(K), P,
-                  static_cast<int>(K), 0.0f, C + n0, static_cast<int>(N));
+      cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, static_cast<int>(M),
+                  static_cast<int>(w), static_cast<int>(K), 1.0f, A,
+                  static_cast<int>(K), P, static_cast<int>(K), 0.0f, C + n0,
+                  static_cast<int>(N));
     }
   }
   if (act == up::EpilogueAct::kNone) return;
   for (size_t i = 0; i < M * N; ++i) {
     float v = C[i];
     switch (act) {
-      case up::EpilogueAct::kRelu: v = k::ReluExpr(v); break;
-      case up::EpilogueAct::kGelu: v = k::GeluExpr(v); break;
-      case up::EpilogueAct::kSilu: v = k::SiluExpr(v); break;
-      case up::EpilogueAct::kNone: break;
+      case up::EpilogueAct::kRelu:
+        v = k::ReluExpr(v);
+        break;
+      case up::EpilogueAct::kGelu:
+        v = k::GeluExpr(v);
+        break;
+      case up::EpilogueAct::kSilu:
+        v = k::SiluExpr(v);
+        break;
+      case up::EpilogueAct::kNone:
+        break;
     }
     C[i] = v;
   }
@@ -181,7 +194,6 @@ float KlLossScaleOf(uint64_t word) {
   const uint64_t hi = up::HighWord(word);
   return hi == 0 ? 1.0f : BitsToF32(hi);
 }
-
 
 class CpuBackend final : public ExecutorBackend {
  public:
@@ -266,57 +278,52 @@ std::expected<void, std::string> CpuBackend::Execute(
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
         ++relaxed_executions_;
-        AccelerateGemm(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
-                       WritePtr(ins.in[2]), ins.out[0], ins.out[1],
-                       ins.out[2], false,
-                       ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3])
-                                                         : nullptr,
-                       up::EpilogueActOf(ins.flags),
-                       ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                       : nullptr);
+        AccelerateGemm(
+            ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
+            ins.out[0], ins.out[1], ins.out[2], false,
+            ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3]) : nullptr,
+            up::EpilogueActOf(ins.flags),
+            ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3]) : nullptr);
         break;
       }
 #endif
       // v5 epilogue flags: bias ref rides the otherwise-free in[3]; the
       // validator proved the flag/slot combination before dispatch.
-      k::GemmNN(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
-                ins.out[0], ins.out[1], ins.out[2],
-                ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3])
-                                                  : nullptr,
-                up::EpilogueActOf(ins.flags), policy_.gemm_tiles,
-                ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                : nullptr,
-                up::GemmAlphaOf(ins.imm));  // v19
+      k::GemmNN(
+          ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
+          ins.out[0], ins.out[1], ins.out[2],
+          ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3]) : nullptr,
+          up::EpilogueActOf(ins.flags), policy_.gemm_tiles,
+          ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3]) : nullptr,
+          up::GemmAlphaOf(ins.imm));  // v19
       break;
     case up::OpCode::kGemmNT:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
         ++relaxed_executions_;
-        AccelerateGemm(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
-                       WritePtr(ins.in[2]), ins.out[0], ins.out[1],
-                       ins.out[2], true, nullptr, up::EpilogueAct::kNone,
-                       ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                       : nullptr);
+        AccelerateGemm(
+            ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
+            ins.out[0], ins.out[1], ins.out[2], true, nullptr,
+            up::EpilogueAct::kNone,
+            ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3]) : nullptr);
         break;
       }
 #endif
       k::GemmNT(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                 ins.out[0], ins.out[1], ins.out[2], policy_.gemm_tiles,
-                ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                : nullptr,
+                ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3]) : nullptr,
                 up::GemmAlphaOf(ins.imm));
       break;
     case up::OpCode::kGemmTN:
       k::GemmTN(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                 ins.out[0], ins.out[1], ins.out[2], policy_.gemm_tiles,
-                ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3])
-                                                : nullptr,
+                ins.flags & up::kFlagGemmAddend ? ReadPtr(ins.in[3]) : nullptr,
                 up::GemmAlphaOf(ins.imm));
       break;
     case up::OpCode::kGemmAccNN:
-      k::GemmAccNN(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
-                   WritePtr(ins.in[2]), ins.out[0], ins.out[1], ins.out[2],
-                   BitsToF32(ins.in[3]), policy_.gemm_tiles);
+      k::GemmAccNN(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
+                   ins.out[0], ins.out[1], ins.out[2], BitsToF32(ins.in[3]),
+                   policy_.gemm_tiles);
       break;
     case up::OpCode::kGemmNNQ8:
 #if SEEML_HAS_ACCELERATE
@@ -331,8 +338,8 @@ std::expected<void, std::string> CpuBackend::Execute(
         break;
       }
 #endif
-      k::GemmNNQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]),
-                  WritePtr(ins.in[2]), ins.out[0], ins.out[1], ins.out[2],
+      k::GemmNNQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]), WritePtr(ins.in[2]),
+                  ins.out[0], ins.out[1], ins.out[2],
                   ColScaled(ins) ? 1.0f : BitsToF32(ins.in[3]),
                   up::EpilogueActOf(ins.flags), policy_.gemm_tiles,
                   ColScaled(ins) ? ReadPtr(ins.in[3]) : nullptr);
@@ -350,8 +357,8 @@ std::expected<void, std::string> CpuBackend::Execute(
         break;
       }
 #endif
-      k::GemmNTQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]),
-                  WritePtr(ins.in[2]), ins.out[0], ins.out[1], ins.out[2],
+      k::GemmNTQ8(ReadPtr(ins.in[0]), ReadPtrQ8(ins.in[1]), WritePtr(ins.in[2]),
+                  ins.out[0], ins.out[1], ins.out[2],
                   ColScaled(ins) ? 1.0f : BitsToF32(ins.in[3]),
                   policy_.gemm_tiles,
                   ColScaled(ins) ? ReadPtr(ins.in[3]) : nullptr);
@@ -476,8 +483,7 @@ std::expected<void, std::string> CpuBackend::Execute(
       k::KLDistillBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       ReadPtr(ins.in[2]), WritePtr(ins.in[3]),
                       up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
-                      KlTemperatureOf(ins.out[1]),
-                      KlLossScaleOf(ins.out[1]));
+                      KlTemperatureOf(ins.out[1]), KlLossScaleOf(ins.out[1]));
       break;
     // v12: out[1] is the fused clip threshold (0 = none). The one kernel
     // that can refuse: a non-finite gradient norm aborts the step with
@@ -505,11 +511,11 @@ std::expected<void, std::string> CpuBackend::Execute(
       k::Accumulate(WritePtr(ins.in[0]), ReadPtr(ins.in[1]), ins.out[0]);
       break;
     case up::OpCode::kGemmNNBF16:
-      k::GemmNNBF16(ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]),
-                    WritePtr(ins.in[2]), ins.out[0], ins.out[1], ins.out[2],
-                    ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3])
-                                                      : nullptr,
-                    up::EpilogueActOf(ins.flags), policy_.gemm_tiles);
+      k::GemmNNBF16(
+          ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]), WritePtr(ins.in[2]),
+          ins.out[0], ins.out[1], ins.out[2],
+          ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3]) : nullptr,
+          up::EpilogueActOf(ins.flags), policy_.gemm_tiles);
       break;
     case up::OpCode::kGemmNTBF16:
       k::GemmNTBF16(ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]),
@@ -517,16 +523,14 @@ std::expected<void, std::string> CpuBackend::Execute(
                     policy_.gemm_tiles);
       break;
     case up::OpCode::kRmsNormFwd:
-      k::RmsNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
-                    WritePtr(ins.in[2]), WritePtr(ins.in[3]),
-                    up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
-                    up::NormEpsOf(ins.imm));
+      k::RmsNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
+                    WritePtr(ins.in[3]), up::HighWord(ins.out[0]),
+                    up::LowWord(ins.out[0]), up::NormEpsOf(ins.imm));
       break;
     case up::OpCode::kRmsNormBwd:
-      k::RmsNormBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
-                    ReadPtr(ins.in[2]), ReadPtr(ins.out[0]),
-                    WritePtr(ins.in[3]), up::HighWord(ins.out[1]),
-                    up::LowWord(ins.out[1]));
+      k::RmsNormBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), ReadPtr(ins.in[2]),
+                    ReadPtr(ins.out[0]), WritePtr(ins.in[3]),
+                    up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
     // v12: in[2] names a kRopeTable result, or is kNullRef.
     case up::OpCode::kRopeFwd:
@@ -546,8 +550,7 @@ std::expected<void, std::string> CpuBackend::Execute(
     case up::OpCode::kFusedMap: {
       // in[1..2] are kNullRef when no stage names them; never dereferenced.
       const float* others[3] = {
-          nullptr,
-          ins.in[1] == up::kNullRef ? nullptr : ReadPtr(ins.in[1]),
+          nullptr, ins.in[1] == up::kNullRef ? nullptr : ReadPtr(ins.in[1]),
           ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2])};
       const float imm[2] = {BitsToF32(ins.out[2]),
                             BitsToF32(up::HighWord(ins.out[2]))};
@@ -631,8 +634,8 @@ std::expected<void, std::string> CpuBackend::Execute(
       else if (op == up::OpCode::kAttnDKTiled)
         k::AttnDKTiled(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                        ReadPtr(ins.in[2]), ReadPtr(ins.in[3]),
-                       ReadPtr(ins.out[0]), WritePtr(ins.out[1]), g.B, g.S,
-                       g.H, g.d);
+                       ReadPtr(ins.out[0]), WritePtr(ins.out[1]), g.B, g.S, g.H,
+                       g.d);
       else
         k::AttnDVTiled(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                        ReadPtr(ins.in[3]), ReadPtr(ins.out[0]),

@@ -45,9 +45,9 @@ TEST(DriverContract, RecognizesEveryRegisteredUnit) {
 TEST(DriverContract, RejectsUnattributableDiagnostics) {
   EXPECT_FALSE(WellFormedDiagnostic("something went wrong"));
   EXPECT_FALSE(WellFormedDiagnostic("Frobnicator: unknown unit"));
-  EXPECT_FALSE(WellFormedDiagnostic("Parser"));       // no message at all
-  EXPECT_FALSE(WellFormedDiagnostic("Parser: "));     // empty message
-  EXPECT_FALSE(WellFormedDiagnostic("Parser:x"));     // malformed separator
+  EXPECT_FALSE(WellFormedDiagnostic("Parser"));    // no message at all
+  EXPECT_FALSE(WellFormedDiagnostic("Parser: "));  // empty message
+  EXPECT_FALSE(WellFormedDiagnostic("Parser:x"));  // malformed separator
   EXPECT_FALSE(WellFormedDiagnostic(""));
 }
 
@@ -199,7 +199,8 @@ TEST(DriverContract, TheEmittedHeaderMeetsTheDevicesLoadContract) {
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
   CompiledUpdate stub = compiled;
   stub.plan.resize(8);
-  EXPECT_ERROR_CONTAINS(VerifyGeneratedPlan(stub, n), "shorter than its header");
+  EXPECT_ERROR_CONTAINS(VerifyGeneratedPlan(stub, n),
+                        "shorter than its header");
 }
 
 }  // namespace

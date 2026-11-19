@@ -108,11 +108,11 @@ void FootprintWalk::SeedTensors() {
     // sizes a MatMul from its actual LHS, which may be a const with rows !=
     // batch); anything else is served at the compiled batch. Over-counting
     // rows would break the lower-bound guarantee rejections rely on.
-    row_count[t.name] =
-        t.is_const ? (t.dims.size() >= 2 && t.dims.front() > 0
-                          ? static_cast<uint64_t>(t.dims.front())
-                          : 1)
-                   : rows;
+    row_count[t.name] = t.is_const
+                            ? (t.dims.size() >= 2 && t.dims.front() > 0
+                                   ? static_cast<uint64_t>(t.dims.front())
+                                   : 1)
+                            : rows;
   }
 }
 
@@ -140,23 +140,20 @@ void FootprintWalk::MarkBackwardReads(
   for (const SmfOp& op : model.ops) {
     bool out_grad = false;
     for (const std::string& in : op.inputs) out_grad = out_grad || Grad(in);
-    const bool matmul =
-        op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
+    const bool matmul = op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
     const bool adapted_weight = matmul && adapted.contains(op.inputs[1]);
     out_grad = out_grad || adapted_weight;
     switch (op.kind) {
       case SmfOpKind::kMatMul:
         if (!matmul) break;
-        if (adapted_weight ||
-            (!IsConst(op.inputs[1]) && Grad(op.inputs[1])))
+        if (adapted_weight || (!IsConst(op.inputs[1]) && Grad(op.inputs[1])))
           read.insert(op.inputs[0]);
         if (!IsConst(op.inputs[1]) && Grad(op.inputs[0]))
           read.insert(op.inputs[1]);
         break;
       case SmfOpKind::kAttention:
         if (op.inputs.size() != 3) break;
-        if (Grad(op.inputs[0]) || Grad(op.inputs[1]))
-          read.insert(op.inputs[2]);
+        if (Grad(op.inputs[0]) || Grad(op.inputs[1])) read.insert(op.inputs[2]);
         if (Grad(op.inputs[0])) read.insert(op.inputs[1]);
         if (Grad(op.inputs[1])) read.insert(op.inputs[0]);
         break;
@@ -165,8 +162,7 @@ void FootprintWalk::MarkBackwardReads(
       case SmfOpKind::kRelu:
       case SmfOpKind::kGelu:
       case SmfOpKind::kSilu:
-        if (!op.inputs.empty() && Grad(op.inputs[0]))
-          read.insert(op.inputs[0]);
+        if (!op.inputs.empty() && Grad(op.inputs[0])) read.insert(op.inputs[0]);
         break;
       case SmfOpKind::kMul:
         if (op.inputs.size() != 2) break;
@@ -200,16 +196,16 @@ void FootprintWalk::ChargeSideCaches(const SmfOp& op, uint64_t r,
   // walk — the training footprint, where the compiler decides
   // whether to keep it — and as an activation at the peak walk (a
   // frozen forward never holds it past the op).
-  if (op.kind == SmfOpKind::kAttention && op.attr0 > 0 &&
-      model.seq_len > 0 && backward_runs) {
+  if (op.kind == SmfOpKind::kAttention && op.attr0 > 0 && model.seq_len > 0 &&
+      backward_runs) {
     const uint64_t rows_heads = SatMul(r, op.attr0);
     const uint64_t cache =
         SatMul(SatMul(rows_heads, model.seq_len), sizeof(float));
     if (sum_activations) {
       fp.probs_cache_bytes = SatAdd(fp.probs_cache_bytes, cache);
-      fp.attention_stats_bytes = SatAdd(
-          fp.attention_stats_bytes,
-          SatMul(SatMul(rows_heads, kAttnStatsWidth), sizeof(float)));
+      fp.attention_stats_bytes =
+          SatAdd(fp.attention_stats_bytes,
+                 SatMul(SatMul(rows_heads, kAttnStatsWidth), sizeof(float)));
     } else {
       Charge(cache);
     }

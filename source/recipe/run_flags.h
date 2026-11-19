@@ -21,7 +21,7 @@ namespace seeml::update::recipe {
 /// integers: no sign, no whitespace).
 struct RunFlags {
   bool steps_given = false;
-  uint64_t steps = 0;             // 0 = the plan's compiled default
+  uint64_t steps = 0;  // 0 = the plan's compiled default
   // A checkpoint is there to resume from, and it is this plan's — not the
   // bare --resume flag: with no checkpoint, or one bound to another plan,
   // the engine starts a fresh run, and the fresh run's rule applies to it.
@@ -31,7 +31,7 @@ struct RunFlags {
   uint64_t checkpoint_every = 0;
   bool eval_every_given = false;  // an explicit count, not "auto"
   uint64_t eval_every = 0;
-  bool has_validation = false;    // a held-out split exists for this run
+  bool has_validation = false;  // a held-out split exists for this run
 };
 
 /// The first rule the flags break against `header`, or nothing.
@@ -45,7 +45,8 @@ struct RunFlags {
   // knows a resume's step, so a resume whose step + steps still ends on the
   // ramp, and a run whose checkpoint did not load, are refused there.
   if (f.steps_given && !f.resume && f.steps != 0 &&
-      header.lr_schedule == static_cast<uint32_t>(LrSchedule::kCosineWithWarmup) &&
+      header.lr_schedule ==
+          static_cast<uint32_t>(LrSchedule::kCosineWithWarmup) &&
       f.steps <= header.warmup_steps)
     return "--steps " + std::to_string(f.steps) +
            " must exceed the plan's compiled warmup (" +
@@ -54,12 +55,14 @@ struct RunFlags {
   // Review N24: two flags that were silently ignored without their partner.
   if (f.checkpoint_every_given && f.checkpoint_every != 0 &&
       !f.has_checkpoint_path)
-    return std::string("--checkpoint-every needs --checkpoint: there is no "
-                       "file to write the checkpoints to");
+    return std::string(
+        "--checkpoint-every needs --checkpoint: there is no "
+        "file to write the checkpoints to");
   if (f.eval_every_given && f.eval_every != 0 && !f.has_validation)
-    return std::string("--eval-every needs a validation split (a plan that "
-                       "compiled one, or --val-frac > 0): there is nothing "
-                       "to evaluate on");
+    return std::string(
+        "--eval-every needs a validation split (a plan that "
+        "compiled one, or --val-frac > 0): there is nothing "
+        "to evaluate on");
   return std::nullopt;
 }
 

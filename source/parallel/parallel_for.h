@@ -94,11 +94,9 @@ template <typename Body>
 void ParallelFor(size_t n, size_t grain, Body&& body) {
   using Decayed = std::remove_reference_t<Body>;
   internal_par::ParallelForRaw(
-      n, grain,
-      [](void* ctx, size_t begin, size_t end, size_t chunk_index) {
-        (*static_cast<Decayed*>(ctx))(begin, end, chunk_index);
-      },
-      const_cast<std::remove_const_t<Decayed>*>(&body));
+      n, grain, [](void* ctx, size_t begin, size_t end, size_t chunk_index) {
+    (*static_cast<Decayed*>(ctx))(begin, end, chunk_index);
+  }, const_cast<std::remove_const_t<Decayed>*>(&body));
 }
 
 }  // namespace seeml::update

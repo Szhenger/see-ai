@@ -23,8 +23,8 @@ struct HostArchInfo {
   std::string_view isa = "unknown";  // "arm64" | "x86_64" | "unknown"
   size_t simd_width_f32 = 4;         // f32 lanes per vector register
   bool has_fma = false;
-  uint64_t l1d_bytes = 0;            // 0 = undetectable
-  uint64_t l2_bytes = 0;             // 0 = undetectable
+  uint64_t l1d_bytes = 0;  // 0 = undetectable
+  uint64_t l2_bytes = 0;   // 0 = undetectable
   size_t physical_cores = 1;
   size_t cache_line_bytes = 64;
   std::string cpu_model = "unknown";  // the OS's CPU brand string, trimmed

@@ -29,11 +29,21 @@ void AppendJsonString(std::string& out, std::string_view s) {
   out += '"';
   for (unsigned char c : s) {
     switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
       default:
         if (c < 0x20) {
           char buf[8];
@@ -84,14 +94,30 @@ size_t ParseJsonString(std::string_view s, size_t i, std::string& out) {
     const char e = s[i + 1];
     i += 2;
     switch (e) {
-      case '"': out += '"'; break;
-      case '\\': out += '\\'; break;
-      case '/': out += '/'; break;
-      case 'b': out += '\b'; break;
-      case 'f': out += '\f'; break;
-      case 'n': out += '\n'; break;
-      case 'r': out += '\r'; break;
-      case 't': out += '\t'; break;
+      case '"':
+        out += '"';
+        break;
+      case '\\':
+        out += '\\';
+        break;
+      case '/':
+        out += '/';
+        break;
+      case 'b':
+        out += '\b';
+        break;
+      case 'f':
+        out += '\f';
+        break;
+      case 'n':
+        out += '\n';
+        break;
+      case 'r':
+        out += '\r';
+        break;
+      case 't':
+        out += '\t';
+        break;
       case 'u': {
         auto hex4 = [&](size_t at, uint32_t* v) {
           if (at + 4 > s.size()) return false;
@@ -99,10 +125,14 @@ size_t ParseJsonString(std::string_view s, size_t i, std::string& out) {
           for (size_t k = 0; k < 4; ++k) {
             const char h = s[at + k];
             uint32_t d = 0;
-            if (h >= '0' && h <= '9') d = static_cast<uint32_t>(h - '0');
-            else if (h >= 'a' && h <= 'f') d = static_cast<uint32_t>(h - 'a' + 10);
-            else if (h >= 'A' && h <= 'F') d = static_cast<uint32_t>(h - 'A' + 10);
-            else return false;
+            if (h >= '0' && h <= '9')
+              d = static_cast<uint32_t>(h - '0');
+            else if (h >= 'a' && h <= 'f')
+              d = static_cast<uint32_t>(h - 'a' + 10);
+            else if (h >= 'A' && h <= 'F')
+              d = static_cast<uint32_t>(h - 'A' + 10);
+            else
+              return false;
             *v = (*v << 4) | d;
           }
           return true;
@@ -238,10 +268,12 @@ std::expected<std::vector<Document>, std::string> DocumentsFromJsonl(
     // stray comma, text) would otherwise vanish from the canonical corpus
     // without a drop entry in the manifest.
     i = SkipSpaces(line, i + 1);
-    if (i < line.size()) return refuse("content after the object (one record per line)");
+    if (i < line.size())
+      return refuse("content after the object (one record per line)");
     if (have_text && (have_prompt || have_response))
-      return refuse("a record is {\"text\"} or {\"prompt\", \"response\"}, "
-                    "not both");
+      return refuse(
+          "a record is {\"text\"} or {\"prompt\", \"response\"}, "
+          "not both");
     if (have_prompt != have_response)
       return refuse("a prompt / response record needs both fields");
     if (!have_text && !have_prompt)
@@ -303,7 +335,7 @@ std::expected<IngestResult, std::string> Ingest(
   std::unordered_map<uint64_t, uint64_t> seen;  // hash -> first index
   std::vector<int32_t> ids;                     // the packed stream
   std::vector<uint8_t> target;
-  std::vector<uint64_t> boundaries;             // ids index of each EOS join
+  std::vector<uint64_t> boundaries;  // ids index of each EOS join
   bool previous_plain = true;
   for (uint64_t d = 0; d < documents.size(); ++d) {
     const Document& doc = documents[d];
@@ -416,7 +448,8 @@ std::expected<IngestResult, std::string> Ingest(
       kept_ids.insert(kept_ids.end(), ids.begin() + static_cast<ptrdiff_t>(lo),
                       ids.begin() + static_cast<ptrdiff_t>(hi));
       if (masked)
-        for (uint64_t j = 0; j < S; ++j) kept_mask.push_back(target[lo + j + 1]);
+        for (uint64_t j = 0; j < S; ++j)
+          kept_mask.push_back(target[lo + j + 1]);
       m.target_tokens += masked ? targets : S;
       ++m.windows;
     }

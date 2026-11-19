@@ -31,16 +31,16 @@ inline constexpr std::string_view kHostArch = "HostArch";
 inline constexpr std::string_view kKernelPolicy = "KernelPolicy";
 
 /// Contract failure in device analysis: "<unit>: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view unit,
-                                                        std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view unit, std::string_view message) {
   return Fail(unit, message);
 }
 
 /// Detection fell back to a conservative default (WARN, compilation
 /// continues): "<unit>: <message>".
-inline void DetectionFallback(std::string_view unit, std::string_view message,
-                              const std::source_location loc =
-                                  std::source_location::current()) {
+inline void DetectionFallback(
+    std::string_view unit, std::string_view message,
+    const std::source_location loc = std::source_location::current()) {
   Fallback(unit, message, loc);
 }
 

@@ -279,11 +279,9 @@ TEST(OpBuilder, Conv2dInfersOutputShape) {
   EXPECT_TRUE(conv->result(0)->shape() == Shape({1, 4, 3, 3}));
 
   // A dynamic batch propagates; static spatial math is unaffected.
-  Value* xd = block.addArgument(DataType::F32,
-                                Shape{Shape::kDynamic, 3, 8, 8});
+  Value* xd = block.addArgument(DataType::F32, Shape{Shape::kDynamic, 3, 8, 8});
   auto convd = OpBuilder::conv2d(xd, w, nullptr, {2, 2});
-  EXPECT_TRUE(convd->result(0)->shape() ==
-              Shape({Shape::kDynamic, 4, 3, 3}));
+  EXPECT_TRUE(convd->result(0)->shape() == Shape({Shape::kDynamic, 4, 3, 3}));
 }
 
 TEST(OpBuilder, GemmInfersResultShape) {
@@ -336,8 +334,7 @@ TEST(Block, VerifyRejectsDuplicateValueIds) {
 
   auto verdict = block.verify();
   ASSERT_FALSE(verdict.has_value());
-  EXPECT_TRUE(verdict.error().find("duplicate value id") !=
-              std::string::npos);
+  EXPECT_TRUE(verdict.error().find("duplicate value id") != std::string::npos);
 }
 
 TEST(Block, VerifyDetectsUseListDrift) {

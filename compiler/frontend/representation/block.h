@@ -27,7 +27,9 @@ class Block {
 
     Value* addArgument(DataType dt, Shape sh);
     std::span<const std::unique_ptr<Value>> arguments() const { return args_; }
-    std::span<const std::unique_ptr<Operation>> operations() const { return ops_; }
+    std::span<const std::unique_ptr<Operation>> operations() const {
+        return ops_;
+    }
     size_t numOps() const { return ops_.size(); }
 
     Operation* appendOp(std::string name);
@@ -108,6 +110,6 @@ class Region {
     std::vector<std::unique_ptr<Block>> blocks_;
 };
 
-} // namespace seeml::sir
+}  // namespace seeml::sir
 
-#endif // SEEML_COMPILER_FRONTEND_REPRESENTATION_BLOCK_H_
+#endif  // SEEML_COMPILER_FRONTEND_REPRESENTATION_BLOCK_H_

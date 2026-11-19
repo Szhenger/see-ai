@@ -39,9 +39,9 @@ bool IsBinary(FusedStage kind) {
 /// A chain under construction: the stage bytes, and the operands they name.
 struct Chain {
   std::vector<sir::Operation*> ops;
-  sir::Value* x = nullptr;            // the running value's origin
-  std::vector<sir::Value*> others;    // slots 1..2
-  std::vector<float> imms;            // immediates 0..1
+  sir::Value* x = nullptr;          // the running value's origin
+  std::vector<sir::Value*> others;  // slots 1..2
+  std::vector<float> imms;          // immediates 0..1
   uint64_t stages = 0;
 
   /// Appends `op`, whose running input is operand `run_index`. False —
@@ -71,8 +71,8 @@ struct Chain {
       }
       arg = static_cast<uint8_t>(i);
     }
-    stages |= static_cast<uint64_t>(MakeFusedStage(
-                  kind, arg, IsBinary(kind) && run_index == 1))
+    stages |= static_cast<uint64_t>(
+                  MakeFusedStage(kind, arg, IsBinary(kind) && run_index == 1))
               << (8 * ops.size());
     ops.push_back(op);
     return true;

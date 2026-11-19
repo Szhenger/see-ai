@@ -116,9 +116,11 @@ TEST(UpdateEngineLoad, HeaderGemmTilesReachTheBackendAndNeverChangeBits) {
   auto data_tuned = MakeClassificationData(64, kInDim, 5);
   ASSERT_TRUE(data_default.has_value() && data_tuned.has_value());
   UpdateEngine by_default, by_tuned;
-  EXPECT_OK(by_default.LoadFromMemory(plan_default.data(), plan_default.size()));
+  EXPECT_OK(
+      by_default.LoadFromMemory(plan_default.data(), plan_default.size()));
   EXPECT_OK(by_tuned.LoadFromMemory(plan_tuned.data(), plan_tuned.size()));
-  EXPECT_EQ(by_default.gemm_tiles().k, seeml::update_rt::kernels::kDefaultGemmTiles.k);
+  EXPECT_EQ(by_default.gemm_tiles().k,
+            seeml::update_rt::kernels::kDefaultGemmTiles.k);
   EXPECT_EQ(by_tuned.gemm_tiles().k, 8u);
   EXPECT_EQ(by_tuned.gemm_tiles().n, 4u);
   EXPECT_OK(by_default.Train(*data_default, 12, Quiet()));
@@ -176,9 +178,8 @@ TEST(UpdateEngineLoad, RejectsBadMagicAndVersion) {
                           "unsupported plan version");
     const auto r = engine.LoadFromMemory(bad.data(), bad.size());
     ASSERT_FALSE(r.has_value());
-    EXPECT_STR_CONTAINS(r.error(),
-                        "v" + std::to_string(kSeeuOldestReadable) + "..v" +
-                            std::to_string(kSeeuVersion));
+    EXPECT_STR_CONTAINS(r.error(), "v" + std::to_string(kSeeuOldestReadable) +
+                                       "..v" + std::to_string(kSeeuVersion));
   }
   {
     // A plan below the semantic-compatibility floor (v2's source_model_hash
@@ -324,9 +325,9 @@ TEST(UpdateEngineLoad, BindsSoftmaxLabelsToTheStagedSlot) {
   lied.label_kind = 0;
   PutHeader(no_labels, lied);
   UpdateEngine engine;
-  EXPECT_ERROR_CONTAINS(engine.LoadFromMemory(no_labels.data(),
-                                              no_labels.size()),
-                        "without class labels");
+  EXPECT_ERROR_CONTAINS(
+      engine.LoadFromMemory(no_labels.data(), no_labels.size()),
+      "without class labels");
 }
 
 TEST(UpdateEngineLoad, LoadFromFileMatchesLoadFromMemory) {
@@ -444,8 +445,7 @@ TEST(UpdateEngineTrain, ValidatesDatasetAgainstPlan) {
   // Wrong input width.
   ASSERT_OK_AND_ASSIGN(Dataset wrong_width,
                        MakeClassificationData(32, kInDim + 1, 1));
-  EXPECT_ERROR_CONTAINS(engine.Train(wrong_width, 5, Quiet()),
-                        "input width");
+  EXPECT_ERROR_CONTAINS(engine.Train(wrong_width, 5, Quiet()), "input width");
 
   // Wrong label kind (unlabeled data on a cross-entropy plan).
   ASSERT_OK_AND_ASSIGN(Dataset unlabeled,
@@ -459,8 +459,7 @@ TEST(UpdateEngineTrain, ValidatesDatasetAgainstPlan) {
       Dataset bad_labels,
       Dataset::FromMemory(std::vector<float>(kBatch * kInDim, 0.5f),
                           std::move(labels), kBatch, kInDim, 1, 0));
-  EXPECT_ERROR_CONTAINS(engine.Train(bad_labels, 5, Quiet()),
-                        "outside [0, 3)");
+  EXPECT_ERROR_CONTAINS(engine.Train(bad_labels, 5, Quiet()), "outside [0, 3)");
 }
 
 TEST(UpdateEngineTrain, UsesDefaultStepsWhenZeroRequested) {
@@ -515,8 +514,8 @@ TEST(UpdateEngineTrain, ExecuteTrainOnceBumpsStepFromZero) {
   ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
   EXPECT_EQ(engine.step(), 0u);
 
-  seeml::testing::FillSlots(
-      engine, std::vector<float>(kBatch * kInDim, 0.1f), {0, 1, 2, 1});
+  seeml::testing::FillSlots(engine, std::vector<float>(kBatch * kInDim, 0.1f),
+                            {0, 1, 2, 1});
   engine.ExecuteTrainOnce();  // AdamW bias correction is 1-indexed
   EXPECT_EQ(engine.step(), 1u);
   EXPECT_GT(engine.LossValue(), 0.0f);
@@ -586,7 +585,8 @@ TEST(UpdateEngineCheckpoint, ResumedRunMatchesUninterruptedRunBitwise) {
   // "Power cuts are ordinary": the resumed run and the uninterrupted run
   // must be the same run, bit for bit.
   EXPECT_EQ(std::memcmp(straight.arena(), resumed.arena(),
-                        straight.header().persistent_size), 0);
+                        straight.header().persistent_size),
+            0);
 }
 
 TEST(UpdateEngineCheckpoint, RejectsIncompatibleCheckpoint) {
@@ -692,8 +692,8 @@ TEST(UpdateEngineCommit, RejectsModelFileThePlanWasNotCompiledFrom) {
   auto compiled = UpdateCompiler(BaseConfig(kBatch)).Compile(saved);
   ASSERT_OK(compiled);
   UpdateEngine engine;
-  ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(),
-                                  compiled->plan.size()));
+  ASSERT_OK(
+      engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
   ASSERT_OK(engine.RunMerge());
 
   // Every offset stays in range for the impostor — only the hash binding
@@ -714,7 +714,8 @@ TEST(UpdateEngineCommit, TheCommittedModelCarriesItsOwnReport) {
     // The SMTK head alone: magic, version 1, kind 1, pre-tokenizer 1, flags
     // 0, vocab 16, 0 merges, 0 special, -1 x 4, no template.
     auto u32 = [&](uint32_t x) {
-      for (int i = 0; i < 4; ++i) model.tokenizer.push_back((x >> (8 * i)) & 0xFF);
+      for (int i = 0; i < 4; ++i)
+        model.tokenizer.push_back((x >> (8 * i)) & 0xFF);
     };
     for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u, 0xFFFFFFFFu,
                        0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
@@ -782,8 +783,8 @@ TEST(UpdateEngineCommit, VerifySourceModelFailsFastOnTheWrongFile) {
   auto compiled = UpdateCompiler(BaseConfig(kBatch)).Compile(saved);
   ASSERT_OK(compiled);
   UpdateEngine engine;
-  ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(),
-                                  compiled->plan.size()));
+  ASSERT_OK(
+      engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
 
   // No train, no merge: the pre-flight check must work straight after load —
   // its whole purpose is refusing before any training cycles are spent.
@@ -915,8 +916,8 @@ TEST(UpdateEngineValidate, EvaluateMetricsReportsExactAccuracy) {
   // The class every row argmaxes to: the labelling with accuracy 1.
   int64_t ku = -1;
   for (uint64_t k = 0; k < kClasses && ku < 0; ++k) {
-    ASSERT_OK_AND_ASSIGN(float acc,
-                         accuracy_with(std::vector<int32_t>(kN, static_cast<int32_t>(k))));
+    ASSERT_OK_AND_ASSIGN(float acc, accuracy_with(std::vector<int32_t>(
+                                        kN, static_cast<int32_t>(k))));
     EXPECT_TRUE(acc == 0.0f || acc == 1.0f);
     if (acc == 1.0f) ku = static_cast<int64_t>(k);
   }
@@ -1111,7 +1112,8 @@ TEST(RuntimeScreenEnergy, TheScreenPassesTheRunsBackendAndTokens) {
   EXPECT_EQ(s.Get("energy_per_token"), nullptr);
   const auto* meter = s.Get("energy_meter");
   ASSERT_TRUE(meter != nullptr);
-  EXPECT_TRUE(std::get<std::string>(*meter).starts_with("unavailable: a cpu run"));
+  EXPECT_TRUE(
+      std::get<std::string>(*meter).starts_with("unavailable: a cpu run"));
   seeml::update::Screen c(seeml::update::kRuntimeScreen);
   seeml::update_rt::FillRuntimeScreen(c, engine, report, 0.0, "accepted",
                                       std::nullopt);
@@ -1243,10 +1245,10 @@ TEST(UpdateEngineGate, ImprovedByAndAccuracyHeld) {
   EXPECT_TRUE(r.ImprovedBy(0.0f));   // zero margin == improved()
   EXPECT_TRUE(r.ImprovedBy(0.05f));  // exactly at the margin
   EXPECT_FALSE(r.ImprovedBy(0.06f));
-  r.val_final_loss = 1.9999999f;     // a calibration-only drift
+  r.val_final_loss = 1.9999999f;  // a calibration-only drift
   EXPECT_TRUE(r.ImprovedBy(0.0f));
   EXPECT_FALSE(r.ImprovedBy(0.01f));
-  r.val_final_loss = 2.0f;           // no strict fall: fails at every margin
+  r.val_final_loss = 2.0f;  // no strict fall: fails at every margin
   EXPECT_FALSE(r.ImprovedBy(0.0f));
   EXPECT_FALSE(r.ImprovedBy(0.5f));
   // Without a split the training windows carry the gate.
@@ -1269,8 +1271,8 @@ TEST(UpdateEngineBackend, KindsParseAndNameRoundTrip) {
   using seeml::update_rt::BackendKind;
   using seeml::update_rt::BackendKindName;
   using seeml::update_rt::ParseBackendKind;
-  for (BackendKind k : {BackendKind::kCpu, BackendKind::kMetal,
-                        BackendKind::kAuto}) {
+  for (BackendKind k :
+       {BackendKind::kCpu, BackendKind::kMetal, BackendKind::kAuto}) {
     auto parsed = ParseBackendKind(BackendKindName(k));
     ASSERT_TRUE(parsed.has_value());
     EXPECT_EQ(static_cast<int>(*parsed), static_cast<int>(k));
@@ -1458,8 +1460,8 @@ TEST(UpdateEngineEval, AWrappedFinalBatchReportsTheRealSamplesMean) {
     auto compiled = UpdateCompiler(config).Compile(model);
     ASSERT_TRUE(compiled.has_value());
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(),
-                                    compiled->plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
     std::mt19937_64 rng(77);
     std::normal_distribution<float> dist(0.0f, 1.0f);
     const uint64_t n = 5;
@@ -1486,15 +1488,15 @@ TEST(UpdateEngineEval, AWrappedFinalBatchReportsTheRealSamplesMean) {
       std::vector<uint8_t> li(labels.begin() + i * label_row,
                               labels.begin() + (i + 1) * label_row);
       ASSERT_OK_AND_ASSIGN(Dataset one,
-                           Dataset::FromMemory(std::move(xi), std::move(li),
-                                               1, kInDim, kind, label_dim));
+                           Dataset::FromMemory(std::move(xi), std::move(li), 1,
+                                               kInDim, kind, label_dim));
       ASSERT_OK_AND_ASSIGN(float alone, engine.Evaluate(one));
       sum += alone;
     }
-    ASSERT_OK_AND_ASSIGN(Dataset five,
-                         Dataset::FromMemory(std::vector<float>(x),
-                                             std::vector<uint8_t>(labels), n,
-                                             kInDim, kind, label_dim));
+    ASSERT_OK_AND_ASSIGN(
+        Dataset five,
+        Dataset::FromMemory(std::vector<float>(x), std::vector<uint8_t>(labels),
+                            n, kInDim, kind, label_dim));
     ASSERT_OK_AND_ASSIGN(float got, engine.Evaluate(five));
     EXPECT_NEAR(got, sum / n, 2e-6 * (1.0 + std::fabs(sum / n)));
   }
@@ -1660,9 +1662,9 @@ TEST(UpdateEngineLr, ResumeTrainsTheRemainderOnTheSameSchedule) {
   ropt.resume = true;
   ropt.record_loss_curve = true;
   ASSERT_OK_AND_ASSIGN(auto rest, resumed.Train(d3, /*steps=*/0, ropt));
-  EXPECT_EQ(rest.steps, 18u);           // the remainder, not a new budget
+  EXPECT_EQ(rest.steps, 18u);  // the remainder, not a new budget
   EXPECT_EQ(resumed.step(), 30u);
-  EXPECT_EQ(resumed.horizon(), 30u);    // restored from the checkpoint
+  EXPECT_EQ(resumed.horizon(), 30u);  // restored from the checkpoint
   EXPECT_NEAR(resumed.EffectiveLr(), 0.1f * 0.1f, 1e-7);
   ASSERT_EQ(rest.loss_curve.size(), 18u);
   for (size_t i = 0; i < 18; ++i)
@@ -1723,16 +1725,15 @@ TEST(UpdateEngineLr, V3CheckpointsStillResume) {
   const uint32_t version3 = 3;
   std::memcpy(bytes.data() + 4, &version3, sizeof(version3));
   bytes.erase(bytes.begin() + 40, bytes.begin() + 112);  // the v4 + v5 tails
-  std::ofstream(v3, std::ios::binary).write(bytes.data(),
-                                            static_cast<std::streamsize>(
-                                                bytes.size()));
+  std::ofstream(v3, std::ios::binary)
+      .write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   UpdateEngine old;
   ASSERT_OK(old.LoadFromMemory(plan.data(), plan.size()));
   ASSERT_OK(old.LoadCheckpoint(v3));
   EXPECT_EQ(old.step(), 4u);
   EXPECT_EQ(old.horizon(), old.header().default_steps);
-  const std::vector<uint8_t> a(engine.arena(),
-                               engine.arena() + engine.header().persistent_size);
+  const std::vector<uint8_t> a(
+      engine.arena(), engine.arena() + engine.header().persistent_size);
   const std::vector<uint8_t> b(old.arena(),
                                old.arena() + old.header().persistent_size);
   EXPECT_TRUE(a == b);
@@ -1756,9 +1757,8 @@ std::vector<uint8_t> Persistent(UpdateEngine& e) {
 /// curves) for one seed. Every sample shares one rule, w_true from `rule`.
 Dataset PortableSet(uint64_t n, uint64_t sample_seed, uint64_t rule) {
   auto unit = [](std::mt19937_64& g) {  // [-1, 1), exact in f32
-    return static_cast<float>(static_cast<double>(g() >> 40) /
-                                  static_cast<double>(1ull << 23) -
-                              1.0);
+    return static_cast<float>(
+        static_cast<double>(g() >> 40) / static_cast<double>(1ull << 23) - 1.0);
   };
   std::mt19937_64 wr(rule), xr(sample_seed);
   std::vector<float> w(kInDim), x(n * kInDim);
@@ -2079,8 +2079,7 @@ TEST(UpdateEngineBest, ResumeRefusesADifferentSeedOrSplit) {
   EXPECT_ERROR_CONTAINS(none.Train(d3, 0, ropt), "resume refused");
 
   // The driver's pre-check reads the same binding without touching state.
-  ASSERT_OK_AND_ASSIGN(auto peek,
-                       seeml::update_rt::PeekCheckpointRecord(ckpt));
+  ASSERT_OK_AND_ASSIGN(auto peek, seeml::update_rt::PeekCheckpointRecord(ckpt));
   EXPECT_TRUE(peek.has_binding);
   EXPECT_EQ(peek.train_samples, 8u);
   EXPECT_EQ(peek.val_samples, 96u);
@@ -2251,7 +2250,7 @@ TEST(UpdateEngineBest, AutoEvaluatesEveryTenthOfTheRun) {
   o.validation = &v;
   o.eval_every = TrainOptions::kEvalEveryAuto;
   ASSERT_OK_AND_ASSIGN(auto report, e.Train(d, 25, o));
-  EXPECT_EQ(report.eval_every, 2u);  // 25 / 10
+  EXPECT_EQ(report.eval_every, 2u);    // 25 / 10
   EXPECT_EQ(report.evaluations, 12u);  // steps 2..24
   // Without a validation set there is nothing to evaluate: no tracking.
   UpdateEngine bare;

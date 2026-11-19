@@ -35,18 +35,18 @@ std::vector<uint8_t> ByteSection(const std::vector<std::string>& specials) {
     for (int i = 0; i < 2; ++i) b.push_back((v >> (8 * i)) & 0xFF);
   };
   u32(0x4B544D53);
-  u32(1);    // version
-  u32(1);    // byte-level BPE
-  u32(2);    // Digits then GPT-2
-  u32(0);    // flags
+  u32(1);  // version
+  u32(1);  // byte-level BPE
+  u32(2);  // Digits then GPT-2
+  u32(0);  // flags
   u32(static_cast<uint32_t>(256 + specials.size()));
-  u32(0);    // merges
+  u32(0);  // merges
   u32(static_cast<uint32_t>(specials.size()));
   u32(256);  // eos: the first special
   u32(static_cast<uint32_t>(-1));
   u32(static_cast<uint32_t>(-1));
   u32(static_cast<uint32_t>(-1));
-  u32(0);    // no chat template
+  u32(0);  // no chat template
   for (int v = 0; v < 256; ++v) {
     u16(1);
     b.push_back(static_cast<uint8_t>(v));
@@ -73,8 +73,10 @@ std::vector<Document> Plain(const std::vector<std::string>& texts) {
 }
 
 TEST(Ingest, TheSanitizerRemovesAndCountsOrOnlyCounts) {
-  const std::string text = std::string("a\x01" "b") + "\xff" + "c" +
-                           "\xe2\x80\xae" + "d\tn";
+  const std::string text = std::string(
+                               "a\x01"
+                               "b") +
+                           "\xff" + "c" + "\xe2\x80\xae" + "d\tn";
   SanitizeCounts c;
   EXPECT_EQ(Sanitize(text, false, &c), "abcd\tn");
   EXPECT_EQ(c.control_chars, 1u);
@@ -116,8 +118,9 @@ TEST(Ingest, JsonlDocumentsAreTextOrPromptResponseAndTheRestIsRefusedByLine) {
                         "line 2: not a JSON object");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": {\"a\": 1}}\n"),
                         "line 1: nested values");
-  EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\", \"text\": \"b\"}\n"),
-                        "line 1: two \"text\" fields");
+  EXPECT_ERROR_CONTAINS(
+      DocumentsFromJsonl("{\"text\": \"a\", \"text\": \"b\"}\n"),
+      "line 1: two \"text\" fields");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\\q\"}\n"),
                         "line 1: malformed string value");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\"\n"),
@@ -125,8 +128,9 @@ TEST(Ingest, JsonlDocumentsAreTextOrPromptResponseAndTheRestIsRefusedByLine) {
   // One record per line, members comma-separated: a second object on the
   // line, a stray comma or a missing comma is a refusal, never a record
   // that silently vanishes from the canonical corpus.
-  EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\"} {\"text\": \"b\"}\n"),
-                        "line 1: content after the object");
+  EXPECT_ERROR_CONTAINS(
+      DocumentsFromJsonl("{\"text\": \"a\"} {\"text\": \"b\"}\n"),
+      "line 1: content after the object");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\"}, x\n"),
                         "line 1: content after the object");
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"text\": \"a\" \"x\": 1}\n"),
@@ -136,7 +140,8 @@ TEST(Ingest, JsonlDocumentsAreTextOrPromptResponseAndTheRestIsRefusedByLine) {
   EXPECT_ERROR_CONTAINS(DocumentsFromJsonl("{\"prompt\": \"a\"}\n"),
                         "line 1: a prompt / response record needs both");
   EXPECT_ERROR_CONTAINS(
-      DocumentsFromJsonl("{\"text\": \"a\", \"prompt\": \"b\", \"response\": \"c\"}\n"),
+      DocumentsFromJsonl(
+          "{\"text\": \"a\", \"prompt\": \"b\", \"response\": \"c\"}\n"),
       "not both");
 }
 
@@ -212,7 +217,10 @@ TEST(Ingest, ThePipelineDropsJoinsCutsAndCountsStraddles) {
   IngestOptions one;
   one.seq_len = 2;
   one.one_document = true;
-  auto r3 = Ingest(tok, 0x1234, Plain({std::string("ab\x01" "cde")}), one);
+  auto r3 = Ingest(tok, 0x1234,
+                   Plain({std::string("ab\x01"
+                                      "cde")}),
+                   one);
   ASSERT_OK(r3);
   EXPECT_EQ(r3->manifest.tokens, 6u);
   EXPECT_EQ(r3->manifest.sanitized.control_chars, 1u);

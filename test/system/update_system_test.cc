@@ -196,8 +196,8 @@ void GradientCheck(const CompiledUpdate& compiled, UpdateEngine& engine,
       // demand relative agreement for everything the estimator can see.
       const double noise_floor = 1e-4;
       if (std::fabs(numeric - analytic) >= noise_floor && rel >= tol)
-        ADD_FAILURE("param " + p.id + "[" + std::to_string(i) +
-                    "]: analytic " + std::to_string(analytic) + " vs numeric " +
+        ADD_FAILURE("param " + p.id + "[" + std::to_string(i) + "]: analytic " +
+                    std::to_string(analytic) + " vs numeric " +
                     std::to_string(numeric));
       ++checked;
     }
@@ -233,8 +233,8 @@ TEST(UpdateSystem, Bf16BaseGradientsMatchFiniteDifferences) {
   // the finite-difference suite at the decoder's loosened tolerance.
   const int64_t dim = 8, heads = 2, seq = 4, ffn = 10, vocab = 3;
   const int64_t batch = 8;
-  SmfModel model = seeml::testing::MakeTinyDecoder(dim, heads, seq, ffn,
-                                                   vocab, 24);
+  SmfModel model =
+      seeml::testing::MakeTinyDecoder(dim, heads, seq, ffn, vocab, 24);
   UpdateConfig config = BaseConfig(batch);
   config.lora.rank = 2;
   config.emit_optimizer = false;
@@ -270,8 +270,8 @@ TEST(UpdateSystem, Bf16BaseTrainsWithinADriftBudgetOfF32) {
     ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
                          UpdateCompiler(config).Compile(model));
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                    compiled.plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
     ASSERT_OK_AND_ASSIGN(Dataset data, MakeClassificationData(256, in_dim, 62));
     data.EnableShuffle(3);
     ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 60, Quiet()));
@@ -334,7 +334,8 @@ TEST(UpdateSystem, AccumulatedGradientsMatchTheLargeBatchGradient) {
   for (int g = 0; g < 4; ++g) {
     std::vector<float> xs(x.begin() + g * 8 * in_dim,
                           x.begin() + (g + 1) * 8 * in_dim);
-    std::vector<int32_t> ls(labels.begin() + g * 8, labels.begin() + (g + 1) * 8);
+    std::vector<int32_t> ls(labels.begin() + g * 8,
+                            labels.begin() + (g + 1) * 8);
     FillSlots(emicro, xs, ls);
     emicro.ExecuteTrainOnce();
   }
@@ -441,8 +442,8 @@ TEST(UpdateSystem, TrainMergeCommit) {
         reinterpret_cast<const float*>(engine.arena() + RefOffset(a.a_ref));
     const auto* B =
         reinterpret_cast<const float*>(engine.arena() + RefOffset(a.b_ref));
-    const auto* delta = reinterpret_cast<const float*>(
-        engine.arena() + RefOffset(a.delta_ref));
+    const auto* delta =
+        reinterpret_cast<const float*>(engine.arena() + RefOffset(a.delta_ref));
 
     double max_err = 0.0, max_delta = 0.0;
     for (int64_t i = 0; i < a.k; ++i)
@@ -451,8 +452,7 @@ TEST(UpdateSystem, TrainMergeCommit) {
         for (int64_t t = 0; t < a.r; ++t)
           expected += static_cast<double>(A[i * a.r + t]) * B[t * a.m + j];
         expected *= a.scale;
-        max_err =
-            std::max(max_err, std::fabs(expected - delta[i * a.m + j]));
+        max_err = std::max(max_err, std::fabs(expected - delta[i * a.m + j]));
         max_delta = std::max(max_delta, std::fabs(expected));
       }
     EXPECT_LT(max_err, 1e-4);
@@ -488,8 +488,8 @@ TEST(UpdateSystem, TrainMergeCommit) {
     // Commit adds the delta onto the file's pristine weights: W' = W + Δ.
     const auto* orig = reinterpret_cast<const float*>(before->data.data());
     const auto* patched = reinterpret_cast<const float*>(t->data.data());
-    const auto* delta = reinterpret_cast<const float*>(
-        engine2.arena() + RefOffset(a.delta_ref));
+    const auto* delta = reinterpret_cast<const float*>(engine2.arena() +
+                                                       RefOffset(a.delta_ref));
     bool all_equal = true;
     for (int64_t i = 0; i < a.k * a.m; ++i)
       if (patched[i] != orig[i] + delta[i]) all_equal = false;
@@ -579,13 +579,13 @@ TEST(UpdateSystem, TeacherFusionChangesNoLossBits) {
   ASSERT_LT(HeaderOf(fused).train_instr_count,
             HeaderOf(unfused).train_instr_count);
 
-  float losses[2][2];        // [engine][pre/post]
+  float losses[2][2];  // [engine][pre/post]
   std::vector<float> curves[2];
   const CompiledUpdate* plans[2] = {&fused, &unfused};
   for (int i = 0; i < 2; ++i) {
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(plans[i]->plan.data(),
-                                    plans[i]->plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(plans[i]->plan.data(), plans[i]->plan.size()));
     ASSERT_OK_AND_ASSIGN(Dataset data, MakeUnlabeledData(128, in_dim, 51));
     data.EnableShuffle(3);
     ASSERT_OK_AND_ASSIGN(float pre, engine.Evaluate(data));
@@ -670,8 +670,8 @@ TEST(UpdateSystem, TransformerGradientsMatchFiniteDifferences) {
   // compiled plan.
   const int64_t dim = 8, heads = 2, seq = 4, ffn = 10, vocab = 3;
   const int64_t batch = 8;  // 2 sequences of 4 positions
-  SmfModel model = seeml::testing::MakeTinyDecoder(dim, heads, seq, ffn,
-                                                   vocab, 23);
+  SmfModel model =
+      seeml::testing::MakeTinyDecoder(dim, heads, seq, ffn, vocab, 23);
 
   UpdateConfig config = BaseConfig(batch);
   config.lora.rank = 2;
@@ -696,8 +696,8 @@ TEST(UpdateSystem, TransformerGradientsMatchFiniteDifferences) {
 TEST(UpdateSystem, TransformerTrainsMergesAndCommits) {
   const int64_t dim = 8, heads = 2, seq = 4, ffn = 16, vocab = 2;
   const int64_t batch = 16;  // 4 sequences of 4 positions
-  SmfModel model = seeml::testing::MakeTinyDecoder(dim, heads, seq, ffn,
-                                                   vocab, 29);
+  SmfModel model =
+      seeml::testing::MakeTinyDecoder(dim, heads, seq, ffn, vocab, 29);
 
   UpdateConfig config = BaseConfig(batch);
   config.optimizer.lr = 5e-3f;
@@ -722,8 +722,7 @@ TEST(UpdateSystem, TransformerTrainsMergesAndCommits) {
   ASSERT_OK_AND_ASSIGN(CompiledUpdate bound,
                        UpdateCompiler(config).Compile(disk_model));
   UpdateEngine bound_engine;
-  ASSERT_OK(
-      bound_engine.LoadFromMemory(bound.plan.data(), bound.plan.size()));
+  ASSERT_OK(bound_engine.LoadFromMemory(bound.plan.data(), bound.plan.size()));
   ASSERT_OK_AND_ASSIGN(auto bound_report,
                        bound_engine.Train(data, 200, Quiet()));
   EXPECT_LT(bound_report.final_avg_loss, bound_report.initial_avg_loss);
@@ -898,8 +897,8 @@ TEST(UpdateSystem, QuantizedBaseTrainsAndCommitsWithoutBakingError) {
     ASSERT_NE(after, nullptr);
     const auto* orig = reinterpret_cast<const float*>(before->data.data());
     const auto* patched = reinterpret_cast<const float*>(after->data.data());
-    const auto* delta = reinterpret_cast<const float*>(
-        engine.arena() + RefOffset(a.delta_ref));
+    const auto* delta =
+        reinterpret_cast<const float*>(engine.arena() + RefOffset(a.delta_ref));
     bool exact = true;
     for (int64_t i = 0; i < a.k * a.m; ++i)
       if (patched[i] != orig[i] + delta[i]) exact = false;
@@ -966,8 +965,7 @@ TEST(UpdateSystem, TokenDecoderResumeMatchesUninterruptedRun) {
   const std::string ck = dir.File("ck.bin");
   {
     UpdateEngine first;
-    ASSERT_OK(
-        first.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK(first.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
     ASSERT_OK_AND_ASSIGN(Dataset d2,
                          seeml::testing::MakeTokenCorpus(10, seq, vocab, 43));
     d2.EnableShuffle(7);
@@ -975,8 +973,7 @@ TEST(UpdateSystem, TokenDecoderResumeMatchesUninterruptedRun) {
     ASSERT_OK(first.SaveCheckpoint(ck));
   }
   UpdateEngine resumed;
-  ASSERT_OK(
-      resumed.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+  ASSERT_OK(resumed.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
   ASSERT_OK_AND_ASSIGN(Dataset d3,
                        seeml::testing::MakeTokenCorpus(10, seq, vocab, 43));
   d3.EnableShuffle(7);
@@ -1067,8 +1064,7 @@ TEST(UpdateSystem, AdapterInitializationIsWellDistributed) {
   const double mean = sum / static_cast<double>(n);
   const double var = sq / static_cast<double>(n) - mean * mean;
   const double expect_std = 1.0 / std::sqrt(static_cast<double>(in_dim));
-  for (size_t i = 0; i + 1 < n; ++i)
-    lag += (v[i] - mean) * (v[i + 1] - mean);
+  for (size_t i = 0; i + 1 < n; ++i) lag += (v[i] - mean) * (v[i + 1] - mean);
   const double lag1 = lag / (static_cast<double>(n) * var);
 
   // 5-sigma-style bounds at n = 1024: mean within 5*std/sqrt(n), std
@@ -1132,9 +1128,9 @@ TEST(UpdateSystem, NonFiniteLossAbortsTheUpdate) {
   std::vector<float> inputs(64 * in_dim, 1.0f);
   inputs[3] = std::numeric_limits<float>::infinity();
   std::vector<uint8_t> labels(64 * sizeof(int32_t), 0);
-  ASSERT_OK_AND_ASSIGN(
-      Dataset data, Dataset::FromMemory(std::move(inputs), std::move(labels),
-                                        64, in_dim, 1, 0));
+  ASSERT_OK_AND_ASSIGN(Dataset data,
+                       Dataset::FromMemory(std::move(inputs), std::move(labels),
+                                           64, in_dim, 1, 0));
   EXPECT_ERROR_CONTAINS(engine.Train(data, 50, Quiet()), "non-finite");
 }
 
@@ -1169,8 +1165,8 @@ TEST(UpdateSystem, KernelBatchChangesNoTrainingBits) {
                            UpdateCompiler(config).Compile(model));
       const PlanHeader h = HeaderOf(compiled);
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
       ASSERT_OK_AND_ASSIGN(Dataset data,
                            seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
       data.EnableShuffle(9);
@@ -1223,8 +1219,8 @@ TEST(UpdateSystem, RelaxedCpuBitsAreThreadCountInvariant) {
     for (int t = 0; t < 2; ++t) {
       seeml::update::SetParallelThreadCount(t == 0 ? 1 : 8);
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
       ASSERT_OK_AND_ASSIGN(Dataset data,
                            seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
       data.EnableShuffle(9);
@@ -1264,14 +1260,13 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
       config.optimizer.kind = OptimizerKind::kAdamW;
       config.quantize_base = storage == 1;
       config.bf16_base = storage == 2;
-      config.precision = relaxed ? Precision::kCertifiedBf16
-                                 : Precision::kF32;
+      config.precision = relaxed ? Precision::kCertifiedBf16 : Precision::kF32;
       ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
                            UpdateCompiler(config).Compile(model));
       const PlanHeader h = HeaderOf(compiled);
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
       ASSERT_OK_AND_ASSIGN(Dataset data,
                            seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
       data.EnableShuffle(9);
@@ -1319,10 +1314,10 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
           EXPECT_NEAR(report.loss_curve[i], want_curve[i],
                       1e-2f * std::fabs(want_curve[i]) + 1e-4f);
         UpdateEngine again;
-        ASSERT_OK(again.LoadFromMemory(compiled.plan.data(),
-                                       compiled.plan.size()));
-        ASSERT_OK_AND_ASSIGN(Dataset data2, seeml::testing::MakeTokenCorpus(
-                                                128, 4, vocab, 43));
+        ASSERT_OK(
+            again.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+        ASSERT_OK_AND_ASSIGN(
+            Dataset data2, seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
         data2.EnableShuffle(9);
         ASSERT_OK_AND_ASSIGN(auto report2, again.Train(data2, 25, options));
         std::vector<uint8_t> state2(again.arena(),
@@ -1355,9 +1350,9 @@ TEST(UpdateSystem, ANonFiniteGradientNormAbortsTheStep) {
   // pass hands the step a gradient whose norm is not finite.
   std::vector<float> inputs(64 * in_dim, 3e38f);
   std::vector<uint8_t> labels(64 * sizeof(int32_t), 0);
-  ASSERT_OK_AND_ASSIGN(
-      Dataset data, Dataset::FromMemory(std::move(inputs), std::move(labels),
-                                        64, in_dim, 1, 0));
+  ASSERT_OK_AND_ASSIGN(Dataset data,
+                       Dataset::FromMemory(std::move(inputs), std::move(labels),
+                                           64, in_dim, 1, 0));
   auto trained = engine.Train(data, 5, Quiet());
   ASSERT_FALSE(trained.has_value());
   const bool named = trained.error().find("not finite") != std::string::npos ||
@@ -1395,8 +1390,8 @@ TEST(UpdateSystem, TiledAttentionTrainsTheSameBitsWithoutTheCache) {
     for (int variant = 0; variant < 4; ++variant) {
       UpdateConfig config = BaseConfig(batch);
       config.optimizer.lr = 5e-3f;
-      config.attention = (variant & 1) ? AttentionKind::kTiled
-                                       : AttentionKind::kCached;
+      config.attention =
+          (variant & 1) ? AttentionKind::kTiled : AttentionKind::kCached;
       seeml::update::SetParallelThreadCount((variant & 2) ? 8 : 1);
       ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
                            UpdateCompiler(config).Compile(*m));
@@ -1406,10 +1401,10 @@ TEST(UpdateSystem, TiledAttentionTrainsTheSameBitsWithoutTheCache) {
       if (variant == 0) cached_arena = h.arena_size;
       if (variant == 1) EXPECT_LT(h.arena_size, cached_arena);
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
-      ASSERT_OK_AND_ASSIGN(Dataset data,
-                           seeml::testing::MakeTokenCorpus(128, seq, vocab, 47));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK_AND_ASSIGN(
+          Dataset data, seeml::testing::MakeTokenCorpus(128, seq, vocab, 47));
       data.EnableShuffle(5);
       TrainOptions options = Quiet();
       options.record_loss_curve = true;
@@ -1435,11 +1430,13 @@ TEST(UpdateSystem, TiledAttentionTrainsTheSameBitsWithoutTheCache) {
   // The pre-embedded decoder stack: tiled by the auto rule once its caches
   // exceed a (deliberately tiny) budget, cached under a roomy one.
   UpdateConfig roomy = BaseConfig(batch);
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate kept, UpdateCompiler(roomy).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate kept,
+                       UpdateCompiler(roomy).Compile(model));
   EXPECT_FALSE(kept.attention_tiled);
   UpdateConfig tight = roomy;
   tight.attention_cache_budget_bytes = kept.probs_cache_bytes - 1;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate tiled, UpdateCompiler(tight).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate tiled,
+                       UpdateCompiler(tight).Compile(model));
   EXPECT_TRUE(tiled.attention_tiled);
   EXPECT_LT(HeaderOf(tiled).arena_size, HeaderOf(kept).arena_size);
 }
@@ -1480,9 +1477,9 @@ namespace {
 // the segment-mask pass reads of a tokenizer section.
 std::vector<uint8_t> TokenizerHeadWithEos(int32_t eos, uint32_t vocab) {
   std::vector<uint8_t> b;
-  for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, vocab, 0u, 0u,
-                     static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
-                     0xFFFFFFFFu, 0u})
+  for (uint32_t x :
+       {0x4B544D53u, 1u, 1u, 1u, 0u, vocab, 0u, 0u, static_cast<uint32_t>(eos),
+        0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
     for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
   return b;
 }
@@ -1516,7 +1513,8 @@ TEST(UpdateSystem, TheSegmentMaskTrainsTheSameBitsTiledAsCached) {
                          UpdateCompiler(config).Compile(model));
     EXPECT_EQ(compiled.attention_tiled, kind == AttentionKind::kTiled);
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
     ASSERT_OK_AND_ASSIGN(Dataset data,
                          seeml::testing::MakeTokenCorpus(128, seq, vocab, 47));
     data.EnableShuffle(5);
@@ -1588,7 +1586,8 @@ TEST(UpdateSystem, AMaskedWindowsSecondDocumentIgnoresItsFirst) {
                      : t == 3 ? eos
                               : static_cast<int32_t>(8 + (w + 2 * t) % 7);
         // Targets: the second document's positions only.
-        if (t >= 4) labels[at] = static_cast<int32_t>((3 * tokens[at] + 1) % vocab);
+        if (t >= 4)
+          labels[at] = static_cast<int32_t>((3 * tokens[at] + 1) % vocab);
       }
     seeml::testing::FillTokenSlots(engine, tokens, labels);
     engine.ExecuteTrainOnce();
@@ -1627,7 +1626,8 @@ TEST(UpdateSystem, SegmentMaskedGradientsMatchFiniteDifferences) {
     ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
                          UpdateCompiler(config).Compile(model));
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
     const std::vector<int32_t> tokens = {7, 3, 1, 4, 2, 3, 9, 6};
     const std::vector<int32_t> labels = {3, 1, 4, 2, 3, 9, 6, 8};
     seeml::testing::FillTokenSlots(engine, tokens, labels);
@@ -1655,10 +1655,12 @@ TEST(UpdateSystem, TheGemmAddendChangesNoTrainingBits) {
   const int64_t vocab = 16, seq = 4, batch = 16;
   std::vector<Case> cases;
   cases.push_back({MakeMlp(8, 12, 4, 91), false, false, 8});
-  cases.push_back({seeml::testing::MakeTinyTokenDecoder(vocab, 8, 2, seq, 16, 92),
-                   true, false, 0});
-  cases.push_back({seeml::testing::MakeTinyTokenDecoder(vocab, 8, 2, seq, 16, 93),
-                   true, true, 0});
+  cases.push_back(
+      {seeml::testing::MakeTinyTokenDecoder(vocab, 8, 2, seq, 16, 92), true,
+       false, 0});
+  cases.push_back(
+      {seeml::testing::MakeTinyTokenDecoder(vocab, 8, 2, seq, 16, 93), true,
+       true, 0});
   cases.push_back({seeml::testing::MakeTiedMlp(8, 94), false, false, 8});
   for (const Case& c : cases) {
     std::vector<float> want_curve;
@@ -1678,8 +1680,8 @@ TEST(UpdateSystem, TheGemmAddendChangesNoTrainingBits) {
       if (variant == 0) unfolded_instrs = h.train_instr_count;
       if (variant == 1) EXPECT_LT(h.train_instr_count, unfolded_instrs);
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
       ASSERT_OK_AND_ASSIGN(
           Dataset data,
           c.tokens ? seeml::testing::MakeTokenCorpus(128, seq, vocab, 45)
@@ -1746,10 +1748,9 @@ TEST(UpdateSystem, ElementwiseChainFusionChangesNoTrainingBits) {
         config.distill_weight = 0.5f;
       }
       seeml::update::SetParallelThreadCount((variant & 2) ? 8 : 1);
-      ASSERT_OK_AND_ASSIGN(
-          CompiledUpdate compiled,
-          UpdateCompiler(config).Compile(c.model,
-                                         c.distill ? &teacher : nullptr));
+      ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                           UpdateCompiler(config).Compile(
+                               c.model, c.distill ? &teacher : nullptr));
       const PlanHeader h = HeaderOf(compiled);
       if (variant == 0) unfused_instrs = h.train_instr_count;
       if (variant == 1) {
@@ -1759,8 +1760,8 @@ TEST(UpdateSystem, ElementwiseChainFusionChangesNoTrainingBits) {
           EXPECT_LE(h.train_instr_count, unfused_instrs);
       }
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
       ASSERT_OK_AND_ASSIGN(
           Dataset data,
           c.tokens ? seeml::testing::MakeTokenCorpus(128, seq, vocab, 43)
@@ -1815,8 +1816,8 @@ TEST(UpdateSystem, AnAdapterOnlyPlanTrainsThePlainPlansBits) {
                          UpdateCompiler(config).Compile(saved));
     const PlanHeader h = HeaderOf(compiled);
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                    compiled.plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
     ASSERT_OK_AND_ASSIGN(Dataset data,
                          seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
     data.EnableShuffle(9);
@@ -1878,8 +1879,8 @@ TEST(UpdateSystem, RematerializationChangesNoBits) {
                            UpdateCompiler(config).Compile(model));
       const PlanHeader h = HeaderOf(compiled);
       UpdateEngine engine;
-      ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(),
-                                      compiled.plan.size()));
+      ASSERT_OK(
+          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
       ASSERT_OK_AND_ASSIGN(Dataset data,
                            seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
       data.EnableShuffle(9);

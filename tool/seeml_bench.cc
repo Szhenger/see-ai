@@ -245,8 +245,9 @@ const Fixture kFixtures[] = {
     // docs/benchmarks.md. Seeded synthetic weights and corpus, so the
     // per-step cost is the model's; the loss is not a quality number.
     {"tok_smollm135m_q8", "token", 512, 128,
-     [] { return tf::MakeTokenDecoderStack(49152, 576, 9, 128, 1536, 30, 113); },
-     [] { return tf::MakeTokenCorpus(64, 128, 49152, 114); },
+     [] {
+  return tf::MakeTokenDecoderStack(49152, 576, 9, 128, 1536, 30, 113);
+}, [] { return tf::MakeTokenCorpus(64, 128, 49152, 114); },
      /*quantize_base=*/true, /*frontier=*/true},
 };
 
@@ -288,14 +289,17 @@ double MedianMs(uint64_t repeats, F&& run) {
 }
 
 AttnCell SweepCached(const std::vector<float>& q, const std::vector<float>& k,
-                     const std::vector<float>& v, const std::vector<float>& dout,
-                     size_t B, size_t S, size_t H, size_t d, uint64_t repeats) {
+                     const std::vector<float>& v,
+                     const std::vector<float>& dout, size_t B, size_t S,
+                     size_t H, size_t d, uint64_t repeats) {
   namespace kn = rt::kernels;
   const size_t act = B * S * H * d, pm = B * H * S * S;
-  std::vector<float> o(act), probs(pm), dp(pm), ds(pm), dq(act), dk(act), dv(act);
+  std::vector<float> o(act), probs(pm), dp(pm), ds(pm), dq(act), dk(act),
+      dv(act);
   AttnCell cell;
   cell.fwd_ms = MedianMs(repeats, [&] {
-    kn::AttnFwd(q.data(), k.data(), v.data(), o.data(), probs.data(), B, S, H, d);
+    kn::AttnFwd(q.data(), k.data(), v.data(), o.data(), probs.data(), B, S, H,
+                d);
   });
   cell.bwd_ms = MedianMs(repeats, [&] {
     kn::AttnDV(probs.data(), dout.data(), dv.data(), B, S, H, d);
@@ -317,30 +321,31 @@ AttnCell SweepTiled(const std::vector<float>& q, const std::vector<float>& k,
   std::vector<float> o(act), stats(st), dq(act), dk(act), dv(act);
   AttnCell cell;
   cell.fwd_ms = MedianMs(repeats, [&] {
-    kn::AttnFwdTiled(q.data(), k.data(), v.data(), o.data(), stats.data(), B,
-                     S, H, d);
+    kn::AttnFwdTiled(q.data(), k.data(), v.data(), o.data(), stats.data(), B, S,
+                     H, d);
   });
   cell.bwd_ms = MedianMs(repeats, [&] {
     kn::AttnDQTiled(q.data(), k.data(), v.data(), dout.data(), stats.data(),
                     dq.data(), B, S, H, d);
     kn::AttnDKTiled(q.data(), k.data(), v.data(), dout.data(), stats.data(),
                     dk.data(), B, S, H, d);
-    kn::AttnDVTiled(q.data(), k.data(), dout.data(), stats.data(), dv.data(),
-                    B, S, H, d);
+    kn::AttnDVTiled(q.data(), k.data(), dout.data(), stats.data(), dv.data(), B,
+                    S, H, d);
   });
   cell.live_bytes = st * 4;
   cell.chain_bytes = (st + 7 * act) * 4;
   return cell;
 }
 
-[[nodiscard]] int AttentionSweep(
-    const std::vector<size_t>& threads, uint64_t repeats,
-    const std::string& out_path) {
+[[nodiscard]] int AttentionSweep(const std::vector<size_t>& threads,
+                                 uint64_t repeats,
+                                 const std::string& out_path) {
   if (repeats == 0) repeats = 1;
   const size_t B = 1, H = 8, d = 64;
   const size_t lengths[] = {64, 256, 1024, 2048};
-  std::string json = "{\n  \"schema\": 1,\n  \"attention_sweep\": {\"B\": 1, "
-                     "\"H\": 8, \"d\": 64, \"cells\": [";
+  std::string json =
+      "{\n  \"schema\": 1,\n  \"attention_sweep\": {\"B\": 1, "
+      "\"H\": 8, \"d\": 64, \"cells\": [";
   bool first = true;
   for (const size_t t : threads) {
     up::SetParallelThreadCount(t);
@@ -353,18 +358,17 @@ AttnCell SweepTiled(const std::vector<float>& q, const std::vector<float>& k,
       const AttnCell c = SweepCached(q, k, v, dout, B, S, H, d, repeats);
       const AttnCell tl = SweepTiled(q, k, v, dout, B, S, H, d, repeats);
       char buf[512];
-      std::snprintf(
-          buf, sizeof(buf),
-          "%s\n    {\"threads\": %zu, \"S\": %zu, "
-          "\"cached\": {\"fwd_ms\": %.4f, \"bwd_ms\": %.4f, "
-          "\"live_bytes\": %llu, \"chain_bytes\": %llu}, "
-          "\"tiled\": {\"fwd_ms\": %.4f, \"bwd_ms\": %.4f, "
-          "\"live_bytes\": %llu, \"chain_bytes\": %llu}}",
-          first ? "" : ",", t, S, c.fwd_ms, c.bwd_ms,
-          static_cast<unsigned long long>(c.live_bytes),
-          static_cast<unsigned long long>(c.chain_bytes),
-          tl.fwd_ms, tl.bwd_ms, static_cast<unsigned long long>(tl.live_bytes),
-          static_cast<unsigned long long>(tl.chain_bytes));
+      std::snprintf(buf, sizeof(buf),
+                    "%s\n    {\"threads\": %zu, \"S\": %zu, "
+                    "\"cached\": {\"fwd_ms\": %.4f, \"bwd_ms\": %.4f, "
+                    "\"live_bytes\": %llu, \"chain_bytes\": %llu}, "
+                    "\"tiled\": {\"fwd_ms\": %.4f, \"bwd_ms\": %.4f, "
+                    "\"live_bytes\": %llu, \"chain_bytes\": %llu}}",
+                    first ? "" : ",", t, S, c.fwd_ms, c.bwd_ms,
+                    static_cast<unsigned long long>(c.live_bytes),
+                    static_cast<unsigned long long>(c.chain_bytes), tl.fwd_ms,
+                    tl.bwd_ms, static_cast<unsigned long long>(tl.live_bytes),
+                    static_cast<unsigned long long>(tl.chain_bytes));
       json += buf;
       first = false;
       std::fprintf(stderr,
@@ -497,8 +501,7 @@ struct BenchArgs {
   auto policy_s = args.TakeValue("--kernel-policy", "");
   auto target_host_s = args.TakeValue("--target-host", "");
   for (auto* v : {&out_path, &threads_csv, &lo_s, &hi_s, &repeats_s,
-                  &fixtures_csv, &peak_s, &tiles_s, &policy_s,
-                  &target_host_s})
+                  &fixtures_csv, &peak_s, &tiles_s, &policy_s, &target_host_s})
     if (!*v) return std::unexpected(Fail(v->error()));
   if (!args.rest.empty())
     return std::unexpected(Fail("unknown argument '" + args.rest[0] + "'"));
@@ -529,8 +532,8 @@ struct BenchArgs {
   if (!backend_s) return std::unexpected(Fail(backend_s.error()));
   const auto backend_kind = rt::ParseBackendKind(*backend_s);
   if (!backend_kind)
-    return std::unexpected(Fail("--backend must be cpu, metal or auto, got '" +
-                                *backend_s + "'"));
+    return std::unexpected(
+        Fail("--backend must be cpu, metal or auto, got '" + *backend_s + "'"));
   return BenchArgs{.attention_sweep = attention_sweep,
                    .out_path = *out_path,
                    .threads_csv = *threads_csv,
@@ -667,32 +670,33 @@ void WriteHeader(FILE* out, const BenchArgs& args, const BenchHost& host) {
   const uint64_t* repeats = &args.repeats;
   const std::string* threads_csv = &args.threads_csv;
   const double peak_gflops = args.peak_gflops;
-  std::fprintf(out,
-               "{\n  \"seeml_version\": \"%s\",\n  \"schema\": 4,\n"
-               "  \"host\": \"%s\",\n  \"backend\": \"%s\",\n"
-               "  \"host_key\": \"%s\",\n"
-               "  \"host_arch\": {\"isa\": \"%s\", \"cpu_model\": \"%s\", "
-               "\"physical_cores\": %zu, \"l1d_bytes\": %" PRIu64
-               ", \"l2_bytes\": %" PRIu64 ", \"simd_width_f32\": %zu},\n"
-               "  \"kernel_policy\": {\"source\": \"%s\", \"gemm_tile_k\": %zu, "
-               "\"gemm_tile_n\": %zu},\n"
-               "  \"walked_gemm_tiles\": {\"k\": %zu, \"n\": %zu},\n"
-               "  \"analytic_gemm_tiles\": {\"k\": %zu, \"n\": %zu},\n"
-               "  \"config\": {\"steps_lo\": %" PRIu64 ", \"steps_hi\": %"
-               PRIu64 ", \"repeats\": %" PRIu64 ", \"threads\": \"%s\", "
-               "\"peak_gflops\": %.1f},\n"
-               "  \"fixtures\": {",
-               seeml::update::kSeemlVersion, HostString().c_str(),
-               backend_resolved.c_str(), JsonEscape(policy->host_key).c_str(),
-               std::string(host_arch.isa).c_str(),
-               JsonEscape(host_arch.cpu_model).c_str(),
-               host_arch.physical_cores, host_arch.l1d_bytes,
-               host_arch.l2_bytes, host_arch.simd_width_f32,
-               policy->source.c_str(), effective_tiles.k, effective_tiles.n,
-               rt::kernels::FitToPanel(effective_tiles).k,
-               rt::kernels::FitToPanel(effective_tiles).n,
-               analytic.kc, analytic.nc, *lo, *hi,
-               *repeats, threads_csv->c_str(), peak_gflops);
+  std::fprintf(
+      out,
+      "{\n  \"seeml_version\": \"%s\",\n  \"schema\": 4,\n"
+      "  \"host\": \"%s\",\n  \"backend\": \"%s\",\n"
+      "  \"host_key\": \"%s\",\n"
+      "  \"host_arch\": {\"isa\": \"%s\", \"cpu_model\": \"%s\", "
+      "\"physical_cores\": %zu, \"l1d_bytes\": %" PRIu64
+      ", \"l2_bytes\": %" PRIu64
+      ", \"simd_width_f32\": %zu},\n"
+      "  \"kernel_policy\": {\"source\": \"%s\", \"gemm_tile_k\": %zu, "
+      "\"gemm_tile_n\": %zu},\n"
+      "  \"walked_gemm_tiles\": {\"k\": %zu, \"n\": %zu},\n"
+      "  \"analytic_gemm_tiles\": {\"k\": %zu, \"n\": %zu},\n"
+      "  \"config\": {\"steps_lo\": %" PRIu64 ", \"steps_hi\": %" PRIu64
+      ", \"repeats\": %" PRIu64
+      ", \"threads\": \"%s\", "
+      "\"peak_gflops\": %.1f},\n"
+      "  \"fixtures\": {",
+      seeml::update::kSeemlVersion, HostString().c_str(),
+      backend_resolved.c_str(), JsonEscape(policy->host_key).c_str(),
+      std::string(host_arch.isa).c_str(),
+      JsonEscape(host_arch.cpu_model).c_str(), host_arch.physical_cores,
+      host_arch.l1d_bytes, host_arch.l2_bytes, host_arch.simd_width_f32,
+      policy->source.c_str(), effective_tiles.k, effective_tiles.n,
+      rt::kernels::FitToPanel(effective_tiles).k,
+      rt::kernels::FitToPanel(effective_tiles).n, analytic.kc, analytic.nc, *lo,
+      *hi, *repeats, threads_csv->c_str(), peak_gflops);
 }
 
 /// MLX-LM's "Train loss" / "Trained Tokens" over the whole sweep: the
@@ -740,7 +744,7 @@ struct FixtureRun {
 /// last run for the runtime screen.
 struct WidthSamples {
   std::vector<double> per_step_ms, lifecycle_ms, energy_j_per_step;
-  std::optional<rt::TrainReport> last_run;  // the runtime screen's run
+  std::optional<rt::TrainReport> last_run;       // the runtime screen's run
   std::optional<rt::EnergyReading> last_energy;  // and its energy
 };
 
@@ -788,8 +792,7 @@ struct WidthSamples {
     run.trace.Note(*r_hi);
     last_run = *r_hi;
     last_energy = e_hi;
-    const double slope = (wall_hi - wall_lo) /
-                         static_cast<double>(*hi - *lo);
+    const double slope = (wall_hi - wall_lo) / static_cast<double>(*hi - *lo);
     per_step_ms.push_back(slope);
     // The GPU domain is the one an unprivileged reader sees advance
     // per sample (the CPU's arrives in bursts), and it is this run's
@@ -827,47 +830,43 @@ void PrintWidthRow(const FixtureRun& run, uint64_t t,
   const std::optional<rt::EnergyReading>& last_energy = samples.last_energy;
   const double step_ms = Median(per_step_ms);
   const double rows_per_s =
-      step_ms > 0.0 ? 1000.0 * static_cast<double>(f->batch_rows) /
-                          step_ms
+      step_ms > 0.0 ? 1000.0 * static_cast<double>(f->batch_rows) / step_ms
                     : 0.0;
   const double gflops =
-      step_ms > 0.0
-          ? static_cast<double>(gemm_flops_per_step) / (step_ms * 1e6)
-          : 0.0;
+      step_ms > 0.0 ? static_cast<double>(gemm_flops_per_step) / (step_ms * 1e6)
+                    : 0.0;
   const rt::StepTimings st = engine.step_timings();
   const double denom = st.steps ? static_cast<double>(st.steps) : 1.0;
   // External-standard fields. Every row of a SeeAI batch is a loss
   // target (token plans: next-token label per position; feature plans:
   // one label per row), so MLX-LM's masked "Tokens/sec" is exactly
   // rows_per_s here; the key name says which unit the fixture trains in.
-  const char* unit_key = std::strcmp(f->kind, "feature") == 0
-                             ? "samples_per_s"
-                             : "tokens_per_s";
+  const char* unit_key =
+      std::strcmp(f->kind, "feature") == 0 ? "samples_per_s" : "tokens_per_s";
   const double it_per_s = step_ms > 0.0 ? 1000.0 / step_ms : 0.0;
   const auto [lo_it, hi_it] =
       std::minmax_element(per_step_ms.begin(), per_step_ms.end());
   std::fprintf(out,
-               "%s\n        \"%" PRIu64 "\": {\"step_ms\": %.3f, "
+               "%s\n        \"%" PRIu64
+               "\": {\"step_ms\": %.3f, "
                "\"lifecycle_ms\": %.2f, \"rows_per_s\": %.0f, "
                "\"gemm_gflops\": %.1f, \"fwd_ms\": %.3f, "
                "\"bwd_ms\": %.3f, \"opt_ms\": %.3f,\n"
                "              \"%s\": %.0f, \"it_per_s\": %.3f, "
                "\"step_ms_min\": %.3f, \"step_ms_max\": %.3f",
-               first_thread ? "" : ",", t, step_ms,
-               Median(lifecycle_ms), rows_per_s, gflops,
-               1000.0 * st.fwd_seconds / denom,
-               1000.0 * st.bwd_seconds / denom,
-               1000.0 * st.opt_seconds / denom, unit_key, rows_per_s,
-               it_per_s, *lo_it, *hi_it);
+               first_thread ? "" : ",", t, step_ms, Median(lifecycle_ms),
+               rows_per_s, gflops, 1000.0 * st.fwd_seconds / denom,
+               1000.0 * st.bwd_seconds / denom, 1000.0 * st.opt_seconds / denom,
+               unit_key, rows_per_s, it_per_s, *lo_it, *hi_it);
   if (peak_gflops > 0.0)
     std::fprintf(out, ", \"mfu\": %.4f", gflops / peak_gflops);
   // The step the plan's whole work (GEMM + attention) predicts at the
   // stated peak — the runtime screen's number, beside the measured
   // step_ms (S0 #146); mfu above stays the GEMM-only utilization.
   if (peak_gflops > 0.0)
-    std::fprintf(out, ", \"predicted_step_ms\": %.3f",
-                 static_cast<double>(work.FlopsPerStep()) /
-                     (peak_gflops * 1e6));
+    std::fprintf(
+        out, ", \"predicted_step_ms\": %.3f",
+        static_cast<double>(work.FlopsPerStep()) / (peak_gflops * 1e6));
   if (!energy_j_per_step.empty()) {
     const double j_step = Median(energy_j_per_step);
     std::fprintf(out,
@@ -945,10 +944,8 @@ void PrintWidthRow(const FixtureRun& run, uint64_t t,
                ", \"rss_over_planned\": %.3f,\n      \"energy\": %s\n    }",
                merge_ms, ckpt_ms, static_cast<double>(train_loss_first),
                static_cast<double>(train_loss_last),
-               trained_steps * static_cast<uint64_t>(f->batch_rows),
-               peak_rss,
-               planned > 0.0 ? static_cast<double>(peak_rss) / planned
-                             : 0.0,
+               trained_steps * static_cast<uint64_t>(f->batch_rows), peak_rss,
+               planned > 0.0 ? static_cast<double>(peak_rss) / planned : 0.0,
                energy_json.c_str());
   return std::nullopt;
 }
@@ -985,8 +982,8 @@ void PrintWidthRow(const FixtureRun& run, uint64_t t,
   if (auto ok = engine.SelectBackend(*backend_kind); !ok)
     return Fail(f->name + (": " + ok.error()));
   const auto t_load = Clock::now();
-  if (auto ok = engine.LoadFromMemory(compiled->plan.data(),
-                                      compiled->plan.size());
+  if (auto ok =
+          engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size());
       !ok)
     return Fail(f->name + (": " + ok.error()));
   const double load_ms = MsSince(t_load);
@@ -1000,26 +997,26 @@ void PrintWidthRow(const FixtureRun& run, uint64_t t,
   uint64_t trainable_params = 0;
   for (const auto& p : compiled->params) trainable_params += p.count;
 
-  std::fprintf(out,
-               "%s\n    \"%s\": {\n"
-               "      \"kind\": \"%s\", \"batch_rows\": %" PRId64
-               ", \"seq\": %" PRId64 ",\n"
-               "      \"plan_bytes\": %zu, \"arena_bytes\": %" PRIu64
-               ", \"persistent_bytes\": %" PRIu64 ", \"rodata_bytes\": %"
-               PRIu64 ",\n"
-               "      \"train_instructions\": %" PRIu64
-               ", \"gemm_flops_per_step\": %" PRIu64
-               ", \"attention_flops_per_step\": %" PRIu64
-               ", \"trainable_params\": %" PRIu64 ",\n"
-               "      \"compile_ms\": %.2f, \"load_ms\": %.3f,\n"
-               "      \"threads\": {",
-               first_fixture ? "" : ",", f->name, f->kind, f->batch_rows,
-               f->seq, compiled->plan.size(), compiled->arena_size,
-               compiled->persistent_size, compiled->rodata_size,
-               compiled->train_instruction_count,
-               gemm_flops_per_step, work.AttentionFlopsPerStep(),
-               trainable_params,
-               compile_ms, load_ms);
+  std::fprintf(
+      out,
+      "%s\n    \"%s\": {\n"
+      "      \"kind\": \"%s\", \"batch_rows\": %" PRId64 ", \"seq\": %" PRId64
+      ",\n"
+      "      \"plan_bytes\": %zu, \"arena_bytes\": %" PRIu64
+      ", \"persistent_bytes\": %" PRIu64 ", \"rodata_bytes\": %" PRIu64
+      ",\n"
+      "      \"train_instructions\": %" PRIu64
+      ", \"gemm_flops_per_step\": %" PRIu64
+      ", \"attention_flops_per_step\": %" PRIu64
+      ", \"trainable_params\": %" PRIu64
+      ",\n"
+      "      \"compile_ms\": %.2f, \"load_ms\": %.3f,\n"
+      "      \"threads\": {",
+      first_fixture ? "" : ",", f->name, f->kind, f->batch_rows, f->seq,
+      compiled->plan.size(), compiled->arena_size, compiled->persistent_size,
+      compiled->rodata_size, compiled->train_instruction_count,
+      gemm_flops_per_step, work.AttentionFlopsPerStep(), trainable_params,
+      compile_ms, load_ms);
 
   FixtureRun run{.f = f,
                  .args = args,
@@ -1082,7 +1079,8 @@ int main(int argc, char** argv) {
   if (!threads) return threads.error();
   if (bench.attention_sweep) {
     if (!args.rest.empty())
-      return Fail("--attention-sweep takes --out, --threads and --repeats only");
+      return Fail(
+          "--attention-sweep takes --out, --threads and --repeats only");
     std::vector<size_t> widths(threads->begin(), threads->end());
     return AttentionSweep(widths, bench.repeats, bench.out_path);
   }

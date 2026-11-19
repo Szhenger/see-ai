@@ -66,9 +66,8 @@ TEST(EngineContract, RejectsUnattributableDiagnostics) {
 
 TEST(EngineContract, PlanContractAcceptsACompiledPlanAndCatchesCorruption) {
   up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
-  ASSERT_OK_AND_ASSIGN(
-      up::CompiledUpdate compiled,
-      up::UpdateCompiler(BaseConfig(kBatch)).Compile(model));
+  ASSERT_OK_AND_ASSIGN(up::CompiledUpdate compiled,
+                       up::UpdateCompiler(BaseConfig(kBatch)).Compile(model));
   const up::PlanHeader good = HeaderOf(compiled);
   EXPECT_TRUE(VerifyPlanContract(good, compiled.plan.size()).has_value());
 
@@ -82,8 +81,7 @@ TEST(EngineContract, PlanContractAcceptsACompiledPlanAndCatchesCorruption) {
 
   up::PlanHeader escaped = good;
   escaped.train_instr_offset = compiled.plan.size();
-  EXPECT_FALSE(
-      VerifyPlanContract(escaped, compiled.plan.size()).has_value());
+  EXPECT_FALSE(VerifyPlanContract(escaped, compiled.plan.size()).has_value());
 }
 
 TEST(EngineContract, HeaderHyperparametersAreFiniteAndInRange) {
@@ -107,21 +105,34 @@ TEST(EngineContract, HeaderHyperparametersAreFiniteAndInRange) {
     std::vector<float> good;
   };
   const Case cases[] = {
-      {"lr", [](up::PlanHeader& h, float v) { h.lr = v; },
-       {0.0f, -1e-3f, nan, INFINITY}, {1e-3f, 1.0f}},
-      {"beta1", [](up::PlanHeader& h, float v) { h.beta1 = v; },
-       {1.0f, -0.1f, nan}, {0.0f, 0.9f}},
-      {"beta2", [](up::PlanHeader& h, float v) { h.beta2 = v; },
-       {1.0f, 1.5f, nan}, {0.999f}},
-      {"eps", [](up::PlanHeader& h, float v) { h.eps = v; },
-       {0.0f, -1e-8f, nan}, {1e-8f}},
-      {"weight_decay", [](up::PlanHeader& h, float v) { h.weight_decay = v; },
-       {-0.01f, nan, INFINITY}, {0.0f, 0.01f}},
-      {"clip_norm", [](up::PlanHeader& h, float v) { h.clip_norm = v; },
-       {-1.0f, nan, INFINITY}, {0.0f, 1.0f}},
+      {"lr",
+       [](up::PlanHeader& h, float v) { h.lr = v; },
+       {0.0f, -1e-3f, nan, INFINITY},
+       {1e-3f, 1.0f}},
+      {"beta1",
+       [](up::PlanHeader& h, float v) { h.beta1 = v; },
+       {1.0f, -0.1f, nan},
+       {0.0f, 0.9f}},
+      {"beta2",
+       [](up::PlanHeader& h, float v) { h.beta2 = v; },
+       {1.0f, 1.5f, nan},
+       {0.999f}},
+      {"eps",
+       [](up::PlanHeader& h, float v) { h.eps = v; },
+       {0.0f, -1e-8f, nan},
+       {1e-8f}},
+      {"weight_decay",
+       [](up::PlanHeader& h, float v) { h.weight_decay = v; },
+       {-0.01f, nan, INFINITY},
+       {0.0f, 0.01f}},
+      {"clip_norm",
+       [](up::PlanHeader& h, float v) { h.clip_norm = v; },
+       {-1.0f, nan, INFINITY},
+       {0.0f, 1.0f}},
       {"min_lr_factor",
        [](up::PlanHeader& h, float v) { h.min_lr_factor = v; },
-       {-0.1f, 1.5f, nan}, {0.0f, 1.0f}},
+       {-0.1f, 1.5f, nan},
+       {0.0f, 1.0f}},
   };
   for (const Case& c : cases) {
     for (const float v : c.bad) {
@@ -147,8 +158,8 @@ TEST(EngineContract, ExecutorContractSpeaksAsThePlanValidator) {
   up::PlanHeader header{};
   header.arena_size = 1024;
 
-  const auto r = VerifyExecutorContract(std::span(&bogus, 1), {}, {}, {}, {}, {},
-                                        header);
+  const auto r =
+      VerifyExecutorContract(std::span(&bogus, 1), {}, {}, {}, {}, {}, header);
   ASSERT_FALSE(r.has_value());
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
   EXPECT_EQ(r.error().find("PlanValidator: "), 0u);
@@ -183,8 +194,7 @@ TEST(EngineContract, PlanContractTiesTheStepSectionToAccumulation) {
   header.grad_accum_steps = 4;
   EXPECT_OK(VerifyPlanContract(header, kPlanSize));
   header.step_instr_offset = kPlanSize - 64;
-  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
-                        "out of bounds");
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize), "out of bounds");
   // A pre-v9 plan cannot carry the fields at all.
   header.step_instr_offset = 1024;
   header.version = up::kSeeuGradAccumVersion - 1;
@@ -210,8 +220,7 @@ TEST(EngineContract, PlanContractProvesTheGemmTileFields) {
   header.gemm_tile_n = 512;
   EXPECT_OK(VerifyPlanContract(header, kPlanSize));
   header.gemm_tile_k = 6;
-  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
-                        "4-wide unroll");
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize), "4-wide unroll");
   header.gemm_tile_k = 0;  // one default, one set: fine
   EXPECT_OK(VerifyPlanContract(header, kPlanSize));
   header.version = up::kSeeuGemmTilesVersion - 1;
@@ -248,8 +257,7 @@ TEST(EngineContract, PlanContractProvesTheDataContractWords) {
                         "data-contract fields below v22");
   header.version = up::kSeeuVersion;
   header.data_flags |= 1u << 7;
-  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
-                        "unknown bits");
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize), "unknown bits");
   header.data_flags = up::kDataFlagCorpusPinned | up::kDataFlagSplit;
   header.val_frac_bits = std::bit_cast<uint32_t>(1.0f);
   EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
@@ -346,13 +354,15 @@ TEST(EngineContract, ExecutorContractBindsEmbeddingTokensToTheStagedSlot) {
   EXPECT_OK(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header));
   // Tokens read from anywhere but the staged slot: rejected.
   train[0].in[0] = up::MakeArenaRef(512);
-  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
-                        "staged input slot");
+  EXPECT_ERROR_CONTAINS(
+      VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
+      "staged input slot");
   // Embedding in a plan that does not declare token input: rejected.
   train[0].in[0] = up::MakeArenaRef(0);
   header.input_kind = 0;
-  EXPECT_ERROR_CONTAINS(VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
-                        "without token input");
+  EXPECT_ERROR_CONTAINS(
+      VerifyExecutorContract(train, {}, {}, {}, {}, rodata, header),
+      "without token input");
 }
 
 TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
@@ -367,8 +377,8 @@ TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
   const uint64_t B = 1, S = 4, H = 1, d = 2;
   up::UpdateInstruction seg{};
   seg.opcode = static_cast<uint16_t>(up::OpCode::kSegmentStarts);
-  seg.in[0] = up::MakeArenaRef(0);     // tokens: 4 i32
-  seg.in[1] = up::MakeArenaRef(64);    // starts: 4 i32
+  seg.in[0] = up::MakeArenaRef(0);   // tokens: 4 i32
+  seg.in[1] = up::MakeArenaRef(64);  // starts: 4 i32
   seg.out[0] = (B << 32) | S;
   seg.out[1] = 7;
   up::UpdateInstruction fwd{};
@@ -420,13 +430,11 @@ TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
 
 TEST(EngineContract, FeederContractMatchesCorpusToPlanGeometry) {
   up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 2);
-  ASSERT_OK_AND_ASSIGN(
-      up::CompiledUpdate compiled,
-      up::UpdateCompiler(BaseConfig(kBatch)).Compile(model));
+  ASSERT_OK_AND_ASSIGN(up::CompiledUpdate compiled,
+                       up::UpdateCompiler(BaseConfig(kBatch)).Compile(model));
   const up::PlanHeader header = HeaderOf(compiled);
 
-  ASSERT_OK_AND_ASSIGN(Dataset fits,
-                       MakeClassificationData(32, kInDim, 3));
+  ASSERT_OK_AND_ASSIGN(Dataset fits, MakeClassificationData(32, kInDim, 3));
   EXPECT_TRUE(VerifyFeederContract(header, fits, kOutDim, 0).has_value());
 
   ASSERT_OK_AND_ASSIGN(Dataset wrong_width,
@@ -449,7 +457,6 @@ TEST(Engine, ErrorsCrossingTheTrainBoundaryAreWellFormed) {
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
   EXPECT_EQ(r.error(), "UpdateEngine: no plan loaded");
 }
-
 
 // =============================================================================
 // CR2 (#143): the coverage table — every program x every check, as refusals.
@@ -487,7 +494,8 @@ struct OpenPlan {
   }
   std::vector<uint8_t> Sealed() {
     std::memcpy(bytes.data(), &h, sizeof(h));
-    const uint64_t hash = up::PlanSelfHash(bytes.data(), bytes.size(), kPlanHashAt);
+    const uint64_t hash =
+        up::PlanSelfHash(bytes.data(), bytes.size(), kPlanHashAt);
     std::memcpy(bytes.data() + kPlanHashAt, &hash, sizeof(hash));
     return bytes;
   }
@@ -522,7 +530,8 @@ constexpr int64_t kTokVocab = 16, kTokDim = 8, kTokSeq = 8, kTokBatch = 16;
 std::vector<uint8_t> TokenPlan() {
   up::SmfModel model = seeml::testing::MakeTinyTokenDecoder(
       kTokVocab, kTokDim, /*heads=*/2, kTokSeq, /*ffn=*/16, 41);
-  auto compiled = up::UpdateCompiler(AccumulatingConfig(kTokBatch)).Compile(model);
+  auto compiled =
+      up::UpdateCompiler(AccumulatingConfig(kTokBatch)).Compile(model);
   return compiled ? compiled->plan : std::vector<uint8_t>{};
 }
 TrainOptions QuietOptions() {
@@ -545,7 +554,8 @@ TEST(CoverageTable, TheClassWidthScanCoversEveryProgram) {
     const uint64_t logits = open.Scratch(kBatch * 4, 0);
     const uint64_t loss = open.Scratch(16, 1);
     const uint64_t probs = open.Scratch(kBatch * 4, 2);
-    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX && probs != UINT64_MAX);
+    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX &&
+                probs != UINT64_MAX);
     up::UpdateInstruction sm{};
     sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxXEntFwd);
     sm.in[0] = up::MakeArenaRef(logits);
@@ -578,7 +588,8 @@ TEST(CoverageTable, TheMaskedLossFlagAndTheMaskedOpcodesAgree) {
     const uint64_t logits = open.Scratch(kBatch * 3 * 4, 0);
     const uint64_t loss = open.Scratch(16, 1);
     const uint64_t probs = open.Scratch(kBatch * 3 * 4, 2);
-    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX && probs != UINT64_MAX);
+    ASSERT_TRUE(logits != UINT64_MAX && loss != UINT64_MAX &&
+                probs != UINT64_MAX);
     up::UpdateInstruction sm{};
     sm.opcode = static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedFwd);
     sm.in[0] = up::MakeArenaRef(logits);
@@ -616,13 +627,14 @@ TEST(CoverageTable, TheMaskedLossFlagAndTheMaskedOpcodesAgree) {
     auto compiled = up::UpdateCompiler(cfg).Compile(model);
     ASSERT_OK(compiled);
     UpdateEngine engine;
-    ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
     EXPECT_NE(engine.header().data_flags & up::kDataFlagMaskedLoss, 0u);
     up::UpdateConfig feature_cfg = AccumulatingConfig(kBatch);
     feature_cfg.masked_loss = true;
-    EXPECT_ERROR_CONTAINS(
-        up::UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 1)),
-        "token models alone");
+    EXPECT_ERROR_CONTAINS(up::UpdateCompiler(feature_cfg)
+                              .Compile(MakeMlp(kInDim, kHidden, kOutDim, 1)),
+                          "token models alone");
   }
 }
 
@@ -647,29 +659,34 @@ TEST(CoverageTable, TheMetadataSectionIsProvenBeforeItIsRead) {
     EXPECT_TRUE(!engine.metadata().ledger.empty());
   }
   struct Edit {
-    uint64_t at;      // byte offset inside the section
+    uint64_t at;  // byte offset inside the section
     uint8_t value;
     const char* says;
   };
   const uint64_t entry0 = sizeof(up::PlanMetadata);
   const Edit edits[] = {
       {offsetof(up::PlanMetadata, magic), 0x00, "bad magic"},
-      {offsetof(up::PlanMetadata, format), 0x09, "unsupported plan metadata format"},
-      {offsetof(up::PlanMetadata, bytes), 0x01, "size disagrees with its ledger"},
+      {offsetof(up::PlanMetadata, format), 0x09,
+       "unsupported plan metadata format"},
+      {offsetof(up::PlanMetadata, bytes), 0x01,
+       "size disagrees with its ledger"},
       {offsetof(up::PlanMetadata, ledger_count), 0x7F, "ledger is too long"},
-      {offsetof(up::PlanMetadata, reserved0), 0x01, "reserved plan metadata words"},
-      {offsetof(up::PlanMetadata, reserved1), 0x01, "reserved plan metadata words"},
+      {offsetof(up::PlanMetadata, reserved0), 0x01,
+       "reserved plan metadata words"},
+      {offsetof(up::PlanMetadata, reserved1), 0x01,
+       "reserved plan metadata words"},
       {offsetof(up::PlanMetadata, export_flags), 0x08, "unknown bits"},
       {offsetof(up::PlanMetadata, export_flags), 0x02, "without a report"},
       {offsetof(up::PlanMetadata, export_flags), 0x01, "without its hash"},
-      {offsetof(up::PlanMetadata, export_report_hash), 0x01, "without a report"},
+      {offsetof(up::PlanMetadata, export_report_hash), 0x01,
+       "without a report"},
       {offsetof(up::PlanMetadata, tokenizer_parity_ids), 0x01,
        "parity ids without the parity flag"},
       {offsetof(up::PlanMetadata, logits_parity_max_delta) + 2, 0x80,
        "logits-parity figure"},
-      {entry0 + 0, 0x00, "not NUL-padded text"},             // an empty name
-      {entry0 + 31, 'x', "not NUL-padded text"},             // no terminator
-      {entry0 + 1, 0x07, "not NUL-padded text"},             // a control byte
+      {entry0 + 0, 0x00, "not NUL-padded text"},  // an empty name
+      {entry0 + 31, 'x', "not NUL-padded text"},  // no terminator
+      {entry0 + 1, 0x07, "not NUL-padded text"},  // a control byte
       {entry0 + offsetof(up::LedgerEntry, arithmetic), 0x02,
        "unknown arithmetic"},
       {entry0 + offsetof(up::LedgerEntry, instructions), 0x01,
@@ -694,7 +711,8 @@ TEST(CoverageTable, TheMetadataSectionIsProvenBeforeItIsRead) {
     open.Replace(0, 0, ins);
     const auto loaded = load(open);
     ASSERT_FALSE(loaded.has_value());
-    EXPECT_STR_CONTAINS(loaded.error(), "the ledger accounts for 0 instruction(s)");
+    EXPECT_STR_CONTAINS(loaded.error(),
+                        "the ledger accounts for 0 instruction(s)");
   }
   {
     // The flag below its version; and a plan without the flag is read as
@@ -730,7 +748,8 @@ TEST(CoverageTable, TheVocabularyScanCoversEveryProgram) {
     OpenPlan open(plan);
     ASSERT_TRUE(open.Count(p) > 0);
     ASSERT_TRUE(open.h.rodata_size >= uint64_t{kTokDim} * sizeof(float));
-    const uint64_t out = open.Scratch(uint64_t{kTokBatch} * kTokDim * sizeof(float), 0);
+    const uint64_t out =
+        open.Scratch(uint64_t{kTokBatch} * kTokDim * sizeof(float), 0);
     ASSERT_TRUE(out != UINT64_MAX);
     up::UpdateInstruction emb{};
     emb.opcode = static_cast<uint16_t>(up::OpCode::kEmbedFwd);
@@ -743,8 +762,8 @@ TEST(CoverageTable, TheVocabularyScanCoversEveryProgram) {
     const std::vector<uint8_t> edited = open.Sealed();
     UpdateEngine engine;
     ASSERT_OK(engine.LoadFromMemory(edited.data(), edited.size()));
-    ASSERT_OK_AND_ASSIGN(Dataset data,
-                         seeml::testing::MakeTokenCorpus(10, kTokSeq, kTokVocab, 43));
+    ASSERT_OK_AND_ASSIGN(Dataset data, seeml::testing::MakeTokenCorpus(
+                                           10, kTokSeq, kTokVocab, 43));
     const auto r = engine.Train(data, 1, QuietOptions());
     std::printf("  [ %-5s ] vocabulary: %s\n", kProgramName[p],
                 r.has_value() ? "NOT scanned" : "refused");
@@ -762,8 +781,8 @@ TEST(CoverageTable, NoProgramWritesTheStagedSlots) {
     for (int slot = 0; slot < 2; ++slot) {
       OpenPlan open(plan);
       ASSERT_TRUE(open.Count(p) > 0);
-      const uint64_t count = slot == 0 ? open.h.input_floats
-                                       : open.h.label_bytes / sizeof(float);
+      const uint64_t count =
+          slot == 0 ? open.h.input_floats : open.h.label_bytes / sizeof(float);
       const uint64_t src = open.Scratch(count * sizeof(float), 0);
       ASSERT_TRUE(src != UINT64_MAX);
       up::UpdateInstruction add{};
@@ -777,9 +796,11 @@ TEST(CoverageTable, NoProgramWritesTheStagedSlots) {
       UpdateEngine engine;
       const auto r = engine.LoadFromMemory(edited.data(), edited.size());
       std::printf("  [ %-5s ] %s slot write: %s\n", kProgramName[p],
-                  slot ? "label" : "input", r.has_value() ? "ACCEPTED" : "refused");
+                  slot ? "label" : "input",
+                  r.has_value() ? "ACCEPTED" : "refused");
       ASSERT_FALSE(r.has_value());
-      EXPECT_STR_CONTAINS(r.error(), slot == 0 ? "staged input slot" : "staged label slot");
+      EXPECT_STR_CONTAINS(
+          r.error(), slot == 0 ? "staged input slot" : "staged label slot");
     }
   }
 }
@@ -852,15 +873,15 @@ TEST(CoverageTable, TheFeederRefusesTheWrongCorpus) {
   ASSERT_OK_AND_ASSIGN(Dataset dense,
                        seeml::testing::MakeRegressionData(64, kInDim, 3, 7));
   EXPECT_ERROR(engine.Train(dense, 1, QuietOptions()));  // label kind
-  ASSERT_OK_AND_ASSIGN(Dataset tokens,
-                       seeml::testing::MakeTokenCorpus(10, kTokSeq, kTokVocab, 43));
+  ASSERT_OK_AND_ASSIGN(Dataset tokens, seeml::testing::MakeTokenCorpus(
+                                           10, kTokSeq, kTokVocab, 43));
   EXPECT_ERROR(engine.Train(tokens, 1, QuietOptions()));  // input kind
   const std::vector<uint8_t> token_plan = TokenPlan();
   ASSERT_FALSE(token_plan.empty());
   UpdateEngine token_engine;
   ASSERT_OK(token_engine.LoadFromMemory(token_plan.data(), token_plan.size()));
-  ASSERT_OK_AND_ASSIGN(Dataset wide,
-                       seeml::testing::MakeTokenCorpus(10, kTokSeq, 2 * kTokVocab, 43));
+  ASSERT_OK_AND_ASSIGN(Dataset wide, seeml::testing::MakeTokenCorpus(
+                                         10, kTokSeq, 2 * kTokVocab, 43));
   EXPECT_ERROR(token_engine.Train(wide, 1, QuietOptions()));  // token bound
 }
 

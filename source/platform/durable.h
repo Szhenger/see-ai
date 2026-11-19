@@ -108,8 +108,8 @@ inline void RemoveFile(const std::string& path) {
 /// rename does; CRT rename on Windows refuses an existing destination, so
 /// Win32 uses MoveFileEx (and writes the move through). Not "ReplaceFile":
 /// <windows.h> defines that name as a macro (ReplaceFileA / ReplaceFileW).
-[[nodiscard]] inline bool AtomicReplace(
-    const std::string& from, const std::string& to) {
+[[nodiscard]] inline bool AtomicReplace(const std::string& from,
+                                        const std::string& to) {
 #ifndef _WIN32
   return std::rename(from.c_str(), to.c_str()) == 0;
 #else
@@ -123,7 +123,8 @@ inline void RemoveFile(const std::string& path) {
 #ifndef _WIN32
   return ::fsync(::fileno(f)) == 0;
 #else
-  return ::FlushFileBuffers(reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)))) != 0;
+  return ::FlushFileBuffers(
+             reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)))) != 0;
 #endif
 }
 
@@ -156,9 +157,9 @@ inline LockResult TryLockExclusive(const std::string& lock_path,
   }
   *out = static_cast<FileHandle>(fd);
 #else
-  HANDLE h = ::CreateFileA(lock_path.c_str(), GENERIC_WRITE, /*share=*/0,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
+  HANDLE h =
+      ::CreateFileA(lock_path.c_str(), GENERIC_WRITE, /*share=*/0, nullptr,
+                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE)
     return ::GetLastError() == ERROR_SHARING_VIOLATION
                ? LockResult::kHeldElsewhere

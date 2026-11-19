@@ -39,12 +39,12 @@ std::expected<sir::Value*, std::string> ValueResolver::MaterializeWeight(
     return seeml::diag::parsing::Error("'" + std::string(name) +
                                        "' is not a tensor of the model");
   if (!t->is_const)
-    return seeml::diag::parsing::Error("'" + std::string(name) +
-                                       "' is not a constant tensor in the model");
+    return seeml::diag::parsing::Error(
+        "'" + std::string(name) + "' is not a constant tensor in the model");
   sir::Operation* op = block_.appendOp("sc_mem.weight");
   op->setAttribute("smf_offset", static_cast<int64_t>(t->data_offset));
-  sir::Value* v = op->addResult(prefix_ + std::string(name),
-                                sir::DataType::F32, sir::Shape(t->dims));
+  sir::Value* v = op->addResult(prefix_ + std::string(name), sir::DataType::F32,
+                                sir::Shape(t->dims));
   build_.weight_sources[v] = t;
   return v;
 }

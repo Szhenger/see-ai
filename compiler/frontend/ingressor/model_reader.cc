@@ -98,7 +98,7 @@ class FileBytes {
 #if SEEML_PAYLOAD_MMAP
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) return "cannot open";
-    struct stat st {};
+    struct stat st{};
     if (::fstat(fd, &st) != 0 || st.st_size < 0) {
       ::close(fd);
       return "cannot stat";
@@ -166,8 +166,8 @@ class FileBytes {
     ranges.push_back({t.data_offset, t.byte_size, t.name, true});
   }
   if (tokenizer_size != 0)
-    ranges.push_back({tokenizer_offset, tokenizer_size,
-                      "the tokenizer section", false});
+    ranges.push_back(
+        {tokenizer_offset, tokenizer_size, "the tokenizer section", false});
   std::sort(ranges.begin(), ranges.end(),
             [](const Range& a, const Range& b) { return a.offset < b.offset; });
   auto refuse = [&](const Range& x, const std::string& what) {
@@ -185,10 +185,9 @@ class FileBytes {
     if (x.offset < metadata_end)
       return refuse(x, "payload overlaps the file's metadata");
     if (prev && x.offset < prev_end)
-      return refuse(x, prev->tensor
-                           ? "payload overlaps tensor '" +
-                                 std::string(prev->name) + "'"
-                           : "payload overlaps the tokenizer section");
+      return refuse(x, prev->tensor ? "payload overlaps tensor '" +
+                                          std::string(prev->name) + "'"
+                                    : "payload overlaps the tokenizer section");
     prev = &x;
     prev_end = x.offset + x.size;  // in-file: cannot overflow
   }
@@ -216,8 +215,8 @@ void CopyPayloads(SmfModel& model, const std::vector<size_t>& const_tensors,
   auto copy_range = [&](uint64_t begin, uint64_t end) {
     // First tensor whose span reaches past `begin`.
     size_t i = static_cast<size_t>(
-        std::upper_bound(starts.begin(), starts.end(), begin) -
-        starts.begin() - 1);
+        std::upper_bound(starts.begin(), starts.end(), begin) - starts.begin() -
+        1);
     for (; i < const_tensors.size() && starts[i] < end; ++i) {
       SmfTensor& t = model.tensors[const_tensors[i]];
       const uint64_t lo = std::max(begin, starts[i]) - starts[i];
@@ -229,8 +228,8 @@ void CopyPayloads(SmfModel& model, const std::vector<size_t>& const_tensors,
   if (const_bytes >= kParallelCopyThreshold) {
     ParallelFor(static_cast<size_t>(const_bytes), kParallelCopyGrain,
                 [&](size_t begin, size_t end, size_t /*chunk*/) {
-                  copy_range(begin, end);
-                });
+      copy_range(begin, end);
+    });
   } else {
     copy_range(0, const_bytes);
   }
@@ -281,7 +280,8 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
   constexpr size_t kMinOpRecordBytes = 6;  // kind + 2 empty names + input cnt
   model.tensors.reserve(
       std::min<size_t>(num_tensors, bytes.size() / kMinTensorRecordBytes));
-  model.ops.reserve(std::min<size_t>(num_ops, bytes.size() / kMinOpRecordBytes));
+  model.ops.reserve(
+      std::min<size_t>(num_ops, bytes.size() / kMinOpRecordBytes));
 
   // Tensor names key every downstream binding (resolver, analyzer, sema);
   // a duplicate would silently resolve last-writer-wins, so it is a load
@@ -324,8 +324,7 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
         break;
       }
     }
-    if (!dims_ok)
-      return tokenizing::TensorError(t.name, "has invalid dims");
+    if (!dims_ok) return tokenizing::TensorError(t.name, "has invalid dims");
 
     if (t.is_const) {
       // The instruction stream sizes reads from dims while rodata packing and
@@ -374,32 +373,35 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
     // kind it is reserved and must be zero, so a future meaning can never
     // be silently misread by a reader that predates it.
     if (op.attr1 != 0 && op.kind != SmfOpKind::kRope)
-      return tokenizing::Error("op '" + op.name + "' carries a nonzero attr1, "
-                               "which its kind does not define, in '" + path +
-                               "'");
+      return tokenizing::Error("op '" + op.name +
+                               "' carries a nonzero attr1, "
+                               "which its kind does not define, in '" +
+                               path + "'");
     // attr2 (v6) is the epsilon of a LayerNorm / RmsNorm, nothing else's;
     // when set it must be a finite positive float.
     if (op.attr2 != 0) {
-      const bool norm = op.kind == SmfOpKind::kLayerNorm ||
-                        op.kind == SmfOpKind::kRmsNorm;
+      const bool norm =
+          op.kind == SmfOpKind::kLayerNorm || op.kind == SmfOpKind::kRmsNorm;
       const float eps = std::bit_cast<float>(op.attr2);
       if (!norm)
-        return tokenizing::Error("op '" + op.name + "' carries a nonzero "
+        return tokenizing::Error("op '" + op.name +
+                                 "' carries a nonzero "
                                  "attr2, which its kind does not define, in '" +
                                  path + "'");
       if (!std::isfinite(eps) || !(eps > 0.0f))
-        return tokenizing::Error("op '" + op.name + "' has a normalization "
+        return tokenizing::Error("op '" + op.name +
+                                 "' has a normalization "
                                  "epsilon that is not a finite positive "
-                                 "float, in '" + path + "'");
+                                 "float, in '" +
+                                 path + "'");
     }
     model.ops.push_back(std::move(op));
   }
 
   if (!r.ok) return tokenizing::FileError("truncated file", path);
 
-  if (auto placed = CheckPayloadPlacement(model, const_tensors,
-                                          tokenizer_offset, tokenizer_size,
-                                          r.pos, path);
+  if (auto placed = CheckPayloadPlacement(
+          model, const_tensors, tokenizer_offset, tokenizer_size, r.pos, path);
       !placed)
     return std::unexpected(placed.error());
   if (tokenizer_size != 0)
@@ -473,9 +475,8 @@ std::expected<std::vector<SmfModel>, std::string> LoadSmfMany(
     std::vector<std::thread> loaders;
     loaders.reserve(paths.size());
     for (size_t i = 0; i < paths.size(); ++i)
-      loaders.emplace_back([&results, &paths, i] {
-        results[i] = LoadSmf(paths[i]);
-      });
+      loaders.emplace_back(
+          [&results, &paths, i] { results[i] = LoadSmf(paths[i]); });
     for (std::thread& t : loaders) t.join();
   }
 

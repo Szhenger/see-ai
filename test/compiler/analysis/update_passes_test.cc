@@ -63,10 +63,9 @@ TEST(AttentionTiling, AutoRechecksTheExactShapesAndOnlyEverTiles) {
       seeml::testing::MakeDecoderStack(dim, heads, seq, 16, 11, 2, 5);
   auto build_block = [&](sir::Block& block) {
     GraphBuild build;
-    build.input =
-        block.addArgument(sir::DataType::F32, sir::Shape{batch, dim});
-    ASSERT_TRUE(BuildForward(block, model, "", build.input, batch, build)
-                    .has_value());
+    build.input = block.addArgument(sir::DataType::F32, sir::Shape{batch, dim});
+    ASSERT_TRUE(
+        BuildForward(block, model, "", build.input, batch, build).has_value());
   };
   // Two layers of P [batch*heads, seq] f32.
   const uint64_t exact = 2ull * batch * heads * seq * sizeof(float);
@@ -85,11 +84,11 @@ TEST(AttentionTiling, AutoRechecksTheExactShapesAndOnlyEverTiles) {
     bool want_tiled;
   };
   for (const Case c : {
-           Case{AttentionKind::kAuto, false, exact, false},     // fits
+           Case{AttentionKind::kAuto, false, exact, false},  // fits
            // exact > budget
            Case{AttentionKind::kAuto, false, exact - 1, true},
-           Case{AttentionKind::kAuto, true, exact * 4, true},   // gate said tile
-           Case{AttentionKind::kCached, true, 0, false},        // forced
+           Case{AttentionKind::kAuto, true, exact * 4, true},  // gate said tile
+           Case{AttentionKind::kCached, true, 0, false},       // forced
            Case{AttentionKind::kTiled, false, exact * 4, true},  // forced
        }) {
     sir::Block block;
@@ -153,9 +152,8 @@ TEST(LoraGrafter, GraftsEveryEligibleMatMul) {
 
   // Per-adapter seeds diverge so A matrices are not clones of each other.
   EXPECT_EQ(a_def->getAttrAs<int64_t>("seed").value_or(-1), 7);
-  EXPECT_EQ(adapters[1].A->definingOp()->getAttrAs<int64_t>("seed").value_or(
-                -1),
-            8);
+  EXPECT_EQ(
+      adapters[1].A->definingOp()->getAttrAs<int64_t>("seed").value_or(-1), 8);
 }
 
 TEST(LoraGrafter, RewiresConsumersOntoAdapterOutput) {
@@ -308,8 +306,11 @@ TEST(TrainableAutodiff, MatmulAlphaRidesBothAdjointProducts) {
       EXPECT_NEAR(alpha.value_or(0.0f), 2.0f, 1e-6);
       ++nt;
     } else if (op->mnemonic() == "sc_low.matmul_tn") {
-      if (alpha) { EXPECT_NEAR(*alpha, 2.0f, 1e-6); ++tn_scaled; }
-      else ++tn_plain;
+      if (alpha) {
+        EXPECT_NEAR(*alpha, 2.0f, 1e-6);
+        ++tn_scaled;
+      } else
+        ++tn_plain;
     }
   });
   EXPECT_EQ(nt, 1u);
@@ -322,8 +323,7 @@ TEST(TrainableAutodiff, AccumulatesFanOutGradients) {
   // into c must be summed (multivariable chain rule).
   sir::Block block;
   sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{2, 3});
-  sir::Value* target =
-      block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
+  sir::Value* target = block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
 
   sir::Operation* w_op = block.appendOp("sc_mem.param");
   w_op->setAttribute("trainable", int64_t{1});
@@ -376,8 +376,7 @@ TEST(TrainableAutodiff, RejectsLossDisconnectedFromTrainables) {
   // The loss is computed purely from block arguments; W never feeds it.
   sir::Block block;
   sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
-  sir::Value* target =
-      block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
+  sir::Value* target = block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
 
   sir::Operation* w_op = block.appendOp("sc_mem.param");
   w_op->setAttribute("trainable", int64_t{1});
@@ -395,8 +394,7 @@ TEST(TrainableAutodiff, RejectsLossDisconnectedFromTrainables) {
 
 TEST(TrainableAutodiff, RejectsOpWithoutVjpRule) {
   sir::Block block;
-  sir::Value* target =
-      block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
+  sir::Value* target = block.addArgument(sir::DataType::F32, sir::Shape{2, 2});
 
   sir::Operation* w_op = block.appendOp("sc_mem.param");
   w_op->setAttribute("trainable", int64_t{1});
@@ -404,8 +402,7 @@ TEST(TrainableAutodiff, RejectsOpWithoutVjpRule) {
 
   sir::Operation* mystery = block.appendOp("sc_high.mystery");
   mystery->addOperand(w);
-  sir::Value* y =
-      mystery->addResult("y", sir::DataType::F32, sir::Shape{2, 2});
+  sir::Value* y = mystery->addResult("y", sir::DataType::F32, sir::Shape{2, 2});
 
   sir::Operation* mse = block.appendOp("sc_high.mse");
   mse->addOperand(y);
@@ -428,8 +425,7 @@ std::pair<sir::Value*, sir::Value*> AddParamAndGrad(sir::Block& block,
   sir::Value* p = p_op->addResult(id, sir::DataType::F32, sir::Shape{4});
   sir::Operation* g_op = block.appendOp("sc_low.fill");
   g_op->setAttribute("value", 0.0f);
-  sir::Value* g =
-      g_op->addResult(id + ".d", sir::DataType::F32, sir::Shape{4});
+  sir::Value* g = g_op->addResult(id + ".d", sir::DataType::F32, sir::Shape{4});
   return {p, g};
 }
 
@@ -474,8 +470,8 @@ TEST(OptimizerSynthesizer, SgdAddsNoState) {
   auto [p, g] = AddParamAndGrad(block, "a");
   const size_t params_before = CountOps(block, "sc_mem.param");
 
-  ASSERT_OK(OptimizerSynthesizer(OptimizerKind::kSgd, 0.0f)
-                .Run(block, {{p, g}}));
+  ASSERT_OK(
+      OptimizerSynthesizer(OptimizerKind::kSgd, 0.0f).Run(block, {{p, g}}));
 
   EXPECT_EQ(CountOps(block, "sc_mem.param"), params_before);
   EXPECT_EQ(CountOps(block, "sc_low.sgd_step"), 1u);
@@ -535,8 +531,8 @@ TEST(MergeBuilder, BuildsZeroedDeltaPlusGemmAccPerAdapter) {
 struct Chain {
   sir::Block block;
   sir::Value* x = nullptr;
-  sir::Value* c = nullptr;      // matmul result
-  sir::Value* z = nullptr;      // chain output (act, or bias sum)
+  sir::Value* c = nullptr;  // matmul result
+  sir::Value* z = nullptr;  // chain output (act, or bias sum)
   sir::Operation* gemm = nullptr;
   sir::Operation* add_bias = nullptr;
   sir::Operation* act = nullptr;
@@ -560,8 +556,8 @@ void BuildChain(Chain& g, const char* act_mnemonic /* nullptr = bias only */) {
   g.add_bias = g.block.appendOp("sc_high.add_bias");
   g.add_bias->addOperand(g.c);
   g.add_bias->addOperand(b);
-  sir::Value* y = g.add_bias->addResult("y", sir::DataType::F32,
-                                        sir::Shape{2, 2});
+  sir::Value* y =
+      g.add_bias->addResult("y", sir::DataType::F32, sir::Shape{2, 2});
   g.z = y;
 
   if (act_mnemonic) {
@@ -573,8 +569,8 @@ void BuildChain(Chain& g, const char* act_mnemonic /* nullptr = bias only */) {
   sir::Operation* consumer = g.block.appendOp("sc_high.scale");
   consumer->setAttribute("alpha", 1.0f);
   consumer->addOperand(g.z);
-  g.consumer_out = consumer->addResult("out", sir::DataType::F32,
-                                       sir::Shape{2, 2});
+  g.consumer_out =
+      consumer->addResult("out", sir::DataType::F32, sir::Shape{2, 2});
 }
 
 TEST(GemmEpilogueFuser, FusesBiasAndActivationChain) {

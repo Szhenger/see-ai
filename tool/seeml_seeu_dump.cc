@@ -81,13 +81,20 @@ int ImmInSlot(uint16_t opcode, uint16_t flags = 0) {
   // v17: a q8 GEMM with per-column scales carries a ref in in[3].
   if (flags & kFlagQ8ColScale) return -1;
   switch (static_cast<OpCode>(opcode)) {
-    case OpCode::kScale:     return 2;
-    case OpCode::kFill:      return 1;
-    case OpCode::kClipNorm:  return 1;
-    case OpCode::kGemmAccNN: return 3;
-    case OpCode::kGemmNNQ8:  return 3;
-    case OpCode::kGemmNTQ8:  return 3;
-    default:                 return -1;
+    case OpCode::kScale:
+      return 2;
+    case OpCode::kFill:
+      return 1;
+    case OpCode::kClipNorm:
+      return 1;
+    case OpCode::kGemmAccNN:
+      return 3;
+    case OpCode::kGemmNNQ8:
+      return 3;
+    case OpCode::kGemmNTQ8:
+      return 3;
+    default:
+      return -1;
   }
 }
 
@@ -103,8 +110,8 @@ std::string EpilogueName(uint16_t flags) {
     name += part;
   };
   if (flags & kFlagEpilogueBias) add("bias");
-  if (const uint16_t act = (flags & kFlagEpilogueActMask) >>
-                           kFlagEpilogueActShift)
+  if (const uint16_t act =
+          (flags & kFlagEpilogueActMask) >> kFlagEpilogueActShift)
     add(kActs[act]);
   if (flags & kFlagGemmAddend) add("addend");
   if (flags & kFlagQ8ColScale) add("cols");
@@ -113,8 +120,8 @@ std::string EpilogueName(uint16_t flags) {
   return name;
 }
 
-[[nodiscard]] bool SectionInBounds(
-    uint64_t off, uint64_t count, uint64_t elem, uint64_t size);
+[[nodiscard]] bool SectionInBounds(uint64_t off, uint64_t count, uint64_t elem,
+                                   uint64_t size);
 
 uint32_t F32BitsOf(float f) {
   uint32_t u = 0;
@@ -124,8 +131,8 @@ uint32_t F32BitsOf(float f) {
 
 /// The whole plan as one JSON object (see the banner). u64 words print as
 /// integers: refs and packed dim words are exact, and kNullRef is 2^64 - 1.
-[[nodiscard]] int DumpJson(
-    const std::vector<uint8_t>& plan, const PlanHeader& h, bool sealed) {
+[[nodiscard]] int DumpJson(const std::vector<uint8_t>& plan,
+                           const PlanHeader& h, bool sealed) {
   if (!sealed) {
     std::fprintf(stderr, "seeml-seeu-dump: plan_hash mismatch — corrupt\n");
     return 1;
@@ -178,14 +185,14 @@ uint32_t F32BitsOf(float f) {
       UpdateInstruction ins;  // copied out: the offset may be unaligned
       std::memcpy(&ins, plan.data() + sections[s].off + i * sizeof(ins),
                   sizeof(ins));
-      std::printf("%s\n      {\"opcode\": %u, \"name\": \"%s\", \"flags\": %u, "
-                  "\"imm\": %u, "
-                  "\"in\": [%" PRIu64 ", %" PRIu64 ", %" PRIu64 ", %" PRIu64
-                  "], \"out\": [%" PRIu64 ", %" PRIu64 ", %" PRIu64 "]}",
-                  i ? "," : "", ins.opcode, OpName(ins.opcode), ins.flags,
-                  ins.imm,
-                  ins.in[0], ins.in[1], ins.in[2], ins.in[3], ins.out[0],
-                  ins.out[1], ins.out[2]);
+      std::printf(
+          "%s\n      {\"opcode\": %u, \"name\": \"%s\", \"flags\": %u, "
+          "\"imm\": %u, "
+          "\"in\": [%" PRIu64 ", %" PRIu64 ", %" PRIu64 ", %" PRIu64
+          "], \"out\": [%" PRIu64 ", %" PRIu64 ", %" PRIu64 "]}",
+          i ? "," : "", ins.opcode, OpName(ins.opcode), ins.flags, ins.imm,
+          ins.in[0], ins.in[1], ins.in[2], ins.in[3], ins.out[0], ins.out[1],
+          ins.out[2]);
     }
     std::printf("%s]", sections[s].count ? "\n    " : "");
   }
@@ -199,8 +206,8 @@ uint32_t F32BitsOf(float f) {
     EmitEntry e;
     std::memcpy(&e, plan.data() + h.emit_table_offset + i * sizeof(e),
                 sizeof(e));
-    std::printf("%s\n    {\"smf_data_offset\": %" PRIu64 ", \"byte_size\": %"
-                PRIu64 ", \"arena_offset\": %" PRIu64 "}",
+    std::printf("%s\n    {\"smf_data_offset\": %" PRIu64
+                ", \"byte_size\": %" PRIu64 ", \"arena_offset\": %" PRIu64 "}",
                 i ? "," : "", e.smf_data_offset, e.byte_size, e.arena_offset);
   }
   std::printf("%s]", h.emit_count ? "\n  " : "");
@@ -211,14 +218,14 @@ uint32_t F32BitsOf(float f) {
     return 1;
   }
   if (meta.present) {
-    std::printf(",\n  \"metadata\": {\"recipe_hash\": %" PRIu64
-                ", \"export_report_hash\": %" PRIu64
-                ", \"export_flags\": %u, \"tokenizer_parity_ids\": %" PRIu64
-                ", \"logits_parity_max_delta_bits\": %u, \"ledger\": [",
-                meta.meta.recipe_hash, meta.meta.export_report_hash,
-                meta.meta.export_flags, meta.meta.tokenizer_parity_ids,
-                static_cast<unsigned>(
-                    F32BitsOf(meta.meta.logits_parity_max_delta)));
+    std::printf(
+        ",\n  \"metadata\": {\"recipe_hash\": %" PRIu64
+        ", \"export_report_hash\": %" PRIu64
+        ", \"export_flags\": %u, \"tokenizer_parity_ids\": %" PRIu64
+        ", \"logits_parity_max_delta_bits\": %u, \"ledger\": [",
+        meta.meta.recipe_hash, meta.meta.export_report_hash,
+        meta.meta.export_flags, meta.meta.tokenizer_parity_ids,
+        static_cast<unsigned>(F32BitsOf(meta.meta.logits_parity_max_delta)));
     // Ledger text is printable ASCII (the loader's rule), which still
     // admits the two characters a JSON string must escape.
     auto json = [](const char* s) {
@@ -230,11 +237,12 @@ uint32_t F32BitsOf(float f) {
       return out;
     };
     for (size_t i = 0; i < meta.ledger.size(); ++i)
-      std::printf("%s\n    {\"pass\": \"%s\", \"arithmetic\": %u, "
-                  "\"instructions\": %u, \"why\": \"%s\"}",
-                  i ? "," : "", json(meta.ledger[i].pass).c_str(),
-                  meta.ledger[i].arithmetic, meta.ledger[i].instructions,
-                  json(meta.ledger[i].why).c_str());
+      std::printf(
+          "%s\n    {\"pass\": \"%s\", \"arithmetic\": %u, "
+          "\"instructions\": %u, \"why\": \"%s\"}",
+          i ? "," : "", json(meta.ledger[i].pass).c_str(),
+          meta.ledger[i].arithmetic, meta.ledger[i].instructions,
+          json(meta.ledger[i].why).c_str());
     std::printf("%s]}", meta.ledger.empty() ? "" : "\n  ");
   }
   std::printf("\n}\n");
@@ -247,13 +255,11 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
   for (uint64_t i = 0; i < count; ++i) {
     const UpdateInstruction& ins = instrs[i];
     std::printf("  %4" PRIu64 "  %-18s", i, OpName(ins.opcode));
-    if (ins.flags)
-      std::printf(" epi(%s)", EpilogueName(ins.flags).c_str());
+    if (ins.flags) std::printf(" epi(%s)", EpilogueName(ins.flags).c_str());
     // v19: the three f32 GEMMs' imm word is their alpha (0 = 1.0).
-    if (ins.imm != 0 &&
-        (static_cast<OpCode>(ins.opcode) == OpCode::kGemmNN ||
-         static_cast<OpCode>(ins.opcode) == OpCode::kGemmNT ||
-         static_cast<OpCode>(ins.opcode) == OpCode::kGemmTN))
+    if (ins.imm != 0 && (static_cast<OpCode>(ins.opcode) == OpCode::kGemmNN ||
+                         static_cast<OpCode>(ins.opcode) == OpCode::kGemmNT ||
+                         static_cast<OpCode>(ins.opcode) == OpCode::kGemmTN))
       std::printf(" alpha(%g)", static_cast<double>(GemmAlphaOf(ins.imm)));
     const int imm = ImmInSlot(ins.opcode, ins.flags);
     for (int s = 0; s < 4; ++s) {
@@ -285,14 +291,12 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
         PrintRef(ins.out[0]);
         std::printf("   n/c: %" PRIu64 " %" PRIu64 "  T %g  scale %g\n",
                     HighWord(ins.out[1]), LowWord(ins.out[1]),
-                    ImmBitsToF32(LowWord(ins.out[2])),
-                    KlScaleOf(ins.out[2]));
+                    ImmBitsToF32(LowWord(ins.out[2])), KlScaleOf(ins.out[2]));
         break;
       case OpCode::kKLDistillBwd:
         std::printf("   n/c: %" PRIu64 " %" PRIu64 "  T %g  scale %g\n",
                     HighWord(ins.out[0]), LowWord(ins.out[0]),
-                    ImmBitsToF32(LowWord(ins.out[1])),
-                    KlScaleOf(ins.out[1]));
+                    ImmBitsToF32(LowWord(ins.out[1])), KlScaleOf(ins.out[1]));
         break;
       case OpCode::kRmsNormFwd:
         std::printf("   rows/cols: %" PRIu64 " %" PRIu64 "  eps %g\n",
@@ -307,8 +311,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
         break;
       case OpCode::kRopeFwd:
       case OpCode::kRopeBwd:
-        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
-                    " %" PRIu64 "  base %g\n",
+        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64 " %" PRIu64
+                    "  base %g\n",
                     HighWord(ins.out[0]), LowWord(ins.out[0]),
                     HighWord(ins.out[1]), LowWord(ins.out[1]),
                     ImmBitsToF32(ins.out[2]));
@@ -316,8 +320,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
       case OpCode::kAttnFwd:
         std::printf("   probs:");
         PrintRef(ins.out[0]);
-        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
-                    " %" PRIu64 "\n",
+        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64 " %" PRIu64
+                    "\n",
                     HighWord(ins.out[1]), LowWord(ins.out[1]),
                     HighWord(ins.out[2]), LowWord(ins.out[2]));
         break;
@@ -325,14 +329,14 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
       case OpCode::kAttnDV:
       case OpCode::kAttnDQ:
       case OpCode::kAttnDK:
-        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
-                    " %" PRIu64 "\n",
+        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64 " %" PRIu64
+                    "\n",
                     HighWord(ins.out[0]), LowWord(ins.out[0]),
                     HighWord(ins.out[1]), LowWord(ins.out[1]));
         break;
       case OpCode::kAttnFwdTiled:
-        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
-                    " %" PRIu64 "  stats: out[0]\n",
+        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64 " %" PRIu64
+                    "  stats: out[0]\n",
                     HighWord(ins.out[1]), LowWord(ins.out[1]),
                     HighWord(ins.out[2]), LowWord(ins.out[2]));
         break;
@@ -340,8 +344,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
       case OpCode::kAttnDKTiled:
       case OpCode::kAttnDVTiled: {
         const auto g = UnpackAttnGeometry(ins.out[2]);
-        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64
-                    " %" PRIu64 "  stats: out[0]  result: out[1]\n",
+        std::printf("   B/S: %" PRIu64 " %" PRIu64 "  H/d: %" PRIu64 " %" PRIu64
+                    "  stats: out[0]  result: out[1]\n",
                     g.B, g.S, g.H, g.d);
         break;
       }
@@ -366,8 +370,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
 /// MISMATCH — and offset + count * elem can wrap in uint64 exactly for the
 /// inputs the check exists to reject (the runtime's contract.cc uses the
 /// same MulOk/RangeOk discipline).
-[[nodiscard]] bool SectionInBounds(
-    uint64_t offset, uint64_t count, uint64_t elem_bytes, uint64_t plan_size) {
+[[nodiscard]] bool SectionInBounds(uint64_t offset, uint64_t count,
+                                   uint64_t elem_bytes, uint64_t plan_size) {
   if (elem_bytes != 0 && count > UINT64_MAX / elem_bytes) return false;
   const uint64_t bytes = count * elem_bytes;
   return offset <= plan_size && bytes <= plan_size - offset;
@@ -378,7 +382,8 @@ void Disassemble(const char* title, const UpdateInstruction* instrs,
 int main(int argc, char** argv) {
   if (argc >= 2 && (std::strcmp(argv[1], "--help") == 0 ||
                     std::strcmp(argv[1], "-h") == 0)) {
-    std::printf("usage: seeml-seeu-dump plan.seeu [--instrs | --json] [--version]\n");
+    std::printf(
+        "usage: seeml-seeu-dump plan.seeu [--instrs | --json] [--version]\n");
     return 0;
   }
   if (argc >= 2 && std::strcmp(argv[1], "--version") == 0) {
@@ -386,7 +391,8 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (argc < 2) {
-    std::fprintf(stderr, "usage: seeml-seeu-dump plan.seeu [--instrs | --json]\n");
+    std::fprintf(stderr,
+                 "usage: seeml-seeu-dump plan.seeu [--instrs | --json]\n");
     return 2;
   }
   // The plan comes first. A flag in its place — a typo'd one, or a real one
@@ -411,8 +417,7 @@ int main(int argc, char** argv) {
       // A typo'd flag must not silently print header-only output with
       // exit 0 — the sibling compile CLI treats every unconsumed argv slot
       // as a hard error for the same reason.
-      std::fprintf(stderr, "seeml-seeu-dump: unknown argument '%s'\n",
-                   argv[i]);
+      std::fprintf(stderr, "seeml-seeu-dump: unknown argument '%s'\n", argv[i]);
       return 2;
     }
   }
@@ -431,9 +436,8 @@ int main(int argc, char** argv) {
   }
   f.seekg(0);
   std::vector<uint8_t> plan(static_cast<size_t>(end));
-  if (!plan.empty() &&
-      !f.read(reinterpret_cast<char*>(plan.data()),
-              static_cast<std::streamsize>(plan.size()))) {
+  if (!plan.empty() && !f.read(reinterpret_cast<char*>(plan.data()),
+                               static_cast<std::streamsize>(plan.size()))) {
     std::fprintf(stderr, "seeml-seeu-dump: cannot read '%s'\n", argv[1]);
     return 1;
   }
@@ -463,8 +467,8 @@ int main(int argc, char** argv) {
   }
 
   // Verify the integrity seal the same way the runtime does.
-  const uint64_t state = PlanSelfHash(plan.data(), plan.size(),
-                                      offsetof(PlanHeader, plan_hash));
+  const uint64_t state =
+      PlanSelfHash(plan.data(), plan.size(), offsetof(PlanHeader, plan_hash));
   const bool sealed = state == h.plan_hash;
   if (want_json) return DumpJson(plan, h, sealed);
 
@@ -490,16 +494,17 @@ int main(int argc, char** argv) {
               h.optimizer_kind == 1 ? "adamw" : "sgd", h.lr, h.weight_decay,
               h.clip_norm);
   std::printf("  lr schedule        %s  warmup %" PRIu64 "  min_factor %g\n",
-              h.lr_schedule == 1 ? "cosine+warmup" : "constant",
-              h.warmup_steps, h.min_lr_factor);
+              h.lr_schedule == 1 ? "cosine+warmup" : "constant", h.warmup_steps,
+              h.min_lr_factor);
   std::printf("  default steps      %" PRIu64 "\n", h.default_steps);
   if (h.gemm_tile_k || h.gemm_tile_n)
     std::printf("  gemm tiles         K %u  N %u  (v11; 0 = runtime default)\n",
                 h.gemm_tile_k, h.gemm_tile_n);
   if (h.grad_accum_steps > 1)
-    std::printf("  grad accumulation  %u micro-batches per optimizer step "
-                "(effective batch %" PRIu64 ")\n",
-                h.grad_accum_steps, h.batch * h.grad_accum_steps);
+    std::printf(
+        "  grad accumulation  %u micro-batches per optimizer step "
+        "(effective batch %" PRIu64 ")\n",
+        h.grad_accum_steps, h.batch * h.grad_accum_steps);
   std::printf("  programs           train %" PRIu64 " | eval %" PRIu64
               " | merge %" PRIu64 " | step %" PRIu64 " instrs\n",
               h.train_instr_count, h.eval_instr_count, h.merge_instr_count,

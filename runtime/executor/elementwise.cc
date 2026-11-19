@@ -29,10 +29,10 @@ void AddBias(const float* x, const float* b, float* out, size_t rows,
              size_t cols) {
   up::ParallelFor(rows, RowGrain(cols, kGrainCheap),
                   [&](size_t r0, size_t r1, size_t) {
-                    for (size_t r = r0; r < r1; ++r)
-                      for (size_t c = 0; c < cols; ++c)
-                        out[r * cols + c] = x[r * cols + c] + b[c];
-                  });
+    for (size_t r = r0; r < r1; ++r)
+      for (size_t c = 0; c < cols; ++c)
+        out[r * cols + c] = x[r * cols + c] + b[c];
+  });
 }
 
 void Accumulate(float* dst, const float* src, size_t n) {
@@ -126,8 +126,8 @@ void FusedMap(const float* x, const float* const others[3], float* out,
     prog[count] = static_cast<uint8_t>(stages >> (8 * count));
     const auto kind = up::FusedStageKind(prog[count]);
     if (kind == up::FusedStage::kEnd) break;
-    transcendental |= kind == up::FusedStage::kGelu ||
-                      kind == up::FusedStage::kSilu;
+    transcendental |=
+        kind == up::FusedStage::kGelu || kind == up::FusedStage::kSilu;
   }
   if (count == 0) return;  // the validator never admits an empty program
   up::ParallelFor(n, transcendental ? kGrainMath : kGrainCheap,
@@ -153,8 +153,7 @@ void EmbedFwd(const int32_t* tokens, const float* table, float* out,
   up::ParallelFor(rows, RowGrain(dim, kGrainCheap),
                   [&](size_t r0, size_t r1, size_t) {
     for (size_t r = r0; r < r1; ++r)
-      std::memcpy(out + r * dim,
-                  table + static_cast<size_t>(tokens[r]) * dim,
+      std::memcpy(out + r * dim, table + static_cast<size_t>(tokens[r]) * dim,
                   dim * sizeof(float));
   });
 }
@@ -174,16 +173,16 @@ void ReduceRows(const float* dy, float* db, size_t rows, size_t cols) {
   constexpr size_t kTile = 256;  // 1 KiB of L1, and no allocation
   up::ParallelFor(cols, RowGrain(rows, kGrainCheap),
                   [&](size_t c0, size_t c1, size_t) {
-                    for (size_t t0 = c0; t0 < c1; t0 += kTile) {
-                      const size_t width = MinZ(kTile, c1 - t0);
-                      float acc[kTile] = {};
-                      for (size_t r = 0; r < rows; ++r) {
-                        const float* SEEML_RESTRICT row = dy + r * cols + t0;
-                        for (size_t c = 0; c < width; ++c) acc[c] += row[c];
-                      }
-                      std::memcpy(db + t0, acc, width * sizeof(float));
-                    }
-                  });
+    for (size_t t0 = c0; t0 < c1; t0 += kTile) {
+      const size_t width = MinZ(kTile, c1 - t0);
+      float acc[kTile] = {};
+      for (size_t r = 0; r < rows; ++r) {
+        const float* SEEML_RESTRICT row = dy + r * cols + t0;
+        for (size_t c = 0; c < width; ++c) acc[c] += row[c];
+      }
+      std::memcpy(db + t0, acc, width * sizeof(float));
+    }
+  });
 }
 
 // Fill and Copy stay serial: memset/memcpy-class loops saturate memory

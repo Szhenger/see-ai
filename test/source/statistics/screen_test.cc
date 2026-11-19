@@ -96,7 +96,8 @@ TEST(Screen, TheReportObjectCarriesEveryValueAndOmitsTheUnset) {
   EXPECT_STR_CONTAINS(json, "\"attention\": \"cached\"");
   EXPECT_STR_CONTAINS(json, "\"detail\": 7");  // verbose rows are reported
   EXPECT_STR_CONTAINS(json, "\"wall_ms\": 1.25");
-  EXPECT_STR_CONTAINS(json, "\"passes\": [{\"name\": \"dce\", \"ops\": 594, \"ms\": 0.5}");
+  EXPECT_STR_CONTAINS(
+      json, "\"passes\": [{\"name\": \"dce\", \"ops\": 594, \"ms\": 0.5}");
   EXPECT_FALSE(Has(json, "vocab"));
   EXPECT_TRUE(json.starts_with("{\n    \"ops\""));  // nested two deep
   EXPECT_TRUE(json.ends_with("\n  }"));
@@ -124,10 +125,10 @@ TEST(Screen, TheGoldenBlockLeavesOutWhatVariesWithTheHost) {
 TEST(Screen, ProblemsNameEveryDepartureFromTheSpec) {
   EXPECT_TRUE(Filled().Problems().empty());
   Screen s(kSpec);
-  s.Set("opss", 1);              // a misspelled key
-  s.Set("ops", 1.5);             // a real into a count
-  s.Set("ratio", 2);             // a count into a real
-  s.Set("weight_bytes", -1);     // a negative count
+  s.Set("opss", 1);                          // a misspelled key
+  s.Set("ops", 1.5);                         // a real into a count
+  s.Set("ratio", 2);                         // a count into a real
+  s.Set("weight_bytes", -1);                 // a negative count
   s.AddRow("passes", {std::string("dce")});  // a short row
   s.AddRow("nopes", {});
   const std::vector<std::string> p = s.Problems();
@@ -230,9 +231,11 @@ TEST(PlanWork, AttentionFlopsCountTheModelProductsInBothFamilies) {
 TEST(PlanWork, AStepIsTheMicroBatchesOfTheTrainProgramPlusTheStepProgram) {
   SmfModel model = seeml::testing::MakeMlp(6, 10, 3, 1);
   UpdateConfig config = seeml::testing::BaseConfig(4);
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
+                       UpdateCompiler(config).Compile(model));
   config.grad_accum_steps = 3;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate accum, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate accum,
+                       UpdateCompiler(config).Compile(model));
   auto train_of = [](const CompiledUpdate& c) {
     PlanHeader h;
     std::memcpy(&h, c.plan.data(), sizeof(h));
@@ -275,14 +278,15 @@ TEST(PlanWork, TheBenchFixturesKeepTheirRecordedGemmFlops) {
   };
   for (Case& c : cases) {
     UpdateConfig config = seeml::testing::BaseConfig(32);  // seeml-bench's
-    config.lora.rank = 8;                                   // fixture config
+    config.lora.rank = 8;                                  // fixture config
     config.lora.alpha = 16.0f;
     auto compiled = UpdateCompiler(config).Compile(c.model);
     ASSERT_OK(compiled);
     if (MeasurePlanWork(compiled->plan).train_gemm_flops != c.flops)
-      ADD_FAILURE(std::string(c.name) + ": " +
-                  std::to_string(MeasurePlanWork(compiled->plan).train_gemm_flops) +
-                  " GEMM FLOPs, the ledger recorded " + std::to_string(c.flops));
+      ADD_FAILURE(
+          std::string(c.name) + ": " +
+          std::to_string(MeasurePlanWork(compiled->plan).train_gemm_flops) +
+          " GEMM FLOPs, the ledger recorded " + std::to_string(c.flops));
   }
 }
 

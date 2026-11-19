@@ -186,8 +186,7 @@ class WorkerPool {
       Job* job = nullptr;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        work_cv_.wait(lock,
-                      [&] { return stop_ || epoch_ != seen_epoch; });
+        work_cv_.wait(lock, [&] { return stop_ || epoch_ != seen_epoch; });
         if (stop_) return;
         seen_epoch = epoch_;
         job = job_;
@@ -221,10 +220,10 @@ class WorkerPool {
   std::condition_variable work_cv_;
   std::condition_variable done_cv_;
   std::vector<std::thread> workers_;
-  Job* job_ = nullptr;        // guarded by mutex_
-  uint64_t epoch_ = 0;        // guarded by mutex_
-  size_t thread_count_ = 0;   // guarded by mutex_; 0 = not yet resolved
-  bool stop_ = false;         // guarded by mutex_
+  Job* job_ = nullptr;       // guarded by mutex_
+  uint64_t epoch_ = 0;       // guarded by mutex_
+  size_t thread_count_ = 0;  // guarded by mutex_; 0 = not yet resolved
+  bool stop_ = false;        // guarded by mutex_
 };
 
 }  // namespace

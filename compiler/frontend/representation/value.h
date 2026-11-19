@@ -49,6 +49,6 @@ class Value {
     std::vector<Operation*> users_;
 };
 
-} // namespace seeml::sir
+}  // namespace seeml::sir
 
-#endif // SEEML_COMPILER_FRONTEND_REPRESENTATION_VALUE_H_
+#endif  // SEEML_COMPILER_FRONTEND_REPRESENTATION_VALUE_H_

@@ -41,8 +41,8 @@ struct DecodedPlan {
   seeml::update::DecodedMetadata metadata;
   std::vector<seeml::update::UpdateInstruction> train, merge, eval, step;
   std::vector<seeml::update::EmitEntry> emit;
-  uint64_t num_classes = 0;   // the narrowest softmax width, 0 = no class loss
-  uint64_t vocab_bound = 0;   // the narrowest embedding table, 0 = none
+  uint64_t num_classes = 0;  // the narrowest softmax width, 0 = no class loss
+  uint64_t vocab_bound = 0;  // the narrowest embedding table, 0 = none
   uint64_t eval_probs_ref = seeml::update::kNullRef;
   uint64_t eval_softmax_rows = 0;
   uint64_t eval_softmax_cols = 0;

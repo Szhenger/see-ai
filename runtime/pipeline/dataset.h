@@ -181,8 +181,8 @@ class Dataset {
   [[nodiscard]] static std::expected<void, std::string> CheckMask(
       const std::vector<uint8_t>& mask, uint64_t num_records, uint64_t seq);
 
-  std::vector<float> inputs_;   // num_samples * input_dim (input_kind 0)
-  std::vector<uint8_t> labels_; // num_samples * label_bytes_per_sample
+  std::vector<float> inputs_;    // num_samples * input_dim (input_kind 0)
+  std::vector<uint8_t> labels_;  // num_samples * label_bytes_per_sample
   // Token corpora (input_kind 1): num_samples records of (input_dim + 1)
   // ids each. A separate store — punning i32 bits through float storage
   // would risk NaN-signaling mutation on copies.
@@ -215,7 +215,7 @@ class Dataset {
 
   // Shuffled serving order; empty when shuffling is disabled.
   std::vector<uint64_t> order_;
-  uint64_t shuffle_state_ = 0;  // splitmix64 state; 0 = shuffling off
+  uint64_t shuffle_state_ = 0;   // splitmix64 state; 0 = shuffling off
   uint64_t shuffle_origin_ = 0;  // state EnableShuffle started from (replay)
   uint64_t epoch_ = 0;           // permutations drawn beyond the first
 };

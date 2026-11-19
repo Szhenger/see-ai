@@ -57,9 +57,9 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
   // Map the file read-only: the eval program reads the f32 weights in place
   // (the page cache serves them; nothing is copied), and the hash below is
   // taken over the very bytes the kernels will read.
-  auto mapped = platform::MapFile(source_model_path,
-                                  platform::MapAccess::kReadOnly,
-                                  /*require_regular=*/false);
+  auto mapped =
+      platform::MapFile(source_model_path, platform::MapAccess::kReadOnly,
+                        /*require_regular=*/false);
   if (!mapped)
     return diag::executing::Error(
         std::string(mapped.error().stage == platform::MapFailure::kOpen
@@ -73,12 +73,12 @@ std::expected<void, std::string> UpdateEngine::BindSourceModel(
   if (up::ContentHash64(candidate.data, bytes) != header_.source_model_hash)
     return diag::executing::Error(
         "source model does not match the plan's source_model_hash — "
-        "refusing to score against '" + source_model_path + "'");
+        "refusing to score against '" +
+        source_model_path + "'");
   if (bytes < source_required_)
     return diag::executing::Error(
         "source model '" + source_model_path + "' is shorter than the " +
-        std::to_string(source_required_) +
-        " bytes its programs read from it");
+        std::to_string(source_required_) + " bytes its programs read from it");
   if (auto r = backend_->BindSource(candidate.data, bytes); !r)
     return diag::executing::Error("backend cannot bind the source model: " +
                                   r.error());
@@ -231,18 +231,18 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // spaces (a GPU backend wraps them as device-visible buffers here). A
   // refusal releases the candidate arena and re-binds the previous plan, so
   // a rejected re-Load still leaves the old plan fully executable.
-  if (auto r = backend_->Bind(arena, arena_bytes, plan + header.rodata_offset,
-                              header.rodata_size,
-                              plan_size - header.rodata_offset);
+  if (auto r =
+          backend_->Bind(arena, arena_bytes, plan + header.rodata_offset,
+                         header.rodata_size, plan_size - header.rodata_offset);
       !r) {
     std::free(arena);
     // The contract (backend.h) keeps the previous binding intact on a
     // refused Bind; re-binding is belt and braces. If even that fails the
     // engine must not claim a loaded plan over an unbound backend.
     if (arena_) {
-      if (auto again = backend_->Bind(arena_, arena_bytes_, rodata_,
-                                      header_.rodata_size,
-                                      plan_size_ - header_.rodata_offset);
+      if (auto again =
+              backend_->Bind(arena_, arena_bytes_, rodata_, header_.rodata_size,
+                             plan_size_ - header_.rodata_offset);
           !again) {
         std::free(arena_);
         arena_ = nullptr;
@@ -253,8 +253,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
             ") and lost the previous one (" + again.error() + ")");
       }
     }
-    return diag::executing::Error("backend '" +
-                                  std::string(backend_->name()) +
+    return diag::executing::Error("backend '" + std::string(backend_->name()) +
                                   "' cannot bind the plan: " + r.error());
   }
 
@@ -316,10 +315,10 @@ std::expected<void, std::string> UpdateEngine::ExecuteStepProgram() {
 /// builds (the benchmark harness); every other build runs it as one range,
 /// so the shipped runtime never reads a clock inside the step.
 std::expected<void, std::string> UpdateEngine::ExecuteTrainProgram() {
-  return profiler_.TrainProgram(
-      train_program_.size(), [&](size_t begin, size_t end) {
-        return ExecuteRange(train_program_, begin, end);
-      });
+  return profiler_.TrainProgram(train_program_.size(),
+                                [&](size_t begin, size_t end) {
+    return ExecuteRange(train_program_, begin, end);
+  });
 }
 
 std::expected<void, std::string> UpdateEngine::ExecuteRange(
@@ -345,10 +344,9 @@ std::expected<void, std::string> UpdateEngine::ExecuteRange(
   for (size_t idx = begin; idx < end; ++idx)
     if (auto r = backend_->Execute(program[idx], params); !r) {
       backend_->EndRange();
-      return diag::executing::Error("backend '" +
-                                    std::string(backend_->name()) +
-                                    "' failed at instruction " +
-                                    std::to_string(idx) + ": " + r.error());
+      return diag::executing::Error(
+          "backend '" + std::string(backend_->name()) +
+          "' failed at instruction " + std::to_string(idx) + ": " + r.error());
     }
   // Every range ends coherent: the engine reads the loss slot, the eval
   // probabilities, the merge deltas and the persistent segment straight off
@@ -357,15 +355,12 @@ std::expected<void, std::string> UpdateEngine::ExecuteRange(
   auto flushed = backend_->Flush();
   backend_->EndRange();
   if (!flushed)
-    return diag::executing::Error("backend '" +
-                                  std::string(backend_->name()) +
+    return diag::executing::Error("backend '" + std::string(backend_->name()) +
                                   "' failed to complete: " + flushed.error());
   return {};
 }
 
-float UpdateEngine::LossValue() const {
-  return *ReadPtr(header_.loss_ref);
-}
+float UpdateEngine::LossValue() const { return *ReadPtr(header_.loss_ref); }
 
 float UpdateEngine::EffectiveLr() const {
   const float base = header_.lr;
@@ -477,9 +472,8 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
   const uint64_t rows_per_sample =
       header_.input_kind == 1 ? header_.seq_len : 1;
   const uint64_t samples_per_step = header_.batch / rows_per_sample;
-  const uint64_t batches =
-      std::max<uint64_t>(1, (data.num_samples() + samples_per_step - 1) /
-                                samples_per_step);
+  const uint64_t batches = std::max<uint64_t>(
+      1, (data.num_samples() + samples_per_step - 1) / samples_per_step);
   double total = 0.0;
   uint64_t correct = 0, counted = 0;
   // The final batch wraps when the set is not a whole number of batches:
@@ -495,7 +489,7 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
   // over the set is.
   const bool ragged = data.num_samples() % samples_per_step != 0;
   const bool per_row = ragged || eval_tail_.kind == EvalTail::kXentMasked;
-  double real_row_loss = 0.0;   // sum of per-row losses over real rows
+  double real_row_loss = 0.0;  // sum of per-row losses over real rows
   uint64_t real_rows = 0;
   {
     BatchPipeline feeder(data, header_.batch, header_.input_floats,
@@ -526,9 +520,8 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
         // next one internally.
         const uint64_t served = b * samples_per_step;
         const uint64_t real_samples = std::min<uint64_t>(
-            samples_per_step, data.num_samples() > served
-                                  ? data.num_samples() - served
-                                  : 0);
+            samples_per_step,
+            data.num_samples() > served ? data.num_samples() - served : 0);
         // Every ROW of a real sample is judged (token records carry
         // seq_len positions each); wrapped duplicate samples are excluded.
         const uint64_t real = real_samples * rows_per_sample;
@@ -544,22 +537,21 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
         // never stages -1, so every real row counts, as before.
         uint64_t tallies[up::kMaxParallelChunks] = {};
         uint64_t judged[up::kMaxParallelChunks] = {};
-        up::ParallelFor(
-            real, kernels::RowGrain(cols, kernels::kGrainCheap),
-            [&](size_t r0, size_t r1, size_t chunk) {
-              uint64_t hits = 0, rows = 0;
-              for (size_t r = r0; r < r1; ++r) {
-                if (labels[r] < 0) continue;
-                ++rows;
-                const float* row = probs + r * cols;
-                uint64_t argmax = 0;
-                for (uint64_t c = 1; c < cols; ++c)
-                  if (row[c] > row[argmax]) argmax = c;
-                if (static_cast<uint64_t>(labels[r]) == argmax) ++hits;
-              }
-              tallies[chunk] = hits;
-              judged[chunk] = rows;
-            });
+        up::ParallelFor(real, kernels::RowGrain(cols, kernels::kGrainCheap),
+                        [&](size_t r0, size_t r1, size_t chunk) {
+          uint64_t hits = 0, rows = 0;
+          for (size_t r = r0; r < r1; ++r) {
+            if (labels[r] < 0) continue;
+            ++rows;
+            const float* row = probs + r * cols;
+            uint64_t argmax = 0;
+            for (uint64_t c = 1; c < cols; ++c)
+              if (row[c] > row[argmax]) argmax = c;
+            if (static_cast<uint64_t>(labels[r]) == argmax) ++hits;
+          }
+          tallies[chunk] = hits;
+          judged[chunk] = rows;
+        });
         for (const uint64_t hits : tallies) correct += hits;
         for (const uint64_t rows : judged) counted += rows;
       }
@@ -568,9 +560,9 @@ std::expected<EvalMetrics, std::string> UpdateEngine::EvaluateMetricsImpl(
   data.RestoreServingPos(entry_pos);
   EvalMetrics m;
   m.loss = static_cast<float>(
-      per_row ? (real_rows ? real_row_loss / static_cast<double>(real_rows)
-                           : 0.0)
-              : total / static_cast<double>(batches));
+      per_row
+          ? (real_rows ? real_row_loss / static_cast<double>(real_rows) : 0.0)
+          : total / static_cast<double>(batches));
   if (track_accuracy && counted > 0) {
     m.accuracy = static_cast<float>(static_cast<double>(correct) /
                                     static_cast<double>(counted));
@@ -644,8 +636,9 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       uint64_t served = 0;
       if (!MulOk(step_, header_.batch, &served) ||
           !MulOk(served, grad_accum_, &served))
-        return diag::executing::Error("resumed step count overflows the "
-                                      "feeder position");
+        return diag::executing::Error(
+            "resumed step count overflows the "
+            "feeder position");
       if (auto r = data.SkipServed(served); !r)
         return std::unexpected(r.error());
     }
@@ -674,10 +667,10 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
     horizon_ = end;
   }  // else: a resume of the remainder keeps the checkpoint's horizon
   if (horizon_ < step_ + steps && options.horizon_steps != 0)
-    return diag::executing::Error(
-        "the requested horizon (" + std::to_string(horizon_) +
-        " steps) ends before the run does (step " +
-        std::to_string(step_ + steps) + ")");
+    return diag::executing::Error("the requested horizon (" +
+                                  std::to_string(horizon_) +
+                                  " steps) ends before the run does (step " +
+                                  std::to_string(step_ + steps) + ")");
   // The warmup rule (S4 #150, review N20), held where the run's true start
   // is known: a horizon inside the compiled warmup leaves the cosine phase
   // no steps, so the whole run sits on the ramp. The runner refuses a fresh
@@ -866,15 +859,15 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       // one optimizer step: G grad executions + the step
       profiler_.CountStep();
 
-      const float loss = static_cast<float>(loss_sum /
-                                            static_cast<double>(grad_accum_));
+      const float loss =
+          static_cast<float>(loss_sum / static_cast<double>(grad_accum_));
       // A non-finite loss means the parameters (and any AdamW moments) are
       // already poisoned; continuing can only burn energy. Fail the update —
       // the source model on disk is untouched by construction.
       if (!std::isfinite(loss))
-        return diag::executing::Error(
-            "loss became non-finite at step " +
-            std::to_string(step_) + " — aborting the update");
+        return diag::executing::Error("loss became non-finite at step " +
+                                      std::to_string(step_) +
+                                      " — aborting the update");
       if (options.record_loss_curve) report.loss_curve.push_back(loss);
       if (s - start < window) {
         first_sum += loss;
@@ -893,14 +886,12 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       // Keyed on the GLOBAL step: a resume re-enters mid-run, and keying
       // on this call's count would evaluate at different steps than the
       // uninterrupted run — and so, possibly, keep a different best.
-      if (track_best && step_ % eval_every == 0 &&
-          s + 1 < start + steps) {
+      if (track_best && step_ % eval_every == 0 && s + 1 < start + steps) {
         auto v = EvaluateMetrics(*options.validation);
         if (!v) return std::unexpected(v.error());
         ++report.evaluations;
-        out_of_patience =
-            gate_.Observe(arena_, header_.persistent_size, step_, v->loss,
-                          v->accuracy, options.patience);
+        out_of_patience = gate_.Observe(arena_, header_.persistent_size, step_,
+                                        v->loss, v->accuracy, options.patience);
         if (options.log_every)
           std::fprintf(stderr,
                        "seeml-update: step %llu  validation loss %.6f "
@@ -993,8 +984,8 @@ double UpdateEngine::RealRowLoss(uint64_t real, const uint8_t* label_slot,
       for (uint64_t r = 0; r < real; ++r) {
         if (labels[r] < 0) continue;
         ++rows;
-        const float p = probs[r * eval_tail_.width +
-                              static_cast<uint64_t>(labels[r])];
+        const float p =
+            probs[r * eval_tail_.width + static_cast<uint64_t>(labels[r])];
         const double safe = std::isnan(p)
                                 ? static_cast<double>(p)
                                 : static_cast<double>(std::fmax(p, 1e-12f));
@@ -1037,7 +1028,8 @@ std::expected<void, std::string> UpdateEngine::RunMerge() {
   // packed Apple package on writable pages, so the GPU can share them —
   // and a stray write since load must fail here, not ship as corrupted
   // deltas. One parallel hash of the plan, once per update.
-  if (up::PlanSelfHash(plan_, plan_size_, offsetof(up::PlanHeader, plan_hash)) !=
+  if (up::PlanSelfHash(plan_, plan_size_,
+                       offsetof(up::PlanHeader, plan_hash)) !=
       header_.plan_hash)
     return diag::executing::Error(
         "plan bytes changed since load — refusing to merge");
@@ -1050,8 +1042,7 @@ std::expected<void, std::string> UpdateEngine::RunMerge() {
   // gate rejects the NaN; without one, this scan is the last line between
   // a poisoned delta and the committed model file.
   for (const up::EmitEntry& e : emit_table_) {
-    const auto* delta =
-        reinterpret_cast<const float*>(arena_ + e.arena_offset);
+    const auto* delta = reinterpret_cast<const float*>(arena_ + e.arena_offset);
     const size_t count = e.byte_size / sizeof(float);
     for (size_t i = 0; i < count; ++i)
       if (!std::isfinite(delta[i]))
@@ -1081,22 +1072,22 @@ std::expected<void, std::string> UpdateEngine::WriteCommittedModelReport(
   if (header_.tokenizer_hash == 0) return {};
   auto hash = HashFileContent(out_path);
   if (!hash) return std::unexpected(hash.error());
-  const bool parity = metadata_.present &&
-                      (metadata_.meta.export_flags & update::kExportTokenizerParity);
+  const bool parity = metadata_.present && (metadata_.meta.export_flags &
+                                            update::kExportTokenizerParity);
   char text[512];
-  const int n = std::snprintf(
-      text, sizeof(text),
-      "{\n \"schema\": 1,\n \"smf_hash\": \"%016llx\",\n"
-      " \"tokenizer_hash\": \"%016llx\",\n"
-      " \"tokenizer_parity_checked\": %s,\n"
-      " \"tokenizer_parity_ids\": %llu,\n"
-      " \"logits_parity_checked\": false,\n"
-      " \"logits_parity_max_delta\": 0.0\n}\n",
-      static_cast<unsigned long long>(*hash),
-      static_cast<unsigned long long>(header_.tokenizer_hash),
-      parity ? "true" : "false",
-      static_cast<unsigned long long>(
-          parity ? metadata_.meta.tokenizer_parity_ids : 0));
+  const int n =
+      std::snprintf(text, sizeof(text),
+                    "{\n \"schema\": 1,\n \"smf_hash\": \"%016llx\",\n"
+                    " \"tokenizer_hash\": \"%016llx\",\n"
+                    " \"tokenizer_parity_checked\": %s,\n"
+                    " \"tokenizer_parity_ids\": %llu,\n"
+                    " \"logits_parity_checked\": false,\n"
+                    " \"logits_parity_max_delta\": 0.0\n}\n",
+                    static_cast<unsigned long long>(*hash),
+                    static_cast<unsigned long long>(header_.tokenizer_hash),
+                    parity ? "true" : "false",
+                    static_cast<unsigned long long>(
+                        parity ? metadata_.meta.tokenizer_parity_ids : 0));
   return WriteFileDurable(out_path + ".export.json",
                           reinterpret_cast<const uint8_t*>(text),
                           static_cast<size_t>(n));
@@ -1104,8 +1095,7 @@ std::expected<void, std::string> UpdateEngine::WriteCommittedModelReport(
 
 std::expected<void, std::string> UpdateEngine::CommitToModel(
     const std::string& source_model_path, const std::string& out_path) const {
-  if (!merged_)
-    return diag::executing::Error("RunMerge() must precede commit");
+  if (!merged_) return diag::executing::Error("RunMerge() must precede commit");
 
   // Serialize committers: without the lock, two updates targeting the same
   // output race at the atomic rename and the loser's work silently
@@ -1146,8 +1136,7 @@ std::expected<void, std::string> UpdateEngine::CommitToModel(
       return diag::executing::Error(
           "emit entry exceeds the source model file — plan and "
           "model are out of sync");
-    const auto* delta =
-        reinterpret_cast<const float*>(arena_ + e.arena_offset);
+    const auto* delta = reinterpret_cast<const float*>(arena_ + e.arena_offset);
     const uint64_t count = e.byte_size / sizeof(float);
     for (uint64_t i = 0; i < count; i += kPatchChunkFloats) {
       const uint64_t n = std::min<uint64_t>(kPatchChunkFloats, count - i);
@@ -1158,9 +1147,9 @@ std::expected<void, std::string> UpdateEngine::CommitToModel(
           !r)
         return std::unexpected(r.error());
       for (uint64_t j = 0; j < n; ++j) buf[j] += delta[i + j];
-      if (auto r = edit->WriteAt(at, reinterpret_cast<const uint8_t*>(
-                                         buf.data()),
-                                 n * sizeof(float));
+      if (auto r =
+              edit->WriteAt(at, reinterpret_cast<const uint8_t*>(buf.data()),
+                            n * sizeof(float));
           !r)
         return std::unexpected(r.error());
     }
@@ -1195,7 +1184,8 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
   // The best payload is written only while it differs from the segment
   // being saved: at the moment of a new best the two are the same bytes,
   // and a resume rebuilds the copy from the main payload.
-  if (gate_.has_best && gate_.best_step != step_) record.best_payload = gate_.best_state;
+  if (gate_.has_best && gate_.best_step != step_)
+    record.best_payload = gate_.best_state;
   return SaveCheckpointRecord(path, header_.plan_hash, record, arena_,
                               header_.persistent_size, stats);
 }
@@ -1203,7 +1193,7 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
 std::expected<void, std::string> UpdateEngine::LoadCheckpoint(
     const std::string& path) {
   auto record = LoadCheckpointRecord(path, header_.plan_hash,
-                                      header_.persistent_size, arena_);
+                                     header_.persistent_size, arena_);
   if (!record) return std::unexpected(record.error());
   step_ = record->step;
   horizon_ = record->horizon_steps;  // 0 from a v3 file: the plan's default

@@ -68,8 +68,7 @@ std::expected<Dataset, std::string> MakeUnlabeledData(uint64_t n,
 }
 
 std::expected<Dataset, std::string> MakeTokenCorpus(uint64_t records,
-                                                    uint64_t seq,
-                                                    int64_t vocab,
+                                                    uint64_t seq, int64_t vocab,
                                                     uint64_t seed) {
   std::mt19937_64 rng(seed);
   std::vector<int32_t> tokens;

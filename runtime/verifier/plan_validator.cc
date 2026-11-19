@@ -20,10 +20,10 @@ namespace {
 bool FusedProgramOk(uint64_t stages_word, uint64_t imm_word,
                     bool uses_slot[3]) {
   if (up::HighWord(stages_word) != 0) return false;
-  constexpr uint8_t kKnownBits = static_cast<uint8_t>(
-      up::kFusedStageKindMask |
-      (up::kFusedStageArgMask << up::kFusedStageArgShift) |
-      up::kFusedStageRunIsRight);
+  constexpr uint8_t kKnownBits =
+      static_cast<uint8_t>(up::kFusedStageKindMask |
+                           (up::kFusedStageArgMask << up::kFusedStageArgShift) |
+                           up::kFusedStageRunIsRight);
   bool uses_imm[2] = {false, false};
   size_t stages = 0;
   for (; stages < up::kFusedMapMaxStages; ++stages) {
@@ -41,8 +41,7 @@ bool FusedProgramOk(uint64_t stages_word, uint64_t imm_word,
     } else if (kind == up::FusedStage::kScale) {
       if (arg > 1 || (stage & up::kFusedStageRunIsRight)) return false;
       uses_imm[arg] = true;
-    } else if (kind == up::FusedStage::kRelu ||
-               kind == up::FusedStage::kGelu ||
+    } else if (kind == up::FusedStage::kRelu || kind == up::FusedStage::kGelu ||
                kind == up::FusedStage::kSilu) {
       if ((stage & ~up::kFusedStageKindMask) != 0) return false;
     } else {
@@ -109,14 +108,13 @@ struct InstructionProof {
   // "harmlessly empty" — it is an unchecked pointer), aligned to its
   // element size (the kernels cast the raw offset to a typed pointer), and
   // in bounds for its address space.
-  bool RefOkW(uint64_t ref, uint64_t elems, bool write,
-              uint64_t elem_bytes) {
+  bool RefOkW(uint64_t ref, uint64_t elems, bool write, uint64_t elem_bytes) {
     if (ref == up::kNullRef) return false;
     if (write && up::IsRodataRef(ref)) return false;
     // A source ref (v17): read-only f32, in the eval program only.
     const bool source = up::IsSourceRef(ref);
-    if (source && (write || !allow_source ||
-                   plan_version < up::kSeeuShippedEvalVersion))
+    if (source &&
+        (write || !allow_source || plan_version < up::kSeeuShippedEvalVersion))
       return false;
     if (elems == 0) return false;
     uint64_t bytes = 0;
@@ -126,7 +124,7 @@ struct InstructionProof {
     // blindly": a misaligned offset is UB, and a bus error on the
     // strict-alignment targets this runtime ships to.
     if (up::RefOffset(ref) % elem_bytes != 0) return false;
-    const uint64_t space = source ? kSourceSpaceLimit
+    const uint64_t space = source                 ? kSourceSpaceLimit
                            : up::IsRodataRef(ref) ? rodata_size
                                                   : arena_size;
     if (!RangeOk(up::RefOffset(ref), bytes, space)) return false;
@@ -138,9 +136,10 @@ struct InstructionProof {
     return RefOkW(ref, elems, write, sizeof(float));
   }
   std::unexpected<std::string> Fail() const {
-    return diag::validating::Error("instruction operand out of bounds "
-                           "(opcode " +
-                           std::to_string(ins.opcode) + ")");
+    return diag::validating::Error(
+        "instruction operand out of bounds "
+        "(opcode " +
+        std::to_string(ins.opcode) + ")");
   }
   // Every kernel is compiled with SEEML_RESTRICT pointers: a written range
   // overlapping any *other* operand of the same instruction is undefined
@@ -185,8 +184,7 @@ struct InstructionProof {
   // "absent" (scale 1.0) and any written scale must be a finite positive
   // float — Execute() multiplies by it blindly, and a zero or NaN scale
   // would train on nothing, silently.
-  [[nodiscard]] std::expected<void, std::string> KlWordOk(
-      uint64_t word) const {
+  [[nodiscard]] std::expected<void, std::string> KlWordOk(uint64_t word) const {
     const float t = std::bit_cast<float>(static_cast<uint32_t>(word));
     if (!std::isfinite(t) || t < up::kKlTemperatureMin ||
         t > up::kKlTemperatureMax)
@@ -242,7 +240,8 @@ struct InstructionProof {
     const uint64_t H = up::HighWord(hd_word), d = up::LowWord(hd_word);
     uint64_t t = 0, dm = 0, bhs = 0;
     if (B == 0 || S == 0 || H == 0 || d == 0) return false;
-    if (!MulOk(B, S, &t) || !MulOk(H, d, &dm) || !MulOk(t, dm, td)) return false;
+    if (!MulOk(B, S, &t) || !MulOk(H, d, &dm) || !MulOk(t, dm, td))
+      return false;
     if (!MulOk(t, H, &bhs) || !MulOk(bhs, S, pn)) return false;
     return true;
   }
@@ -256,10 +255,10 @@ std::expected<void, std::string> InstructionProof::FlagsOk() const {
   // misplaced bit must die here, loudly, not skip silently.
   if (plan_version < up::kSeeuFlagsVersion) {
     if (ins.flags != 0)
-      return diag::validating::Error(
-          "instruction carries flags in a pre-v" +
-          std::to_string(up::kSeeuFlagsVersion) + " plan (opcode " +
-          std::to_string(ins.opcode) + ")");
+      return diag::validating::Error("instruction carries flags in a pre-v" +
+                                     std::to_string(up::kSeeuFlagsVersion) +
+                                     " plan (opcode " +
+                                     std::to_string(ins.opcode) + ")");
   } else {
     const auto opcode = static_cast<up::OpCode>(ins.opcode);
     const bool addend_ok =
@@ -299,10 +298,9 @@ std::expected<void, std::string> InstructionProof::FlagsOk() const {
         (colscale_ok ? up::kFlagQ8ColScale : uint16_t{0}) |
         (relaxed_ok ? up::kFlagRelaxed : uint16_t{0}));
     if (ins.flags & static_cast<uint16_t>(~allowed))
-      return diag::validating::Error(
-          "unknown or misplaced instruction flags " +
-          std::to_string(ins.flags) + " (opcode " +
-          std::to_string(ins.opcode) + ")");
+      return diag::validating::Error("unknown or misplaced instruction flags " +
+                                     std::to_string(ins.flags) + " (opcode " +
+                                     std::to_string(ins.opcode) + ")");
     // One ref slot, one tenant: the addend and the epilogue both want in[3].
     if ((ins.flags & up::kFlagGemmAddend) &&
         (ins.flags & up::kEpilogueFlagsMask))
@@ -332,7 +330,8 @@ std::expected<void, std::string> InstructionProof::ImmOk() const {
     if (!defined)
       return diag::validating::Error(
           "instruction carries an imm word its opcode does not define "
-          "(opcode " + std::to_string(ins.opcode) + ", plan v" +
+          "(opcode " +
+          std::to_string(ins.opcode) + ", plan v" +
           std::to_string(plan_version) + ")");
     const float value = std::bit_cast<float>(ins.imm);
     if (norm_fwd && (!std::isfinite(value) || !(value > 0.0f)))
@@ -363,23 +362,22 @@ std::expected<void, std::string> InstructionProof::VersionOk() const {
   if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kGemmNNBF16) ||
        ins.opcode == static_cast<uint16_t>(up::OpCode::kGemmNTBF16)) &&
       plan_version < up::kSeeuBf16Version)
-    return diag::validating::Error(
-        "bf16 GEMM opcode in a pre-v" +
-        std::to_string(up::kSeeuBf16Version) + " plan");
+    return diag::validating::Error("bf16 GEMM opcode in a pre-v" +
+                                   std::to_string(up::kSeeuBf16Version) +
+                                   " plan");
   if (ins.opcode >= static_cast<uint16_t>(up::OpCode::kAttnFwdTiled) &&
       ins.opcode <= static_cast<uint16_t>(up::OpCode::kAttnDVTiled) &&
       plan_version < up::kSeeuTiledAttentionVersion)
     return diag::validating::Error(
-        "tiled attention opcode " + std::to_string(ins.opcode) +
-        " in a pre-v" + std::to_string(up::kSeeuTiledAttentionVersion) +
-        " plan");
+        "tiled attention opcode " + std::to_string(ins.opcode) + " in a pre-v" +
+        std::to_string(up::kSeeuTiledAttentionVersion) + " plan");
   if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedFwd) ||
-       ins.opcode == static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedBwd)) &&
+       ins.opcode ==
+           static_cast<uint16_t>(up::OpCode::kSoftmaxXEntMaskedBwd)) &&
       plan_version < up::kSeeuDataContractVersion)
     return diag::validating::Error(
         "masked cross-entropy opcode " + std::to_string(ins.opcode) +
-        " in a pre-v" + std::to_string(up::kSeeuDataContractVersion) +
-        " plan");
+        " in a pre-v" + std::to_string(up::kSeeuDataContractVersion) + " plan");
   if ((ins.opcode == static_cast<uint16_t>(up::OpCode::kSegmentStarts) ||
        ins.opcode == static_cast<uint16_t>(up::OpCode::kAttnFwdSeg)) &&
       plan_version < up::kSeeuSegmentMaskVersion)
@@ -400,19 +398,19 @@ std::expected<void, std::string> InstructionProof::VersionOk() const {
         std::to_string(up::kSeeuGlobalClipVersion) + " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kAccumulate) &&
       plan_version < up::kSeeuGradAccumVersion)
-    return diag::validating::Error(
-        "accumulate opcode in a pre-v" +
-        std::to_string(up::kSeeuGradAccumVersion) + " plan");
+    return diag::validating::Error("accumulate opcode in a pre-v" +
+                                   std::to_string(up::kSeeuGradAccumVersion) +
+                                   " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kFusedMap) &&
       plan_version < up::kSeeuFusedMapVersion)
-    return diag::validating::Error(
-        "fused_map opcode in a pre-v" +
-        std::to_string(up::kSeeuFusedMapVersion) + " plan");
+    return diag::validating::Error("fused_map opcode in a pre-v" +
+                                   std::to_string(up::kSeeuFusedMapVersion) +
+                                   " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kRopeTable) &&
       plan_version < up::kSeeuKernelBatchVersion)
-    return diag::validating::Error(
-        "rope_table opcode in a pre-v" +
-        std::to_string(up::kSeeuKernelBatchVersion) + " plan");
+    return diag::validating::Error("rope_table opcode in a pre-v" +
+                                   std::to_string(up::kSeeuKernelBatchVersion) +
+                                   " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kEmbedFwd) &&
       plan_version < up::kSeeuTokenVersion)
     return diag::validating::Error(
@@ -425,8 +423,7 @@ std::expected<void, std::string> InstructionProof::Gemm() {
   uint64_t mk = 0, kn = 0, mn = 0;
   // Every layout variant reads M*K (A) and K*N (B), writes M*N (C).
   const auto oc = static_cast<up::OpCode>(ins.opcode);
-  const bool q8 =
-      oc == up::OpCode::kGemmNNQ8 || oc == up::OpCode::kGemmNTQ8;
+  const bool q8 = oc == up::OpCode::kGemmNNQ8 || oc == up::OpCode::kGemmNTQ8;
   const bool bf16 =
       oc == up::OpCode::kGemmNNBF16 || oc == up::OpCode::kGemmNTBF16;
   if (!MulOk(d0, d2, &mk) || !MulOk(d2, d1, &kn) || !MulOk(d0, d1, &mn))
@@ -435,8 +432,7 @@ std::expected<void, std::string> InstructionProof::Gemm() {
   // packing produces it — 1 byte per element for int8, 2 for bf16.
   if ((q8 || bf16) && !up::IsRodataRef(ins.in[1])) return Fail();
   const uint64_t b_elem = q8 ? 1 : bf16 ? 2 : sizeof(float);
-  if (!RefOk(ins.in[0], mk, false) ||
-      !RefOkW(ins.in[1], kn, false, b_elem) ||
+  if (!RefOk(ins.in[0], mk, false) || !RefOkW(ins.in[1], kn, false, b_elem) ||
       !RefOk(ins.in[2], mn, true))
     return Fail();
   // Fused-bias epilogue (flags proved valid for this opcode above):
@@ -450,10 +446,8 @@ std::expected<void, std::string> InstructionProof::Gemm() {
   // the high word zero (CR1 #142 F33 — a zero or NaN scale passed, and
   // dequantized the whole weight to nothing or to NaN).
   if (q8 && !(ins.flags & up::kFlagQ8ColScale)) {
-    const float scale =
-        std::bit_cast<float>(static_cast<uint32_t>(ins.in[3]));
-    if (up::HighWord(ins.in[3]) != 0 || !std::isfinite(scale) ||
-        scale <= 0.0f)
+    const float scale = std::bit_cast<float>(static_cast<uint32_t>(ins.in[3]));
+    if (up::HighWord(ins.in[3]) != 0 || !std::isfinite(scale) || scale <= 0.0f)
       return diag::validating::Error(
           "quantized GEMM dequant scale must be a finite positive float");
   }
@@ -462,8 +456,7 @@ std::expected<void, std::string> InstructionProof::Gemm() {
   // in the dX GEMM (NT), where W is read as [N, K].
   if (ins.flags & up::kFlagQ8ColScale) {
     const bool nt = oc == up::OpCode::kGemmNTQ8;
-    if (!up::IsRodataRef(ins.in[3]) ||
-        !RefOk(ins.in[3], nt ? d2 : d1, false))
+    if (!up::IsRodataRef(ins.in[3]) || !RefOk(ins.in[3], nt ? d2 : d1, false))
       return Fail();
   }
   // The addend (v14, f32 GEMMs only — proved above): in[3] is a read of
@@ -752,7 +745,7 @@ std::expected<void, std::string> InstructionProof::AttentionCached() {
       const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
       uint64_t td = 0, pn = 0, t = 0;
       if (!AttnGeometryOk(up::PackWords(g.B, g.S), up::PackWords(g.H, g.d), &td,
-                         &pn) ||
+                          &pn) ||
           !MulOk(g.B, g.S, &t))
         return Fail();
       if (!RefOk(ins.in[0], td, false) || !RefOk(ins.in[1], td, false) ||
@@ -823,7 +816,7 @@ std::expected<void, std::string> InstructionProof::AttentionTiled() {
       const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
       uint64_t td = 0, pn = 0, st = 0, t = 0;
       if (!AttnGeometryOk(up::PackWords(g.B, g.S), up::PackWords(g.H, g.d), &td,
-                         &pn) ||
+                          &pn) ||
           !MulOk(g.B * g.S * g.H, up::kAttnStatsWidth, &st) ||
           !MulOk(g.B, g.S, &t))
         return Fail();
@@ -841,12 +834,12 @@ std::expected<void, std::string> InstructionProof::AttentionTiled() {
       // Geometry is the packed 16-bit word: every field must be nonzero
       // and the products must be sound.
       const auto g = up::UnpackAttnGeometry(d2);
-      const uint64_t bs = up::PackWords(g.B, g.S),
-                     hd = up::PackWords(g.H, g.d);
+      const uint64_t bs = up::PackWords(g.B, g.S), hd = up::PackWords(g.H, g.d);
       uint64_t td = 0, pn = 0, st = 0;
       if (!AttnGeometryOk(bs, hd, &td, &pn)) return Fail();
       if (!MulOk(g.B * g.S * g.H, up::kAttnStatsWidth, &st)) return Fail();
-      const bool dq = ins.opcode == static_cast<uint16_t>(up::OpCode::kAttnDQTiled);
+      const bool dq =
+          ins.opcode == static_cast<uint16_t>(up::OpCode::kAttnDQTiled);
       if (!RefOk(ins.in[0], td, false) || !RefOk(ins.in[1], td, false) ||
           !RefOk(ins.in[2], td, false) || !RefOk(ins.in[3], td, false) ||
           !RefOk(ins.out[0], st, dq) || !RefOk(ins.out[1], td, true))
@@ -969,9 +962,8 @@ std::expected<void, std::string> InstructionProof::Run() {
 }
 
 [[nodiscard]] std::expected<void, std::string> ValidateInstructionImpl(
-    const up::UpdateInstruction& ins, uint64_t arena_size,
-    uint64_t rodata_size, uint32_t plan_version, bool allow_source,
-    InstructionExtents* extents) {
+    const up::UpdateInstruction& ins, uint64_t arena_size, uint64_t rodata_size,
+    uint32_t plan_version, bool allow_source, InstructionExtents* extents) {
   return InstructionProof(ins, arena_size, rodata_size, plan_version,
                           allow_source, extents)
       .Run();
@@ -980,16 +972,16 @@ std::expected<void, std::string> InstructionProof::Run() {
 }  // namespace
 
 std::expected<void, std::string> ValidateInstruction(
-    const up::UpdateInstruction& ins, uint64_t arena_size,
-    uint64_t rodata_size, uint32_t plan_version, bool allow_source) {
+    const up::UpdateInstruction& ins, uint64_t arena_size, uint64_t rodata_size,
+    uint32_t plan_version, bool allow_source) {
   InstructionExtents extents;
   return ValidateInstructionImpl(ins, arena_size, rodata_size, plan_version,
                                  allow_source, &extents);
 }
 
 std::expected<InstructionExtents, std::string> DescribeInstruction(
-    const up::UpdateInstruction& ins, uint64_t arena_size,
-    uint64_t rodata_size, uint32_t plan_version, bool allow_source) {
+    const up::UpdateInstruction& ins, uint64_t arena_size, uint64_t rodata_size,
+    uint32_t plan_version, bool allow_source) {
   InstructionExtents extents;
   if (auto r = ValidateInstructionImpl(ins, arena_size, rodata_size,
                                        plan_version, allow_source, &extents);

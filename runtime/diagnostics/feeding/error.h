@@ -22,13 +22,14 @@ inline constexpr std::string_view kDataset = "Dataset";
 inline constexpr std::string_view kBatchPipeline = "BatchPipeline";
 
 /// Corpus-level failure: "Dataset: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view message) {
   return Fail(kDataset, message);
 }
 
 /// File-shaped failure: "Dataset: <what> '<path>'".
-[[nodiscard]] inline std::unexpected<std::string> FileError(std::string_view what,
-                                                            std::string_view path) {
+[[nodiscard]] inline std::unexpected<std::string> FileError(
+    std::string_view what, std::string_view path) {
   std::string m;
   m.reserve(what.size() + path.size() + 3);
   m.append(what).append(" '").append(path).append("'");

@@ -93,10 +93,11 @@ TEST(ArenaBinder, PinnedValuesAreBoundBelowTheTransientsAndSplitNoHole) {
   sir::Value* c = o3->addResult("c", sir::DataType::F32, sir::Shape{1024});
   std::unordered_map<const sir::Value*, uint64_t> bound, refs;
   std::unordered_set<const sir::Value*> pinned{p};
-  const uint64_t high = LinearScanTransients(block, /*base=*/0, bound, pinned, refs);
-  EXPECT_EQ(refs.at(p), MakeArenaRef(0));          // first, at the base
-  EXPECT_EQ(refs.at(c), refs.at(a));               // the hole is whole
-  EXPECT_EQ(high, AlignUp(16) + 4096u);            // one slot above the pinned region
+  const uint64_t high =
+      LinearScanTransients(block, /*base=*/0, bound, pinned, refs);
+  EXPECT_EQ(refs.at(p), MakeArenaRef(0));  // first, at the base
+  EXPECT_EQ(refs.at(c), refs.at(a));       // the hole is whole
+  EXPECT_EQ(high, AlignUp(16) + 4096u);    // one slot above the pinned region
 }
 
 TEST(ArenaBinder, AlreadyBoundValuesAreSkipped) {
@@ -131,9 +132,8 @@ struct MatmulFixture {
     mm->addOperand(x);
     mm->addOperand(w);
     y = mm->addResult("y", sir::DataType::F32, sir::Shape{4, 3});
-    refs = {{x, MakeArenaRef(0)},
-            {w, MakeRodataRef(0)},
-            {y, MakeArenaRef(128)}};
+    refs = {
+        {x, MakeArenaRef(0)}, {w, MakeRodataRef(0)}, {y, MakeArenaRef(128)}};
   }
 
   std::vector<sir::Operation*> Ops() {
@@ -195,8 +195,8 @@ TEST(InstructionLowering, RejectsOpsWithoutAnEncoding) {
   op->addOperand(x);
   sir::Value* y = op->addResult("y", sir::DataType::F32, sir::Shape{4});
 
-  std::unordered_map<const sir::Value*, uint64_t> refs{
-      {x, MakeArenaRef(0)}, {y, MakeArenaRef(64)}};
+  std::unordered_map<const sir::Value*, uint64_t> refs{{x, MakeArenaRef(0)},
+                                                       {y, MakeArenaRef(64)}};
   auto resolve =
       [&](const sir::Value* v) -> std::expected<uint64_t, std::string> {
     return refs.at(v);

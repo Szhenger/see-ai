@@ -22,8 +22,8 @@ namespace seeml::update_rt {
 /// under both builds (no ODR hazard between differently-configured
 /// objects).
 struct StepTimings {
-  uint64_t steps = 0;         // optimizer steps accumulated (G grad
-                              // executions each under accumulation)
+  uint64_t steps = 0;  // optimizer steps accumulated (G grad
+                       // executions each under accumulation)
   double fwd_seconds = 0.0;
   double bwd_seconds = 0.0;
   double opt_seconds = 0.0;
@@ -69,7 +69,9 @@ inline PhaseBoundaries ScanPhases(
 class StepProfiler {
  public:
   /// The phase boundaries of a newly bound train program, and a fresh split.
-  void Bind([[maybe_unused]] const std::vector<seeml::update::UpdateInstruction>& train) {
+  void Bind(
+      [[maybe_unused]] const std::vector<seeml::update::UpdateInstruction>&
+          train) {
 #ifdef SEEML_STEP_TIMING
     phases_ = ScanPhases(train);
     timings_ = {};

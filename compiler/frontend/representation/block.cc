@@ -11,8 +11,10 @@
 namespace seeml::sir {
 
 Value* Block::addArgument(DataType dt, Shape sh) {
-    std::string id = "%" + std::to_string(Operation::id_counter_.fetch_add(1, std::memory_order_relaxed));
-    auto val = std::make_unique<Value>(std::move(id), dt, std::move(sh), nullptr);
+    std::string id = "%" + std::to_string(Operation::id_counter_.fetch_add(
+                               1, std::memory_order_relaxed));
+    auto val =
+        std::make_unique<Value>(std::move(id), dt, std::move(sh), nullptr);
     args_.push_back(std::move(val));
     return args_.back().get();
 }
@@ -32,15 +34,14 @@ Operation* Block::appendOp(std::unique_ptr<Operation> op) {
 
 void Block::insertOpsAfter(Operation* anchor,
                            std::vector<std::unique_ptr<Operation>> new_ops) {
-    auto it = std::find_if(ops_.begin(), ops_.end(),
-                           [anchor](const auto& p) { return p.get() == anchor; });
+    auto it = std::find_if(ops_.begin(), ops_.end(), [anchor](const auto& p) {
+        return p.get() == anchor;
+    });
     assert(it != ops_.end() && "insertOpsAfter: anchor not found in block");
 
-    for (auto& op : new_ops)
-        op->setParentBlock(this);
+    for (auto& op : new_ops) op->setParentBlock(this);
 
-    ops_.insert(std::next(it),
-                std::make_move_iterator(new_ops.begin()),
+    ops_.insert(std::next(it), std::make_move_iterator(new_ops.begin()),
                 std::make_move_iterator(new_ops.end()));
 }
 
@@ -54,14 +55,16 @@ void Block::moveOpBefore(Operation* op, Operation* anchor) {
     assert(from != ops_.end() && "moveOpBefore: op not found in block");
     auto owned = std::move(*from);
     ops_.erase(from);
-    auto to = std::find_if(ops_.begin(), ops_.end(),
-                           [anchor](const auto& p) { return p.get() == anchor; });
+    auto to = std::find_if(ops_.begin(), ops_.end(), [anchor](const auto& p) {
+        return p.get() == anchor;
+    });
     assert(to != ops_.end() && "moveOpBefore: anchor not found in block");
     ops_.insert(to, std::move(owned));
 }
 
 std::unique_ptr<Operation> Block::removeOp(Operation* op) {
-    auto it = std::find_if(ops_.begin(), ops_.end(), [op](const auto& p) { return p.get() == op; });
+    auto it = std::find_if(ops_.begin(), ops_.end(),
+                           [op](const auto& p) { return p.get() == op; });
     assert(it != ops_.end() && "removeOp: operation not found in block");
 #ifndef NDEBUG
     for (const auto& res : op->results())
@@ -205,4 +208,4 @@ Block* Region::entryBlock() {
     return blocks_.front().get();
 }
 
-} // namespace seeml::sir
+}  // namespace seeml::sir

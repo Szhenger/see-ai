@@ -66,19 +66,22 @@ std::span<const UpdateInstruction> Program(const std::vector<uint8_t>& plan,
 Totals Measure(const UpdateConfig& config, const CompiledUpdate& r) {
   Totals t;
   for (const PassTiming& p : r.pass_timings) {
-    if (IsFrontendPhase(p.name)) t.frontend_ms += p.ms;
-    else if (IsBackendPhase(p.name)) t.backend_ms += p.ms;
-    else t.analysis_ms += p.ms;
+    if (IsFrontendPhase(p.name))
+      t.frontend_ms += p.ms;
+    else if (IsBackendPhase(p.name))
+      t.backend_ms += p.ms;
+    else
+      t.analysis_ms += p.ms;
   }
   t.device_bytes = r.arena_size + r.plan.size();
   if (r.plan.size() >= sizeof(t.header)) {
     std::memcpy(&t.header, r.plan.data(), sizeof(t.header));
     t.train = Program(r.plan, t.header.train_instr_offset,
                       t.header.train_instr_count);
-    t.eval = Program(r.plan, t.header.eval_instr_offset,
-                     t.header.eval_instr_count);
-    t.step = Program(r.plan, t.header.step_instr_offset,
-                     t.header.step_instr_count);
+    t.eval =
+        Program(r.plan, t.header.eval_instr_offset, t.header.eval_instr_count);
+    t.step =
+        Program(r.plan, t.header.step_instr_offset, t.header.step_instr_count);
   }
   t.work = MeasurePlanWork(r.plan);
   // Forward, backward, optimizer (S5 #151), with the unit seeml-plan-probe
@@ -110,10 +113,10 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
   fe.Set("weight_tensors", ing.weight_tensors);
   fe.Set("weight_bytes", ing.weight_bytes);
   fe.Set("parameters", ing.weight_bytes / 4);
-  fe.Set("input", ing.token_input
-                      ? "token ids, " + std::to_string(ing.seq_len) +
-                            " per sequence"
-                      : std::to_string(ing.input_width) + " features per row");
+  fe.Set("input",
+         ing.token_input
+             ? "token ids, " + std::to_string(ing.seq_len) + " per sequence"
+             : std::to_string(ing.input_width) + " features per row");
   if (top.vocabulary) fe.Set("vocabulary", top.vocabulary);
   if (top.has_teacher) fe.Set("teacher_ops", top.teacher_ops);
   fe.Set("adapted_tensors", top.adapted_tensors);
@@ -134,11 +137,10 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
       fe.Set("corpus_documents", std::to_string(c.documents_in) + " in, " +
                                      std::to_string(c.documents_kept) +
                                      " kept");
-      fe.Set("corpus_dropped", std::to_string(c.dropped_empty) + " empty, " +
-                                   std::to_string(c.dropped_duplicate) +
-                                   " duplicate, " +
-                                   std::to_string(c.dropped_degenerate) +
-                                   " degenerate");
+      fe.Set("corpus_dropped",
+             std::to_string(c.dropped_empty) + " empty, " +
+                 std::to_string(c.dropped_duplicate) + " duplicate, " +
+                 std::to_string(c.dropped_degenerate) + " degenerate");
       fe.Set("corpus_sanitized",
              std::to_string(c.invalid_utf8_bytes) + " invalid UTF-8 byte(s), " +
                  std::to_string(c.control_chars) + " control char(s), " +
@@ -192,14 +194,13 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
   fe.Set("footprint_caches", acc.footprint_caches);
   fe.Set("footprint_total", acc.footprint_total);
   fe.Set("bound_ratio", t.device_bytes ? static_cast<double>(r.estimate_bytes) /
-                                           static_cast<double>(t.device_bytes)
-                                     : 0.0);
+                                             static_cast<double>(t.device_bytes)
+                                       : 0.0);
   fe.Set("memory_budget", acc.memory_budget);
   fe.Set("frontend_ms", t.frontend_ms);
   for (const WeightRange& w : ing.ranges)
     fe.AddRow("tensors", {w.name, w.bytes, static_cast<double>(w.min),
                           static_cast<double>(w.max)});
-
 }
 
 void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
@@ -222,14 +223,13 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   }
   uint64_t trainable = 0;
   for (const AdapterDebugInfo& a : r.adapters)
-    trainable += static_cast<uint64_t>(a.r) *
-                 static_cast<uint64_t>(a.k + a.m);
+    trainable += static_cast<uint64_t>(a.r) * static_cast<uint64_t>(a.k + a.m);
   an.Set("trainable_parameters", trainable);
   const uint64_t parameters = ing.weight_bytes / 4;
-  an.Set("trainable_share",
-         parameters ? 100.0 * static_cast<double>(trainable) /
-                          static_cast<double>(parameters)
-                    : 0.0);
+  an.Set("trainable_share", parameters
+                                ? 100.0 * static_cast<double>(trainable) /
+                                      static_cast<double>(parameters)
+                                : 0.0);
   an.Set("gradients", f.gradients);
   an.Set("rope_tables", f.rope_tables);
   an.Set("epilogue_fusions", f.epilogue_fusions);
@@ -246,9 +246,9 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   // (`auto` with no corpus): it is the unmasked plan it always was.
   if (!f.segment_mask_why.empty())
     an.Set("segment_mask",
-           (f.segment_mask ? "on, " + std::to_string(f.segment_masked_ops) +
-                                 " op(s): "
-                           : std::string("off: ")) +
+           (f.segment_mask
+                ? "on, " + std::to_string(f.segment_masked_ops) + " op(s): "
+                : std::string("off: ")) +
                f.segment_mask_why);
   std::string remat;
   if (r.remat_applied)
@@ -296,7 +296,7 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
     an.AddRow("ledger",
               {std::string(e.pass),
                std::string(e.arithmetic == kLedgerExact ? "bit-identical"
-                                                         : "reordered"),
+                                                        : "reordered"),
                static_cast<uint64_t>(e.instructions), std::string(e.why)});
 }
 
@@ -324,14 +324,14 @@ void FillBackend(const CompileFacts& f, const UpdateConfig& config,
   // stated peak, so a Metal run's measured step has a prediction beside it.
   if (std::isfinite(config.gpu_peak_gflops) && config.gpu_peak_gflops > 0.0) {
     be.Set("gpu_peak_gflops", config.gpu_peak_gflops);
-    be.Set("predicted_step_gpu_ms",
-           static_cast<double>(t.work.FlopsPerStep()) /
-               (config.gpu_peak_gflops * 1e6));
+    be.Set("predicted_step_gpu_ms", static_cast<double>(t.work.FlopsPerStep()) /
+                                        (config.gpu_peak_gflops * 1e6));
   }
   // The target (S6 #152): a cross-compile names the key its kernel policy
   // came from, and claims no GPU it cannot see; otherwise this host.
   if (!config.target_host.empty()) {
-    be.Set("target", config.target_host + " (--target-host); GPU not described");
+    be.Set("target",
+           config.target_host + " (--target-host); GPU not described");
   } else {
     const HostArchInfo host = DetectHostArch();
     be.Set("target", HostKey(host) + "; GPU " +
@@ -348,11 +348,10 @@ void FillBackend(const CompileFacts& f, const UpdateConfig& config,
     }
     if (host.gpu_cores > 0) be.Set("gpu_cores", host.gpu_cores);
   }
-  be.Set("kernel_policy",
-         r.gemm_tile_k == 0 && r.gemm_tile_n == 0
-             ? std::string("runtime default")
-             : "K " + std::to_string(r.gemm_tile_k) + ", N " +
-                   std::to_string(r.gemm_tile_n));
+  be.Set("kernel_policy", r.gemm_tile_k == 0 && r.gemm_tile_n == 0
+                              ? std::string("runtime default")
+                              : "K " + std::to_string(r.gemm_tile_k) + ", N " +
+                                    std::to_string(r.gemm_tile_n));
   be.Set("plan_hash", Hex16(t.header.plan_hash));
   be.Set("backend_ms", t.backend_ms);
   for (const TensorFact& tensor : f.largest_tensors)

@@ -66,7 +66,8 @@ TEST(GoldenFixture, TheExportersModelLoadsValueForValue) {
 }
 
 TEST(GoldenFixture, TheExportersFeatureCorpusServesItsRows) {
-  ASSERT_OK_AND_ASSIGN(Dataset data, Dataset::LoadFromFile(Golden("class.sds")));
+  ASSERT_OK_AND_ASSIGN(Dataset data,
+                       Dataset::LoadFromFile(Golden("class.sds")));
   EXPECT_EQ(data.num_samples(), 5u);
   EXPECT_EQ(data.input_dim(), 4u);
   EXPECT_EQ(data.label_kind(), 1u);

@@ -54,7 +54,9 @@ inline constexpr uint64_t MakeRodataRef(uint64_t offset) {
 inline constexpr uint64_t MakeSourceRef(uint64_t offset) {
   return offset | kSourceBit;
 }
-inline constexpr bool IsRodataRef(uint64_t ref) { return (ref & kRodataBit) != 0; }
+inline constexpr bool IsRodataRef(uint64_t ref) {
+  return (ref & kRodataBit) != 0;
+}
 inline constexpr bool IsSourceRef(uint64_t ref) {
   return (ref & (kRodataBit | kSourceBit)) == kSourceBit;
 }
@@ -333,7 +335,7 @@ inline constexpr uint8_t FusedStageArg(uint8_t stage) {
 // — its in[3] already carries the dequant scale, so a bias has nowhere to
 // ride. Every other opcode requires flags == 0.
 inline constexpr uint16_t kFlagEpilogueBias = 1u << 0;  // in[3] = bias ref [N]
-inline constexpr uint16_t kFlagEpilogueActShift = 1;    // bits 1..2: EpilogueAct
+inline constexpr uint16_t kFlagEpilogueActShift = 1;  // bits 1..2: EpilogueAct
 inline constexpr uint16_t kFlagEpilogueActMask = 3u << kFlagEpilogueActShift;
 inline constexpr uint16_t kEpilogueFlagsMask =
     kFlagEpilogueBias | kFlagEpilogueActMask;
@@ -430,7 +432,12 @@ inline float GemmAlphaOf(uint32_t imm) {
   return imm == 0 ? 1.0f : std::bit_cast<float>(imm);
 }
 
-enum class EpilogueAct : uint16_t { kNone = 0, kRelu = 1, kGelu = 2, kSilu = 3 };
+enum class EpilogueAct : uint16_t {
+  kNone = 0,
+  kRelu = 1,
+  kGelu = 2,
+  kSilu = 3
+};
 
 inline constexpr EpilogueAct EpilogueActOf(uint16_t flags) {
   return static_cast<EpilogueAct>((flags & kFlagEpilogueActMask) >>

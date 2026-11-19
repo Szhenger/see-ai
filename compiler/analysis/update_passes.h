@@ -36,21 +36,21 @@
 //   sc_low.*       synthesized adjoint / optimizer / merge ops
 // =============================================================================
 
-#include "compiler/analysis/algebra/epilogue_fuser.h" // IWYU pragma: export
-#include "compiler/analysis/algebra/addend_fuser.h"   // IWYU pragma: export
+#include "compiler/analysis/algebra/epilogue_fuser.h"  // IWYU pragma: export
+#include "compiler/analysis/algebra/addend_fuser.h"    // IWYU pragma: export
 #include "compiler/analysis/statistics/attention_tiling.h"  // IWYU pragma: export
-#include "compiler/analysis/algebra/chain_fuser.h"    // IWYU pragma: export
-#include "compiler/analysis/algebra/rope_table.h"     // IWYU pragma: export
+#include "compiler/analysis/algebra/chain_fuser.h"      // IWYU pragma: export
+#include "compiler/analysis/algebra/rope_table.h"       // IWYU pragma: export
 #include "compiler/analysis/algebra/segment_mask.h"     // IWYU pragma: export
 #include "compiler/analysis/calculus/rematerializer.h"  // IWYU pragma: export
-#include "compiler/analysis/algebra/lora_grafter.h"   // IWYU pragma: export
-#include "compiler/analysis/algebra/merge_builder.h"  // IWYU pragma: export
-#include "compiler/analysis/calculus/autodiff.h"      // IWYU pragma: export
-#include "compiler/analysis/optimization/optimizer.h"     // IWYU pragma: export
-#include "compiler/analysis/optimization/schedule.h"      // IWYU pragma: export
-#include "compiler/analysis/statistics/precision.h"   // IWYU pragma: export
+#include "compiler/analysis/algebra/lora_grafter.h"     // IWYU pragma: export
+#include "compiler/analysis/algebra/merge_builder.h"    // IWYU pragma: export
+#include "compiler/analysis/calculus/autodiff.h"        // IWYU pragma: export
+#include "compiler/analysis/optimization/optimizer.h"   // IWYU pragma: export
+#include "compiler/analysis/optimization/schedule.h"    // IWYU pragma: export
+#include "compiler/analysis/statistics/precision.h"     // IWYU pragma: export
 #include "compiler/analysis/statistics/quantization.h"  // IWYU pragma: export
-#include "compiler/analysis/topology/dce.h"            // IWYU pragma: export
-#include "compiler/analysis/pass_manager.h"   // IWYU pragma: export
+#include "compiler/analysis/topology/dce.h"             // IWYU pragma: export
+#include "compiler/analysis/pass_manager.h"             // IWYU pragma: export
 
 #endif  // SEEML_COMPILER_ANALYSIS_UPDATE_PASSES_H_
