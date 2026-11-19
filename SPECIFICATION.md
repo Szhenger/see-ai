@@ -400,7 +400,7 @@ test of the compiler-emitted GEMM source.
   host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
   with its reason, apart from the passes, never a failure. Exit codes:
   0 no test failed / 1 fail / 2 usage or empty selection. 33 suite executables mirror the source tree
-  one-to-one, 591 tests in all, and 227 more in the Python plane's
+  one-to-one, 591 tests in all, and 233 more in the Python plane's
   `test/tool/` (counted on macOS, 2026-11-19; the live counts are the suite
   list of `build/build.sh`, each suite's `--list`, and what `unittest
   discover` reports).
