@@ -150,6 +150,41 @@ class CliExitCodes(unittest.TestCase):
         self.assertIn("--clip-norm (recipe field clip_norm)", done.stderr)
         self.assertNotIn("requires a value", done.stderr)
 
+    # --help is the recipe's field table said once: every field's flag (the
+    # ABI manifest lists them, tool/seeml/abi.json) is one option entry —
+    # `[--flag …` or the second of a `[--a | --b]` pair — and no entry is
+    # there twice. Until the /code-review of #213 five were (--weight-decay,
+    # --clip-norm, --lr-schedule, --warmup, --allow-zero-lr: two lines in an
+    # older and a newer wording), and the --segment-mask entry sat inside
+    # the --masked-loss description.
+    @built("seeml-update-compile")
+    def test_update_compile_help_lists_every_recipe_flag_once(self):
+        usage = self.exits(0, "seeml-update-compile", "--help").stderr
+        entries = re.findall(r"(?:\[|\| )(--[a-z0-9-]+)(?![\w-])", usage)
+        twice = sorted({e for e in entries if entries.count(e) > 1})
+        self.assertEqual(twice, [], "option entries --help prints twice")
+        flags = [f["flag"] for f in self.recipe_fields()]
+        self.assertGreater(len(flags), 30)
+        self.assertEqual([f for f in flags if f not in entries], [],
+                         "recipe flags --help does not list")
+        # An entry's description follows it: the three --masked-loss lines
+        # are together, and the next entry starts after them.
+        lines = usage.splitlines()
+        at = next(i for i, line in enumerate(lines) if "[--masked-loss]" in line)
+        self.assertIn("alone (labels of -1 ignored)", lines[at + 1])
+        self.assertIn("corpus that carries a mask", lines[at + 2])
+        self.assertIn("[--segment-mask auto|off|on]", lines[at + 3])
+        self.assertLessEqual(max(map(len, lines)), 80)
+
+    # docs/usage.md says what each recipe field's flag does: a field added
+    # to the table is documented there, by its flag.
+    def test_usage_md_names_every_recipe_flag(self):
+        with open(os.path.join(REPO, "docs", "usage.md")) as f:
+            text = f.read()
+        missing = [f["flag"] for f in self.recipe_fields()
+                   if not re.search(re.escape(f["flag"]) + r"(?![\w-])", text)]
+        self.assertEqual(missing, [])
+
     @built("seeml-seeu-dump")
     def test_seeu_dump(self):
         for argv in (
