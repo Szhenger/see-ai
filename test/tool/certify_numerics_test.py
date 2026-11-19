@@ -675,6 +675,46 @@ class CertifyPlansTest(unittest.TestCase):
             self.assertEqual(x.flags, y.flags & ~fx.FLAG_RELAXED)
             self.assertEqual(x.src, y.src)
 
+    def test_a_relaxed_masked_tiled_plan_certifies_the_masked_forward(self):
+        # Plan v26 (#191 step 2): with the segment mask the tiled forward is
+        # kAttnFwdTiledSeg, relaxed as the plain one is — and its own site,
+        # attn.fwd.tiled.seg: the certifier prices it, the contract names it,
+        # and a certificate that priced the unmasked forward instead does
+        # not vouch for the plan.
+        corpus = os.path.join(self.dir, "segdec", "corpus.sds")
+        pkg = self.compile("dec_relaxed_tiled_seg",
+                           os.path.join("segdec", "decoder.smf"), 12,
+                           "--precision", "certified-bf16",
+                           "--attention", "tiled", "--segment-mask", "on",
+                           "--lora-rank", "4")
+        plan = fx.Plan.load(os.path.join(pkg, cn.PLAN_FILE))
+        self.assertGreater(plan.relaxed_instructions, plan.relaxed_gemms)
+        attention = ["attn.dk.tiled", "attn.dq.tiled", "attn.dv.tiled",
+                     "attn.fwd.tiled.seg"]
+        self.assertEqual(cn.flagged_sites(plan),
+                         attention + [cn.RELAXED_GEMM_SITE])
+        status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                               "--steps", "4", "--val-fraction", "0.25",
+                               "--max-loss-deviation", "1e-2"])
+        self.assertEqual(status, 0, log)
+        with open(os.path.join(pkg, cn.CERT_FILE)) as f:
+            cert = json.load(f)
+        self.assertEqual(cert["contract"]["sites"],
+                         attention + [cn.RELAXED_GEMM_SITE])
+        site = cert["evidence"]["sites"]["attn.fwd.tiled.seg"]
+        self.assertGreater(site["instances"], 0)
+        self.assertLessEqual(site["observed_rel"], site["bound_rel"])
+        self.assertEqual(cn.check_certificate(
+            cert, os.path.join(pkg, cn.PLAN_FILE)), [])
+        # A certificate naming the unmasked forward's site in its place.
+        swapped = json.loads(json.dumps(cert))
+        swapped["contract"]["sites"] = [
+            "attn.fwd.tiled" if s == "attn.fwd.tiled.seg" else s
+            for s in cert["contract"]["sites"]]
+        self.assertTrue(any("attn.fwd.tiled.seg" in problem
+                            for problem in cn.check_certificate(
+                                swapped, os.path.join(pkg, cn.PLAN_FILE))))
+
     def test_a_relaxed_tiled_attention_plan_certifies_its_attention_sites(self):
         # Plan v20 (F3 #131): certified precision with tiled attention marks
         # the four tiled opcodes of training kFlagRelaxed beside the frozen

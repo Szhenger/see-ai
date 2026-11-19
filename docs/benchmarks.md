@@ -1696,6 +1696,15 @@ Five for five, by 0.020–0.037 nats, so **the defaults are now lr 2e-3, cosine,
 
 **What these rows are not.** One model, one corpus, two horizons. They are SeeAI rows only: the torch and MLX-LM rows of the frontier harness were not run at these settings (`tool/frontier_run.py` now takes `--scaling`, with the compiler's default, so a reference row can scale as an α/√r plan does). **The host was on battery with Low Power Mode on**; the losses do not depend on that (the baseline reproduces bit for bit), the step times do, and none is quoted as a result.
 
+**The segment mask, measured (2026-11-18, #191).** `--segment-mask auto` grafts the attention segment mask when the corpus given holds windows with more than one document. Before it could become the default it needed a row (the rule above: a default is a measured claim), so: SmolLM-135M at the #151 setting — rank 8, 512 tokens a step, int8 base, 300 steps, the default schedule, a compiled split of 49 of 492 records scored every 30 steps, Metal — over this repository's docs with every paragraph its own document (490 documents; 309 of the 492 windows hold more than one, 312 by the pack stage's own count). Each run is scored under its own attention: the masked plan's validation masks too.
+
+| row | before training | committed [step] | step 300 |
+|---|---|---|---|
+| unmasked (`off`, the default) | 4.7659 | 3.6580 [210] | 3.7734 |
+| masked (`auto`, which decides on) | 4.8038 | 3.7276 [210] | 3.8468 |
+
+The mask costs 0.038 nats before a step is taken and 0.070 at the committed state. On this corpus that is the expected sign: neighbouring paragraphs of one document set are related text, and a position that may not read the paragraph before it predicts worse. It is the unfavourable case for the mask, and the only one measured. So **the default stays `off`**; `auto` and `on` are there to be asked for, and the analysis screen says what `auto` decided. What would change the default is the row this one is not: a corpus of unrelated documents, scored on documents alone — the model as it is used, one document in its context. That row has not been run (`docs/ledger/segment-mask-2026-11-18/`: the script, both compile screens, both runs; losses only — the host was on battery, and no time here is a measurement).
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

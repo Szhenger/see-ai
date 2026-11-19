@@ -1670,7 +1670,7 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
     return b;
   };
   UpdateConfig config = BaseConfig(16);
-  config.segment_mask = true;
+  config.segment_mask = SegmentMaskKind::kOn;
   EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
                         "names no EOS id");
   model.tokenizer = head(-1);
@@ -1727,6 +1727,115 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
   // Every cached forward of the unmasked plan is a masked one here.
   EXPECT_EQ(CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg),
             CountOpcode(TrainProgramOf(u), OpCode::kAttnFwd));
+}
+
+TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
+  // #191 design item 3: under `auto` the compiler grafts the mask when the
+  // corpus it was given holds a window with more than one document, and
+  // otherwise compiles exactly the unmasked plan. The decision reads the
+  // corpus and the model's tokenizer section alone; it never refuses, and
+  // the analysis screen says what it decided and why. The default stays
+  // `off` (the measured row does not favour the mask): no mask, no row.
+  const int64_t seq = 8;
+  const int32_t eos = 5;
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, seq, 16, 41);
+  std::vector<uint8_t> head;
+  for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 16u, 0u, 0u,
+                     static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
+                     0xFFFFFFFFu, 0u})
+    for (int i = 0; i < 4; ++i) head.push_back((x >> (8 * i)) & 0xFF);
+  model.tokenizer = head;
+  seeml::testing::ScopedTempDir dir;
+  // Six records of S + 1 ids. `where` places one EOS in record 2 (-1: none).
+  // (An empty path, which no compile opens, if the corpus cannot be written.)
+  auto corpus = [&](const char* name, int where,
+                    const SmfModel& m) -> std::string {
+    std::vector<int32_t> ids(6 * (seq + 1), 1);
+    if (where >= 0) ids[2 * (seq + 1) + where] = eos;
+    auto ds = seeml::update_rt::Dataset::FromTokens(ids, 6, seq, {},
+                                                    m.TokenizerHash());
+    if (!ds || !ds->SaveToFile(dir.File(name))) return "/nonexistent.sds";
+    return dir.File(name);
+  };
+  auto masked_ops = [](const CompiledUpdate& c) {
+    return CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg) +
+           CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdTiledSeg);
+  };
+  auto row = [](const CompiledUpdate& c) {
+    return c.screens.analysis.Json(0);
+  };
+  UpdateConfig cfg = BaseConfig(16);
+  EXPECT_TRUE(cfg.segment_mask == SegmentMaskKind::kOff);  // the default
+  cfg.segment_mask = SegmentMaskKind::kAuto;
+
+  // No corpus: nothing to decide on, the unmasked plan, and no row.
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate none, UpdateCompiler(cfg).Compile(model));
+  EXPECT_EQ(masked_ops(none), 0u);
+  EXPECT_TRUE(row(none).find("segment_mask") == std::string::npos);
+
+  // A corpus with an EOS mid-window: masked, both families, and the row
+  // counts the windows.
+  cfg.data_path = corpus("multi.sds", 3, model);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate multi, UpdateCompiler(cfg).Compile(model));
+  EXPECT_TRUE(masked_ops(multi) > 0);
+  EXPECT_EQ(CountOpcode(TrainProgramOf(multi), OpCode::kAttnFwd), 0u);
+  EXPECT_STR_CONTAINS(row(multi), "1 of 6 window(s) hold more than one document");
+  UpdateConfig tiled = cfg;
+  tiled.attention = AttentionKind::kTiled;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate multi_tiled,
+                       UpdateCompiler(tiled).Compile(model));
+  EXPECT_TRUE(CountOpcode(TrainProgramOf(multi_tiled),
+                          OpCode::kAttnFwdTiledSeg) > 0);
+  // `off`, the default, over the same corpus: the unmasked plan and no row.
+  UpdateConfig off = cfg;
+  off.segment_mask = SegmentMaskKind::kOff;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate forced_off,
+                       UpdateCompiler(off).Compile(model));
+  EXPECT_EQ(masked_ops(forced_off), 0u);
+  EXPECT_TRUE(row(forced_off).find("segment_mask") == std::string::npos);
+  // `on` says it was asked for.
+  UpdateConfig asked = cfg;
+  asked.segment_mask = SegmentMaskKind::kOn;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate forced_on,
+                       UpdateCompiler(asked).Compile(model));
+  EXPECT_TRUE(masked_ops(forced_on) > 0);
+  EXPECT_STR_CONTAINS(row(forced_on), "asked for");
+
+  // No window holds two documents — no EOS at all, or one where it masks
+  // nothing (the last input position, and the final label): unmasked, and
+  // the train program is the no-corpus compile's, instruction for
+  // instruction (the corpus pins the header, not the stream).
+  for (int where : {-1, static_cast<int>(seq) - 1, static_cast<int>(seq)}) {
+    cfg.data_path = corpus("single.sds", where, model);
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate single,
+                         UpdateCompiler(cfg).Compile(model));
+    EXPECT_EQ(masked_ops(single), 0u);
+    EXPECT_STR_CONTAINS(row(single),
+                        "off: no window of the corpus holds more than one");
+    const auto a = TrainProgramOf(single), b = TrainProgramOf(none);
+    ASSERT_EQ(a.size(), b.size());
+    EXPECT_EQ(std::memcmp(a.data(), b.data(),
+                          a.size() * sizeof(UpdateInstruction)),
+              0);
+  }
+  // The first input position is enough: positions 1.. start a new document.
+  cfg.data_path = corpus("first.sds", 0, model);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate first, UpdateCompiler(cfg).Compile(model));
+  EXPECT_TRUE(masked_ops(first) > 0);
+
+  // A model whose tokenizer names no EOS: `auto` compiles unmasked and
+  // says why; only an explicit `on` refuses.
+  SmfModel no_eos = model;
+  no_eos.tokenizer[8 * 4] = no_eos.tokenizer[8 * 4 + 1] =
+      no_eos.tokenizer[8 * 4 + 2] = no_eos.tokenizer[8 * 4 + 3] = 0xFF;  // -1
+  cfg.data_path = corpus("noeos.sds", 3, no_eos);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate unnamed,
+                       UpdateCompiler(cfg).Compile(no_eos));
+  EXPECT_EQ(masked_ops(unnamed), 0u);
+  EXPECT_STR_CONTAINS(row(unnamed), "names no EOS id");
+  UpdateConfig on = cfg;
+  on.segment_mask = SegmentMaskKind::kOn;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(on).Compile(no_eos), "names no EOS id");
 }
 
 TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {

@@ -1,0 +1,74 @@
+frontend — the model the compiler read
+  operators                483 ops                       operators in the SMF model file
+  tensors                  274                           tensors the file declares, the input included
+  frozen weights           273                           the file's constant tensors
+  weight payload           704,390,400 B (671.8 MiB)     those tensors' bytes in the file
+  parameters               176,097,600                   weight elements: the payload ÷ 4 B (f32)
+  input                    token ids, 128 per sequence   token ids per sequence, or features per row
+  vocabulary               49,152 tokens                 rows of the embedding table
+  adapted weights          211                           frozen weights LoRA will adapt: read only as a MatMul's weight
+  frozen weights live      in the plan                   in the plan, or mapped from the model file (adapter-only)
+  corpus                   492 records of 129 ids (jsonl)  records and their width, and what --data named (text, jsonl, sds)
+  documents                490 in, 490 kept              documents read and kept (raw text)
+  dropped                  0 empty, 0 duplicate, 0 degenerate  documents dropped: empty, exact duplicates, degenerate (raw text)
+  corpus tokens            63,468 tokens                 ids the records hold
+  straddling windows       312                           records that span a document boundary (see the segment mask row)
+  distinct ids             5802 of 49152                 distinct token ids the corpus uses, of the vocabulary
+  loss targets             62976 of 62976                positions the loss counts, of all positions
+  batches per epoch        110.75                        training records (less a compiled split) ÷ sequences per optimizer step
+  epochs covered           2.709                         the step budget × sequences per step ÷ training records
+  label entropy            6.6772 nats                   the labels' unigram entropy: the input-blind loss floor
+  corpus hash              6f4903425ae97c27              ContentHash64 of the canonical SDS the plan is pinned to
+  validation               49 of 492 records held out, seed 0, split 108e769ef0137272  the compiled held-out split: records, seed, the indices' hash
+  model hash               4448e52d513b5011              ContentHash64 of the source model file the plan is bound to
+  tokenizer hash           bc20bbcbeb260e1f              the model's tokenizer section, which every corpus must name
+  recipe hash              8242ad29bafa130c              the resolved recipe: the request with every decision written in
+  exporter report          45eb3848a6c02a19; tokenizer parity not run; logits parity not run  the report's hash and the parity the exporter proved
+  step-0 bound             1,600,448,832 B (1.5 GiB)     the accountant's lower bound the early gate proved fits
+  bound ÷ exact            0.8533                        the step-0 bound ÷ arena + plan: the accountant's honesty, ≤ 1
+  memory budget            17,179,869,184 B (16.0 GiB)   the configured budget, else this host's memory
+analysis — what the passes did
+  passes                   19                            passes and driver phases run, each timed
+  ops in                   757 ops                       the forward SIR the frontend built
+  ops out                  4,426 ops                     the training SIR after every pass, as lowered
+  adapters                 211                           LoRA adapters grafted, one per targeted matmul weight
+  rank                     8                             r, each adapter's inner width
+  adapter scale            2 = alpha / r                 what each adapter's delta is multiplied by, and the rule that set it
+  trainable                3,024,384                     the sum of r·(k + m) over the adapters
+  trainable share          1.717 %                       trainable ÷ the model's parameters
+  epilogue fusions         0                             bias and activation chains folded into a GEMM
+  addend fusions           419                           GEMMs folded into the add that reads them
+  chain fusions            0                             elementwise chains folded into one kernel
+  dead ops removed         419 ops                       ops nothing reads, swept before lowering
+  attention                cached, 30 op(s)              cached probabilities, or the tiled family's stats rows
+  segment mask             off: asked for                no attention across a window's documents: the decision and its reason
+  rematerialization        off: auto, no memory budget   forward values the backward recomputes instead of keeping
+  narrow weights           211 int8                      frozen weights stored int8 or bf16 in rodata
+  adjoint ops              1,766 ops                     operations autodiff emitted for the backward
+  activations saved        836,837,376 B (798.1 MiB)     forward values the backward reads: kept from forward to backward
+  forward work             158,923,751,424 FLOP          GEMM + attention work of the eval program (the forward and the loss), one pass
+  backward work            165,517,197,312 FLOP          one pass of the train program less the forward's: a step runs grad_accum of each
+  optimizer work           0 FLOP                        the step program's GEMM + attention work (elementwise updates are 0)
+  reordered arithmetic     0                             instructions whose reduction order a backend may change (the ledger)
+backend — the plan it emitted
+  train program            2,887 instructions            one micro-batch: forward, backward, optimizer
+  eval program             907 instructions              the forward and the loss, for validation
+  merge program            422 instructions              each adapter's delta, s·A·B at its adapter scale s
+  arena                    1,576,898,688 B (1.5 GiB)     the one allocation the device makes
+  io                       4,096 B (4.0 KiB)             the staged input, label and loss slots
+  rodata                   262,048,512 B (249.9 MiB)     frozen weights packed into the plan
+  plan file                298,631,168 B (284.8 MiB)     the sealed .seeu
+  arena + plan             1,875,529,856 B (1.7 GiB)     what the device holds: the arena and the mapped plan
+  GEMM work                310,851,403,776 FLOP          per step: 2·M·N·K over the train GEMMs, times G
+  attention work           13,589,544,960 FLOP           per step: 4·B·H·S²·d forward + 8·B·H·S²·d backward
+  target GPU               Apple M5, Apple10 family, Metal 4  the Metal device: name, Apple GPU family, Metal 4 support
+  GPU cores                10                            the GPU's core count, as IOKit reports it
+  GPU working set          12,713,115,648 B (11.8 GiB)   the device's recommended working set: the memory a plan may keep resident on the GPU
+  kernel policy            runtime default               the CPU GEMM tiles the header carries
+  plan hash                514da19daf3ae61b              the plan's self-hash, which checkpoints bind to
+runtime — planned by the compiler, measured by the device
+  planned memory           1,875,529,856 B (1.7 GiB)     arena + plan: the resource contract the device checks
+  work per step            324,440,948,736 FLOP          GEMM + attention work of one optimizer step
+seeml-update-compile: emitted ~/.claude/jobs/ddb59ea7/tmp/mask_row/unmasked_off/pkg/update_plan.seeu
+seeml-update-compile: wrote ~/.claude/jobs/ddb59ea7/tmp/mask_row/unmasked_off/pkg/corpus.sds (the canonical corpus the plan is pinned to) and ~/.claude/jobs/ddb59ea7/tmp/mask_row/unmasked_off/pkg/corpus_manifest.json
+built: ~/.claude/jobs/ddb59ea7/tmp/mask_row/unmasked_off/pkg/model_update

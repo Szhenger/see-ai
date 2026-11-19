@@ -241,6 +241,15 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
              ? std::string("none")
              : std::string(r.attention_tiled ? "tiled" : "cached") + ", " +
                    std::to_string(f.attention_ops) + " op(s)");
+  // The segment mask's decision and its reason (#191): what `auto` saw, or
+  // what was asked. No row for the compile that had nothing to decide on
+  // (`auto` with no corpus): it is the unmasked plan it always was.
+  if (!f.segment_mask_why.empty())
+    an.Set("segment_mask",
+           (f.segment_mask ? "on, " + std::to_string(f.segment_masked_ops) +
+                                 " op(s): "
+                           : std::string("off: ")) +
+               f.segment_mask_why);
   std::string remat;
   if (r.remat_applied)
     remat = "on, " + std::to_string(r.remat_recomputed_values) +

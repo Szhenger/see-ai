@@ -145,8 +145,10 @@ inline constexpr Field kFields[] = {
      "", "seed of the compiled held-out split (needs val_frac)"},
     {"masked_loss", "--masked-loss", Kind::kBool, 0, 0, 0, 0, false, false, "",
      "cross-entropy over target positions alone"},
-    {"segment_mask", "--segment-mask", Kind::kBool, 0, 0, 0, 0, false, false,
-     "", "no attention across the documents of a packed window"},
+    {"segment_mask", "--segment-mask", Kind::kEnum, 0, 0, 0, 0, false, false,
+     "auto|off|on",
+     "no attention across the documents of a packed window; auto masks when "
+     "the corpus given holds such windows"},
     {"memory_budget_mib", "--memory-budget-mib", Kind::kUInt, 1, kMibMax, 0, 0,
      false, false, "", "the memory gate's budget; unset = the host's memory"},
 };
@@ -394,7 +396,10 @@ inline std::expected<void, std::string> Apply(const Values& values,
     else if (n == "validation_scores") c.eval_on_plan = v == "plan";
     else if (n == "val_frac") c.val_frac = static_cast<float>(d);
     else if (n == "split_seed") c.split_seed = u;
-    else if (n == "segment_mask") c.segment_mask = v == "true";
+    else if (n == "segment_mask")
+      c.segment_mask = v == "auto" ? SegmentMaskKind::kAuto
+                       : v == "on" ? SegmentMaskKind::kOn
+                                   : SegmentMaskKind::kOff;
     else if (n == "masked_loss") c.masked_loss = on;
     else if (n == "memory_budget_mib") c.memory_budget_bytes = u << 20;
     else
@@ -551,7 +556,9 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"val_frac", bits(c.val_frac)},
       {"split_seed", std::to_string(c.split_seed)},
       {"masked_loss", yes(c.masked_loss)},
-      {"segment_mask", yes(c.segment_mask)},
+      {"segment_mask", c.segment_mask == SegmentMaskKind::kAuto ? "auto"
+                       : c.segment_mask == SegmentMaskKind::kOn ? "on"
+                                                                : "off"},
       {"memory_budget_mib", mib(c.memory_budget_bytes)},
   };
   static_assert(std::size(lines) == std::size(kFields),
