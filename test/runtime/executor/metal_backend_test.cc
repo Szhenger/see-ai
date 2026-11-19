@@ -1391,8 +1391,8 @@ void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
     ASSERT_OK(fused);
     ASSERT_OK(apart);
     std::printf("  [ %-22s ] fused dispatches %llu (expected %llu), C %s\n",
-                cs.name, (unsigned long long)fused->fused,
-                (unsigned long long)cs.fused,
+                cs.name, static_cast<unsigned long long>(fused->fused),
+                static_cast<unsigned long long>(cs.fused),
                 cs.c_stored ? "stored" : "not stored");
     EXPECT_EQ(fused->fused, cs.fused);
     EXPECT_EQ(apart->fused, 0u);
@@ -1412,7 +1412,8 @@ void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
     EXPECT_EQ(first_diff, total);
     if (first_diff != total)
       std::printf("    first difference at float %llu: %.9g vs %.9g\n",
-                  (unsigned long long)first_diff, fused->arena[first_diff],
+                  static_cast<unsigned long long>(first_diff),
+                  fused->arena[first_diff],
                   apart->arena[first_diff]);
     if (!cs.c_stored) EXPECT_TRUE(c_zero);
     // And against the CPU reference at the GEMM twin's tolerance.
@@ -1888,7 +1889,7 @@ TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
   ASSERT_OK(fused);
   ASSERT_OK(apart);
   std::printf("  [ low-rank fold ] %llu fused dispatches over 20 steps and an "
-              "evaluation\n", (unsigned long long)fused->fused);
+              "evaluation\n", static_cast<unsigned long long>(fused->fused));
   EXPECT_TRUE(fused->fused >= 40u);  // two pairs per training forward
   EXPECT_EQ(apart->fused, 0u);
   ASSERT_EQ(fused->run.curve.size(), 20u);

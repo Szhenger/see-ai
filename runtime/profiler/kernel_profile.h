@@ -44,21 +44,22 @@ class KernelProfile {
     std::fprintf(out,
                  "metal profile: %.3f s over %zu keys; %llu forward pass(es), "
                  "%llu backward pass(es) (counted at the loss opcodes)\n",
-                 total, rows.size(), (unsigned long long)fwd_passes_,
-                 (unsigned long long)bwd_passes_);
+                 total, rows.size(),
+                 static_cast<unsigned long long>(fwd_passes_),
+                 static_cast<unsigned long long>(bwd_passes_));
     if (lowrank_fused)
       std::fprintf(out,
                    "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
                    "store dropped (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 "
                    "keeps the pairs apart)\n",
-                   (unsigned long long)lowrank_fused,
-                   (unsigned long long)lowrank_dropped);
+                   static_cast<unsigned long long>(lowrank_fused),
+                   static_cast<unsigned long long>(lowrank_dropped));
     for (const auto& r : rows)
       std::fprintf(out, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
                    r.second.seconds,
                    total > 0 ? 100.0 * r.second.seconds / total : 0.0,
-                   (unsigned long long)r.second.count,
-                   1e6 * r.second.seconds / (double)r.second.count,
+                   static_cast<unsigned long long>(r.second.count),
+                   1e6 * r.second.seconds / static_cast<double>(r.second.count),
                    r.first.c_str());
   }
 
@@ -94,15 +95,18 @@ class SpanLog {
                  "metal spans: %zu command buffer(s), %llu dispatch(es); GPU "
                  "busy %.3f s, CPU wall %.3f s, outside the GPU %.3f s "
                  "(%.1f%% of the wall; %.2f us per dispatch)\n",
-                 rows_.size(), (unsigned long long)dispatches, gpu, wall,
+                 rows_.size(), static_cast<unsigned long long>(dispatches), gpu,
+                 wall,
                  wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
-                 dispatches ? 1e6 * (wall - gpu) / (double)dispatches : 0.0);
+                 dispatches
+                     ? 1e6 * (wall - gpu) / static_cast<double>(dispatches)
+                     : 0.0);
     if (lowrank_fused)
       std::fprintf(out,
                    "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
                    "store dropped\n",
-                   (unsigned long long)lowrank_fused,
-                   (unsigned long long)lowrank_dropped);
+                   static_cast<unsigned long long>(lowrank_fused),
+                   static_cast<unsigned long long>(lowrank_dropped));
     // Per buffer size: the train, eval and merge programs are told apart by
     // their dispatch counts (one buffer per ExecuteRange).
     std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall
@@ -114,7 +118,7 @@ class SpanLog {
       std::fprintf(out,
                    "  %7llu dispatches x %4.0f: GPU %8.3f ms, wall %8.3f ms, "
                    "outside %7.3f ms (%.1f%%) per buffer\n",
-                   (unsigned long long)n, v[0], 1e3 * v[1] / v[0],
+                   static_cast<unsigned long long>(n), v[0], 1e3 * v[1] / v[0],
                    1e3 * v[2] / v[0], 1e3 * (v[2] - v[1]) / v[0],
                    v[2] > 0 ? 100.0 * (v[2] - v[1]) / v[2] : 0.0);
   }

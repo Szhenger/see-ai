@@ -2147,11 +2147,11 @@ MetalDeviceInfo DescribeMetalDevice() {
     // Metal4 = 5002), so a newer device than this SDK names still answers:
     // an unknown value is simply unsupported.
     for (int n = 16; n >= 1; --n)
-      if ([device supportsFamily:(MTLGPUFamily)(1000 + n)]) {
+      if ([device supportsFamily:static_cast<MTLGPUFamily>(1000 + n)]) {
         info.apple_family = n;
         break;
       }
-    info.metal4 = [device supportsFamily:(MTLGPUFamily)5002];
+    info.metal4 = [device supportsFamily:static_cast<MTLGPUFamily>(5002)];
     info.working_set_bytes = device.recommendedMaxWorkingSetSize;
     info.threadgroup_memory_bytes = device.maxThreadgroupMemoryLength;
   }

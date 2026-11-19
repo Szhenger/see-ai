@@ -27,7 +27,8 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
   {
     auto hex = [](uint64_t v) {
       char buf[24];
-      std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)v);
+      std::snprintf(buf, sizeof(buf), "%016llx",
+                    static_cast<unsigned long long>(v));
       return std::string(buf);
     };
     const seeml::update::PlanHeader& h = engine.header();

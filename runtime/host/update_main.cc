@@ -300,8 +300,8 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
     std::snprintf(buf, sizeof buf,
                   "the model's tokenizer section (%016llx) is not the one the "
                   "plan was compiled with (%016llx)",
-                  (unsigned long long)tokenizer_hash,
-                  (unsigned long long)header.tokenizer_hash);
+                  static_cast<unsigned long long>(tokenizer_hash),
+                  static_cast<unsigned long long>(header.tokenizer_hash));
     return std::unexpected(std::string(buf));
   }
   auto tok = tk::ByteLevelBpe::Load(section);
@@ -337,15 +337,16 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
                "(%llu empty, %llu duplicate, %llu degenerate dropped); %llu "
                "window(s) of %llu, %llu remainder token(s) dropped; corpus "
                "%016llx\n",
-               data_path.c_str(), (unsigned long long)m.documents_kept,
-               (unsigned long long)m.documents_in,
-               (unsigned long long)m.dropped_empty,
-               (unsigned long long)m.dropped_duplicate,
-               (unsigned long long)m.dropped_degenerate,
-               (unsigned long long)m.windows,
-               (unsigned long long)header.seq_len,
-               (unsigned long long)m.remainder_tokens,
-               (unsigned long long)ingest->corpus_hash);
+               data_path.c_str(),
+               static_cast<unsigned long long>(m.documents_kept),
+               static_cast<unsigned long long>(m.documents_in),
+               static_cast<unsigned long long>(m.dropped_empty),
+               static_cast<unsigned long long>(m.dropped_duplicate),
+               static_cast<unsigned long long>(m.dropped_degenerate),
+               static_cast<unsigned long long>(m.windows),
+               static_cast<unsigned long long>(header.seq_len),
+               static_cast<unsigned long long>(m.remainder_tokens),
+               static_cast<unsigned long long>(ingest->corpus_hash));
   auto ds = seeml::update_rt::Dataset::FromTokens(
       std::move(ingest->ids), m.windows, header.seq_len,
       std::move(ingest->mask), tokenizer_hash);
@@ -702,8 +703,9 @@ struct Gate {
   std::fprintf(stderr,
                "seeml-update: resource contract — arena %llu bytes"
                " (%llu persistent)\n",
-               (unsigned long long)engine.header().arena_size,
-               (unsigned long long)engine.header().persistent_size);
+               static_cast<unsigned long long>(engine.header().arena_size),
+               static_cast<unsigned long long>(
+                   engine.header().persistent_size));
   return std::nullopt;
 }
 
@@ -726,8 +728,9 @@ struct Gate {
                    "model_update: the plan compiled its validation split "
                    "(seed %llu, fraction %g); --val-frac is not a runner "
                    "decision for this plan\n",
-                   (unsigned long long)plan_header.split_seed,
-                   (double)seeml::update::ValFracOf(plan_header.val_frac_bits));
+                   static_cast<unsigned long long>(plan_header.split_seed),
+                   static_cast<double>(
+                       seeml::update::ValFracOf(plan_header.val_frac_bits)));
       return 2;
     }
     const std::vector<uint64_t> held = seeml::update::HeldOutIndices(
@@ -739,9 +742,9 @@ struct Gate {
                    "data: the corpus does not yield the plan's compiled "
                    "split (%llu records; split hash %016llx, the plan's "
                    "%016llx): the plan was compiled over another corpus\n",
-                   (unsigned long long)dataset->num_samples(),
-                   (unsigned long long)split_hash,
-                   (unsigned long long)plan_header.val_split_hash);
+                   static_cast<unsigned long long>(dataset->num_samples()),
+                   static_cast<unsigned long long>(split_hash),
+                   static_cast<unsigned long long>(plan_header.val_split_hash));
       return 1;
     }
     auto split = dataset->SplitHeldOut(held, split_hash);
@@ -750,7 +753,8 @@ struct Gate {
       return 1;
     }
     val_set = std::move(*split);
-    val_frac = (double)seeml::update::ValFracOf(plan_header.val_frac_bits);
+    val_frac = static_cast<double>(
+        seeml::update::ValFracOf(plan_header.val_frac_bits));
   } else if (val_frac > 0.0) {
     auto split = dataset->SplitValidation(val_frac);
     if (!split) {
@@ -783,8 +787,8 @@ struct Gate {
                  "validation samples); resume with the first run's "
                  "--seed and --val-frac\n",
                  options.checkpoint_path.c_str(),
-                 (unsigned long long)resumed_from->train_samples,
-                 (unsigned long long)resumed_from->val_samples);
+                 static_cast<unsigned long long>(resumed_from->train_samples),
+                 static_cast<unsigned long long>(resumed_from->val_samples));
     return 2;
   }
   return std::nullopt;
@@ -806,7 +810,7 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
     report->val_last_accuracy = none;
     std::fprintf(stderr,
                  "seeml-update: stopped by signal %d at step %llu%s\n",
-                 g_stop_signal, (unsigned long long)engine.step(),
+                 g_stop_signal, static_cast<unsigned long long>(engine.step()),
                  checkpoint_path.empty()
                      ? "; no --checkpoint, so nothing resumable was kept"
                      : "");
@@ -814,11 +818,12 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
       std::fprintf(stderr,
                    "seeml-update: '%s' holds step %llu; rerun with --resume "
                    "to finish the run\n",
-                   checkpoint_path.c_str(), (unsigned long long)engine.step());
+                   checkpoint_path.c_str(),
+                   static_cast<unsigned long long>(engine.step()));
   }
   std::fprintf(stderr, "seeml-update: train loss %.6f -> %.6f over %llu steps\n",
                report->initial_avg_loss, report->final_avg_loss,
-               (unsigned long long)report->steps);
+               static_cast<unsigned long long>(report->steps));
   if (report->has_validation && !stopped)
     std::fprintf(stderr,
                  "seeml-update: validation loss %.6f -> %.6f [backend %s]\n",
@@ -828,9 +833,10 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
     std::fprintf(stderr,
                  "seeml-update: best state at step %llu (validation loss "
                  "%.6f); last state %.6f; %llu periodic evaluation(s)%s\n",
-                 (unsigned long long)report->best_step, report->val_final_loss,
+                 static_cast<unsigned long long>(report->best_step),
+                 report->val_final_loss,
                  report->val_last_loss,
-                 (unsigned long long)report->evaluations,
+                 static_cast<unsigned long long>(report->evaluations),
                  report->stopped_by_patience ? "; stopped: out of patience"
                                              : "");
   if (report->has_val_accuracy && !stopped)
@@ -963,7 +969,7 @@ struct ReportContext {
   // backend ran on a relaxed kernel (plan v18) — 0 on the reference
   // build, and for an exact plan, whatever the backend could do.
   std::fprintf(f, ",\n  \"relaxed_executions\": %llu",
-               (unsigned long long)engine.relaxed_executions());
+               static_cast<unsigned long long>(engine.relaxed_executions()));
   // The package mode (#158): the plan this run executed and where it
   // came from — the binary, or a file mapped at start-up.
   std::fputs(",\n  \"plan\": {\"source\": ", f);
@@ -973,7 +979,7 @@ struct ReportContext {
   else str(plan_path);
   std::fprintf(f, ", \"bytes\": %zu}", engine.plan_size());
   std::fprintf(f, ",\n  \"steps\": %llu,\n  \"train_loss\": [",
-               (unsigned long long)report->steps);
+               static_cast<unsigned long long>(report->steps));
   num(report->initial_avg_loss);
   std::fputs(", ", f);
   num(report->final_avg_loss);
@@ -995,14 +1001,14 @@ struct ReportContext {
     // the run's endpoint and where the best was found.
     std::fprintf(f,
                  "  \"best_state\": {\"step\": %llu, \"last_loss\": ",
-                 (unsigned long long)report->best_step);
+                 static_cast<unsigned long long>(report->best_step));
     num(report->val_last_loss);
     std::fprintf(f,
                  ", \"eval_every\": %llu, \"patience\": %llu, "
                  "\"evaluations\": %llu, \"stopped_by_patience\": %s},\n",
-                 (unsigned long long)report->eval_every,
-                 (unsigned long long)report->patience,
-                 (unsigned long long)report->evaluations,
+                 static_cast<unsigned long long>(report->eval_every),
+                 static_cast<unsigned long long>(report->patience),
+                 static_cast<unsigned long long>(report->evaluations),
                  report->stopped_by_patience ? "true" : "false");
   }
   if (accuracy_measured) {
@@ -1021,7 +1027,7 @@ struct ReportContext {
                "\"train_s\": %.4f, \"eval_s\": %.4f, \"evaluations\": %llu, "
                "\"merge_s\": %.4f, \"commit_s\": %.4f, \"wall_s\": %.4f},\n",
                load_s, data_s, train_s, report->eval_seconds,
-               (unsigned long long)(report->evaluations +
+               static_cast<unsigned long long>(report->evaluations +
                                     (report->has_validation ? 2 : 0)),
                merge_s, commit_s, SecondsSince(t_main0));
   // The runtime screen, by key (S0 #146; the schema seeml-abi publishes).

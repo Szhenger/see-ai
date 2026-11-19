@@ -360,17 +360,18 @@ int AttentionSweep(const std::vector<size_t>& threads, uint64_t repeats,
           "\"tiled\": {\"fwd_ms\": %.4f, \"bwd_ms\": %.4f, "
           "\"live_bytes\": %llu, \"chain_bytes\": %llu}}",
           first ? "" : ",", t, S, c.fwd_ms, c.bwd_ms,
-          (unsigned long long)c.live_bytes, (unsigned long long)c.chain_bytes,
-          tl.fwd_ms, tl.bwd_ms, (unsigned long long)tl.live_bytes,
-          (unsigned long long)tl.chain_bytes);
+          static_cast<unsigned long long>(c.live_bytes),
+          static_cast<unsigned long long>(c.chain_bytes),
+          tl.fwd_ms, tl.bwd_ms, static_cast<unsigned long long>(tl.live_bytes),
+          static_cast<unsigned long long>(tl.chain_bytes));
       json += buf;
       first = false;
       std::fprintf(stderr,
                    "seeml-bench: attention S=%zu t=%zu  cached fwd %.2f bwd "
                    "%.2f ms  tiled fwd %.2f bwd %.2f ms  live %llu -> %llu B\n",
                    S, t, c.fwd_ms, c.bwd_ms, tl.fwd_ms, tl.bwd_ms,
-                   (unsigned long long)c.live_bytes,
-                   (unsigned long long)tl.live_bytes);
+                   static_cast<unsigned long long>(c.live_bytes),
+                   static_cast<unsigned long long>(tl.live_bytes));
     }
   }
   up::SetParallelThreadCount(0);

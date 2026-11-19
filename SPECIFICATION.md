@@ -18,7 +18,7 @@ Repository shape: ~225 tracked files — 83 `.cc`, 69 `.h`, 1 `.mm`, 1 `.py`,
 ### C++23 (ISO, no extensions)
 
 The entire product — compiler, runtime, and both CLI tools — is C++23,
-compiled with `-std=c++23 -O2 -Wall -Wextra -Werror -pthread` (strict ISO:
+compiled with `-std=c++23 -O2 -Wall -Wextra -Wold-style-cast -Werror -pthread` (strict ISO:
 `CMAKE_CXX_EXTENSIONS OFF`; MSVC arms use `/W4 /WX`). The standard was chosen
 for exactly one feature: **`std::expected`**, which is the universal error
 idiom — every fallible API returns `std::expected<T, std::string>`, and error

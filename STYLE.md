@@ -23,6 +23,8 @@ uint8_t`), `snake_case` file names, `SEEML_<PATH>_H_` include guards,
 includes by repository-rooted path (`"compiler/driver/update_compiler.h"`),
 `///` on declarations and a `// ====` banner that says what the file is for,
 80 columns (about 640 lines run past 80 today and 17 past 100; add none).
+A conversion is a named cast (`static_cast`, `reinterpret_cast`): both build
+drivers compile with `-Wold-style-cast` under `-Werror`.
 
 A file belongs to the dialect of the namespace it *defines* in. The passes,
 sema, the parser and the lowering live in `seeml::update` and are Google

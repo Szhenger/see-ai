@@ -66,9 +66,10 @@ TEST(Split, TheHashNamesTheSetAndTheLiteralFixtureHoldsThePythonMirror) {
   const std::vector<uint64_t> fixture = HeldOutIndices(10, 1, 0.3f);
   ASSERT_EQ(fixture.size(), 3u);
   std::printf("split fixture n=10 seed=1 frac=0.3: %llu %llu %llu hash %016llx\n",
-              (unsigned long long)fixture[0], (unsigned long long)fixture[1],
-              (unsigned long long)fixture[2],
-              (unsigned long long)SplitHash(fixture));
+              static_cast<unsigned long long>(fixture[0]),
+              static_cast<unsigned long long>(fixture[1]),
+              static_cast<unsigned long long>(fixture[2]),
+              static_cast<unsigned long long>(SplitHash(fixture)));
   const std::vector<uint64_t> expected = {1, 5, 7};
   EXPECT_EQ(fixture, expected);
   EXPECT_EQ(SplitHash(fixture), 0xe731eed086e2a95dULL);
