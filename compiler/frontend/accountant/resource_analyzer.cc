@@ -57,33 +57,47 @@ namespace {
 // below both turn on which products the grafter will adapt.
 using sema::AdaptedWeights;
 
-/// Shared walk behind both estimators. `sum_activations` selects the
-/// training model (the forward values the backward reads are all alive
-/// when it begins — sum them) or the frozen-forward model (no backward
-/// consumes anything, so transients die at their single reader and the
-/// arena binder reuses their slots — the honest lower bound is the single
-/// widest live term). `adapted` names the weights LoRA adapts (the
-/// training walk alone reads it).
-TrainingFootprint EstimateFootprintImpl(
-    const SmfModel& model, int64_t batch, bool sum_activations,
-    const std::unordered_set<std::string_view>& adapted) {
-  TrainingFootprint fp;
+/// The state of the estimators' walk (EstimateFootprintImpl): the model, the
+/// footprint so far, and what the shape rules and the backward's reads have
+/// established about each value.
+struct FootprintWalk {
+  const SmfModel& model;
+  const bool sum_activations;
+  const uint64_t rows;
+  TrainingFootprint fp{};
   uint64_t peak_activation = 0;
-  auto charge = [&](uint64_t term) {
+  std::unordered_map<std::string_view, const SmfTensor*> tensors{};
+  std::unordered_map<std::string_view, uint64_t> width{};
+  std::unordered_map<std::string_view, uint64_t> row_count{};
+  std::unordered_set<std::string_view> needs_grad{}, read{}, recomputable{};
+
+  void Charge(uint64_t term) {
     if (sum_activations)
       fp.activation_bytes = SatAdd(fp.activation_bytes, term);
     else
       peak_activation = std::max(peak_activation, term);
-  };
-  const uint64_t rows = batch > 0 ? static_cast<uint64_t>(batch) : 0;
+  }
+  bool IsConst(std::string_view name) const {
+    auto it = tensors.find(name);
+    return it != tensors.end() && it->second->is_const;
+  }
+  bool Grad(std::string_view name) const { return needs_grad.contains(name); }
+  bool KeptAnyway(std::string_view name) const {
+    return read.contains(name) || recomputable.contains(name) ||
+           IsConst(name) || name == model.input_name;
+  }
 
+  void SeedTensors();
+  void MarkBackwardReads(const std::unordered_set<std::string_view>& adapted);
+  void ChargeSideCaches(const SmfOp& op, uint64_t r, bool backward_runs);
+  void WalkForward();
+};
+
+void FootprintWalk::SeedTensors() {
   // Frozen weights: one resident copy each (they at least fill rodata).
   // Track each tensor's last dimension as its "width" to seed propagation;
   // the reader has already validated dims, so widths are positive (or the
   // dynamic batch dim, which never appears last).
-  std::unordered_map<std::string_view, const SmfTensor*> tensors;
-  std::unordered_map<std::string_view, uint64_t> width;
-  std::unordered_map<std::string_view, uint64_t> row_count;
   tensors.reserve(model.tensors.size());
   for (const SmfTensor& t : model.tensors) {
     tensors[t.name] = &t;
@@ -100,85 +114,113 @@ TrainingFootprint EstimateFootprintImpl(
                           : 1)
                    : rows;
   }
+}
 
-  // The training walk charges a forward value only where the backward
-  // reads it, and the VJP rules (analysis/calculus/autodiff.cc) say where:
-  // an adapted MatMul's activation input (dA = Xᵀ·dt, emitted for every
-  // trainable adapter), each operand of an activation-by-activation
-  // product for the other's adjoint, attention's V where Q or K is
-  // differentiated and its Q or K for the other's adjoint, the input of a
-  // norm or activation function and each factor of an elementwise product
-  // where the other side is differentiated — and the model output the loss
-  // differentiates. A residual add, a bias add and a rotation read nothing
-  // of their forward (their adjoint is the incoming one, reduced or
-  // rotated), so their inputs die in the forward. Whether a rule is
-  // emitted at all follows needs_grad forward from the adapted products,
-  // as autodiff propagates it. Every value charged is alive when the
-  // backward begins, which is what makes the sum a lower bound on the
-  // arena. `recomputable` marks the charged values rematerialization
-  // rebuilds there instead of keeping — a norm's, an activation function's,
-  // a product's or the embedding gather's output whose operands the
-  // backward holds anyway (read, pinned IO, rodata, or recomputable
-  // themselves: the pass's own rule, that a recompute may keep nothing new).
-  std::unordered_set<std::string_view> needs_grad, read, recomputable;
-  auto is_const = [&](std::string_view name) {
-    auto it = tensors.find(name);
-    return it != tensors.end() && it->second->is_const;
-  };
-  auto grad = [&](std::string_view name) { return needs_grad.contains(name); };
-  if (sum_activations) {
-    for (const SmfOp& op : model.ops) {
-      bool out_grad = false;
-      for (const std::string& in : op.inputs) out_grad = out_grad || grad(in);
-      const bool matmul =
-          op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
-      const bool adapted_weight = matmul && adapted.contains(op.inputs[1]);
-      out_grad = out_grad || adapted_weight;
-      switch (op.kind) {
-        case SmfOpKind::kMatMul:
-          if (!matmul) break;
-          if (adapted_weight ||
-              (!is_const(op.inputs[1]) && grad(op.inputs[1])))
-            read.insert(op.inputs[0]);
-          if (!is_const(op.inputs[1]) && grad(op.inputs[0]))
-            read.insert(op.inputs[1]);
-          break;
-        case SmfOpKind::kAttention:
-          if (op.inputs.size() != 3) break;
-          if (grad(op.inputs[0]) || grad(op.inputs[1]))
-            read.insert(op.inputs[2]);
-          if (grad(op.inputs[0])) read.insert(op.inputs[1]);
-          if (grad(op.inputs[1])) read.insert(op.inputs[0]);
-          break;
-        case SmfOpKind::kLayerNorm:
-        case SmfOpKind::kRmsNorm:
-        case SmfOpKind::kRelu:
-        case SmfOpKind::kGelu:
-        case SmfOpKind::kSilu:
-          if (!op.inputs.empty() && grad(op.inputs[0]))
-            read.insert(op.inputs[0]);
-          break;
-        case SmfOpKind::kMul:
-          if (op.inputs.size() != 2) break;
-          if (grad(op.inputs[1])) read.insert(op.inputs[0]);
-          if (grad(op.inputs[0])) read.insert(op.inputs[1]);
-          break;
-        default:  // kAdd, kAddBias, kRope, kEmbedding: nothing of the forward
-          break;
-      }
-      if (out_grad) needs_grad.insert(op.output);
+/// The training walk charges a forward value only where the backward
+/// reads it, and the VJP rules (analysis/calculus/autodiff.cc) say where:
+/// an adapted MatMul's activation input (dA = Xᵀ·dt, emitted for every
+/// trainable adapter), each operand of an activation-by-activation
+/// product for the other's adjoint, attention's V where Q or K is
+/// differentiated and its Q or K for the other's adjoint, the input of a
+/// norm or activation function and each factor of an elementwise product
+/// where the other side is differentiated — and the model output the loss
+/// differentiates. A residual add, a bias add and a rotation read nothing
+/// of their forward (their adjoint is the incoming one, reduced or
+/// rotated), so their inputs die in the forward. Whether a rule is
+/// emitted at all follows needs_grad forward from the adapted products,
+/// as autodiff propagates it. Every value charged is alive when the
+/// backward begins, which is what makes the sum a lower bound on the
+/// arena. `recomputable` marks the charged values rematerialization
+/// rebuilds there instead of keeping — a norm's, an activation function's,
+/// a product's or the embedding gather's output whose operands the
+/// backward holds anyway (read, pinned IO, rodata, or recomputable
+/// themselves: the pass's own rule, that a recompute may keep nothing new).
+void FootprintWalk::MarkBackwardReads(
+    const std::unordered_set<std::string_view>& adapted) {
+  for (const SmfOp& op : model.ops) {
+    bool out_grad = false;
+    for (const std::string& in : op.inputs) out_grad = out_grad || Grad(in);
+    const bool matmul =
+        op.kind == SmfOpKind::kMatMul && op.inputs.size() == 2;
+    const bool adapted_weight = matmul && adapted.contains(op.inputs[1]);
+    out_grad = out_grad || adapted_weight;
+    switch (op.kind) {
+      case SmfOpKind::kMatMul:
+        if (!matmul) break;
+        if (adapted_weight ||
+            (!IsConst(op.inputs[1]) && Grad(op.inputs[1])))
+          read.insert(op.inputs[0]);
+        if (!IsConst(op.inputs[1]) && Grad(op.inputs[0]))
+          read.insert(op.inputs[1]);
+        break;
+      case SmfOpKind::kAttention:
+        if (op.inputs.size() != 3) break;
+        if (Grad(op.inputs[0]) || Grad(op.inputs[1]))
+          read.insert(op.inputs[2]);
+        if (Grad(op.inputs[0])) read.insert(op.inputs[1]);
+        if (Grad(op.inputs[1])) read.insert(op.inputs[0]);
+        break;
+      case SmfOpKind::kLayerNorm:
+      case SmfOpKind::kRmsNorm:
+      case SmfOpKind::kRelu:
+      case SmfOpKind::kGelu:
+      case SmfOpKind::kSilu:
+        if (!op.inputs.empty() && Grad(op.inputs[0]))
+          read.insert(op.inputs[0]);
+        break;
+      case SmfOpKind::kMul:
+        if (op.inputs.size() != 2) break;
+        if (Grad(op.inputs[1])) read.insert(op.inputs[0]);
+        if (Grad(op.inputs[0])) read.insert(op.inputs[1]);
+        break;
+      default:  // kAdd, kAddBias, kRope, kEmbedding: nothing of the forward
+        break;
     }
-    read.insert(model.output_name);
+    if (out_grad) needs_grad.insert(op.output);
   }
-  auto kept_anyway = [&](std::string_view name) {
-    return read.contains(name) || recomputable.contains(name) ||
-           is_const(name) || name == model.input_name;
-  };
+  read.insert(model.output_name);
+}
 
-  // Forward activations: propagate output widths and row counts with the
-  // parser's shape rules. Every activation is [rows, width] f32. An
-  // unresolvable width contributes zero — the estimate must stay a lower
-  // bound.
+/// What an op keeps beside its output: the norms' row statistics, and
+/// attention's probability cache.
+void FootprintWalk::ChargeSideCaches(const SmfOp& op, uint64_t r,
+                                     bool backward_runs) {
+  // LayerNorm additionally caches per-row mean/rstd for the backward
+  // kernel (two f32 per row); RMSNorm caches rstd (one).
+  if (op.kind == SmfOpKind::kLayerNorm && backward_runs)
+    Charge(SatMul(2 * sizeof(float), r));
+  if (op.kind == SmfOpKind::kRmsNorm && backward_runs)
+    Charge(SatMul(sizeof(float), r));
+  // Attention caches the probability matrix P[B,H,S,S] — flattened
+  // [rows * heads, seq_len] — for the backward primitives; usually
+  // the dominant transformer activation. heads/seq_len of zero mean
+  // an invalid model the parser will reject; contribute nothing here
+  // so the estimate stays a lower bound.
+  // It is counted on its own (probs_cache_bytes) in the summing
+  // walk — the training footprint, where the compiler decides
+  // whether to keep it — and as an activation at the peak walk (a
+  // frozen forward never holds it past the op).
+  if (op.kind == SmfOpKind::kAttention && op.attr0 > 0 &&
+      model.seq_len > 0 && backward_runs) {
+    const uint64_t rows_heads = SatMul(r, op.attr0);
+    const uint64_t cache =
+        SatMul(SatMul(rows_heads, model.seq_len), sizeof(float));
+    if (sum_activations) {
+      fp.probs_cache_bytes = SatAdd(fp.probs_cache_bytes, cache);
+      fp.attention_stats_bytes = SatAdd(
+          fp.attention_stats_bytes,
+          SatMul(SatMul(rows_heads, kAttnStatsWidth), sizeof(float)));
+    } else {
+      Charge(cache);
+    }
+  }
+}
+
+/// Forward activations: propagate output widths and row counts with the
+/// parser's shape rules. Every activation is [rows, width] f32. An
+/// unresolvable width contributes zero — the estimate must stay a lower
+/// bound.
+void FootprintWalk::WalkForward() {
   for (const SmfOp& op : model.ops) {
     uint64_t w = 0;
     uint64_t r = rows;
@@ -189,7 +231,7 @@ TrainingFootprint EstimateFootprintImpl(
     // output needs a gradient), which decides whether its side caches —
     // the norms' row statistics, attention's probabilities — live past
     // the forward.
-    const bool backward_runs = !sum_activations || grad(op.output);
+    const bool backward_runs = !sum_activations || Grad(op.output);
     switch (op.kind) {
       case SmfOpKind::kMatMul:
       case SmfOpKind::kEmbedding: {
@@ -215,35 +257,7 @@ TrainingFootprint EstimateFootprintImpl(
         if (op.inputs.empty()) break;
         if (auto it = width.find(op.inputs[0]); it != width.end())
           w = it->second;
-        // LayerNorm additionally caches per-row mean/rstd for the backward
-        // kernel (two f32 per row); RMSNorm caches rstd (one).
-        if (op.kind == SmfOpKind::kLayerNorm && backward_runs)
-          charge(SatMul(2 * sizeof(float), r));
-        if (op.kind == SmfOpKind::kRmsNorm && backward_runs)
-          charge(SatMul(sizeof(float), r));
-        // Attention caches the probability matrix P[B,H,S,S] — flattened
-        // [rows * heads, seq_len] — for the backward primitives; usually
-        // the dominant transformer activation. heads/seq_len of zero mean
-        // an invalid model the parser will reject; contribute nothing here
-        // so the estimate stays a lower bound.
-        // It is counted on its own (probs_cache_bytes) in the summing
-        // walk — the training footprint, where the compiler decides
-        // whether to keep it — and as an activation at the peak walk (a
-        // frozen forward never holds it past the op).
-        if (op.kind == SmfOpKind::kAttention && op.attr0 > 0 &&
-            model.seq_len > 0 && backward_runs) {
-          const uint64_t rows_heads = SatMul(r, op.attr0);
-          const uint64_t cache =
-              SatMul(SatMul(rows_heads, model.seq_len), sizeof(float));
-          if (sum_activations) {
-            fp.probs_cache_bytes = SatAdd(fp.probs_cache_bytes, cache);
-            fp.attention_stats_bytes = SatAdd(
-                fp.attention_stats_bytes,
-                SatMul(SatMul(rows_heads, kAttnStatsWidth), sizeof(float)));
-          } else {
-            charge(cache);
-          }
-        }
+        ChargeSideCaches(op, r, backward_runs);
         break;
       }
     }
@@ -252,7 +266,7 @@ TrainingFootprint EstimateFootprintImpl(
     row_count[op.output] = r;
     if (sum_activations && !read.contains(op.output)) continue;
     const uint64_t bytes = SatMul(SatMul(r, w), sizeof(float));
-    charge(bytes);
+    Charge(bytes);
     if (!sum_activations) continue;
     bool cheap = false;
     switch (op.kind) {
@@ -271,13 +285,31 @@ TrainingFootprint EstimateFootprintImpl(
     if (!cheap) continue;
     bool free_to_recompute = true;
     for (const std::string& in : op.inputs)
-      free_to_recompute = free_to_recompute && kept_anyway(in);
+      free_to_recompute = free_to_recompute && KeptAnyway(in);
     if (!free_to_recompute) continue;
     recomputable.insert(op.output);
     fp.recomputable_bytes = SatAdd(fp.recomputable_bytes, bytes);
   }
-  if (!sum_activations) fp.activation_bytes = peak_activation;
-  return fp;
+}
+
+/// Shared walk behind both estimators. `sum_activations` selects the
+/// training model (the forward values the backward reads are all alive
+/// when it begins — sum them) or the frozen-forward model (no backward
+/// consumes anything, so transients die at their single reader and the
+/// arena binder reuses their slots — the honest lower bound is the single
+/// widest live term). `adapted` names the weights LoRA adapts (the
+/// training walk alone reads it).
+TrainingFootprint EstimateFootprintImpl(
+    const SmfModel& model, int64_t batch, bool sum_activations,
+    const std::unordered_set<std::string_view>& adapted) {
+  FootprintWalk walk{.model = model,
+                     .sum_activations = sum_activations,
+                     .rows = batch > 0 ? static_cast<uint64_t>(batch) : 0};
+  walk.SeedTensors();
+  if (sum_activations) walk.MarkBackwardReads(adapted);
+  walk.WalkForward();
+  if (!sum_activations) walk.fp.activation_bytes = walk.peak_activation;
+  return walk.fp;
 }
 
 }  // namespace
