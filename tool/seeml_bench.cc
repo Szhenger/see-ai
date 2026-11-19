@@ -468,18 +468,20 @@ int Fail(const std::string& msg) {
   return 2;
 }
 
-}  // namespace
+/// The command line, parsed and bounds-checked (ParseArgs).
+struct BenchArgs {
+  bool attention_sweep = false;
+  std::string out_path, threads_csv, fixtures_csv;
+  std::string tiles, policy, target_host;  // empty = not given
+  uint64_t lo = 0, hi = 0, repeats = 0;
+  // 0 = not given: mfu is then omitted rather than computed against a guess.
+  double peak_gflops = 0.0;
+  rt::BackendKind backend_kind{};
+};
 
-int main(int argc, char** argv) {
-  // Six in-process compiles would otherwise narrate every pass at INFO;
-  // the harness's own stderr lines are the progress report.
-  seeml::diag::Logger::SetLevel(seeml::diag::LogLevel::kWarn);
-  Args args(argc, argv);
-  if (args.Take("--version")) {
-    std::printf("seeml-bench %s\n", seeml::update::kSeemlVersion);
-    return 0;
-  }
-
+/// The command line: every flag taken and parsed, in the order that decides
+/// which refusal wins. The error is the exit code.
+[[nodiscard]] std::expected<BenchArgs, int> ParseArgs(Args& args) {
   const bool attention_sweep = args.Take("--attention-sweep");
   auto out_path = args.TakeValue("--out", "");
   auto threads_csv = args.TakeValue("--threads", "1,8");
@@ -495,36 +497,68 @@ int main(int argc, char** argv) {
   for (auto* v : {&out_path, &threads_csv, &lo_s, &hi_s, &repeats_s,
                   &fixtures_csv, &peak_s, &tiles_s, &policy_s,
                   &target_host_s})
-    if (!*v) return Fail(v->error());
-  if (!args.rest.empty()) return Fail("unknown argument '" + args.rest[0] +
-                                      "'");
+    if (!*v) return std::unexpected(Fail(v->error()));
+  if (!args.rest.empty())
+    return std::unexpected(Fail("unknown argument '" + args.rest[0] + "'"));
   if (out_path->empty())
-    return Fail("--out is required\nusage: seeml-bench --out bench.json "
-                "[--threads 1,8] [--steps-lo 20] [--steps-hi 80] "
-                "[--backend cpu|metal|auto] "
-                "[--repeats 3] [--fixtures name,...] [--peak-gflops F] "
-                "[--gemm-tiles K,N | --kernel-policy table.json "
-                "[--target-host KEY]] [--version]");
+    return std::unexpected(
+        Fail("--out is required\nusage: seeml-bench --out bench.json "
+             "[--threads 1,8] [--steps-lo 20] [--steps-hi 80] "
+             "[--backend cpu|metal|auto] "
+             "[--repeats 3] [--fixtures name,...] [--peak-gflops F] "
+             "[--gemm-tiles K,N | --kernel-policy table.json "
+             "[--target-host KEY]] [--version]"));
 
   auto lo = ParseU64("--steps-lo", *lo_s);
   auto hi = ParseU64("--steps-hi", *hi_s);
   auto repeats = ParseU64("--repeats", *repeats_s);
   for (auto* v : {&lo, &hi, &repeats})
-    if (!*v) return Fail(v->error());
-  if (*hi <= *lo) return Fail("--steps-hi must exceed --steps-lo");
+    if (!*v) return std::unexpected(Fail(v->error()));
+  if (*hi <= *lo)
+    return std::unexpected(Fail("--steps-hi must exceed --steps-lo"));
   // 0 = not given: mfu is then omitted rather than computed against a guess.
   double peak_gflops = 0.0;
   if (!peak_s->empty()) {
     auto p = ParsePositiveF64("--peak-gflops", *peak_s);
-    if (!p) return Fail(p.error());
+    if (!p) return std::unexpected(Fail(p.error()));
     peak_gflops = *p;
   }
 
-  if (!backend_s) return Fail(backend_s.error());
+  if (!backend_s) return std::unexpected(Fail(backend_s.error()));
   const auto backend_kind = rt::ParseBackendKind(*backend_s);
   if (!backend_kind)
-    return Fail("--backend must be cpu, metal or auto, got '" + *backend_s +
-                "'");
+    return std::unexpected(Fail("--backend must be cpu, metal or auto, got '" +
+                                *backend_s + "'"));
+  return BenchArgs{.attention_sweep = attention_sweep,
+                   .out_path = *out_path,
+                   .threads_csv = *threads_csv,
+                   .fixtures_csv = *fixtures_csv,
+                   .tiles = *tiles_s,
+                   .policy = *policy_s,
+                   .target_host = *target_host_s,
+                   .lo = *lo,
+                   .hi = *hi,
+                   .repeats = *repeats,
+                   .peak_gflops = peak_gflops,
+                   .backend_kind = *backend_kind};
+}
+
+/// What every fixture runs under: the backend that will actually run, the
+/// kernel policy and the tiles it walks, and the host it is keyed on.
+struct BenchHost {
+  std::string backend_resolved;
+  up::KernelPolicyChoice policy;
+  rt::kernels::GemmTiles effective_tiles;
+  up::HostArchInfo host_arch;
+  up::GemmTiling analytic;
+};
+
+/// Resolves the backend and the kernel policy once, for every fixture.
+[[nodiscard]] std::expected<BenchHost, int> ResolveHost(const BenchArgs& args) {
+  const rt::BackendKind* backend_kind = &args.backend_kind;
+  const std::string* tiles_s = &args.tiles;
+  const std::string* policy_s = &args.policy;
+  const std::string* target_host_s = &args.target_host;
   // The report records the backend that actually ran (the per-backend
   // gate keys rows by it): resolve `auto` once, the way every fixture's
   // engine will, so the field never says "auto".
@@ -532,7 +566,7 @@ int main(int argc, char** argv) {
   {
     rt::UpdateEngine probe;
     if (auto ok = probe.SelectBackend(*backend_kind); !ok)
-      return Fail(ok.error());
+      return std::unexpected(Fail(ok.error()));
     backend_resolved = probe.backend_name();
     if (!probe.backend_note().empty())
       std::fprintf(stderr, "seeml-bench: %s\n", probe.backend_note().c_str());
@@ -542,13 +576,13 @@ int main(int argc, char** argv) {
   up::KernelPolicyRequest policy_request;
   if (!tiles_s->empty()) {
     auto tiles = up::ParseGemmTilesFlag(*tiles_s);
-    if (!tiles) return Fail(tiles.error());
+    if (!tiles) return std::unexpected(Fail(tiles.error()));
     policy_request.explicit_tiles = *tiles;
   }
   if (!policy_s->empty()) policy_request.table_path = *policy_s;
   if (!target_host_s->empty()) policy_request.target_host = *target_host_s;
   auto policy = up::ResolveKernelPolicy(policy_request);
-  if (!policy) return Fail(policy.error());
+  if (!policy) return std::unexpected(Fail(policy.error()));
   if (!policy->note.empty())
     std::fprintf(stderr, "seeml-bench: %s\n", policy->note.c_str());
   // The tiles that actually run: a zero header field is the runtime's
@@ -558,68 +592,79 @@ int main(int argc, char** argv) {
   if (policy->tiles.gemm_tile_n) effective_tiles.n = policy->tiles.gemm_tile_n;
   const up::HostArchInfo host_arch = up::DetectHostArch();
   const up::GemmTiling analytic = up::SuggestGemmTiling(host_arch);
+  return BenchHost{.backend_resolved = std::move(backend_resolved),
+                   .policy = std::move(*policy),
+                   .effective_tiles = effective_tiles,
+                   .host_arch = host_arch,
+                   .analytic = analytic};
+}
 
+/// --threads: the widths to sweep.
+[[nodiscard]] std::expected<std::vector<uint64_t>, int> ParseThreads(
+    const BenchArgs& args) {
+  const std::string* threads_csv = &args.threads_csv;
   auto thread_names = SplitCsv("--threads", *threads_csv);
-  if (!thread_names) return Fail(thread_names.error());
+  if (!thread_names) return std::unexpected(Fail(thread_names.error()));
   std::vector<uint64_t> threads;
   for (const auto& t : *thread_names) {
     auto n = ParseU64("--threads", t);
-    if (!n) return Fail(n.error());
+    if (!n) return std::unexpected(Fail(n.error()));
     threads.push_back(*n);
   }
-  if (attention_sweep) {
-    if (!args.rest.empty())
-      return Fail("--attention-sweep takes --out, --threads and --repeats only");
-    std::vector<size_t> widths(threads.begin(), threads.end());
-    return AttentionSweep(widths, *repeats, *out_path);
-  }
+  return threads;
+}
 
+/// --fixtures: the named ones, or the default set (every fixture that is
+/// not frontier-shaped).
+[[nodiscard]] std::expected<std::vector<const Fixture*>, int> SelectFixtures(
+    const BenchArgs& args) {
+  const std::string* fixtures_csv = &args.fixtures_csv;
   std::vector<const Fixture*> selected;
   if (fixtures_csv->empty()) {
     for (const Fixture& f : kFixtures)
       if (!f.frontier) selected.push_back(&f);
   } else {
     auto names = SplitCsv("--fixtures", *fixtures_csv);
-    if (!names) return Fail(names.error());
+    if (!names) return std::unexpected(Fail(names.error()));
     for (const auto& n : *names) {
       const Fixture* found = nullptr;
       for (const Fixture& f : kFixtures)
         if (n == f.name) found = &f;
-      if (!found) return Fail("--fixtures: unknown fixture '" + n + "'");
+      if (!found)
+        return std::unexpected(Fail("--fixtures: unknown fixture '" + n + "'"));
       selected.push_back(found);
     }
   }
+  return selected;
+}
 
-  // Stage the report beside its destination and rename it into place only
-  // when every fixture completed: a failed run must not leave a truncated
-  // bench.json that a later gate could mistake for a report (nor a stray
-  // checkpoint temp), so both are cleaned up on any early return.
-  const std::string tmp_path = *out_path + ".tmp";
-  struct Staging {
-    std::string tmp, ckpt;
-    FILE* file = nullptr;
-    bool committed = false;
-    ~Staging() {
-      if (committed) return;
-      if (file) std::fclose(file);
-      std::remove(tmp.c_str());
-      if (!ckpt.empty()) std::remove(ckpt.c_str());
-    }
-  } staging{tmp_path, "", nullptr, false};
-  FILE* out = std::fopen(tmp_path.c_str(), "w");
-  if (!out) return Fail("cannot open '" + tmp_path + "' for writing");
-  staging.file = out;
-  // Schema 2 adds the external-standard fields (see the header comment);
-  // every schema-1 key is unchanged, so stored baselines remain comparable.
-  // Schema 3 adds the kernel policy and the host identity it is keyed on;
-  // every schema-2 key is unchanged, so stored baselines stay comparable
-  // (bench_compare.py refuses to compare runs whose policies differ).
-  // Schema 4 adds the calibration block (P5, #79) at the end of the report;
-  // every schema-3 key is unchanged. A schema-4 report without it is one
-  // the gate refuses.
-  std::vector<double> calib_pre, calib_post;
-  std::fprintf(stderr, "seeml-bench: calibrating (%s)\n", kCalibKernel);
-  Calibrate(calib_pre);
+/// The staged report and the checkpoint temp of the fixture in flight:
+/// removed on any early return, kept once the report is renamed into place.
+struct Staging {
+  std::string tmp, ckpt;
+  FILE* file = nullptr;
+  bool committed = false;
+  ~Staging() {
+    if (committed) return;
+    if (file) std::fclose(file);
+    std::remove(tmp.c_str());
+    if (!ckpt.empty()) std::remove(ckpt.c_str());
+  }
+};
+
+/// The report's opening: the host, the policy, the configuration, and the
+/// opening of "fixtures".
+void WriteHeader(FILE* out, const BenchArgs& args, const BenchHost& host) {
+  const std::string& backend_resolved = host.backend_resolved;
+  const up::KernelPolicyChoice* policy = &host.policy;
+  const rt::kernels::GemmTiles& effective_tiles = host.effective_tiles;
+  const up::HostArchInfo& host_arch = host.host_arch;
+  const up::GemmTiling& analytic = host.analytic;
+  const uint64_t* lo = &args.lo;
+  const uint64_t* hi = &args.hi;
+  const uint64_t* repeats = &args.repeats;
+  const std::string* threads_csv = &args.threads_csv;
+  const double peak_gflops = args.peak_gflops;
   std::fprintf(out,
                "{\n  \"seeml_version\": \"%s\",\n  \"schema\": 4,\n"
                "  \"host\": \"%s\",\n  \"backend\": \"%s\",\n"
@@ -646,261 +691,359 @@ int main(int argc, char** argv) {
                rt::kernels::FitToPanel(effective_tiles).n,
                analytic.kc, analytic.nc, *lo, *hi,
                *repeats, threads_csv->c_str(), peak_gflops);
+}
 
-  bool first_fixture = true;
-  for (const Fixture* f : selected) {
-    std::fprintf(stderr, "seeml-bench: %s\n", f->name);
-    const up::SmfModel model = f->model();
-    up::UpdateConfig config = tf::BaseConfig(f->batch_rows);
-    config.lora.rank = 8;
-    config.lora.alpha = 16.0f;
-    config.quantize_base = f->quantize_base;
-    config.gemm_tile_k = policy->tiles.gemm_tile_k;
-    config.gemm_tile_n = policy->tiles.gemm_tile_n;
-
-    const auto t_compile = Clock::now();
-    auto compiled = up::UpdateCompiler(config).Compile(model);
-    if (!compiled) return Fail(f->name + (": " + compiled.error()));
-    const double compile_ms = MsSince(t_compile);
-    // The plan's work, read once from its own instructions (S0 #146).
-    // gemm_flops_per_step keeps the historical unit: the train program's
-    // GEMMs, times G — no step program, whose GEMMs it never counted.
-    const up::PlanWork work = up::MeasurePlanWork(compiled->plan);
-    const uint64_t gemm_flops_per_step =
-        work.train_gemm_flops * work.micro_batches;
-
-    rt::UpdateEngine engine;
-    if (auto ok = engine.SelectBackend(*backend_kind); !ok)
-      return Fail(f->name + (": " + ok.error()));
-    const auto t_load = Clock::now();
-    if (auto ok = engine.LoadFromMemory(compiled->plan.data(),
-                                        compiled->plan.size());
-        !ok)
-      return Fail(f->name + (": " + ok.error()));
-    const double load_ms = MsSince(t_load);
-
-    auto data = f->data();
-    if (!data) return Fail(f->name + (": " + data.error()));
-
-    rt::TrainOptions quiet;
-    quiet.log_every = 0;
-
-    uint64_t trainable_params = 0;
-    for (const auto& p : compiled->params) trainable_params += p.count;
-
-    std::fprintf(out,
-                 "%s\n    \"%s\": {\n"
-                 "      \"kind\": \"%s\", \"batch_rows\": %" PRId64
-                 ", \"seq\": %" PRId64 ",\n"
-                 "      \"plan_bytes\": %zu, \"arena_bytes\": %" PRIu64
-                 ", \"persistent_bytes\": %" PRIu64 ", \"rodata_bytes\": %"
-                 PRIu64 ",\n"
-                 "      \"train_instructions\": %" PRIu64
-                 ", \"gemm_flops_per_step\": %" PRIu64
-                 ", \"attention_flops_per_step\": %" PRIu64
-                 ", \"trainable_params\": %" PRIu64 ",\n"
-                 "      \"compile_ms\": %.2f, \"load_ms\": %.3f,\n"
-                 "      \"threads\": {",
-                 first_fixture ? "" : ",", f->name, f->kind, f->batch_rows,
-                 f->seq, compiled->plan.size(), compiled->arena_size,
-                 compiled->persistent_size, compiled->rodata_size,
-                 compiled->train_instruction_count,
-                 gemm_flops_per_step, work.AttentionFlopsPerStep(),
-                 trainable_params,
-                 compile_ms, load_ms);
-    first_fixture = false;
-
-    // MLX-LM's "Train loss" / "Trained Tokens" over the whole sweep: the
-    // engine trains continuously across thread widths and repeats, so the
-    // first window is the fixture's starting loss and the last its ending
-    // loss — a sanity anchor that the timed work was real training.
-    bool have_first_loss = false;
-    float train_loss_first = 0.0f, train_loss_last = 0.0f;
-    uint64_t trained_steps = 0;
-    auto note = [&](const rt::TrainReport& r) {
-      if (!have_first_loss) {
-        train_loss_first = r.initial_avg_loss;
-        have_first_loss = true;
-      }
-      train_loss_last = r.final_avg_loss;
-      trained_steps += r.steps;
-    };
-
-    // Energy per step (F6 #134): the SoC counters over the lo and hi runs,
-    // the same regression as the step time — the lifecycle's energy
-    // cancels — on the first domain both readings carry (the GPU's is what
-    // an unprivileged reader sees on macOS 26; whole-SoC either way).
-    rt::EnergyMeter energy;
-    std::string energy_domain;
-    // The runtime screen's input-blind loss, a property of the fixture's
-    // corpus: one pass over its labels, not one per thread width.
-    std::optional<double> label_entropy;
-    if (engine.header().label_kind == 1) label_entropy = data->LabelEntropyNats();
-    bool first_thread = true;
-    for (uint64_t t : threads) {
-      up::SetParallelThreadCount(t);
-      // Warm the pool, the caches, and the feeder before timing.
-      if (auto r = engine.Train(*data, 4, quiet); !r)
-        return Fail(f->name + (": " + r.error()));
-      else
-        note(*r);
-
-      std::vector<double> per_step_ms, lifecycle_ms, energy_j_per_step;
-      std::optional<rt::TrainReport> last_run;  // the runtime screen's run
-      std::optional<rt::EnergyReading> last_energy;  // and its energy
-      engine.ResetStepTimings();
-      for (uint64_t rep = 0; rep < *repeats; ++rep) {
-        energy.Start();
-        const auto t_lo = Clock::now();
-        auto r_lo = engine.Train(*data, *lo, quiet);
-        const double wall_lo = MsSince(t_lo);
-        const rt::EnergyReading e_lo = energy.Stop();
-        if (!r_lo) return Fail(f->name + (": " + r_lo.error()));
-        note(*r_lo);
-        energy.Start();
-        const auto t_hi = Clock::now();
-        auto r_hi = engine.Train(*data, *hi, quiet);
-        const double wall_hi = MsSince(t_hi);
-        const rt::EnergyReading e_hi = energy.Stop();
-        if (!r_hi) return Fail(f->name + (": " + r_hi.error()));
-        note(*r_hi);
-        last_run = *r_hi;
-        last_energy = e_hi;
-        const double slope = (wall_hi - wall_lo) /
-                             static_cast<double>(*hi - *lo);
-        per_step_ms.push_back(slope);
-        // The GPU domain is the one an unprivileged reader sees advance
-        // per sample (the CPU's arrives in bursts), and it is this run's
-        // compute only on the Metal backend: a CPU run has no number.
-        if (backend_resolved == "metal") {
-          const char* domain = "GPU Energy";
-          const double j_lo = rt::EnergyMeter::Domain(e_lo, domain);
-          const double j_hi = rt::EnergyMeter::Domain(e_hi, domain);
-          if (j_lo >= 0.0 && j_hi > j_lo) {
-            energy_j_per_step.push_back((j_hi - j_lo) /
-                                        static_cast<double>(*hi - *lo));
-            energy_domain = domain;
-          }
-        }
-        lifecycle_ms.push_back(wall_lo - slope * static_cast<double>(*lo));
-      }
-      const double step_ms = Median(per_step_ms);
-      const double rows_per_s =
-          step_ms > 0.0 ? 1000.0 * static_cast<double>(f->batch_rows) /
-                              step_ms
-                        : 0.0;
-      const double gflops =
-          step_ms > 0.0
-              ? static_cast<double>(gemm_flops_per_step) / (step_ms * 1e6)
-              : 0.0;
-      const rt::StepTimings st = engine.step_timings();
-      const double denom = st.steps ? static_cast<double>(st.steps) : 1.0;
-      // External-standard fields. Every row of a SeeAI batch is a loss
-      // target (token plans: next-token label per position; feature plans:
-      // one label per row), so MLX-LM's masked "Tokens/sec" is exactly
-      // rows_per_s here; the key name says which unit the fixture trains in.
-      const char* unit_key = std::strcmp(f->kind, "feature") == 0
-                                 ? "samples_per_s"
-                                 : "tokens_per_s";
-      const double it_per_s = step_ms > 0.0 ? 1000.0 / step_ms : 0.0;
-      const auto [lo_it, hi_it] =
-          std::minmax_element(per_step_ms.begin(), per_step_ms.end());
-      std::fprintf(out,
-                   "%s\n        \"%" PRIu64 "\": {\"step_ms\": %.3f, "
-                   "\"lifecycle_ms\": %.2f, \"rows_per_s\": %.0f, "
-                   "\"gemm_gflops\": %.1f, \"fwd_ms\": %.3f, "
-                   "\"bwd_ms\": %.3f, \"opt_ms\": %.3f,\n"
-                   "              \"%s\": %.0f, \"it_per_s\": %.3f, "
-                   "\"step_ms_min\": %.3f, \"step_ms_max\": %.3f",
-                   first_thread ? "" : ",", t, step_ms,
-                   Median(lifecycle_ms), rows_per_s, gflops,
-                   1000.0 * st.fwd_seconds / denom,
-                   1000.0 * st.bwd_seconds / denom,
-                   1000.0 * st.opt_seconds / denom, unit_key, rows_per_s,
-                   it_per_s, *lo_it, *hi_it);
-      if (peak_gflops > 0.0)
-        std::fprintf(out, ", \"mfu\": %.4f", gflops / peak_gflops);
-      // The step the plan's whole work (GEMM + attention) predicts at the
-      // stated peak — the runtime screen's number, beside the measured
-      // step_ms (S0 #146); mfu above stays the GEMM-only utilization.
-      if (peak_gflops > 0.0)
-        std::fprintf(out, ", \"predicted_step_ms\": %.3f",
-                     static_cast<double>(work.FlopsPerStep()) /
-                         (peak_gflops * 1e6));
-      if (!energy_j_per_step.empty()) {
-        const double j_step = Median(energy_j_per_step);
-        std::fprintf(out,
-                     ", \"energy_j_per_step\": %.5f, \"energy_j_per_token\": "
-                     "%.7f",
-                     j_step, j_step / static_cast<double>(f->batch_rows));
-      }
-      // The runtime screen (S7 #153): the very struct model_update prints,
-      // filled from this thread count's last timed run — the plan's numbers
-      // beside what that run measured. The bench gates nothing: its verdict
-      // is "measured".
-      if (last_run) {
-        seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);
-        rt::FillRuntimeScreen(runtime_screen, engine, *last_run, peak_gflops,
-                              "measured", label_entropy,
-                              last_energy ? &*last_energy : nullptr);
-        std::fprintf(out, ",\n              \"runtime\": %s",
-                     runtime_screen.Json(14).c_str());
-      }
-      std::fprintf(out, "}");
-      first_thread = false;
+/// MLX-LM's "Train loss" / "Trained Tokens" over the whole sweep: the
+/// engine trains continuously across thread widths and repeats, so the
+/// first window is the fixture's starting loss and the last its ending
+/// loss — a sanity anchor that the timed work was real training.
+struct LossTrace {
+  bool have_first_loss = false;
+  float train_loss_first = 0.0f, train_loss_last = 0.0f;
+  uint64_t trained_steps = 0;
+  void Note(const rt::TrainReport& r) {
+    if (!have_first_loss) {
+      train_loss_first = r.initial_avg_loss;
+      have_first_loss = true;
     }
-    const std::string energy_json =
-        !energy_domain.empty()
-            ? "{\"attribution\": \"whole-SoC\", \"scope\": [\"" +
-                  JsonEscape(energy_domain) + "\"]}"
-            : "{\"unavailable\": \"" +
-                  JsonEscape(!energy.available() ? energy.reason()
-                             : backend_resolved != "metal"
-                                 ? "this run computes on the CPU: the CPU "
-                                   "domain is published in bursts to an "
-                                   "unprivileged reader, and the GPU domain "
-                                   "is not its compute"
-                                 : "the GPU domain did not advance over the "
-                                   "timed runs") +
-                  "\"}";
-
-    const auto t_merge = Clock::now();
-    if (auto ok = engine.RunMerge(); !ok)
-      return Fail(f->name + (": " + ok.error()));
-    const double merge_ms = MsSince(t_merge);
-    const std::string ckpt = *out_path + "." + f->name + ".ckpt.tmp";
-    staging.ckpt = ckpt;
-    const auto t_ckpt = Clock::now();
-    if (auto ok = engine.SaveCheckpoint(ckpt); !ok)
-      return Fail(f->name + (": " + ok.error()));
-    const double ckpt_ms = MsSince(t_ckpt);
-    std::remove(ckpt.c_str());
-    staging.ckpt.clear();
-    // Tier C's "peak RSS vs arena" and MLX-LM's "Peak mem", measured rather
-    // than asserted: the OS-observed peak over (arena + plan).
-    const uint64_t peak_rss = PeakRssBytes();
-    const double planned = static_cast<double>(compiled->arena_size) +
-                           static_cast<double>(compiled->plan.size());
-    std::fprintf(out,
-                 "\n      },\n      \"merge_ms\": %.3f, "
-                 "\"checkpoint_save_ms\": %.3f,\n"
-                 "      \"train_loss_first\": %.6f, "
-                 "\"train_loss_last\": %.6f, \"trained_tokens\": %" PRIu64
-                 ",\n      \"peak_rss_bytes\": %" PRIu64
-                 ", \"rss_over_planned\": %.3f,\n      \"energy\": %s\n    }",
-                 merge_ms, ckpt_ms, static_cast<double>(train_loss_first),
-                 static_cast<double>(train_loss_last),
-                 trained_steps * static_cast<uint64_t>(f->batch_rows),
-                 peak_rss,
-                 planned > 0.0 ? static_cast<double>(peak_rss) / planned
-                               : 0.0,
-                 energy_json.c_str());
+    train_loss_last = r.final_avg_loss;
+    trained_steps += r.steps;
   }
+};
 
-  // The second calibration bracket: a runner whose speed moved during the
-  // sweep shows up as pre != post and as `spread`, and the headline rate is
-  // the median of both sides.
-  Calibrate(calib_post);
+/// One fixture's sweep: what its thread widths share.
+struct FixtureRun {
+  const Fixture* f;
+  const BenchArgs& args;
+  const std::string& backend_resolved;
+  FILE* out;
+  rt::UpdateEngine& engine;
+  rt::Dataset* data;
+  const rt::TrainOptions& quiet;
+  const up::PlanWork& work;
+  uint64_t gemm_flops_per_step;
+  LossTrace trace{};
+  // Energy per step (F6 #134): the SoC counters over the lo and hi runs,
+  // the same regression as the step time — the lifecycle's energy
+  // cancels — on the first domain both readings carry (the GPU's is what
+  // an unprivileged reader sees on macOS 26; whole-SoC either way).
+  rt::EnergyMeter energy{};
+  std::string energy_domain{};
+  // The runtime screen's input-blind loss, a property of the fixture's
+  // corpus: one pass over its labels, not one per thread width.
+  std::optional<double> label_entropy{};
+};
+
+/// One thread width's timed runs: a regression sample per repeat, and the
+/// last run for the runtime screen.
+struct WidthSamples {
+  std::vector<double> per_step_ms, lifecycle_ms, energy_j_per_step;
+  std::optional<rt::TrainReport> last_run;  // the runtime screen's run
+  std::optional<rt::EnergyReading> last_energy;  // and its energy
+};
+
+/// Trains the fixture at one thread width: the warm-up, then --repeats
+/// pairs of a lo and a hi run.
+[[nodiscard]] std::optional<int> TimeWidth(FixtureRun& run, uint64_t t,
+                                           WidthSamples& samples) {
+  const Fixture* f = run.f;
+  rt::UpdateEngine& engine = run.engine;
+  rt::Dataset* data = run.data;
+  const rt::TrainOptions& quiet = run.quiet;
+  rt::EnergyMeter& energy = run.energy;
+  std::string& energy_domain = run.energy_domain;
+  const std::string& backend_resolved = run.backend_resolved;
+  const uint64_t* lo = &run.args.lo;
+  const uint64_t* hi = &run.args.hi;
+  const uint64_t* repeats = &run.args.repeats;
+  std::vector<double>& per_step_ms = samples.per_step_ms;
+  std::vector<double>& lifecycle_ms = samples.lifecycle_ms;
+  std::vector<double>& energy_j_per_step = samples.energy_j_per_step;
+  std::optional<rt::TrainReport>& last_run = samples.last_run;
+  std::optional<rt::EnergyReading>& last_energy = samples.last_energy;
+  up::SetParallelThreadCount(t);
+  // Warm the pool, the caches, and the feeder before timing.
+  if (auto r = engine.Train(*data, 4, quiet); !r)
+    return Fail(f->name + (": " + r.error()));
+  else
+    run.trace.Note(*r);
+
+  engine.ResetStepTimings();
+  for (uint64_t rep = 0; rep < *repeats; ++rep) {
+    energy.Start();
+    const auto t_lo = Clock::now();
+    auto r_lo = engine.Train(*data, *lo, quiet);
+    const double wall_lo = MsSince(t_lo);
+    const rt::EnergyReading e_lo = energy.Stop();
+    if (!r_lo) return Fail(f->name + (": " + r_lo.error()));
+    run.trace.Note(*r_lo);
+    energy.Start();
+    const auto t_hi = Clock::now();
+    auto r_hi = engine.Train(*data, *hi, quiet);
+    const double wall_hi = MsSince(t_hi);
+    const rt::EnergyReading e_hi = energy.Stop();
+    if (!r_hi) return Fail(f->name + (": " + r_hi.error()));
+    run.trace.Note(*r_hi);
+    last_run = *r_hi;
+    last_energy = e_hi;
+    const double slope = (wall_hi - wall_lo) /
+                         static_cast<double>(*hi - *lo);
+    per_step_ms.push_back(slope);
+    // The GPU domain is the one an unprivileged reader sees advance
+    // per sample (the CPU's arrives in bursts), and it is this run's
+    // compute only on the Metal backend: a CPU run has no number.
+    if (backend_resolved == "metal") {
+      const char* domain = "GPU Energy";
+      const double j_lo = rt::EnergyMeter::Domain(e_lo, domain);
+      const double j_hi = rt::EnergyMeter::Domain(e_hi, domain);
+      if (j_lo >= 0.0 && j_hi > j_lo) {
+        energy_j_per_step.push_back((j_hi - j_lo) /
+                                    static_cast<double>(*hi - *lo));
+        energy_domain = domain;
+      }
+    }
+    lifecycle_ms.push_back(wall_lo - slope * static_cast<double>(*lo));
+  }
+  return std::nullopt;
+}
+
+/// One thread width's row: the medians of its samples, the external-standard
+/// fields, and the runtime screen of its last run.
+void PrintWidthRow(const FixtureRun& run, uint64_t t,
+                   const WidthSamples& samples, bool first_thread) {
+  const Fixture* f = run.f;
+  FILE* out = run.out;
+  const rt::UpdateEngine& engine = run.engine;
+  const up::PlanWork& work = run.work;
+  const uint64_t gemm_flops_per_step = run.gemm_flops_per_step;
+  const double peak_gflops = run.args.peak_gflops;
+  const std::optional<double>& label_entropy = run.label_entropy;
+  const std::vector<double>& per_step_ms = samples.per_step_ms;
+  const std::vector<double>& lifecycle_ms = samples.lifecycle_ms;
+  const std::vector<double>& energy_j_per_step = samples.energy_j_per_step;
+  const std::optional<rt::TrainReport>& last_run = samples.last_run;
+  const std::optional<rt::EnergyReading>& last_energy = samples.last_energy;
+  const double step_ms = Median(per_step_ms);
+  const double rows_per_s =
+      step_ms > 0.0 ? 1000.0 * static_cast<double>(f->batch_rows) /
+                          step_ms
+                    : 0.0;
+  const double gflops =
+      step_ms > 0.0
+          ? static_cast<double>(gemm_flops_per_step) / (step_ms * 1e6)
+          : 0.0;
+  const rt::StepTimings st = engine.step_timings();
+  const double denom = st.steps ? static_cast<double>(st.steps) : 1.0;
+  // External-standard fields. Every row of a SeeAI batch is a loss
+  // target (token plans: next-token label per position; feature plans:
+  // one label per row), so MLX-LM's masked "Tokens/sec" is exactly
+  // rows_per_s here; the key name says which unit the fixture trains in.
+  const char* unit_key = std::strcmp(f->kind, "feature") == 0
+                             ? "samples_per_s"
+                             : "tokens_per_s";
+  const double it_per_s = step_ms > 0.0 ? 1000.0 / step_ms : 0.0;
+  const auto [lo_it, hi_it] =
+      std::minmax_element(per_step_ms.begin(), per_step_ms.end());
+  std::fprintf(out,
+               "%s\n        \"%" PRIu64 "\": {\"step_ms\": %.3f, "
+               "\"lifecycle_ms\": %.2f, \"rows_per_s\": %.0f, "
+               "\"gemm_gflops\": %.1f, \"fwd_ms\": %.3f, "
+               "\"bwd_ms\": %.3f, \"opt_ms\": %.3f,\n"
+               "              \"%s\": %.0f, \"it_per_s\": %.3f, "
+               "\"step_ms_min\": %.3f, \"step_ms_max\": %.3f",
+               first_thread ? "" : ",", t, step_ms,
+               Median(lifecycle_ms), rows_per_s, gflops,
+               1000.0 * st.fwd_seconds / denom,
+               1000.0 * st.bwd_seconds / denom,
+               1000.0 * st.opt_seconds / denom, unit_key, rows_per_s,
+               it_per_s, *lo_it, *hi_it);
+  if (peak_gflops > 0.0)
+    std::fprintf(out, ", \"mfu\": %.4f", gflops / peak_gflops);
+  // The step the plan's whole work (GEMM + attention) predicts at the
+  // stated peak — the runtime screen's number, beside the measured
+  // step_ms (S0 #146); mfu above stays the GEMM-only utilization.
+  if (peak_gflops > 0.0)
+    std::fprintf(out, ", \"predicted_step_ms\": %.3f",
+                 static_cast<double>(work.FlopsPerStep()) /
+                     (peak_gflops * 1e6));
+  if (!energy_j_per_step.empty()) {
+    const double j_step = Median(energy_j_per_step);
+    std::fprintf(out,
+                 ", \"energy_j_per_step\": %.5f, \"energy_j_per_token\": "
+                 "%.7f",
+                 j_step, j_step / static_cast<double>(f->batch_rows));
+  }
+  // The runtime screen (S7 #153): the very struct model_update prints,
+  // filled from this thread count's last timed run — the plan's numbers
+  // beside what that run measured. The bench gates nothing: its verdict
+  // is "measured".
+  if (last_run) {
+    seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);
+    rt::FillRuntimeScreen(runtime_screen, engine, *last_run, peak_gflops,
+                          "measured", label_entropy,
+                          last_energy ? &*last_energy : nullptr);
+    std::fprintf(out, ",\n              \"runtime\": %s",
+                 runtime_screen.Json(14).c_str());
+  }
+  std::fprintf(out, "}");
+}
+
+/// Closes a fixture's object: its energy scope, the merge and checkpoint
+/// latencies, the loss anchors and the peak RSS.
+[[nodiscard]] std::optional<int> FinishFixture(
+    FixtureRun& run, const up::CompiledUpdate* compiled, Staging& staging) {
+  const Fixture* f = run.f;
+  FILE* out = run.out;
+  rt::UpdateEngine& engine = run.engine;
+  const rt::EnergyMeter& energy = run.energy;
+  const std::string& energy_domain = run.energy_domain;
+  const std::string& backend_resolved = run.backend_resolved;
+  const std::string* out_path = &run.args.out_path;
+  const float train_loss_first = run.trace.train_loss_first;
+  const float train_loss_last = run.trace.train_loss_last;
+  const uint64_t trained_steps = run.trace.trained_steps;
+  const std::string energy_json =
+      !energy_domain.empty()
+          ? "{\"attribution\": \"whole-SoC\", \"scope\": [\"" +
+                JsonEscape(energy_domain) + "\"]}"
+          : "{\"unavailable\": \"" +
+                JsonEscape(!energy.available() ? energy.reason()
+                           : backend_resolved != "metal"
+                               ? "this run computes on the CPU: the CPU "
+                                 "domain is published in bursts to an "
+                                 "unprivileged reader, and the GPU domain "
+                                 "is not its compute"
+                               : "the GPU domain did not advance over the "
+                                 "timed runs") +
+                "\"}";
+
+  const auto t_merge = Clock::now();
+  if (auto ok = engine.RunMerge(); !ok)
+    return Fail(f->name + (": " + ok.error()));
+  const double merge_ms = MsSince(t_merge);
+  const std::string ckpt = *out_path + "." + f->name + ".ckpt.tmp";
+  staging.ckpt = ckpt;
+  const auto t_ckpt = Clock::now();
+  if (auto ok = engine.SaveCheckpoint(ckpt); !ok)
+    return Fail(f->name + (": " + ok.error()));
+  const double ckpt_ms = MsSince(t_ckpt);
+  std::remove(ckpt.c_str());
+  staging.ckpt.clear();
+  // Tier C's "peak RSS vs arena" and MLX-LM's "Peak mem", measured rather
+  // than asserted: the OS-observed peak over (arena + plan).
+  const uint64_t peak_rss = PeakRssBytes();
+  const double planned = static_cast<double>(compiled->arena_size) +
+                         static_cast<double>(compiled->plan.size());
+  std::fprintf(out,
+               "\n      },\n      \"merge_ms\": %.3f, "
+               "\"checkpoint_save_ms\": %.3f,\n"
+               "      \"train_loss_first\": %.6f, "
+               "\"train_loss_last\": %.6f, \"trained_tokens\": %" PRIu64
+               ",\n      \"peak_rss_bytes\": %" PRIu64
+               ", \"rss_over_planned\": %.3f,\n      \"energy\": %s\n    }",
+               merge_ms, ckpt_ms, static_cast<double>(train_loss_first),
+               static_cast<double>(train_loss_last),
+               trained_steps * static_cast<uint64_t>(f->batch_rows),
+               peak_rss,
+               planned > 0.0 ? static_cast<double>(peak_rss) / planned
+                             : 0.0,
+               energy_json.c_str());
+  return std::nullopt;
+}
+
+/// One fixture: compiled, loaded, trained at every thread width, merged and
+/// checkpointed; its object appended to the report.
+[[nodiscard]] std::optional<int> MeasureFixture(
+    const Fixture* f, const BenchArgs& args, const BenchHost& host,
+    const std::vector<uint64_t>& threads, Staging& staging, FILE* out,
+    bool first_fixture) {
+  const up::KernelPolicyChoice* policy = &host.policy;
+  const rt::BackendKind* backend_kind = &args.backend_kind;
+  std::fprintf(stderr, "seeml-bench: %s\n", f->name);
+  const up::SmfModel model = f->model();
+  up::UpdateConfig config = tf::BaseConfig(f->batch_rows);
+  config.lora.rank = 8;
+  config.lora.alpha = 16.0f;
+  config.quantize_base = f->quantize_base;
+  config.gemm_tile_k = policy->tiles.gemm_tile_k;
+  config.gemm_tile_n = policy->tiles.gemm_tile_n;
+
+  const auto t_compile = Clock::now();
+  auto compiled = up::UpdateCompiler(config).Compile(model);
+  if (!compiled) return Fail(f->name + (": " + compiled.error()));
+  const double compile_ms = MsSince(t_compile);
+  // The plan's work, read once from its own instructions (S0 #146).
+  // gemm_flops_per_step keeps the historical unit: the train program's
+  // GEMMs, times G — no step program, whose GEMMs it never counted.
+  const up::PlanWork work = up::MeasurePlanWork(compiled->plan);
+  const uint64_t gemm_flops_per_step =
+      work.train_gemm_flops * work.micro_batches;
+
+  rt::UpdateEngine engine;
+  if (auto ok = engine.SelectBackend(*backend_kind); !ok)
+    return Fail(f->name + (": " + ok.error()));
+  const auto t_load = Clock::now();
+  if (auto ok = engine.LoadFromMemory(compiled->plan.data(),
+                                      compiled->plan.size());
+      !ok)
+    return Fail(f->name + (": " + ok.error()));
+  const double load_ms = MsSince(t_load);
+
+  auto data = f->data();
+  if (!data) return Fail(f->name + (": " + data.error()));
+
+  rt::TrainOptions quiet;
+  quiet.log_every = 0;
+
+  uint64_t trainable_params = 0;
+  for (const auto& p : compiled->params) trainable_params += p.count;
+
+  std::fprintf(out,
+               "%s\n    \"%s\": {\n"
+               "      \"kind\": \"%s\", \"batch_rows\": %" PRId64
+               ", \"seq\": %" PRId64 ",\n"
+               "      \"plan_bytes\": %zu, \"arena_bytes\": %" PRIu64
+               ", \"persistent_bytes\": %" PRIu64 ", \"rodata_bytes\": %"
+               PRIu64 ",\n"
+               "      \"train_instructions\": %" PRIu64
+               ", \"gemm_flops_per_step\": %" PRIu64
+               ", \"attention_flops_per_step\": %" PRIu64
+               ", \"trainable_params\": %" PRIu64 ",\n"
+               "      \"compile_ms\": %.2f, \"load_ms\": %.3f,\n"
+               "      \"threads\": {",
+               first_fixture ? "" : ",", f->name, f->kind, f->batch_rows,
+               f->seq, compiled->plan.size(), compiled->arena_size,
+               compiled->persistent_size, compiled->rodata_size,
+               compiled->train_instruction_count,
+               gemm_flops_per_step, work.AttentionFlopsPerStep(),
+               trainable_params,
+               compile_ms, load_ms);
+
+  FixtureRun run{.f = f,
+                 .args = args,
+                 .backend_resolved = host.backend_resolved,
+                 .out = out,
+                 .engine = engine,
+                 .data = &*data,
+                 .quiet = quiet,
+                 .work = work,
+                 .gemm_flops_per_step = gemm_flops_per_step};
+  if (engine.header().label_kind == 1)
+    run.label_entropy = data->LabelEntropyNats();
+  bool first_thread = true;
+  for (uint64_t t : threads) {
+    WidthSamples samples;
+    if (auto rc = TimeWidth(run, t, samples)) return rc;
+    PrintWidthRow(run, t, samples, first_thread);
+    first_thread = false;
+  }
+  return FinishFixture(run, &*compiled, staging);
+}
+
+/// The report's close: the calibration block (P5, #79) — the headline rate
+/// is the median of both brackets.
+void WriteCalibration(FILE* out, const std::vector<double>& calib_pre,
+                      const std::vector<double>& calib_post) {
   std::vector<double> calib_all = calib_pre;
   calib_all.insert(calib_all.end(), calib_post.begin(), calib_post.end());
   const double calib = Median(calib_all);
@@ -914,6 +1057,72 @@ int main(int argc, char** argv) {
                kCalibKernel, calib, Median(calib_pre), Median(calib_post),
                calib_all.size(),
                calib > 0.0 ? (*calib_max - *calib_min) / calib : 0.0);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // Six in-process compiles would otherwise narrate every pass at INFO;
+  // the harness's own stderr lines are the progress report.
+  seeml::diag::Logger::SetLevel(seeml::diag::LogLevel::kWarn);
+  Args args(argc, argv);
+  if (args.Take("--version")) {
+    std::printf("seeml-bench %s\n", seeml::update::kSeemlVersion);
+    return 0;
+  }
+
+  auto parsed = ParseArgs(args);
+  if (!parsed) return parsed.error();
+  const BenchArgs& bench = *parsed;
+  auto host = ResolveHost(bench);
+  if (!host) return host.error();
+  auto threads = ParseThreads(bench);
+  if (!threads) return threads.error();
+  if (bench.attention_sweep) {
+    if (!args.rest.empty())
+      return Fail("--attention-sweep takes --out, --threads and --repeats only");
+    std::vector<size_t> widths(threads->begin(), threads->end());
+    return AttentionSweep(widths, bench.repeats, bench.out_path);
+  }
+
+  auto selected = SelectFixtures(bench);
+  if (!selected) return selected.error();
+
+  // Stage the report beside its destination and rename it into place only
+  // when every fixture completed: a failed run must not leave a truncated
+  // bench.json that a later gate could mistake for a report (nor a stray
+  // checkpoint temp), so both are cleaned up on any early return.
+  const std::string tmp_path = bench.out_path + ".tmp";
+  Staging staging{tmp_path, "", nullptr, false};
+  FILE* out = std::fopen(tmp_path.c_str(), "w");
+  if (!out) return Fail("cannot open '" + tmp_path + "' for writing");
+  staging.file = out;
+  // Schema 2 adds the external-standard fields (see the header comment);
+  // every schema-1 key is unchanged, so stored baselines remain comparable.
+  // Schema 3 adds the kernel policy and the host identity it is keyed on;
+  // every schema-2 key is unchanged, so stored baselines stay comparable
+  // (bench_compare.py refuses to compare runs whose policies differ).
+  // Schema 4 adds the calibration block (P5, #79) at the end of the report;
+  // every schema-3 key is unchanged. A schema-4 report without it is one
+  // the gate refuses.
+  std::vector<double> calib_pre, calib_post;
+  std::fprintf(stderr, "seeml-bench: calibrating (%s)\n", kCalibKernel);
+  Calibrate(calib_pre);
+  WriteHeader(out, bench, *host);
+
+  bool first_fixture = true;
+  for (const Fixture* f : *selected) {
+    if (auto rc = MeasureFixture(f, bench, *host, *threads, staging, out,
+                                 first_fixture))
+      return *rc;
+    first_fixture = false;
+  }
+
+  // The second calibration bracket: a runner whose speed moved during the
+  // sweep shows up as pre != post and as `spread`, and the headline rate is
+  // the median of both sides.
+  Calibrate(calib_post);
+  WriteCalibration(out, calib_pre, calib_post);
   // A truncated report must not exit 0 — same discipline as --report in
   // seeml-update-compile.
   const bool write_failed = std::ferror(out) != 0;
@@ -921,9 +1130,9 @@ int main(int argc, char** argv) {
   staging.file = nullptr;
   if (write_failed || close_failed)
     return Fail("failed writing '" + tmp_path + "'");
-  if (std::rename(tmp_path.c_str(), out_path->c_str()) != 0)
-    return Fail("cannot move '" + tmp_path + "' to '" + *out_path + "'");
+  if (std::rename(tmp_path.c_str(), bench.out_path.c_str()) != 0)
+    return Fail("cannot move '" + tmp_path + "' to '" + bench.out_path + "'");
   staging.committed = true;
-  std::fprintf(stderr, "seeml-bench: wrote %s\n", out_path->c_str());
+  std::fprintf(stderr, "seeml-bench: wrote %s\n", bench.out_path.c_str());
   return 0;
 }
