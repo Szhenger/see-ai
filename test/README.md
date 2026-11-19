@@ -36,7 +36,24 @@ test/
   fuzz/                 libFuzzer harnesses (built with -DSEEML_FUZZ=ON)
     binary_formats.cc
   tool/                 the Python plane (unittest, standard library only)
-    pack_update_test.py
+    autotune_test.py          tool/autotune.py: the sweep, the scoring, the decision rule and the table merge, against a fake seeml-bench
+    bench_compare_test.py     tool/bench_compare.py, the Tier A regression gate, on synthetic reports and two recorded incidents
+    bench_runtime_test.py     seeml-bench rows carry the runtime screen model_update prints (runs the built seeml-bench)
+    certify_numerics_test.py  tool/certify_numerics.py: what a certificate binds to, the relaxed model's bound, certificates over compiled plans
+    cli_exit_codes_test.py    the exit-code contract of the six built C++ tools (0 done, 1 failed, 2 bad command line)
+    driver_shape_test.py      the driver contains orchestration only: no function in compiler/driver/ is longer than 150 lines
+    energy_test.py            tool/seeml/energy.py: the energy meter never raises; the per-step regression is the step time's
+    export_model_test.py      tool/export_model.py: the streaming writers against the original per-row and whole-blob algorithms, byte for byte
+    formats_test.py           the byte seam between the planes: formats.py against abi.json, seeml-abi, the golden fixtures, the two plan decoders
+    frontier_exec_test.py     tool/frontier_exec.py, the reference executor: on its own (finite differences), then differentially against the C++ runtime
+    frontier_run_test.py      tool/frontier_run.py, the frontier harness: the adapted-set rule, the parity checks, the split rule, the report
+    masked_loss_test.py       the masked cross-entropy kernels of the oracle against PyTorch's cross_entropy(ignore_index=-1) and its gradient
+    pack_update_test.py       tool/pack_update.py, the package assembler, on fabricated package directories
+    recipe_test.py            the recipe at the command line: a recipe file compiles to the plan its flags compile to; the refusals name the field
+    runner_stop_test.py       cooperative cancellation and --threads through a built model_update: SIGTERM stops at a step boundary, exit 5, resumable
+    runner_text_test.py       raw text on the device: a run on .txt / .jsonl commits the bytes a run on the compiler's canonical SDS commits
+    seetest_skip_test.py      SeeTest's SKIP(), seen from outside the process: printed and counted as SKIPPED, never a pass or a failure
+    tokenizer_test.py         the SMF tokenizer section and the core's encoder: the builder's refusals, parity with the reference tokenizer
 ```
 
 ## Why an in-tree harness?

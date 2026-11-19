@@ -26,8 +26,9 @@ Cross-cutting ground rules, all now in place and to be leaned on:
   fixed-order reductions may only be traded for vectorized float32 ones by
   an opt-in opcode family, and only for a plan that
   `tool/certify_numerics.py` has certified on its own operands — no
-  certificate, no relaxed plan. The tool and the contract exist; the opcode
-  family does not yet. First evidence (Apple M5, 2026-09-17, 8 model lanes):
+  certificate, no relaxed plan. The tool, the contract and the opcode
+  family exist (the relaxed GEMMs shipped as plan v18). First evidence (Apple
+  M5, 2026-09-17, 8 model lanes):
   on the Tier A `dec_wide` plan (S=256, d=64, V=4096) the worst per-site
   output error is 3.3e-6 of the tensor's scale (the attention forward),
   every site sits inside its any-order rounding bound (worst 5.0e-4, the

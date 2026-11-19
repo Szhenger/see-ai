@@ -167,7 +167,7 @@ registered with `add_test`, and an opt-in fuzz target. Options:
 
 **`build/build.sh`**: pure POSIX sh, `CXX="${CXX:-c++}"`, compiles ~60
 translation units serially into `build/*.o` and links loose objects (no `ar`)
-into the same tools and 25 suites. This is the path used by the CI matrix and
+into the same tools and 33 suites. This is the path used by the CI matrix and
 by CodeQL's manual build tracing, and the only path on hosts without CMake.
 
 **Toolchain floor** (documented in `README.md`, enforced by CI pins): GCC 13+,
@@ -397,12 +397,18 @@ test of the compiler-emitted GEMM source.
   semantics, ANSI color via `isatty`, and `SKIP(reason)` for a test the
   host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
   with its reason, apart from the passes, never a failure. Exit codes:
-  0 no test failed / 1 fail / 2 usage or empty selection. 25 suite executables mirror the source tree
-  one-to-one; 345 tests at v1.2.3.
+  0 no test failed / 1 fail / 2 usage or empty selection. 33 suite executables mirror the source tree
+  one-to-one, 591 tests in all, and 227 more in the Python plane's
+  `test/tool/` (counted on macOS, 2026-11-19; the live counts are the suite
+  list of `build/build.sh`, each suite's `--list`, and what `unittest
+  discover` reports).
 - **Fixtures** (`test/support/`) — seeded in-process builders for models,
-  corpora, and arena probes; a RAII temp-dir. There are no checked-in binary
-  golden files; determinism claims are tested as serial-vs-parallel bitwise
-  equality, and autodiff is verified against central finite differences.
+  corpora, and arena probes; a RAII temp-dir. The checked-in binary golden
+  files are the four SMF / SDS fixtures of `test/fixtures/golden/`, written
+  by its `make_golden.py` and read by both planes (the screens' golden text
+  sits beside them); no plan is checked in. Determinism claims are tested
+  as serial-vs-parallel bitwise equality, and autodiff is verified against
+  central finite differences.
 - **Sanitizers** — ASan+UBSan per-PR, TSan nightly (the mechanical proof the
   pool and feeder are race-free), via `SEEML_SANITIZE`.
 - **Fuzzing** — one libFuzzer target (`test/fuzz/binary_formats.cc`) whose
