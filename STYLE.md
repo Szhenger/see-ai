@@ -24,7 +24,11 @@ includes by repository-rooted path (`"compiler/driver/update_compiler.h"`),
 `///` on declarations and a `// ====` banner that says what the file is for,
 80 columns (about 640 lines run past 80 today and 17 past 100; add none).
 A conversion is a named cast (`static_cast`, `reinterpret_cast`): both build
-drivers compile with `-Wold-style-cast` under `-Werror`.
+drivers compile with `-Wold-style-cast` under `-Werror`. Neither compiles
+the generated runner, `runtime/host/update_main.cc` — a package's own
+`build.sh` does, with `-Wall -Wextra` alone — so no build holds that file
+to this rule or to a dropped `[[nodiscard]]` result (section 2); it is held
+by review.
 
 A file belongs to the dialect of the namespace it *defines* in. The passes,
 sema, the parser and the lowering live in `seeml::update` and are Google

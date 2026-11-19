@@ -42,7 +42,7 @@ struct Reader {
   }
 };
 
-std::unexpected<std::string> Refuse(const std::string& what) {
+[[nodiscard]] std::unexpected<std::string> Refuse(const std::string& what) {
   return std::unexpected("tokenizer section: " + what);
 }
 

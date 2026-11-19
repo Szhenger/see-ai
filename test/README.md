@@ -16,14 +16,21 @@ test/
     corpora.cc          synthetic datasets (classification/regression/unlabeled)
     probes.cc           engine-arena introspection + the test-run environment
     scoped_temp_dir     filesystem sandbox for I/O suites
+  fixtures/             the checked-in inputs
+    golden/             four SMF / SDS files (make_golden.py writes them), read by both planes; screens/ holds the screens' golden text
+    tokenizer/          adversarial.txt, the Python plane's tokenizer parity corpus
   source/               one folder per source-language subsystem
     parallel/           parallel_for
     identity/           hash
+    statistics/         screen
+    tokenizer/          bpe  ingest
+    contract/           split
+    recipe/             recipe
   compiler/             one folder per compiler subsystem
     frontend/           model_io  resource_analyzer  sir  operator  parser  golden_fixture
     analysis/           update_passes  pass_manager  statistics
     backend/            architecture  lowering  native_emitter
-    driver/             update_compiler  driver
+    driver/             update_compiler  driver  screens
     diagnostics/        diagnostics
   runtime/              one folder per runtime subsystem
     pipeline/           dataset  batch_pipeline
