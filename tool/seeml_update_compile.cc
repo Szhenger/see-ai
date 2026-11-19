@@ -70,6 +70,10 @@
 //                                      leave it beside the binary (#158)
 //       [--build]                      run build.sh after emission
 //       [--version]                    print the release version
+//       [--help | -h]                  print the usage (exit 0), from any
+//                                      slot that is not another flag's value:
+//                                      `--out -h` is --out without a value
+//                                      (exit 2), not a request for help
 //
 // Every numeric flag is parsed strictly: trailing garbage, overflow, NaN/Inf,
 // or an unknown flag is a hard error, never a silent default.
@@ -181,6 +185,58 @@ void PrintUsage() {
       "                      predicts a step's time from the plan's work\n"
       "  [--verbose]         every screen row, the per-pass and per-adapter\n"
       "                      tables, and each pass's note\n");
+}
+
+/// The flags outside the recipe's field table that take a value. With the
+/// table's non-boolean fields they are every flag whose next argv slot is
+/// its value (TakesValue); a flag added to ParseArgs with TakeValue is added
+/// here.
+constexpr const char* kValueFlags[] = {
+    "--source",      "--out",      "--recipe",      "--data",
+    "--teacher",     "--dump-sir", "--gemm-tiles",  "--kernel-policy",
+    "--target-host", "--report",   "--peak-gflops", "--gpu-peak-gflops"};
+
+[[nodiscard]] bool TakesValue(const char* arg) {
+  for (const char* flag : kValueFlags)
+    if (std::strcmp(arg, flag) == 0) return true;
+  for (const recipe::Field& field : recipe::kFields)
+    if (field.kind != recipe::Kind::kBool && std::strcmp(arg, field.flag) == 0)
+      return true;
+  return false;
+}
+
+[[nodiscard]] bool IsHelp(const char* arg) {
+  return std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0;
+}
+
+/// What the line says about help, read slot by slot the way the runner's
+/// ArgsOk reads its own (runtime/host/update_main.cc): a value flag's next
+/// slot is its value, so --help or -h is a request only in a slot that is
+/// no flag's value. `--out -h` asked for nothing: it left --out without a
+/// value (a flag is never a value), `swallowed` names it, and the refusal
+/// wins over the help, as it does in the runner. Help standing on its own
+/// is help whatever else is wrong with the line, as it always was.
+struct HelpRequest {
+  bool asked = false;
+  // The first value flag with --help or -h in its value slot.
+  const char* swallowed = nullptr;
+};
+
+[[nodiscard]] HelpRequest FindHelp(int argc, char** argv) {
+  HelpRequest help;
+  for (int i = 1; i < argc; ++i) {
+    if (IsHelp(argv[i])) {
+      help.asked = true;
+    } else if (TakesValue(argv[i]) && i + 1 < argc) {
+      if (IsHelp(argv[i + 1])) {
+        if (!help.swallowed) help.swallowed = argv[i];
+        ++i;
+      } else if (std::strncmp(argv[i + 1], "--", 2) != 0) {
+        ++i;  // the value's slot: whatever it holds is not a request
+      }
+    }
+  }
+  return help;
 }
 
 /// Strict argument cursor: every flag must be known, every value must parse
@@ -401,7 +457,14 @@ struct CompileArgs {
   if (argc > 255) return std::unexpected(Usage("too many arguments"));
   Args args(argc, argv);
 
-  if (args.Take("--help") || args.Take("-h")) {
+  // Help from any slot that is not another flag's value (/code-review of
+  // #213: `--out -h` printed the usage and exited 0 without compiling). In
+  // a value's slot it is the flag before it left without a value.
+  const HelpRequest help = FindHelp(argc, argv);
+  if (help.swallowed)
+    return std::unexpected(
+        Usage(std::string(help.swallowed) + " requires a value"));
+  if (help.asked) {
     PrintUsage();
     return std::unexpected(0);
   }

@@ -14,7 +14,9 @@ Each tool has its own test so that a missing binary skips that tool alone.
 Run: python3 -m unittest discover -s test/tool -p '*_test.py'
 """
 
+import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -92,6 +94,61 @@ class CliExitCodes(unittest.TestCase):
                 self.exits(1, "seeml-update-compile", *argv)
         self.exits(0, "seeml-update-compile", "--version")
         self.exits(0, "seeml-update-compile", "--help")
+
+    def recipe_fields(self):
+        with open(os.path.join(REPO, "tool", "seeml", "abi.json")) as f:
+            return json.load(f)["recipe"]["fields"]
+
+    # Help is asked for from a slot that is no flag's value. `--out -h` read
+    # the -h as a request (usage, exit 0, nothing compiled) until the
+    # /code-review of #213; it is --out without a value, as it is in the
+    # generated runner. The value flags are the --help text's own entries
+    # that show a value, with the recipe's non-boolean fields: one the
+    # compiler takes a value for without knowing its next slot is a value
+    # slot fails here.
+    @built("seeml-update-compile")
+    def test_update_compile_help_is_not_read_from_a_value_slot(self):
+        model = os.path.join(GOLDEN, "mlp.smf")
+        out = os.path.join(self.dir, "pkg")
+        base = ("--source", model, "--out", out)
+        usage = self.exits(0, "seeml-update-compile", "--help").stderr
+        value_flags = {"--source", "--out"}
+        value_flags.update(re.findall(r"\[(--[a-z0-9-]+) (?!\|)", usage))
+        value_flags.update(f["flag"] for f in self.recipe_fields()
+                           if f["kind"] != "bool")
+        self.assertGreater(len(value_flags), 35)
+        for flag in sorted(value_flags):
+            for help_flag in ("-h", "--help"):
+                with self.subTest(argv=f"{flag} {help_flag}"):
+                    done = self.exits(2, "seeml-update-compile", *base, flag,
+                                      help_flag)
+                    self.assertIn(f"{flag} requires a value\n", done.stderr)
+                    self.assertNotIn("usage:", done.stderr)
+        # The two the finding named, with no other flag on the line.
+        for argv in (("--source", model, "--out", "-h"),
+                     ("--out", out, "--source", "-h")):
+            with self.subTest(argv=" ".join(argv)):
+                done = self.exits(2, "seeml-update-compile", *argv)
+                self.assertIn(f"{argv[2]} requires a value\n", done.stderr)
+        self.assertFalse(os.path.exists(out))
+        self.assertFalse(os.path.exists("-h"))
+        # As a flag of its own it is help, wherever it stands — also on a
+        # line that is otherwise incomplete or wrong, as before.
+        for argv in (("-h",), ("--help",), ("-h", *base), (*base, "--help"),
+                     ("--source", model, "-h", "--out", out),
+                     (*base, "--lr", "1e-3", "-h"),
+                     ("--help", "--no-such-flag"), ("-h", "--steps"),
+                     (*base, "--lr", "--quantize-base", "--help")):
+            with self.subTest(argv=" ".join(argv)):
+                done = self.exits(0, "seeml-update-compile", *argv)
+                self.assertIn("usage: seeml-update-compile", done.stderr)
+        self.assertFalse(os.path.exists(out))
+        # Only a flag is refused as a value. A value that merely starts with
+        # one dash is still a value, held to its field's bound (recipe_test
+        # compiles --clip-norm -0).
+        done = self.exits(2, "seeml-update-compile", *base, "--clip-norm", "-1")
+        self.assertIn("--clip-norm (recipe field clip_norm)", done.stderr)
+        self.assertNotIn("requires a value", done.stderr)
 
     @built("seeml-seeu-dump")
     def test_seeu_dump(self):

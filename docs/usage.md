@@ -140,7 +140,7 @@ Reading a training loop as thirty-ish opcodes of straight-line code is a genuine
 | `1` | the work failed: an input file that cannot be read or is not what it claims to be (a model, a recipe file, a kernel-policy table, a plan), a compile refusal, a failed write or build |
 | `2` | a bad command line, refused before any model or plan is read: an unknown flag or stray argument, a flag without its value, a value that does not parse or is outside its bound, flags that contradict each other |
 
-For `seeml-update-compile` a recipe field outside its bound is `2` whether a flag or the `--recipe` file set it (one function holds both to the bound); a recipe file that cannot be opened or parsed is `1`. One gap: `seeml-bench` is right about its command line but still exits `2`, not `1`, when a run itself fails (a fixture that does not compile, a report it cannot write). The generated `model_update` has its own, longer table — see Step 3.
+For `seeml-update-compile` a recipe field outside its bound is `2` whether a flag or the `--recipe` file set it (one function holds both to the bound); a recipe file that cannot be opened or parsed is `1`. Its `--help` / `-h` prints the usage and exits `0` from any place on the line that is not another flag's value: `--out -h` is `--out` without a value (`2`), as it is for the generated runner. One gap: `seeml-bench` is right about its command line but still exits `2`, not `1`, when a run itself fails (a fixture that does not compile, a report it cannot write). The generated `model_update` has its own, longer table — see Step 3.
 
 ## What the Compiler Tells You
 
