@@ -7,9 +7,11 @@ engineer needs. It is a technology specification, not a machine-learning
 tutorial — for the concepts the system implements, see `docs/compiler.md` and
 `docs/runtime.md`.
 
-Repository shape: ~225 tracked files — 83 `.cc`, 69 `.h`, 1 `.mm`, 1 `.py`,
-1 `.sh`, 3 `.yml`. Top-level directories: `compiler/`, `runtime/`, `source/`,
-`tool/`, `test/`, `build/`, `docs/`, `.github/`.
+Repository shape: ~660 tracked files — 114 `.cc`, 112 `.h`, 3 `.mm`, 32 `.py`,
+11 `.sh`, 3 `.yml` (counted with `git ls-files`, 2026-11-19; the recorded
+runs under `docs/ledger/` are most of the rest). Top-level directories:
+`compiler/`, `runtime/`, `source/`, `tool/`, `test/`, `build/`, `docs/`,
+`.github/`.
 
 ---
 
@@ -165,7 +167,7 @@ registered with `add_test`, and an opt-in fuzz target. Options:
 - `SEEML_SOURCE_DIR` — repo path baked into test binaries so the emitter
   suite can vendor real runtime sources.
 
-**`build/build.sh`**: pure POSIX sh, `CXX="${CXX:-c++}"`, compiles ~60
+**`build/build.sh`**: pure POSIX sh, `CXX="${CXX:-c++}"`, compiles ~80
 translation units serially into `build/*.o` and links loose objects (no `ar`)
 into the same tools and 33 suites. This is the path used by the CI matrix and
 by CodeQL's manual build tracing, and the only path on hosts without CMake.

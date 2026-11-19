@@ -23,7 +23,11 @@ uint8_t`), `snake_case` file names, `SEEML_<PATH>_H_` include guards,
 includes by repository-rooted path (`"compiler/driver/update_compiler.h"`),
 `///` on declarations and a `// ====` banner that says what the file is for,
 80 columns. A conversion is a named cast (`static_cast`, `reinterpret_cast`):
-both build drivers compile with `-Wold-style-cast` under `-Werror`.
+both build drivers compile with `-Wold-style-cast` under `-Werror`. Neither
+compiles the generated runner, `runtime/host/update_main.cc` — a package's
+own `build.sh` does, with `-Wall -Wextra` alone — so no build holds that
+file to this rule or to a dropped `[[nodiscard]]` result (section 2); it is
+held by review.
 
 **Formatting: the formatter is the rule.** The root `.clang-format` is the
 Google dialect at 80 columns; `compiler/frontend/representation/.clang-format`
