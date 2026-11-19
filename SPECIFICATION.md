@@ -394,8 +394,10 @@ test of the compiler-emitted GEMM source.
   test registration defeating init-order issues, GoogleTest-shaped output,
   `EXPECT_*`/`ASSERT_*` including `std::expected`-aware `_OK`/`_ERROR`
   variants and `ASSERT_OK_AND_ASSIGN`, a `--filter` with wildcard/substring
-  semantics, ANSI color via `isatty`. Exit codes: 0 pass / 1 fail / 2 usage
-  or empty selection. 25 suite executables mirror the source tree
+  semantics, ANSI color via `isatty`, and `SKIP(reason)` for a test the
+  host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
+  with its reason, apart from the passes, never a failure. Exit codes:
+  0 no test failed / 1 fail / 2 usage or empty selection. 25 suite executables mirror the source tree
   one-to-one; 345 tests at v1.2.3.
 - **Fixtures** (`test/support/`) — seeded in-process builders for models,
   corpora, and arena probes; a RAII temp-dir. There are no checked-in binary
@@ -437,7 +439,8 @@ no release automation; versioning is a manual edit of
 
 - **`seeml-update-compile`** — the compiler driver. Strict argument cursor
   (unknown flag, missing value, trailing garbage, or numeric overflow is a
-  hard error, never a default), optional machine-readable JSON `--report`
+  hard error, never a default — exit 2, as every bad command line is;
+  exit 1 is the work failing), optional machine-readable JSON `--report`
   (written with `ferror`+`fclose` checked so a truncated report cannot exit
   0), `--build` shelling out (`std::system`, the codebase's only process
   spawn) to the generated package script.
@@ -445,7 +448,8 @@ no release automation; versioning is a manual edit of
   prints header/sections, and with `--instrs` disassembles the three
   instruction streams with symbolic opcode names. Depends only on
   `source/plan` + `source/identity` (and the parallel lib for the hash) so it
-  builds anywhere.
+  builds anywhere. Exit 2 on a bad command line (a flag where the plan file
+  belongs included), 1 on a plan it cannot read or whose seal fails.
 - **`tool/pack_update.py`** — the package assembler (Two-Plane Overhaul
   P1): embeds `update_plan.seeu` as a page-aligned `.incbin` assembly stub
   (`update_plan_embedded.S`) in place of the decimal C-array TU the compiler

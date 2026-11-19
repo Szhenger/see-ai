@@ -9,7 +9,7 @@ test/
   framework/            SeeTest, the in-tree harness (façade: seetest.h)
     registry.{h,cc}     test registration + the runner (--list, --filter)
     matcher.h           value formatting, safe comparisons, failure messages
-    assert.h            the TEST / EXPECT_* / ASSERT_* macro surface
+    assert.h            the TEST / EXPECT_* / ASSERT_* / SKIP macro surface
     seetest_main.cc     the runner main linked into every suite
   support/              shared fixtures (façade: builders.h)
     models.cc           deterministic SMF (SeeAI Model Format) model builders + BaseConfig
@@ -41,7 +41,7 @@ test/
 
 ## Why an in-tree harness?
 
-Fair question — GoogleTest exists. But recall the product's core constraint: the runtime is *zero-dependency*, and the project prizes knowing exactly what every byte of its code does. SeeTest is a few hundred lines implementing precisely what the suites need — a `TEST` macro that self-registers (each `TEST` block constructs a static registrar object before `main` runs, the classic trick), `EXPECT_*` (record the failure, keep going) versus `ASSERT_*` (this test can't meaningfully continue), a matcher layer that formats both sides of a failed comparison so failures read like sentences, and a runner with `--list` and `--filter`. Nothing more, because nothing more is needed — and when a test fails on some exotic target, the entire harness is right there to read.
+Fair question — GoogleTest exists. But recall the product's core constraint: the runtime is *zero-dependency*, and the project prizes knowing exactly what every byte of its code does. SeeTest is a few hundred lines implementing precisely what the suites need — a `TEST` macro that self-registers (each `TEST` block constructs a static registrar object before `main` runs, the classic trick), `EXPECT_*` (record the failure, keep going) versus `ASSERT_*` (this test can't meaningfully continue), a matcher layer that formats both sides of a failed comparison so failures read like sentences, `SKIP("why")` for a test the host cannot run (no Metal device, say) — printed and counted as `[  SKIPPED ]` with its reason, apart from the passes, so a hardware-gated test never reports green for zero work — and a runner with `--list` and `--filter`. Nothing more, because nothing more is needed — and when a test fails on some exotic target, the entire harness is right there to read.
 
 The `support/` fixtures earn their keep the same way: **deterministic** model builders and synthetic corpora (seeded, so a failure reproduces exactly), `probes.cc` for peeking inside an engine's arena from a test, and `scoped_temp_dir`, which sandboxes every I/O suite into a temp directory that cleans itself up — tests that touch the filesystem must not be able to touch *your* filesystem.
 

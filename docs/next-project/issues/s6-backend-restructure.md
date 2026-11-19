@@ -26,9 +26,14 @@ predicted step time has no GPU denominator. Design: [`docs/next-project/seeai.md
    check, sanitizer and tokenizer). `tuner/` folds into architecture;
    `kernel_emitter.cc` retires or its GPU tiling clamp moves under
    architecture as data.
-2. Selection: ISA drops MSE and conv opcodes, adds the masked cross-entropy
-   pair (S3) and the attention segment operand; SEEU version bump with the
-   header fields above.
+2. Selection: ISA adds the masked cross-entropy pair (S3) and the attention
+   segment operand; SEEU version bump with the header fields above.
+   Superseded 2026-11-18 by decision (#193), the clause as first written:
+   *ISA drops MSE and conv opcodes.* MSE stays a supported loss outside the
+   language-model scope; `kMseFwd` / `kMseBwd` (13 / 14), the demo MLP and
+   the `mlp_mse` fixtures stay as test canaries. Conv had no opcode to drop;
+   its lowering is gone, and the SIR operator
+   (`compiler/frontend/operator/convolution.cc`) is still built.
 3. Scheduling stays a candidate gated on F8 (#139): if the measured step
    time outside kernels is real, it becomes a directory that runs before
    allocation; otherwise a function inside selection.
@@ -104,6 +109,10 @@ The design items left by the 2026-11-12 status, closed on
 - **Design item 2's ISA residue is handed off:** dropping the MSE opcodes
   to #193 (a decision), the attention segment operand's tiled family to
   #191 (step 2). Conv had no opcode to drop.
+  Decided 2026-11-18 (#193): the MSE opcodes are **kept** — see the note
+  on design item 2. The SIR conv operator
+  (`compiler/frontend/operator/convolution.cc`) is still built although the
+  conv lowering is gone.
 
 Acceptance 1 and 2 hold as before (plan identity on 17 fixtures;
 `test/tool/driver_shape_test.py`). Acceptance 3's predicted-vs-measured line
