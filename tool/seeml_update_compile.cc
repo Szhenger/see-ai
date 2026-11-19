@@ -700,6 +700,8 @@ void PrintReportScalars(std::FILE* f, const ReportContext& context) {
   // the plan blob), which the step-0 estimate is a lower bound on.
   const uint64_t exact_footprint =
       compiled->arena_size + static_cast<uint64_t>(compiled->plan.size());
+  // The format is laid out a JSON key to a line.
+  // clang-format off
   std::fprintf(f,
                "{\n"
                "  \"schema\": 1,\n"
@@ -806,6 +808,7 @@ void PrintReportScalars(std::FILE* f, const ReportContext& context) {
                embedded_tu_json.c_str(), policy->source.c_str(),
                JsonEscape(policy->host_key).c_str(),
                compiled->gemm_tile_k, compiled->gemm_tile_n);
+  // clang-format on
 }
 
 /// The report's lists: the adapters, the vendored sources, the passes and

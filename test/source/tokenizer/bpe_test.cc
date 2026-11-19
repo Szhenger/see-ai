@@ -128,7 +128,8 @@ TEST(ByteLevelBpe, LoadsASectionAndRefusesWhatItDoesNotImplement) {
   bad.version = 2;
   EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "unsupported version");
   bad = s;
-  bad.merges[1] = {bad.merges[1][0], bad.merges[1][1], 5};  // "the" != "t"+"h"+"e"? no: c wrong
+  // "the" != "t"+"h"+"e"? no: c wrong
+  bad.merges[1] = {bad.merges[1][0], bad.merges[1][1], 5};
   EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "does not produce the concatenation");
   bad = s;
   bad.specials.push_back(999);

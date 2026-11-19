@@ -258,7 +258,8 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   else if (config.remat == RematKind::kOff)
     remat = "off";
   else if (config.remat == RematKind::kAuto && !f.remat_budget_configured)
-    remat = "off: auto, no memory budget";  // --remat on / --memory-budget-mib N
+    // --remat on / --memory-budget-mib N
+    remat = "off: auto, no memory budget";
   else
     remat = "off: the plain plan fits the budget";
   an.Set("rematerialization", remat);

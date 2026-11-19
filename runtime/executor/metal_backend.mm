@@ -90,6 +90,9 @@ struct KArgs {
 };
 static_assert(sizeof(KArgs) == 248, "KArgs must match the MSL layout");
 
+// The pipeline ids and their kernel names: two tables kept in the same
+// order, a variant family to a row.
+// clang-format off
 enum Pipe : int {
   kPGemmNN, kPGemmNT, kPGemmTN, kPGemmAcc, kPGemmNNQ8, kPGemmNTQ8,
   kPGemmNNBF16, kPGemmNTBF16,
@@ -178,6 +181,7 @@ const char* const kPipeNames[kPipeCount] = {
     "k_attn_dv_tiled_blk",
     "k_attn_fwd_tiled_mma", "k_attn_dq_tiled_mma", "k_attn_dk_tiled_mma",
     "k_attn_dv_tiled_mma", "k_selftest"};
+// clang-format on
 
 // The relaxed GEMM family (plan v18): a second library, present only where
 // Metal 4's tensor ops compile (macOS 26 on an Apple GPU). Two dispatches
@@ -474,7 +478,8 @@ class MetalBackend final : public ExecutorBackend {
   struct FusionPlan {
     std::vector<int32_t> role;  // kRoleNone, kRoleDeferred, or the base's index
     std::vector<int32_t> partner;  // a deferred base: its rank-r GEMM's index
-    std::vector<uint8_t> drop_c;  // per fused j: the program never reads C again
+    // per fused j: the program never reads C again
+    std::vector<uint8_t> drop_c;
     uint64_t pairs = 0;
   };
   static constexpr int32_t kRoleNone = -1, kRoleDeferred = -2;

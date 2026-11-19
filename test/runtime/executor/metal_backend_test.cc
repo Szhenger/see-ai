@@ -1584,7 +1584,8 @@ TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
   for (uint64_t i = st; i < st + B * S; ++i)
     EXPECT_EQ(std::bit_cast<uint32_t>(twin->cpu[i]),
               std::bit_cast<uint32_t>(twin->gpu[i]));
-  EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[st + 4]), 3);  // after the EOS at 2
+  // after the EOS at 2
+  EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[st + 4]), 3);
   ExpectRangeClose("the masked output", *twin, o, B * S * D, 1e-5, 1e-5);
   ExpectRangeClose("the masked probabilities", *twin, p, B * H * S * S, 1e-5,
                    1e-5);
@@ -1702,7 +1703,8 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
         EXPECT_EQ(twin->gpu[st_at + r * 4 + 3], want);
       }
       EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 6]), 6);    // start == i
-      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 32]), 32);  // a block edge
+      // a block edge
+      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 32]), 32);
       // Perturb window 0's rows before position 32 — every document but the
       // last ones: what rows 32.. produce and receive is unmoved on the GPU.
       std::vector<float> other = arena;

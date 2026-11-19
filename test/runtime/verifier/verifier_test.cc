@@ -450,8 +450,9 @@ TEST(PlanValidator, RejectsWriteRangesAliasingOtherOperands) {
   // overlaps another operand is undefined behavior, so a plan carrying one
   // must be a load error, never a dispatch.
   const auto r = ValidateInstruction(
+      // out 128..384 overlaps in0 0..256
       AddEw(up::MakeArenaRef(0), up::MakeArenaRef(512),
-            up::MakeArenaRef(128), 64),  // out 128..384 overlaps in0 0..256
+            up::MakeArenaRef(128), 64),
       kArena, kRodata, up::kSeeuVersion);
   ASSERT_FALSE(r.has_value());
   EXPECT_STR_CONTAINS(r.error(), "alias");
@@ -620,7 +621,8 @@ TEST(PlanValidator, TheRelaxedBitIsAFrozenGemmPermissionFromV18) {
   EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
   up::UpdateInstruction bf = g;
   bf.flags = up::kFlagRelaxed;
-  bf.opcode = static_cast<uint16_t>(up::OpCode::kGemmNTBF16);  // N*K bf16 = 64 B
+  // N*K bf16 = 64 B
+  bf.opcode = static_cast<uint16_t>(up::OpCode::kGemmNTBF16);
   EXPECT_OK(ValidateInstruction(bf, kArena, kRodata, up::kSeeuVersion));
   up::UpdateInstruction tn = g;
   tn.flags = up::kFlagRelaxed;
@@ -975,7 +977,8 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   // Every way a program can lie:
   EXPECT_ERROR(check(FusedMap(0)));                        // empty
   EXPECT_ERROR(check(FusedMap(7)));                        // unknown kind
-  EXPECT_ERROR(check(FusedMap(silu | uint64_t{1} << 40)));  // bytes past 4 stages
+  // bytes past 4 stages
+  EXPECT_ERROR(check(FusedMap(silu | uint64_t{1} << 40)));
   EXPECT_ERROR(check(FusedMap(silu | silu << 16)));        // data after the end
   EXPECT_ERROR(check(FusedMap(silu | 0x10)));              // arg on a unary
   EXPECT_ERROR(check(FusedMap(MakeFusedStage(FusedStage::kAdd, 0))));  // slot 0

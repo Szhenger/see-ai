@@ -86,7 +86,8 @@ TEST(AttentionTiling, AutoRechecksTheExactShapesAndOnlyEverTiles) {
   };
   for (const Case c : {
            Case{AttentionKind::kAuto, false, exact, false},     // fits
-           Case{AttentionKind::kAuto, false, exact - 1, true},  // exact > budget
+           // exact > budget
+           Case{AttentionKind::kAuto, false, exact - 1, true},
            Case{AttentionKind::kAuto, true, exact * 4, true},   // gate said tile
            Case{AttentionKind::kCached, true, 0, false},        // forced
            Case{AttentionKind::kTiled, false, exact * 4, true},  // forced

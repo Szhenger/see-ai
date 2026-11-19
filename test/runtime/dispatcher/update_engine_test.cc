@@ -747,7 +747,8 @@ TEST(UpdateEngineCommit, TheCommittedModelCarriesItsOwnReport) {
   EXPECT_TRUE(report.present);
   EXPECT_TRUE(report.tokenizer_parity);
   EXPECT_EQ(report.tokenizer_parity_ids, 77u);
-  EXPECT_FALSE(report.logits_parity);  // the weights are no longer the checkpoint's
+  // the weights are no longer the checkpoint's
+  EXPECT_FALSE(report.logits_parity);
   // ... and the next fine-tune compiles from it.
   config.export_report = report;
   EXPECT_OK(UpdateCompiler(config).Compile(committed));

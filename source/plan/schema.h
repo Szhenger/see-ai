@@ -170,9 +170,12 @@ inline constexpr uint32_t kSeeuTiledSegmentMaskVersion = 26;
 // The version that grew the header with the data contract.
 inline constexpr uint32_t kSeeuDataContractVersion = 22;
 // PlanHeader::data_flags bits.
-inline constexpr uint32_t kDataFlagMaskedLoss = 1u << 0;    // labels carry -1 = ignore
-inline constexpr uint32_t kDataFlagCorpusPinned = 1u << 1;  // corpus_hash is enforced
-inline constexpr uint32_t kDataFlagSplit = 1u << 2;         // a compiled held-out split
+// labels carry -1 = ignore
+inline constexpr uint32_t kDataFlagMaskedLoss = 1u << 0;
+// corpus_hash is enforced
+inline constexpr uint32_t kDataFlagCorpusPinned = 1u << 1;
+// a compiled held-out split
+inline constexpr uint32_t kDataFlagSplit = 1u << 2;
 // v23 (S4 #150 / S5 #151 / S6 #152): the plan carries a metadata section —
 // the identity manifest's remaining words and the reduction-order ledger —
 // at the first 64-aligned byte after the emit table (source/plan/

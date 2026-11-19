@@ -48,6 +48,8 @@ void Field(const char* name, size_t offset, size_t size) {
 
 // Every field of a packed struct, and — the point — a proof that the list
 // is complete: the fields' sizes must add up to the struct's.
+// (Field lists, several to a line.)
+// clang-format off
 #define PLAN_HEADER_FIELDS(X)                                                  \
   X(magic) X(version) X(arena_size) X(persistent_size) X(input_ref)           \
   X(input_floats) X(label_ref) X(label_bytes) X(label_kind) X(optimizer_kind) \
@@ -70,6 +72,7 @@ void Field(const char* name, size_t offset, size_t size) {
 #define LEDGER_ENTRY_FIELDS(X) X(pass) X(arithmetic) X(instructions) X(why)
 #define CKPT_FIELDS(X) \
   X(magic) X(version) X(plan_hash) X(step) X(persistent_size) X(payload_hash)
+// clang-format on
 
 #define SIZE_OF(T, f) +sizeof(T::f)
 #define SIZE_OF_PlanHeader(f) SIZE_OF(up::PlanHeader, f)
@@ -253,11 +256,13 @@ void PrintSekp() {
   Struct("CkptHeaderV4Tail", sizeof(rt::CkptHeaderV4Tail), [] {
     SEEML_FIELD(rt::CkptHeaderV4Tail, horizon_steps);
   });
+  // clang-format off
 #define CKPT_V5_FIELDS(X)                                                  \
   X(shuffle_origin) X(train_samples) X(val_samples) X(best_step)           \
   X(best_payload_hash) X(flags) X(val_initial_loss_bits)                   \
   X(val_initial_accuracy_bits) X(best_loss_bits) X(best_accuracy_bits)     \
   X(stale_evals)
+  // clang-format on
 #define SIZE_OF_V5(f) +sizeof(rt::CkptHeaderV5Tail::f)
   static_assert(0 CKPT_V5_FIELDS(SIZE_OF_V5) == sizeof(rt::CkptHeaderV5Tail),
                 "a CkptHeaderV5Tail field is missing from the manifest");

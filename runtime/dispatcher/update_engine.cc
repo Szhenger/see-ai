@@ -863,7 +863,8 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
                           std::chrono::steady_clock::now() - step_t0)
                           .count();
       ++executed;
-      profiler_.CountStep();  // one optimizer step: G grad executions + the step
+      // one optimizer step: G grad executions + the step
+      profiler_.CountStep();
 
       const float loss = static_cast<float>(loss_sum /
                                             static_cast<double>(grad_accum_));

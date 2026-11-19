@@ -201,7 +201,8 @@ TEST(Gemm, Bf16VariantsAreBitwiseTheF32GemmsOverTheWidenedMatrix) {
   for (size_t i = 0; i < M * N; ++i) EXPECT_EQ(got[i], want[i]);
   // Round-to-nearest-even and NaN quieting, spot-checked.
   EXPECT_EQ(Float32ToBf16Bits(1.0f), 0x3F80u);
-  EXPECT_EQ(Bf16BitsToFloat32(Float32ToBf16Bits(1.00390625f)), 1.0f);  // tie -> even
+  // tie -> even
+  EXPECT_EQ(Bf16BitsToFloat32(Float32ToBf16Bits(1.00390625f)), 1.0f);
   EXPECT_EQ(Bf16BitsToFloat32(Float32ToBf16Bits(1.01171875f)), 1.015625f);
   EXPECT_TRUE(std::isnan(Bf16BitsToFloat32(Float32ToBf16Bits(
       std::numeric_limits<float>::quiet_NaN()))));
@@ -1152,7 +1153,8 @@ TEST(SegmentMask, StartsOutsideTheRowAreClampedNotFollowed) {
   std::vector<float> q(B * S * D, 0.5f), kk(B * S * D, 0.25f), v(B * S * D);
   for (size_t t = 0; t < v.size(); ++t) v[t] = static_cast<float>(t);
   auto run = [&](const std::vector<int32_t>& st) {
-    std::vector<float> o(B * S * D), p(B * H * S * S + 64, -7.0f);  // + a canary
+    // + a canary
+    std::vector<float> o(B * S * D), p(B * H * S * S + 64, -7.0f);
     k::AttnFwd(q.data(), kk.data(), v.data(), o.data(), p.data(), B, S, H, d,
                st.data());
     return std::make_pair(o, p);

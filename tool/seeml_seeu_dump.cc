@@ -131,6 +131,8 @@ uint32_t F32BitsOf(float f) {
     return 1;
   }
   std::printf("{\n  \"header\": {");
+  // The header's fields, several to a line.
+  // clang-format off
 #define U(f) std::printf("%s\"" #f "\": %" PRIu64, first ? "" : ", ", \
                         static_cast<uint64_t>(h.f)), first = false
 #define F(f) std::printf(", \"" #f "_bits\": %u", \
@@ -155,6 +157,7 @@ uint32_t F32BitsOf(float f) {
   F(clip_norm);
 #undef U
 #undef F
+  // clang-format on
   std::printf("},\n  \"sections\": {");
   const struct {
     const char* name;

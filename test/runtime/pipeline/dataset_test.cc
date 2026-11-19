@@ -413,7 +413,8 @@ TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {
   std::vector<int32_t> vin(8), vlab(8);
   val.FillBatch(8, reinterpret_cast<float*>(vin.data()),
                 reinterpret_cast<uint8_t*>(vlab.data()));
-  EXPECT_EQ(vlab[0], seeml::update_rt::kSdsIgnoreLabel);  // record 2's first two positions
+  // record 2's first two positions
+  EXPECT_EQ(vlab[0], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(vlab[1], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(vlab[2], tokens[2 * 5 + 3]);
   // A plain token corpus saved without a hash or a mask stays v2.
@@ -550,7 +551,8 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
     for (int32_t j = 0; j <= 4; ++j) tokens.push_back(r * 5 + j);
   std::vector<uint8_t> mask(16, 1);
   for (int r = 0; r < 4; ++r)
-    for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;  // record r masks its first r
+    // record r masks its first r
+    for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;
   ASSERT_OK_AND_ASSIGN(Dataset masked, Dataset::FromTokens(tokens, 4, 4, mask, 9));
   ASSERT_OK_AND_ASSIGN(Dataset held_out, masked.SplitHeldOut({0, 2}, 0x55));
   EXPECT_EQ(masked.num_samples(), 2u);
@@ -566,9 +568,11 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
     EXPECT_EQ(in[j], tokens[1 * 5 + j]);
     EXPECT_EQ(in[4 + j], tokens[3 * 5 + j]);
   }
-  EXPECT_EQ(lab[0], seeml::update_rt::kSdsIgnoreLabel);  // record 1 masks position 0
+  // record 1 masks position 0
+  EXPECT_EQ(lab[0], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(lab[1], tokens[1 * 5 + 2]);
-  EXPECT_EQ(lab[4 + 2], seeml::update_rt::kSdsIgnoreLabel);  // record 3 masks 0..2
+  // record 3 masks 0..2
+  EXPECT_EQ(lab[4 + 2], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(lab[4 + 3], tokens[3 * 5 + 4]);
   held_out.FillBatch(8, reinterpret_cast<float*>(in.data()),
                      reinterpret_cast<uint8_t*>(lab.data()));
@@ -577,7 +581,8 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
     EXPECT_EQ(in[4 + j], tokens[2 * 5 + j]);
   }
   EXPECT_EQ(lab[0], tokens[0 * 5 + 1]);
-  EXPECT_EQ(lab[4 + 1], seeml::update_rt::kSdsIgnoreLabel);  // record 2 masks 0..1
+  // record 2 masks 0..1
+  EXPECT_EQ(lab[4 + 1], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(lab[4 + 2], tokens[2 * 5 + 3]);
 }
 

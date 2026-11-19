@@ -410,7 +410,8 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
   UpdateConfig ordered, shuffled;
   ASSERT_OK(Apply({{"targets", "wq,wv"}}, {}, &ordered));
   ASSERT_OK(Apply({{"targets", "wv,wq,wv"}}, {}, &shuffled));
-  EXPECT_EQ(shuffled.lora.target_filters.size(), 3u);  // the config is as written
+  // the config is as written
+  EXPECT_EQ(shuffled.lora.target_filters.size(), 3u);
   EXPECT_EQ(recipe::ResolvedText(ordered), recipe::ResolvedText(shuffled));
   EXPECT_STR_CONTAINS(recipe::ResolvedText(shuffled), "targets=wq,wv\n");
 

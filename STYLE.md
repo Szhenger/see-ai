@@ -1,9 +1,9 @@
 # SeeAI House Style
 
 What the tree already does, written down (S8, #154). Where the tree is not
-yet uniform, the rule is stated and the gap is named. There is no
-`.clang-format` yet: formatting is by hand, and no change reformats code it
-does not otherwise touch.
+yet uniform, the rule is stated and the gap is named. Layout is not written
+down here: it is what `clang-format` 19 makes of the committed `.clang-format`
+files (section 1, "Formatting").
 
 ## 1. Two dialects, by subsystem
 
@@ -22,9 +22,49 @@ constants and enumerators (`enum class`, sized: `enum class LossKind :
 uint8_t`), `snake_case` file names, `SEEML_<PATH>_H_` include guards,
 includes by repository-rooted path (`"compiler/driver/update_compiler.h"`),
 `///` on declarations and a `// ====` banner that says what the file is for,
-80 columns (about 640 lines run past 80 today and 17 past 100; add none).
-A conversion is a named cast (`static_cast`, `reinterpret_cast`): both build
-drivers compile with `-Wold-style-cast` under `-Werror`.
+80 columns. A conversion is a named cast (`static_cast`, `reinterpret_cast`):
+both build drivers compile with `-Wold-style-cast` under `-Werror`.
+
+**Formatting: the formatter is the rule.** The root `.clang-format` is the
+Google dialect at 80 columns; `compiler/frontend/representation/.clang-format`
+and `compiler/frontend/operator/.clang-format` inherit it and set the SIR
+dialect's indent. One command formats the tree:
+
+    git ls-files -z '*.cc' '*.h' '*.mm' | xargs -0 clang-format-19 -i
+
+and the check is the same file list with `--dry-run -Werror` in place of
+`-i`, which exits non-zero on any file the formatter would change:
+
+    git ls-files -z '*.cc' '*.h' '*.mm' | xargs -0 clang-format-19 --dry-run -Werror
+
+- **The version is 19**, the LLVM release the Linux toolchain is pinned to.
+  Other releases lay some constructs out differently (Apple's `clang-format`
+  is not 19): a tree formatted by one fails the check. Where no
+  `clang-format-19` is packaged, `pip install 'clang-format==19.1.*'` into a
+  virtual environment provides it as `clang-format`.
+- **The formatter lays code out and changes nothing else.** It does not sort
+  or regroup `#include`s (their order is semantic here), does not reorder
+  `using` declarations, does not re-wrap a comment and does not split a
+  string literal. So the 80 columns are the author's to keep in a comment and
+  in a literal, and a trailing comment that would run past 80 goes on its own
+  line above the statement — otherwise the formatter breaks the *code* to
+  shorten the line.
+- **`.clang-format-ignore`** names what the formatter skips even when asked:
+  the generated `source/tokenizer/unicode_tables.h`, `test/fixtures/`, and
+  the ledger's probe under `docs/`. A C++ file that is not code to maintain
+  is added there, by path.
+- **`// clang-format off` … `// clang-format on` fences a hand-laid table**,
+  and only that: rows the formatter would explode to one item a line or
+  cannot lay out. Six today — the `OpCode` table with its operand comments
+  (`source/plan/instruction.h`), the Metal pipeline ids and their kernel
+  names (`runtime/executor/metal_backend.mm`), the two X-macro field lists
+  of `tool/seeml_abi.cc`, the header field list of `tool/seeml_seeu_dump.cc`
+  and the report's format string in `tool/seeml_update_compile.cc`. The
+  Metal shader source (`runtime/executor/metal_kernels.h`) needs no fence: it
+  is raw string literals, which the formatter does not enter.
+- `.git-blame-ignore-revs` names the commit that reformatted the tree:
+  `git config blame.ignoreRevsFile .git-blame-ignore-revs` makes `git blame`
+  look through it.
 
 A file belongs to the dialect of the namespace it *defines* in. The passes,
 sema, the parser and the lowering live in `seeml::update` and are Google
