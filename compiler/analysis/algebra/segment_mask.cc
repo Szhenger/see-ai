@@ -17,10 +17,6 @@ std::expected<size_t, std::string> SegmentMasker::Run(sir::Block& block) {
         "segment mask: the model reads no token ids to find documents in"));
   const int64_t seq = attention.front()->getAttrAs<int64_t>("seq").value_or(0);
   for (sir::Operation* op : attention) {
-    if (op->hasAttribute("tiled"))
-      return std::unexpected(std::string(
-          "segment mask: the tiled attention family is not masked yet "
-          "(#191 step 2); compile with --attention cached"));
     if (op->numOperands() != 3)
       return std::unexpected(std::string(
           "segment mask: an attention op already carries a fourth operand"));

@@ -1470,6 +1470,172 @@ TEST(UpdateSystem, TiledAttentionGradientsMatchFiniteDifferences) {
 }
 
 // =============================================================================
+// The attention segment mask (#191): plan v25 on the cached family, v26 on
+// the tiled one
+// =============================================================================
+
+namespace {
+
+// An SMTK head naming `eos` as the EOS id over a 16-entry vocabulary: all
+// the segment-mask pass reads of a tokenizer section.
+std::vector<uint8_t> TokenizerHeadWithEos(int32_t eos, uint32_t vocab) {
+  std::vector<uint8_t> b;
+  for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, vocab, 0u, 0u,
+                     static_cast<uint32_t>(eos), 0xFFFFFFFFu, 0xFFFFFFFFu,
+                     0xFFFFFFFFu, 0u})
+    for (int i = 0; i < 4; ++i) b.push_back((x >> (8 * i)) & 0xFF);
+  return b;
+}
+
+}  // namespace
+
+TEST(UpdateSystem, TheSegmentMaskTrainsTheSameBitsTiledAsCached) {
+  // #191 step 2: a masked update compiles to the cached family or the
+  // tiled one, and both train to the same losses, validation loss and
+  // persistent segment, at one thread, three and eight — and to different
+  // ones than the unmasked update, whose windows attend across documents.
+  // The corpus's successor rule visits the EOS id (5) often, so most
+  // windows hold more than one document.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 8, ffn = 16;
+  const int64_t batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 62);
+  model.tokenizer = TokenizerHeadWithEos(5, static_cast<uint32_t>(vocab));
+  struct Run {
+    std::vector<float> curve;
+    std::vector<uint8_t> state;
+    float val = 0.0f;
+  };
+  auto run = [&](bool masked, AttentionKind kind, unsigned threads, Run* out) {
+    UpdateConfig config = BaseConfig(batch);
+    config.optimizer.lr = 5e-3f;
+    config.segment_mask = masked;
+    config.attention = kind;
+    seeml::update::SetParallelThreadCount(threads);
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                         UpdateCompiler(config).Compile(model));
+    EXPECT_EQ(compiled.attention_tiled, kind == AttentionKind::kTiled);
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK_AND_ASSIGN(Dataset data,
+                         seeml::testing::MakeTokenCorpus(128, seq, vocab, 47));
+    data.EnableShuffle(5);
+    TrainOptions options = Quiet();
+    options.record_loss_curve = true;
+    ASSERT_OK_AND_ASSIGN(auto report, engine.Train(data, 20, options));
+    ASSERT_OK_AND_ASSIGN(float val, engine.Evaluate(data));
+    out->curve = report.loss_curve;
+    out->val = val;
+    out->state.assign(engine.arena(),
+                      engine.arena() + HeaderOf(compiled).persistent_size);
+  };
+  Run want;
+  run(true, AttentionKind::kCached, 1, &want);
+  ASSERT_EQ(want.curve.size(), 20u);
+  for (AttentionKind kind : {AttentionKind::kCached, AttentionKind::kTiled})
+    for (unsigned threads : {1u, 3u, 8u}) {
+      Run got;
+      run(true, kind, threads, &got);
+      EXPECT_EQ(got.val, want.val);
+      ASSERT_EQ(got.curve.size(), want.curve.size());
+      for (size_t i = 0; i < want.curve.size(); ++i)
+        EXPECT_EQ(got.curve[i], want.curve[i]);
+      EXPECT_TRUE(got.state == want.state);
+    }
+  Run plain;
+  run(false, AttentionKind::kTiled, 1, &plain);
+  // The mask is not a no-op here: the unmasked update's losses and state
+  // differ (not at every step — a batch whose windows hold one document
+  // each is the same batch either way).
+  EXPECT_TRUE(plain.state != want.state);
+  EXPECT_TRUE(plain.curve != want.curve);
+  seeml::update::SetParallelThreadCount(0);
+}
+
+TEST(UpdateSystem, AMaskedWindowsSecondDocumentIgnoresItsFirst) {
+  // #191's acceptance: two documents in one window, and the second's
+  // logits independent of the first's tokens. Through a compiled plan, on
+  // both families: every window is [a a a EOS x x x x] and the loss is
+  // masked to the second document's positions (labels of -1 elsewhere), so
+  // the loss is a function of the second document's logits alone. With the
+  // segment mask it carries the same bits whatever the first document
+  // holds; without it (the control) it moves.
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 8, ffn = 16;
+  const int64_t windows = 4, batch = windows * seq;
+  const int32_t eos = 5;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 71);
+  model.tokenizer = TokenizerHeadWithEos(eos, static_cast<uint32_t>(vocab));
+  // NaN for a plan that does not compile or load: every comparison below
+  // then fails (the finiteness check first).
+  auto loss_of = [&](bool masked, AttentionKind kind,
+                     int32_t first_doc) -> float {
+    UpdateConfig config = BaseConfig(batch);
+    config.emit_optimizer = false;
+    config.masked_loss = true;
+    config.segment_mask = masked;
+    config.attention = kind;
+    auto compiled = UpdateCompiler(config).Compile(model);
+    if (!compiled) return std::numeric_limits<float>::quiet_NaN();
+    UpdateEngine engine;
+    if (!engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()))
+      return std::numeric_limits<float>::quiet_NaN();
+    std::vector<int32_t> tokens(batch), labels(batch, -1);
+    for (int64_t w = 0; w < windows; ++w)
+      for (int64_t t = 0; t < seq; ++t) {
+        const int64_t at = w * seq + t;
+        tokens[at] = t < 3    ? static_cast<int32_t>((first_doc + w + t) % 4)
+                     : t == 3 ? eos
+                              : static_cast<int32_t>(8 + (w + 2 * t) % 7);
+        // Targets: the second document's positions only.
+        if (t >= 4) labels[at] = static_cast<int32_t>((3 * tokens[at] + 1) % vocab);
+      }
+    seeml::testing::FillTokenSlots(engine, tokens, labels);
+    engine.ExecuteTrainOnce();
+    return engine.LossValue();
+  };
+  for (AttentionKind kind : {AttentionKind::kCached, AttentionKind::kTiled}) {
+    const float a = loss_of(true, kind, 0), b = loss_of(true, kind, 2);
+    EXPECT_TRUE(std::isfinite(a));
+    EXPECT_EQ(std::bit_cast<uint32_t>(a), std::bit_cast<uint32_t>(b));
+    const float ca = loss_of(false, kind, 0), cb = loss_of(false, kind, 2);
+    EXPECT_TRUE(std::isfinite(ca) && std::isfinite(cb));
+    EXPECT_NE(ca, cb);
+    EXPECT_NE(ca, a);
+  }
+  // Both families agree on the masked loss, bit for bit.
+  EXPECT_EQ(std::bit_cast<uint32_t>(loss_of(true, AttentionKind::kCached, 1)),
+            std::bit_cast<uint32_t>(loss_of(true, AttentionKind::kTiled, 1)));
+}
+
+TEST(UpdateSystem, SegmentMaskedGradientsMatchFiniteDifferences) {
+  // The masked attention's backward against central differences, through a
+  // compiled plan, on both families: the windows hold an EOS (id 3) at
+  // position 1, so rows 2 and 3 attend from position 2 on. No such check
+  // existed for the cached family either (2026-11-17 review).
+  const int64_t vocab = 11, dim = 8, heads = 2, seq = 4, ffn = 10;
+  const int64_t batch = 8;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 37);
+  model.tokenizer = TokenizerHeadWithEos(3, static_cast<uint32_t>(vocab));
+  for (AttentionKind kind : {AttentionKind::kCached, AttentionKind::kTiled}) {
+    UpdateConfig config = BaseConfig(batch);
+    config.lora.rank = 2;
+    config.emit_optimizer = false;
+    config.segment_mask = true;
+    config.attention = kind;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                         UpdateCompiler(config).Compile(model));
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    const std::vector<int32_t> tokens = {7, 3, 1, 4, 2, 3, 9, 6};
+    const std::vector<int32_t> labels = {3, 1, 4, 2, 3, 9, 6, 8};
+    seeml::testing::FillTokenSlots(engine, tokens, labels);
+    GradientCheck(compiled, engine, 3737, /*tol=*/3e-2);
+  }
+}
+
+// =============================================================================
 // The GEMM addend (E10, #93): kFlagGemmAddend
 // =============================================================================
 

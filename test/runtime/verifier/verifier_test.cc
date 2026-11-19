@@ -1054,6 +1054,36 @@ TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
   up::UpdateInstruction fwd_bad = fwd_seg;
   fwd_bad.out[1] = up::PackAttnGeometry(1, 0, 1, 2);
   refused(fwd_bad, up::kSeeuVersion, "out of bounds");
+  // The masked tiled forward (#191 step 2, v26): kAttnFwdSeg's layout with
+  // the stats row [B*H*S, 4] where the cache was. Refused below v26; every
+  // operand held, the starts among them; relaxed from v26 as the plain
+  // tiled forward is from v20.
+  up::UpdateInstruction tiled_seg = fwd_seg;
+  tiled_seg.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwdTiledSeg);
+  EXPECT_OK(ValidateInstruction(tiled_seg, kArena, kRodata, up::kSeeuVersion));
+  refused(tiled_seg, up::kSeeuTiledSegmentMaskVersion - 1,
+          "tiled segment mask opcode 57");
+  up::UpdateInstruction tiled_bad = tiled_seg;
+  tiled_bad.out[2] = up::MakeArenaRef(kArena - 8);  // 4 i32 do not fit
+  refused(tiled_bad, up::kSeeuVersion, "out of bounds");
+  tiled_bad = tiled_seg;
+  tiled_bad.out[0] = up::MakeArenaRef(kArena - 32);  // 16 stats floats do not
+  refused(tiled_bad, up::kSeeuVersion, "out of bounds");
+  tiled_bad = tiled_seg;
+  tiled_bad.out[0] = up::MakeArenaRef(192);  // the stats over the output
+  refused(tiled_bad, up::kSeeuVersion, "alias");
+  tiled_bad = tiled_seg;
+  tiled_bad.out[1] = up::PackAttnGeometry(1, 4, 0, 2);
+  refused(tiled_bad, up::kSeeuVersion, "out of bounds");
+  up::UpdateInstruction tiled_relaxed = tiled_seg;
+  tiled_relaxed.flags = up::kFlagRelaxed;
+  EXPECT_OK(
+      ValidateInstruction(tiled_relaxed, kArena, kRodata, up::kSeeuVersion));
+  up::UpdateInstruction cached_relaxed = fwd_seg;
+  cached_relaxed.flags = up::kFlagRelaxed;  // the cached family never is
+  EXPECT_FALSE(
+      ValidateInstruction(cached_relaxed, kArena, kRodata, up::kSeeuVersion)
+          .has_value());
   // The global clip (#190, v24): the threshold held as kClipNorm's is, the
   // one-float slot in bounds and apart from g, and both opcodes refused
   // below v24.

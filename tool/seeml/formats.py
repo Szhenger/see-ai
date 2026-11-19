@@ -129,9 +129,10 @@ SMTK_HEAD = Layout("SmtkHead", [
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 25
+SEEU_VERSION = 26
 SEEU_GLOBAL_CLIP_VERSION = 24  # kSqNormAccum, kClipGlobal (#190)
 SEEU_SEGMENT_MASK_VERSION = 25  # kSegmentStarts, kAttnFwdSeg (#191)
+SEEU_TILED_SEGMENT_MASK_VERSION = 26  # kAttnFwdTiledSeg (#191 step 2)
 SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
 # PlanHeader.data_flags (v22).
 DATA_FLAG_MASKED_LOSS = 1
@@ -217,10 +218,12 @@ OPCODES = {
     47: "attn.fwd.tiled", 48: "attn.dq.tiled", 49: "attn.dk.tiled",
     50: "attn.dv.tiled", 51: "softmax_xent_masked.fwd",
     52: "softmax_xent_masked.bwd", 53: "sqnorm.accum", 54: "clip.global",
-    55: "segment.starts", 56: "attn.fwd.seg",
+    55: "segment.starts", 56: "attn.fwd.seg", 57: "attn.fwd.tiled.seg",
 }
-# The tiled family's stats row: [row max, 1/denominator, delta, pad].
+# The tiled family's stats row: [row max, 1/denominator, delta, start] —
+# the fourth float is the row's document start since v26 (0 unmasked).
 ATTN_STATS_WIDTH = 4
+ATTN_STATS_START = 3
 
 # Instruction flags on the GEMM family: the fused epilogue.
 FLAG_EPILOGUE_BIAS = 1

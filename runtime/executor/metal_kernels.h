@@ -1501,9 +1501,39 @@ static inline void row_axpy64(thread float* acc, float s, device const float* ro
   for (uint t = 0; t < 64u; ++t)
     if (c0 + t < d) acc[t] += s * row[t];
 }
+// The segment mask on the tiled family (#191 step 2, plan v26), all twelve
+// kernels below. A forward kernel given p.flags bit 1 reads the i32
+// document start of every token position through ref slot 5 (the slot the
+// backward keeps its result in; a forward has none), skips the keys before
+// the row's start as it skips the causal ones, and leaves the CLAMPED start
+// in the stats row's fourth float; a backward kernel reads it back from
+// there — 0 from a forward without the mask, so nothing is skipped and an
+// unmasked dispatch sums what it always summed, in the order it always
+// did. Both conversions clamp into [0, i] first (the CPU kernels' rule:
+// no value read from the arena is a bound or an index unchecked; the float
+// is clamped in the float domain, NaN to 0, before it is converted).
+// Skipping is a per-thread predicate inside the loops that already carry
+// the causal one; every threadgroup barrier stays in uniform control flow.
+static inline uint seg_start_i(int s0, uint i) {
+  return s0 <= 0 ? 0u : min((uint)s0, i);
+}
+static inline uint seg_start_f(float f, uint i) {
+  if (!(f > 0.0f)) return 0u;  // NaN, negatives, zero
+  return f >= (float)i ? i : (uint)f;
+}
+// The first key index >= j0 a lane striding by 32 from `lane` visits: the
+// lane's own sequence with its masked head dropped, order unchanged.
+static inline uint lane_from(uint lane, uint j0) {
+  return j0 > lane ? lane + ((j0 - lane + 31u) / 32u) * 32u : lane;
+}
+#define TILED_FWD_START(b, i, live)                                         \
+  (((p.flags & 2u) != 0u && (live))                                         \
+       ? seg_start_i(((device const int*)(RBASE(5) + p.off[5]))[(ulong)(b) * p.S + (i)], (i)) \
+       : 0u)
 // p.B, p.S, p.H, p.D = d; p.f[0] = 1 / sqrt(d). Slots: 0 q, 1 k, 2 v,
 // 3 o (forward) / dO (backward), 4 stats [B*H*S, 4], 5 the backward's
-// result. The grid is one simdgroup per unit.
+// result (the forward's starts, with flag bit 1). The grid is one
+// simdgroup per unit.
 kernel void k_attn_fwd_tiled(KSIG, uint g [[thread_position_in_grid]],
                              uint lane [[thread_index_in_simdgroup]]) {
   const uint B = p.B, S = p.S, H = p.H, d = p.D, D = H * d;
@@ -1517,19 +1547,21 @@ kernel void k_attn_fwd_tiled(KSIG, uint g [[thread_position_in_grid]],
   device float* st = WF(4) + u * 4u;
   const float inv_sqrt_d = p.f[0];
   const bool vec = (p.flags & 1u) != 0u;
+  const uint j0 = TILED_FWD_START(b, i, true);
+  const uint jl = lane_from(lane, j0);
   float lmax = -INFINITY;
-  for (uint j = lane; j <= i; j += 32u)
+  for (uint j = jl; j <= i; j += 32u)
     lmax = max(lmax, row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d);
   const float m = simd_max(lmax);
   float lsum = 0.0f;
-  for (uint j = lane; j <= i; j += 32u)
+  for (uint j = jl; j <= i; j += 32u)
     lsum += exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m);
   const float inv = 1.0f / simd_xor_sum(lsum);
   for (uint c0 = 0; c0 < d; c0 += 64u) {
     float acc[64];
     #pragma clang loop unroll(full)
     for (uint t = 0; t < 64u; ++t) acc[t] = 0.0f;
-    for (uint j = lane; j <= i; j += 32u) {
+    for (uint j = jl; j <= i; j += 32u) {
       const float pj = exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m) * inv;
       device const float* vj = vbase + j * D + c0;
       row_axpy64(acc, pj, vj, c0, d, vec);
@@ -1544,7 +1576,7 @@ kernel void k_attn_fwd_tiled(KSIG, uint g [[thread_position_in_grid]],
     st[0] = m;
     st[1] = inv;
     st[2] = 0.0f;
-    st[3] = 0.0f;
+    st[3] = (float)j0;
   }
 }
 kernel void k_attn_dq_tiled(KSIG, uint g [[thread_position_in_grid]],
@@ -1562,8 +1594,9 @@ kernel void k_attn_dq_tiled(KSIG, uint g [[thread_position_in_grid]],
   const float inv_sqrt_d = p.f[0];
   const bool vec = (p.flags & 1u) != 0u;
   const float m = st[0], inv = st[1];
+  const uint jl = lane_from(lane, seg_start_f(st[3], i));
   float ldot = 0.0f;
-  for (uint j = lane; j <= i; j += 32u) {
+  for (uint j = jl; j <= i; j += 32u) {
     const float pj = exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m) * inv;
     const float dp = row_dot(dout, vbase + j * D, d, vec);
     ldot += dp * pj;
@@ -1573,7 +1606,7 @@ kernel void k_attn_dq_tiled(KSIG, uint g [[thread_position_in_grid]],
     float acc[64];
     #pragma clang loop unroll(full)
     for (uint t = 0; t < 64u; ++t) acc[t] = 0.0f;
-    for (uint j = lane; j <= i; j += 32u) {
+    for (uint j = jl; j <= i; j += 32u) {
       const float pj = exp(row_dot(q, kbase + j * D, d, vec) * inv_sqrt_d - m) * inv;
       const float dp = row_dot(dout, vbase + j * D, d, vec);
       const float ds = pj * (dp - delta);
@@ -1612,6 +1645,7 @@ kernel void k_attn_dk_tiled(KSIG, uint g [[thread_position_in_grid]],
       device const float* qi = qbase + i * D;
       device const float* doi = dobase + i * D;
       device const float* st = stats + i * 4u;
+      if (j < seg_start_f(st[3], i)) continue;  // row i's document starts later
       const float pij = exp(row_dot(qi, kj, d, vec) * inv_sqrt_d - st[0]) * st[1];
       const float ds = pij * (row_dot(doi, vj, d, vec) - st[2]);
       const float gg = ds * inv_sqrt_d;
@@ -1645,6 +1679,7 @@ kernel void k_attn_dv_tiled(KSIG, uint g [[thread_position_in_grid]],
       device const float* qi = qbase + i * D;
       device const float* doi = dobase + i * D;
       device const float* st = stats + i * 4u;
+      if (j < seg_start_f(st[3], i)) continue;
       const float pij = exp(row_dot(qi, kj, d, vec) * inv_sqrt_d - st[0]) * st[1];
       row_axpy64(acc, pij, doi + c0, c0, d, vec);
     }
@@ -1727,6 +1762,7 @@ kernel void k_attn_fwd_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]]
   #pragma clang loop unroll(full)
 
   for (uint c = 0; c < ATT_D; ++c) qr[c] = (live && c < d) ? qbase[i * D + c] : 0.0f;
+  const uint js = TILED_FWD_START(b, i, live);  // the row's document start
   const uint last = min(i0 + ATT_ROWS, S);  // rows this group covers
   const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
   float m = -INFINITY;
@@ -1737,6 +1773,7 @@ kernel void k_attn_fwd_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]]
       for (uint jj = 0; jj < ATT_BLK; ++jj) {
         const uint j = kb * ATT_BLK + jj;
         if (j > i) break;
+        if (j < js) continue;
         m = max(m, tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d);
       }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -1749,6 +1786,7 @@ kernel void k_attn_fwd_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]]
       for (uint jj = 0; jj < ATT_BLK; ++jj) {
         const uint j = kb * ATT_BLK + jj;
         if (j > i) break;
+        if (j < js) continue;
         l += exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m);
       }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -1768,6 +1806,7 @@ kernel void k_attn_fwd_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]]
         for (uint jj = 0; jj < ATT_BLK; ++jj) {
           const uint j = kb * ATT_BLK + jj;
           if (j > i) break;
+          if (j < js) continue;
           const float pj = exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m) * inv;
           threadgroup const float* vr = vt + jj * ATT_D + c0;
           #pragma clang loop unroll(full)
@@ -1784,7 +1823,7 @@ kernel void k_attn_fwd_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]]
   }
   if (live) {
     device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
-    st[0] = m; st[1] = inv; st[2] = 0.0f; st[3] = 0.0f;
+    st[0] = m; st[1] = inv; st[2] = 0.0f; st[3] = (float)js;
   }
 }
 kernel void k_attn_dq_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
@@ -1806,6 +1845,7 @@ kernel void k_attn_dq_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
   device float* dq = WF(5) + (b * S + i) * D + h * d;
   const float inv_sqrt_d = p.f[0];
   const float m = live ? st[0] : 0.0f, inv = live ? st[1] : 0.0f;
+  const uint js = live ? seg_start_f(st[3], i) : 0u;
   float qr[ATT_D], dor[ATT_D];
   #pragma clang loop unroll(full)
 
@@ -1824,6 +1864,7 @@ kernel void k_attn_dq_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
       for (uint jj = 0; jj < ATT_BLK; ++jj) {
         const uint j = kb * ATT_BLK + jj;
         if (j > i) break;
+        if (j < js) continue;
         const float pj = exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m) * inv;
         const float dp = tg_dot(dor, vt + jj * ATT_D, d);
         delta += dp * pj;
@@ -1843,6 +1884,7 @@ kernel void k_attn_dq_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
         for (uint jj = 0; jj < ATT_BLK; ++jj) {
           const uint j = kb * ATT_BLK + jj;
           if (j > i) break;
+          if (j < js) continue;
           const float pj = exp(tg_dot(qr, kt + jj * ATT_D, d) * inv_sqrt_d - m) * inv;
           const float dp = tg_dot(dor, vt + jj * ATT_D, d);
           const float gg = pj * (dp - delta) * inv_sqrt_d;
@@ -1913,6 +1955,7 @@ kernel void k_attn_dk_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
           const uint i = ib + ii;
           if (i >= S) break;
           if (i < j) continue;
+          if (j < seg_start_f(stt[ii * 4u + 3u], i)) continue;
           threadgroup const float* qi = qt + ii * ATT_D;
           const float pij = exp(tg_dot(kr, qi, d) * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u];
           const float dp = tg_dot(vr, dot_ + ii * ATT_D, d);
@@ -1968,6 +2011,7 @@ kernel void k_attn_dv_tiled_blk(KSIG, uint3 tg [[threadgroup_position_in_grid]],
           const uint i = ib + ii;
           if (i >= S) break;
           if (i < j) continue;
+          if (j < seg_start_f(stt[ii * 4u + 3u], i)) continue;
           const float pij = exp(tg_dot(kr, qt + ii * ATT_D, d) * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u];
           threadgroup const float* doi = dot_ + ii * ATT_D + c0;
           #pragma clang loop unroll(full)
@@ -2096,6 +2140,7 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
   threadgroup float* w = own + sg * 8u * ATT_D;  // [8 x 32] S / P block
   const uint r = lane >> 2, c0 = (lane & 3u) * 8u;
   const uint i = i0 + sg * 8u + r;
+  const uint js = TILED_FWD_START(b, i, i < S);  // the row's document start
   const uint last = min(i0 + AMM_ROWS, S);
   const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
   simdgroup_float8x8 s[4];
@@ -2109,7 +2154,8 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
-      if (j <= i && j < S) m = max(m, w[r * 32u + c0 + e] * inv_sqrt_d);
+      if (j >= js && j <= i && j < S)
+        m = max(m, w[r * 32u + c0 + e] * inv_sqrt_d);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
@@ -2131,7 +2177,8 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
       threadgroup float* x = w + r * 32u + c0 + e;
-      const float pe = (j <= i && j < S) ? exp(*x * inv_sqrt_d - m) : 0.0f;
+      const float pe =
+          (j >= js && j <= i && j < S) ? exp(*x * inv_sqrt_d - m) : 0.0f;
       l += pe;
       *x = pe;
     }
@@ -2147,7 +2194,7 @@ kernel void k_attn_fwd_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]]
                  live, inv, d, lane);
   if (live && (lane & 3u) == 0u) {
     device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
-    st[0] = m; st[1] = inv; st[2] = 0.0f; st[3] = 0.0f;
+    st[0] = m; st[1] = inv; st[2] = 0.0f; st[3] = (float)js;
   }
 }
 kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
@@ -2183,6 +2230,7 @@ kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
   const bool live = i < S;
   device float* st = WF(4) + ((b * H + h) * S + i) * 4u;
   const float m = live ? st[0] : 0.0f, inv = live ? st[1] : 0.0f;
+  const uint js = live ? seg_start_f(st[3], i) : 0u;
   const uint last = min(i0 + AMM_ROWS, S);
   const uint kblocks = (last + ATT_BLK - 1u) / ATT_BLK;
   simdgroup_float8x8 s[4], dp[4];
@@ -2199,7 +2247,7 @@ kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint e = 0; e < 8u; ++e) {
       const uint j = kb * ATT_BLK + c0 + e;
-      if (live && j <= i && j < S) {
+      if (live && j >= js && j <= i && j < S) {
         const float pj = exp(w[r * 32u + c0 + e] * inv_sqrt_d - m) * inv;
         delta += wp[r * 32u + c0 + e] * pj;
       }
@@ -2225,7 +2273,7 @@ kernel void k_attn_dq_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
       const uint j = kb * ATT_BLK + c0 + e;
       threadgroup float* x = w + r * 32u + c0 + e;
       float gg = 0.0f;
-      if (live && j <= i && j < S) {
+      if (live && j >= js && j <= i && j < S) {
         const float pj = exp(*x * inv_sqrt_d - m) * inv;
         gg = pj * (wp[r * 32u + c0 + e] - delta) * inv_sqrt_d;
       }
@@ -2292,7 +2340,8 @@ kernel void k_attn_dk_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
       const uint ii = c0 + e, i = ib + ii;
       threadgroup float* x = w + r * 32u + ii;
       float gg = 0.0f;
-      if (live && i >= j && i < S) {
+      if (live && i >= j && i < S &&
+          j >= seg_start_f(stt[ii * 4u + 3u], i)) {
         const float pij =
             exp(*x * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u];
         gg = pij * (wp[r * 32u + ii] - stt[ii * 4u + 2u]) * inv_sqrt_d;
@@ -2347,7 +2396,8 @@ kernel void k_attn_dv_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
     for (uint e = 0; e < 8u; ++e) {
       const uint ii = c0 + e, i = ib + ii;
       threadgroup float* x = w + r * 32u + ii;
-      *x = (live && i >= j && i < S)
+      *x = (live && i >= j && i < S &&
+            j >= seg_start_f(stt[ii * 4u + 3u], i))
                ? exp(*x * inv_sqrt_d - stt[ii * 4u]) * stt[ii * 4u + 1u]
                : 0.0f;
     }

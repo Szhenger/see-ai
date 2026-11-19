@@ -1608,6 +1608,166 @@ TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
     }
 }
 
+TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
+  // #191 step 2 (plan v26): the masked tiled forward and the three backward
+  // passes that read each row's start from the stats row, on all three
+  // kernel forms — per row (head width 96), blocked (16 and 48) and, under
+  // kFlagRelaxed, the matrix-tile form — against the CPU family at the
+  // tiled kernels' tolerance, bitwise run to run, the start column bit for
+  // bit. Window 0 holds consecutive EOS (a one-token document) and EOS at
+  // 31 and, where S allows, at 127: documents that start on a 32-row and a
+  // 128-row block edge. A second run perturbs the first document's rows
+  // and the later documents' results on the GPU do not move by a bit.
+  if (Skip()) return;
+  struct Shape { uint32_t B, S, H, d; };
+  for (const Shape sh : {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48},
+                         Shape{1, 70, 2, 96}})
+    for (const uint16_t flags : {uint16_t{0}, seeml::update::kFlagRelaxed}) {
+      const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
+      const size_t rows = size_t{sh.B} * sh.H * sh.S;
+      const size_t D = size_t{sh.H} * sh.d;
+      const size_t ids = (size_t{sh.B} * sh.S + 3) & ~size_t{3};
+      // Arena (floats): q, k, v, dO, o, stats [rows, 4], dq, dk, dv, then
+      // the i32 tokens and starts.
+      const size_t q_at = 0, k_at = n, v_at = 2 * n, do_at = 3 * n,
+                   o_at = 4 * n;
+      const size_t st_at = 5 * n, dq_at = st_at + rows * 4, dk_at = dq_at + n,
+                   dv_at = dk_at + n, tok_at = dv_at + n, ss_at = tok_at + ids,
+                   total = ss_at + ids;
+      std::vector<float> arena(total, 0.0f);
+      std::mt19937_64 rng(5191 + sh.S + sh.d);
+      std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+      for (size_t i = 0; i < 4 * n; ++i) arena[i] = unit(rng);
+      const int32_t eos = 9;
+      std::vector<int32_t> tokens(size_t{sh.B} * sh.S, 1);
+      for (uint32_t at : {5u, 6u, 31u, 127u})
+        if (at < sh.S) tokens[at] = eos;
+      std::memcpy(arena.data() + tok_at, tokens.data(),
+                  tokens.size() * sizeof(int32_t));
+      auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
+      UpdateInstruction starts;
+      starts.opcode = static_cast<uint16_t>(OpCode::kSegmentStarts);
+      starts.in[0] = ref(tok_at);
+      starts.in[1] = ref(ss_at);
+      starts.out[0] = (uint64_t{sh.B} << 32) | sh.S;
+      starts.out[1] = static_cast<uint64_t>(eos);
+      UpdateInstruction fwd;
+      fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdTiledSeg);
+      fwd.flags = flags;
+      fwd.in[0] = ref(q_at); fwd.in[1] = ref(k_at); fwd.in[2] = ref(v_at);
+      fwd.in[3] = ref(o_at);
+      fwd.out[0] = ref(st_at);
+      fwd.out[1] = PackAttnGeometry(sh.B, sh.S, sh.H, sh.d);
+      fwd.out[2] = ref(ss_at);
+      std::vector<UpdateInstruction> program = {starts, fwd};
+      for (const auto& [op, result] :
+           {std::pair{OpCode::kAttnDQTiled, dq_at},
+            std::pair{OpCode::kAttnDKTiled, dk_at},
+            std::pair{OpCode::kAttnDVTiled, dv_at}}) {
+        UpdateInstruction ins;
+        ins.opcode = static_cast<uint16_t>(op);
+        ins.flags = flags;
+        ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+        ins.in[3] = ref(do_at);
+        ins.out[0] = ref(st_at);
+        ins.out[1] = ref(result);
+        ins.out[2] = PackAttnGeometry(sh.B, sh.S, sh.H, sh.d);
+        program.push_back(ins);
+      }
+      auto twin = RunTwin(program, arena, {});
+      ASSERT_OK(twin);
+      auto again = RunTwin(program, arena, {});
+      ASSERT_OK(again);
+      const std::string tag =
+          std::to_string(sh.S) + "x" + std::to_string(sh.d) +
+          (flags ? " relaxed" : " exact");
+      ExpectRangeClose((tag + " o").c_str(), *twin, o_at, n, 1e-4, 1e-5);
+      ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
+      ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
+      ExpectRangeClose((tag + " dv").c_str(), *twin, dv_at, n, 1e-4, 1e-5);
+      EXPECT_EQ(std::memcmp(&twin->gpu[o_at], &again->gpu[o_at],
+                            (tok_at - o_at) * sizeof(float)),
+                0);
+      // The start column: each row's document start, alike on both
+      // backends, and the starts themselves bit for bit.
+      for (size_t i = 0; i < size_t{sh.B} * sh.S; ++i)
+        EXPECT_EQ(std::bit_cast<uint32_t>(twin->cpu[ss_at + i]),
+                  std::bit_cast<uint32_t>(twin->gpu[ss_at + i]));
+      for (size_t r = 0; r < rows; ++r) {
+        const size_t b = r / (size_t{sh.H} * sh.S), i = r % sh.S;
+        const float want = static_cast<float>(
+            std::bit_cast<int32_t>(twin->cpu[ss_at + b * sh.S + i]));
+        EXPECT_EQ(twin->cpu[st_at + r * 4 + 3], want);
+        EXPECT_EQ(twin->gpu[st_at + r * 4 + 3], want);
+      }
+      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 6]), 6);    // start == i
+      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 32]), 32);  // a block edge
+      // Perturb window 0's rows before position 32 — every document but the
+      // last ones: what rows 32.. produce and receive is unmoved on the GPU.
+      std::vector<float> other = arena;
+      for (size_t t = 0; t < 32; ++t)
+        for (size_t c = 0; c < D; ++c) {
+          other[q_at + t * D + c] *= 2.0f;
+          other[k_at + t * D + c] += 5.0f;
+          other[v_at + t * D + c] -= 3.0f;
+        }
+      auto moved = RunTwin(program, other, {});
+      ASSERT_OK(moved);
+      for (size_t at : {o_at, dq_at, dk_at, dv_at})
+        EXPECT_EQ(std::memcmp(&twin->gpu[at + 32 * D], &moved->gpu[at + 32 * D],
+                              (size_t{sh.S} - 32) * D * sizeof(float)),
+                  0);
+      EXPECT_NE(std::memcmp(&twin->gpu[o_at], &moved->gpu[o_at],
+                            32 * D * sizeof(float)),
+                0);
+    }
+  // Garbage in the start column: the backward kernels clamp it as the CPU
+  // kernels do, on every form (the float domain first; NaN is 0).
+  for (const Shape sh : {Shape{1, 40, 1, 16}, Shape{1, 40, 1, 96}})
+    for (const uint16_t flags : {uint16_t{0}, seeml::update::kFlagRelaxed}) {
+      const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
+      const size_t rows = size_t{sh.B} * sh.H * sh.S;
+      const size_t q_at = 0, k_at = n, v_at = 2 * n, do_at = 3 * n;
+      const size_t st_at = 4 * n, dq_at = st_at + rows * 4, dk_at = dq_at + n,
+                   dv_at = dk_at + n, total = dv_at + n;
+      std::vector<float> arena(total, 0.0f);
+      std::mt19937_64 rng(6191 + sh.d);
+      std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+      for (size_t i = 0; i < 4 * n; ++i) arena[i] = unit(rng);
+      const float garbage[] = {-5.0f, std::numeric_limits<float>::quiet_NaN(),
+                               1e30f, std::numeric_limits<float>::infinity(),
+                               2.75f};
+      for (size_t r = 0; r < rows; ++r) {
+        arena[st_at + r * 4 + 0] = 0.5f;   // a row max
+        arena[st_at + r * 4 + 1] = 0.25f;  // a 1 / denominator
+        arena[st_at + r * 4 + 3] = garbage[r % 5];
+      }
+      auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
+      std::vector<UpdateInstruction> program;
+      for (const auto& [op, result] :
+           {std::pair{OpCode::kAttnDQTiled, dq_at},
+            std::pair{OpCode::kAttnDKTiled, dk_at},
+            std::pair{OpCode::kAttnDVTiled, dv_at}}) {
+        UpdateInstruction ins;
+        ins.opcode = static_cast<uint16_t>(op);
+        ins.flags = flags;
+        ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+        ins.in[3] = ref(do_at);
+        ins.out[0] = ref(st_at);
+        ins.out[1] = ref(result);
+        ins.out[2] = PackAttnGeometry(sh.B, sh.S, sh.H, sh.d);
+        program.push_back(ins);
+      }
+      auto twin = RunTwin(program, arena, {});
+      ASSERT_OK(twin);
+      const std::string tag = "garbage starts, d " + std::to_string(sh.d) +
+                              (flags ? " relaxed" : " exact");
+      ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
+      ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
+      ExpectRangeClose((tag + " dv").c_str(), *twin, dv_at, n, 1e-4, 1e-5);
+    }
+}
+
 TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
   // #190: two gradients, one norm over both (sqrt(169 + 25)); both backends
   // land each on the shared factor — at tolerance, the GPU summing the

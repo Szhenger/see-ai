@@ -137,6 +137,9 @@ SITES = {
     # The tiled family (v15) recomputes the same double reductions.
     47: "attn.fwd.tiled", 48: "attn.dq.tiled", 49: "attn.dk.tiled",
     50: "attn.dv.tiled",
+    # The masked tiled forward (v26, #191 step 2) is its own site: a
+    # certificate that priced the unmasked forward does not cover it.
+    57: "attn.fwd.tiled.seg",
 }
 # The optimizer steps reduce only when they carry a fused clip (plan v12,
 # threshold bits in out[1]): then the gradient norm is theirs.

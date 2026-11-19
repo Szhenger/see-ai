@@ -198,8 +198,14 @@ void AttnDK(const float* ds, const float* q, float* dk, size_t B, size_t S,
 // pass recomputes the probabilities it needs from Q, K and (m, 1/l), with
 // the cached kernels' expressions in the cached kernels' orders, so each
 // result equals the cached family's float for float.
+// The segment mask (#191 step 2, plan v26): with `starts` (kSegmentStarts'
+// result) the forward scores no key before a row's document start and
+// leaves the row's clamped start in stats[.., kAttnStatsStart]; the three
+// backward passes read it from there (0, and nothing masked, when the
+// forward had no starts).
 void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
-                  float* stats, size_t B, size_t S, size_t H, size_t d);
+                  float* stats, size_t B, size_t S, size_t H, size_t d,
+                  const int32_t* starts = nullptr);
 void AttnDQTiled(const float* q, const float* k, const float* v,
                  const float* dout, float* stats, float* dq, size_t B,
                  size_t S, size_t H, size_t d);

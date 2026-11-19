@@ -1696,10 +1696,29 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
     EXPECT_TRUE(starts_at < first_attn);
     EXPECT_TRUE(seg > 0);
   }
+  // The tiled family (step 2, plan v26): the same shape — the starts once,
+  // every tiled forward the masked one — and the backward opcodes are the
+  // unmasked plan's own, which read each row's start from the stats row.
   UpdateConfig tiled = config;
   tiled.attention = AttentionKind::kTiled;
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(tiled).Compile(model),
-                        "tiled attention family is not masked yet");
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate t, UpdateCompiler(tiled).Compile(model));
+  UpdateConfig tiled_plain = BaseConfig(16);
+  tiled_plain.attention = AttentionKind::kTiled;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate tu,
+                       UpdateCompiler(tiled_plain).Compile(model));
+  for (const auto& program : {TrainProgramOf(t), EvalProgramOf(t)}) {
+    EXPECT_EQ(CountOpcode(program, OpCode::kSegmentStarts), 1u);
+    EXPECT_EQ(CountOpcode(program, OpCode::kAttnFwdTiled), 0u);
+    EXPECT_EQ(CountOpcode(program, OpCode::kAttnFwdSeg), 0u);
+  }
+  EXPECT_EQ(CountOpcode(TrainProgramOf(t), OpCode::kAttnFwdTiledSeg),
+            CountOpcode(TrainProgramOf(tu), OpCode::kAttnFwdTiled));
+  EXPECT_TRUE(CountOpcode(TrainProgramOf(t), OpCode::kAttnFwdTiledSeg) > 0);
+  for (OpCode back : {OpCode::kAttnDQTiled, OpCode::kAttnDKTiled,
+                      OpCode::kAttnDVTiled})
+    EXPECT_EQ(CountOpcode(TrainProgramOf(t), back),
+              CountOpcode(TrainProgramOf(tu), back));
+  EXPECT_EQ(HeaderOf(t).version, seeml::update::kSeeuVersion);
   // Off by default: the plan is the unmasked one.
   UpdateConfig plain = BaseConfig(16);
   ASSERT_OK_AND_ASSIGN(CompiledUpdate u, UpdateCompiler(plain).Compile(model));

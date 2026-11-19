@@ -1174,6 +1174,170 @@ TEST(SegmentMask, StartsOutsideTheRowAreClampedNotFollowed) {
   EXPECT_EQ(pg[3 * S + 3], 1.0f);
 }
 
+namespace {
+
+// One attention layer's forward and backward, both families, for the twin
+// tests: the cached family through its five kernels, the tiled family
+// through its four.
+struct AttnResult {
+  std::vector<float> o, dq, dk, dv;
+};
+AttnResult RunCachedAttention(const std::vector<float>& q,
+                              const std::vector<float>& kk,
+                              const std::vector<float>& v,
+                              const std::vector<float>& dout, size_t B,
+                              size_t S, size_t H, size_t d,
+                              const int32_t* starts) {
+  const size_t D = H * d;
+  AttnResult r{std::vector<float>(B * S * D), std::vector<float>(B * S * D),
+               std::vector<float>(B * S * D), std::vector<float>(B * S * D)};
+  std::vector<float> p(B * H * S * S), dp(B * H * S * S), ds(B * H * S * S);
+  k::AttnFwd(q.data(), kk.data(), v.data(), r.o.data(), p.data(), B, S, H, d,
+             starts);
+  k::AttnDV(p.data(), dout.data(), r.dv.data(), B, S, H, d);
+  k::AttnDP(dout.data(), v.data(), dp.data(), B, S, H, d);
+  k::SoftmaxRowsBwd(p.data(), dp.data(), ds.data(), B * H * S, S);
+  k::AttnDQ(ds.data(), kk.data(), r.dq.data(), B, S, H, d);
+  k::AttnDK(ds.data(), q.data(), r.dk.data(), B, S, H, d);
+  return r;
+}
+AttnResult RunTiledAttention(const std::vector<float>& q,
+                             const std::vector<float>& kk,
+                             const std::vector<float>& v,
+                             const std::vector<float>& dout, size_t B, size_t S,
+                             size_t H, size_t d, const int32_t* starts,
+                             std::vector<float>* stats_out = nullptr) {
+  const size_t D = H * d;
+  AttnResult r{std::vector<float>(B * S * D), std::vector<float>(B * S * D),
+               std::vector<float>(B * S * D), std::vector<float>(B * S * D)};
+  std::vector<float> stats(B * H * S * seeml::update::kAttnStatsWidth);
+  k::AttnFwdTiled(q.data(), kk.data(), v.data(), r.o.data(), stats.data(), B,
+                  S, H, d, starts);
+  k::AttnDQTiled(q.data(), kk.data(), v.data(), dout.data(), stats.data(),
+                 r.dq.data(), B, S, H, d);
+  k::AttnDKTiled(q.data(), kk.data(), v.data(), dout.data(), stats.data(),
+                 r.dk.data(), B, S, H, d);
+  k::AttnDVTiled(q.data(), kk.data(), dout.data(), stats.data(), r.dv.data(),
+                 B, S, H, d);
+  if (stats_out) *stats_out = stats;
+  return r;
+}
+
+}  // namespace
+
+TEST(SegmentMask, TheTiledFamilyComputesTheCachedFamilysMaskedBits) {
+  // #191 step 2 (plan v26): the tiled forward takes the starts and leaves
+  // each row's start in its stats row; dQ, dK and dV read it back. Skipping
+  // a masked term is adding the cached family's exact zero, so all four
+  // results carry the cached family's bits — at one thread, three and
+  // eight. S = 37 is ragged against every block size a backend uses; the
+  // windows hold a document ending at a block edge (EOS at 31, so rows
+  // from 32 start there), consecutive EOS (a one-token document, whose row
+  // attends to itself alone), an EOS at the last position, and none.
+  const size_t B = 4, S = 37, H = 2, d = 6, D = H * d;
+  const int32_t eos = 9;
+  std::vector<int32_t> tokens(B * S, 1);
+  tokens[0 * S + 31] = eos;
+  tokens[1 * S + 4] = eos;
+  tokens[1 * S + 5] = eos;
+  tokens[1 * S + 20] = eos;
+  tokens[2 * S + (S - 1)] = eos;
+  std::vector<int32_t> starts(B * S, -1);
+  k::SegmentStarts(tokens.data(), starts.data(), B, S, eos);
+  EXPECT_EQ(starts[0 * S + 32], 32);
+  EXPECT_EQ(starts[1 * S + 5], 5);   // start == i: the row sees itself only
+  EXPECT_EQ(starts[1 * S + 6], 6);
+  EXPECT_EQ(starts[2 * S + (S - 1)], 0);
+  const std::vector<float> q = RandnVector(B * S * D, 11),
+                           kk = RandnVector(B * S * D, 12),
+                           v = RandnVector(B * S * D, 13),
+                           dout = RandnVector(B * S * D, 14);
+  for (const int32_t* st : {static_cast<const int32_t*>(starts.data()),
+                            static_cast<const int32_t*>(nullptr)}) {
+    const AttnResult want = RunCachedAttention(q, kk, v, dout, B, S, H, d, st);
+    for (unsigned threads : {1u, 3u, 8u}) {
+      ScopedThreads scoped(threads);
+      std::vector<float> stats;
+      const AttnResult got =
+          RunTiledAttention(q, kk, v, dout, B, S, H, d, st, &stats);
+      EXPECT_BITWISE_EQ_F32(want.o, got.o);
+      EXPECT_BITWISE_EQ_F32(want.dq, got.dq);
+      EXPECT_BITWISE_EQ_F32(want.dk, got.dk);
+      EXPECT_BITWISE_EQ_F32(want.dv, got.dv);
+      // The stats row's fourth float is the row's start (0 with no mask).
+      for (size_t b = 0; b < B; ++b)
+        for (size_t h = 0; h < H; ++h)
+          for (size_t i = 0; i < S; ++i)
+            EXPECT_EQ(stats[((b * H + h) * S + i) * 4 + 3],
+                      st ? static_cast<float>(st[b * S + i]) : 0.0f);
+    }
+  }
+  // And the mask masks: perturbing window 0's first document (positions
+  // 0..31) changes nothing its second document's rows produce or receive.
+  std::vector<float> k2 = kk, v2 = v, q2 = q;
+  for (size_t t = 0; t < 32; ++t)
+    for (size_t c = 0; c < D; ++c) {
+      k2[t * D + c] += 5.0f;
+      v2[t * D + c] -= 3.0f;
+      q2[t * D + c] *= 2.0f;
+    }
+  const AttnResult a =
+      RunTiledAttention(q, kk, v, dout, B, S, H, d, starts.data());
+  const AttnResult b2 =
+      RunTiledAttention(q2, k2, v2, dout, B, S, H, d, starts.data());
+  for (size_t i = 32; i < S; ++i)
+    for (size_t c = 0; c < D; ++c) {
+      EXPECT_EQ(std::bit_cast<uint32_t>(a.o[i * D + c]),
+                std::bit_cast<uint32_t>(b2.o[i * D + c]));
+      EXPECT_EQ(std::bit_cast<uint32_t>(a.dq[i * D + c]),
+                std::bit_cast<uint32_t>(b2.dq[i * D + c]));
+      EXPECT_EQ(std::bit_cast<uint32_t>(a.dk[i * D + c]),
+                std::bit_cast<uint32_t>(b2.dk[i * D + c]));
+      EXPECT_EQ(std::bit_cast<uint32_t>(a.dv[i * D + c]),
+                std::bit_cast<uint32_t>(b2.dv[i * D + c]));
+    }
+}
+
+TEST(SegmentMask, AStatsRowsStartIsClampedNotFollowed) {
+  // The tiled backward reads each row's start from the arena (the stats
+  // row's fourth float). Whatever float sits there, the kernels clamp it
+  // into [0, i] before it bounds a loop: garbage computes what its clamped
+  // value computes, and nothing outside the operands is touched (ASan, in
+  // CI, would say). NaN and the negatives are 0; the huge ones are the row.
+  const size_t B = 1, S = 5, H = 1, d = 2, D = H * d;
+  const std::vector<float> q = RandnVector(B * S * D, 21),
+                           kk = RandnVector(B * S * D, 22),
+                           v = RandnVector(B * S * D, 23),
+                           dout = RandnVector(B * S * D, 24);
+  auto backward = [&](const std::vector<float>& pad) {
+    std::vector<float> o(B * S * D), stats(B * H * S * 4);
+    k::AttnFwdTiled(q.data(), kk.data(), v.data(), o.data(), stats.data(), B,
+                    S, H, d);
+    for (size_t i = 0; i < S; ++i) stats[i * 4 + 3] = pad[i];
+    AttnResult r{o, std::vector<float>(B * S * D),
+                 std::vector<float>(B * S * D), std::vector<float>(B * S * D)};
+    k::AttnDQTiled(q.data(), kk.data(), v.data(), dout.data(), stats.data(),
+                   r.dq.data(), B, S, H, d);
+    k::AttnDKTiled(q.data(), kk.data(), v.data(), dout.data(), stats.data(),
+                   r.dk.data(), B, S, H, d);
+    k::AttnDVTiled(q.data(), kk.data(), dout.data(), stats.data(), r.dv.data(),
+                   B, S, H, d);
+    return r;
+  };
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  const AttnResult garbage = backward({-5.0f, nan, 1e30f, inf, 2.75f});
+  const AttnResult clamped = backward({0.0f, 0.0f, 2.0f, 3.0f, 2.0f});
+  EXPECT_BITWISE_EQ_F32(clamped.dq, garbage.dq);
+  EXPECT_BITWISE_EQ_F32(clamped.dk, garbage.dk);
+  EXPECT_BITWISE_EQ_F32(clamped.dv, garbage.dv);
+  EXPECT_EQ(seeml::update::AttnStatsStart(nan, 7), 0u);
+  EXPECT_EQ(seeml::update::AttnStatsStart(-0.0f, 7), 0u);
+  EXPECT_EQ(seeml::update::AttnStatsStart(7.0f, 7), 7u);
+  EXPECT_EQ(seeml::update::AttnStatsStart(6.99f, 7), 6u);
+  EXPECT_EQ(seeml::update::AttnStatsStart(inf, 0), 0u);
+}
+
 TEST(ClipGlobal, EveryTensorSharesTheOneFactorAndTheJointNormLandsOnTheCap) {
   // #190: ||a||^2 = 169, ||b||^2 = 25 — one norm, sqrt(194), over both; a
   // cap of 1 scales both by the same 1 / sqrt(194), so the update keeps its

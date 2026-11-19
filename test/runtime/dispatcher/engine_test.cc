@@ -403,6 +403,19 @@ TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
   fill.out[0] = 4;
   EXPECT_ERROR_CONTAINS(verify({seg, fill, fwd}), "segment-masked attention");
   EXPECT_OK(verify({seg, fill, seg, fwd}));
+  // The masked tiled forward (#191 step 2, plan v26) reads its starts the
+  // same way and is held to the same rule, case for case.
+  up::UpdateInstruction tiled = fwd;
+  tiled.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwdTiledSeg);
+  EXPECT_OK(verify({seg, tiled}));
+  up::UpdateInstruction tiled_elsewhere = tiled;
+  tiled_elsewhere.out[2] = up::MakeArenaRef(512);
+  EXPECT_ERROR_CONTAINS(verify({seg, tiled_elsewhere}),
+                        "segment-masked attention");
+  EXPECT_ERROR_CONTAINS(verify({tiled, seg}), "segment-masked attention");
+  EXPECT_ERROR_CONTAINS(verify({seg}, {tiled}), "segment-masked attention");
+  EXPECT_ERROR_CONTAINS(verify({seg, fill, tiled}), "segment-masked attention");
+  EXPECT_OK(verify({seg, fill, seg, tiled}));
 }
 
 TEST(EngineContract, FeederContractMatchesCorpusToPlanGeometry) {

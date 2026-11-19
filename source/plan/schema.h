@@ -156,9 +156,16 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // version word raised.
 // v25 (#191): the attention segment mask — kSegmentStarts and kAttnFwdSeg,
 // refused below v25; no header field and no section changes.
-inline constexpr uint32_t kSeeuVersion = 25;
+// v26 (#191, step 2): the segment mask on the tiled attention family —
+// kAttnFwdTiledSeg, refused below v26. The stats row's fourth float, a pad
+// until now, is the row's document start (0 from an unmasked forward), and
+// the tiled backward opcodes 48-50 honor it: a v26 runtime given a plan
+// without the mask reads zeros there and computes the v25 bits. No header
+// field and no section changes.
+inline constexpr uint32_t kSeeuVersion = 26;
 inline constexpr uint32_t kSeeuGlobalClipVersion = 24;
 inline constexpr uint32_t kSeeuSegmentMaskVersion = 25;
+inline constexpr uint32_t kSeeuTiledSegmentMaskVersion = 26;
 
 // The version that grew the header with the data contract.
 inline constexpr uint32_t kSeeuDataContractVersion = 22;

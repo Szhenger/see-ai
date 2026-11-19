@@ -74,6 +74,17 @@ inline uint64_t AttentionFlops(std::span<const UpdateInstruction> program) {
         macs = AttnMacs(hi(ins.out[1]), lo(ins.out[1]), hi(ins.out[2]),
                         lo(ins.out[2]));
         break;
+      // The segment-masked forwards (#191, plan v25 / v26): the same two
+      // products, the geometry packed into out[1]. The mask is not
+      // discounted, as the causal one is not. (Uncounted until 2026-11-18:
+      // a masked plan's forward attention read as zero work.)
+      case OpCode::kAttnFwdSeg:
+      case OpCode::kAttnFwdTiledSeg: {
+        const AttnGeometry g = UnpackAttnGeometry(ins.out[1]);
+        products = 2;
+        macs = AttnMacs(g.B, g.S, g.H, g.d);
+        break;
+      }
       case OpCode::kAttnDP:  // out[0] = B|S, out[1] = H|d
       case OpCode::kAttnDV:
       case OpCode::kAttnDQ:
