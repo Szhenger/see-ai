@@ -128,6 +128,26 @@ class RunnerRawTextTest(unittest.TestCase):
         self.assertEqual(sha256(by_text), sha256(by_sds))
         return r.stderr
 
+    def test_a_corpus_that_cannot_take_its_name_is_not_a_short_write(self):
+        # The compiler stages corpus.sds and renames it into place. With a
+        # directory holding the name, every byte was written and the rename
+        # is what failed: the refusal says that (it said "short write to"
+        # until the /code-review of #213), exits 1, and leaves no staged
+        # file behind.
+        pkg = os.path.join(self.dir, "blocked")
+        corpus = os.path.join(pkg, "corpus.sds")
+        os.makedirs(corpus)
+        r = subprocess.run(
+            [COMPILER, "--source", self.model, "--out", pkg, "--data",
+             self.txt, "--data-batch", "16", "--steps", "30", "--no-embed"],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stderr[-2000:])
+        self.assertIn(f"seeml-update-compile: cannot move '{corpus}.tmp' to "
+                      f"'{corpus}'\n", r.stderr)
+        self.assertNotIn("short write", r.stderr)
+        self.assertFalse(os.path.exists(corpus + ".tmp"))
+        self.assertTrue(os.path.isdir(corpus))
+
     def test_a_txt_trains_as_its_canonical_sds(self):
         self.assert_text_run_is_the_sds_run("txt", self.txt)
 

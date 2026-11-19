@@ -598,7 +598,10 @@ void PrintScreens(const CompiledUpdate* compiled, bool verbose) {
 
 /// Staged and renamed into place (as the runner's --report is): a
 /// write that fails midway leaves no corpus.sds at all, never a
-/// truncated one under the name the plan is pinned to.
+/// truncated one under the name the plan is pinned to. The two failures
+/// are two messages — the bytes did not reach the staged file, or the
+/// staged file could not take the name (a directory is in the way, say) —
+/// and neither leaves the staged file behind.
 [[nodiscard]] std::optional<std::string> WriteStaged(const std::string& path,
                                                      const char* data,
                                                      size_t size) {
@@ -606,9 +609,13 @@ void PrintScreens(const CompiledUpdate* compiled, bool verbose) {
   std::ofstream f(staged, std::ios::binary | std::ios::trunc);
   f.write(data, static_cast<std::streamsize>(size));
   f.close();
-  if (f.fail() || std::rename(staged.c_str(), path.c_str()) != 0) {
+  if (f.fail()) {
     std::remove(staged.c_str());
     return "short write to '" + path + "'";
+  }
+  if (std::rename(staged.c_str(), path.c_str()) != 0) {
+    std::remove(staged.c_str());
+    return "cannot move '" + staged + "' to '" + path + "'";
   }
   return std::nullopt;
 }
