@@ -1,0 +1,34 @@
+# The SeeAI formatter contract (S8, #154; STYLE.md section 1). Google style at
+# 80 columns, formatted with clang-format 19 — the version CI pins; other
+# versions lay some constructs out differently. Every key below either makes
+# the formatter keep what is semantic or hand-written in this tree, or pins
+# what Google style would otherwise guess per file.
+#
+# No `Language:` key on purpose: the one section then governs C++ and the
+# Objective-C++ of runtime/executor/*.mm alike. (Google's Objective-C base is
+# 100 columns; ColumnLimit below overrides it.)
+BasedOnStyle: Google
+ColumnLimit: 80
+Standard: Latest
+
+# Include order is semantic here (source/plan/instruction.h records the
+# Carbon HiWord / LoWord macro collision): never sorted, never regrouped.
+SortIncludes: Never
+IncludeBlocks: Preserve
+# The formatter lays code out; it does not reorder it. (Google style would
+# sort a run of using-declarations.)
+SortUsingDeclarations: Never
+
+# Comments are hand-wrapped prose and string literals are messages that
+# tests match: neither is re-broken. A literal or a comment that runs past
+# 80 columns stays as written.
+ReflowComments: false
+BreakStringLiterals: false
+
+# `T* p`, always — not whatever the majority of a file happens to do.
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# A lambda passed as the last argument (up::ParallelFor(n, grain, [&](...) {)
+# has its body indented from the statement, not from the signature.
+LambdaBodyIndentation: OuterScope

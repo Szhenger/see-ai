@@ -129,55 +129,84 @@ constexpr const char* kMainSource = "runtime/host/update_main.cc";
 // repository — the compiler host's checkout cannot be a build dependency of
 // the deliverable.
 constexpr const char* kVendoredSources[] = {
-    "runtime/dispatcher/update_engine.h",     "runtime/dispatcher/update_engine.cc",
-    "runtime/loader/contract.h",          "runtime/loader/contract.cc",
-    "runtime/loader/plan_loader.h",       "runtime/loader/plan_loader.cc",
-    "runtime/gating/gate.h",              "runtime/gating/gate.cc",
+    "runtime/dispatcher/update_engine.h",
+    "runtime/dispatcher/update_engine.cc",
+    "runtime/loader/contract.h",
+    "runtime/loader/contract.cc",
+    "runtime/loader/plan_loader.h",
+    "runtime/loader/plan_loader.cc",
+    "runtime/gating/gate.h",
+    "runtime/gating/gate.cc",
     "runtime/profiler/step_timings.h",
     "runtime/profiler/runtime_screen.h",
-    "runtime/profiler/energy_meter.h",  "runtime/profiler/kernel_profile.h",  "runtime/profiler/runtime_screen.cc",
-    "runtime/executor/update_kernels.h",  "runtime/executor/kernel_policy.h",
-    "runtime/executor/gemm.cc",           "runtime/executor/elementwise.cc",
-    "runtime/executor/activation.cc",     "runtime/executor/normalization.cc",
-    "runtime/executor/loss.cc",           "runtime/executor/optimizer.cc",
+    "runtime/profiler/energy_meter.h",
+    "runtime/profiler/kernel_profile.h",
+    "runtime/profiler/runtime_screen.cc",
+    "runtime/executor/update_kernels.h",
+    "runtime/executor/kernel_policy.h",
+    "runtime/executor/gemm.cc",
+    "runtime/executor/elementwise.cc",
+    "runtime/executor/activation.cc",
+    "runtime/executor/normalization.cc",
+    "runtime/executor/loss.cc",
+    "runtime/executor/optimizer.cc",
     "runtime/executor/attention.cc",
-    "runtime/executor/backend.h",         "runtime/executor/backend.cc",
-    "runtime/executor/cpu_backend.cc",    "runtime/executor/metal_backend.h",
+    "runtime/executor/backend.h",
+    "runtime/executor/backend.cc",
+    "runtime/executor/cpu_backend.cc",
+    "runtime/executor/metal_backend.h",
     "runtime/executor/metal_backend_stub.cc",
-    "runtime/executor/metal_backend.mm",  "runtime/executor/metal_kernels.h",
-    "runtime/pipeline/dataset.h",           "runtime/pipeline/dataset.cc",
-    "runtime/pipeline/batch_pipeline.h",    "runtime/pipeline/batch_pipeline.cc",
-    "runtime/verifier/plan_validator.h", "runtime/verifier/plan_validator.cc",
-    "runtime/storage/durable_io.h",     "runtime/storage/durable_io.cc",
+    "runtime/executor/metal_backend.mm",
+    "runtime/executor/metal_kernels.h",
+    "runtime/pipeline/dataset.h",
+    "runtime/pipeline/dataset.cc",
+    "runtime/pipeline/batch_pipeline.h",
+    "runtime/pipeline/batch_pipeline.cc",
+    "runtime/verifier/plan_validator.h",
+    "runtime/verifier/plan_validator.cc",
+    "runtime/storage/durable_io.h",
+    "runtime/storage/durable_io.cc",
     "runtime/storage/checkpoint_format.h",
-    "runtime/storage/checkpoint.h",     "runtime/storage/checkpoint.cc",
+    "runtime/storage/checkpoint.h",
+    "runtime/storage/checkpoint.cc",
     "runtime/diagnostics/diagnostic.h",
     "runtime/diagnostics/feeding/error.h",
     "runtime/diagnostics/validating/error.h",
     "runtime/diagnostics/executing/error.h",
     "runtime/diagnostics/persisting/error.h",
-    "source/plan/update_types.h",         "source/plan/config.h",
+    "source/plan/update_types.h",
+    "source/plan/config.h",
     "source/plan/bf16.h",
-    "source/plan/instruction.h",          "source/plan/schema.h",
+    "source/plan/instruction.h",
+    "source/plan/schema.h",
     "source/plan/metadata.h",
     "source/identity/hash.h",
-    "source/platform/memory.h",           "source/platform/file_map.h",
+    "source/platform/memory.h",
+    "source/platform/file_map.h",
     "source/platform/durable.h",
-    "source/contract/bounds.h",           "source/contract/plan_contract.h",
+    "source/contract/bounds.h",
+    "source/contract/plan_contract.h",
     "source/contract/split.h",
-    "source/recipe/recipe.h",             "source/recipe/run_flags.h",
-    "source/statistics/screen.h",         "source/statistics/screens.h",
+    "source/recipe/recipe.h",
+    "source/recipe/run_flags.h",
+    "source/statistics/screen.h",
+    "source/statistics/screens.h",
     "source/statistics/plan_work.h",
-    "source/parallel/parallel_for.h",     "source/parallel/parallel_for.cc",
+    "source/parallel/parallel_for.h",
+    "source/parallel/parallel_for.cc",
     // The data path (S2 #148): the SDS format the feeder reads, and the
     // tokenizer and text ingest (sanitize, deduplicate, encode, pack) the
     // device re-runs on its own text — vendored and compiled into every
     // package (S6 #152); the runner's raw-text feeder is S7's (#153).
     "source/language/dataset_format.h",
-    "source/language/model_format.h",     "source/language/smf_preamble.h",
-    "source/tokenizer/tokenizer_format.h", "source/tokenizer/unicode_tables.h",
-    "source/tokenizer/byte_level_bpe.h",   "source/tokenizer/byte_level_bpe.cc",
-    "source/tokenizer/text_ingest.h",      "source/tokenizer/text_ingest.cc",
+    "source/language/model_format.h",
+    "source/language/smf_preamble.h",
+    "source/tokenizer/tokenizer_format.h",
+    "source/tokenizer/unicode_tables.h",
+    "source/tokenizer/byte_level_bpe.h",
+    "source/tokenizer/byte_level_bpe.cc",
+    "source/tokenizer/text_ingest.h",
+    "source/tokenizer/text_ingest.cc",
 };
 
 std::string BuildScript(bool relaxed_plan) {
@@ -195,18 +224,23 @@ std::string BuildScript(bool relaxed_plan) {
     // certificate that is absent, refused, or issued for other plan
     // bytes stops the build before a single object is compiled
     // (2026-09-24 review, N17).
-    s += "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
+    s +=
+        "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
     s += "# v18): it may be built only beside the numerics certificate that\n";
     s += "# tool/certify_numerics.py granted for exactly these plan bytes.\n";
     s += "if [ ! -f numerics_certificate.json ]; then\n";
-    s += "  echo \"build.sh: update_plan.seeu carries relaxed GEMMs and this\" \\\n";
+    s +=
+        "  echo \"build.sh: update_plan.seeu carries relaxed GEMMs and this\" \\\n";
     s += "       \"package has no numerics_certificate.json; run\" \\\n";
-    s += "       \"tool/certify_numerics.py certify <pkg> --corpus <corpus.sds>\" \\\n";
-    s += "       \"[--source <model.smf>], then tool/pack_update.py <pkg> --build\" >&2\n";
+    s +=
+        "       \"tool/certify_numerics.py certify <pkg> --corpus <corpus.sds>\" \\\n";
+    s +=
+        "       \"[--source <model.smf>], then tool/pack_update.py <pkg> --build\" >&2\n";
     s += "  exit 1\n";
     s += "fi\n";
     s += "grep -q '\"verdict\": \"granted\"' numerics_certificate.json || {\n";
-    s += "  echo \"build.sh: numerics_certificate.json is not a granted certificate\" >&2\n";
+    s +=
+        "  echo \"build.sh: numerics_certificate.json is not a granted certificate\" >&2\n";
     s += "  exit 1\n";
     s += "}\n";
     s += "if command -v shasum >/dev/null 2>&1; then\n";
@@ -214,9 +248,12 @@ std::string BuildScript(bool relaxed_plan) {
     s += "else\n";
     s += "  PLAN_SHA=$(sha256sum update_plan.seeu | cut -d' ' -f1)\n";
     s += "fi\n";
-    s += "grep -q \"\\\"sha256\\\": \\\"$PLAN_SHA\\\"\" numerics_certificate.json || {\n";
-    s += "  echo \"build.sh: numerics_certificate.json was issued for a different\" \\\n";
-    s += "       \"plan (SHA-256 mismatch): re-certify after recompiling\" >&2\n";
+    s +=
+        "grep -q \"\\\"sha256\\\": \\\"$PLAN_SHA\\\"\" numerics_certificate.json || {\n";
+    s +=
+        "  echo \"build.sh: numerics_certificate.json was issued for a different\" \\\n";
+    s +=
+        "       \"plan (SHA-256 mismatch): re-certify after recompiling\" >&2\n";
     s += "  exit 1\n";
     s += "}\n";
   }
@@ -225,7 +262,8 @@ std::string BuildScript(bool relaxed_plan) {
   s += "# the runtime's defaults. It is a throughput knob only — results\n";
   s += "# are bit-identical for any tiling the kernel accepts. This hook\n";
   s += "# changes the compiled-in default a zero header field selects:\n";
-  s += "#   SEEML_TILE_FLAGS=\"-DSEEML_GEMM_TILE_K=64 -DSEEML_GEMM_TILE_N=256\"\n";
+  s +=
+      "#   SEEML_TILE_FLAGS=\"-DSEEML_GEMM_TILE_K=64 -DSEEML_GEMM_TILE_N=256\"\n";
   s += "TILE_FLAGS=\"${SEEML_TILE_FLAGS-}\"\n";
   s += "# -pthread: the runtime parallelizes its kernels and pipelines the\n";
   s += "# batch feeder; SEEML_THREADS=1 at run time restores fully serial\n";
@@ -238,27 +276,35 @@ std::string BuildScript(bool relaxed_plan) {
   s += "ACCEL_FLAGS=\"\"\n";
   s += "ACCEL_LDFLAGS=\"\"\n";
   if (relaxed_plan) {
-    s += "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
-    s += "# v18, certified at packaging): on Apple hosts the CPU backend runs\n";
-    s += "# their f32- and int8-weight forms on Accelerate's SGEMM (the AMX /\n";
+    s +=
+        "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
+    s +=
+        "# v18, certified at packaging): on Apple hosts the CPU backend runs\n";
+    s +=
+        "# their f32- and int8-weight forms on Accelerate's SGEMM (the AMX /\n";
     s += "# SME matrix units; an int8 weight is widened panel by panel).\n";
     s += "# SEEML_NO_ACCELERATE=1 keeps every kernel portable.\n";
-    s += "if [ \"$(uname -s)\" = \"Darwin\" ] && [ -z \"${SEEML_NO_ACCELERATE:-}\" ]; then\n";
+    s +=
+        "if [ \"$(uname -s)\" = \"Darwin\" ] && [ -z \"${SEEML_NO_ACCELERATE:-}\" ]; then\n";
     s += "  ACCEL_FLAGS=\"-DSEEML_ACCELERATE\"\n";
     s += "  ACCEL_LDFLAGS=\"-framework Accelerate\"\n";
     s += "fi\n";
   }
   s += "FLAGS=\"$FLAGS $ACCEL_FLAGS\"\n";
   s += "# The plan reaches the binary through one of two translation units:\n";
-  s += "# update_plan_embedded.S, the .incbin stub tool/pack_update.py writes\n";
-  s += "# (page-aligned, assembles in seconds at any plan size; it needs only\n";
+  s +=
+      "# update_plan_embedded.S, the .incbin stub tool/pack_update.py writes\n";
+  s +=
+      "# (page-aligned, assembles in seconds at any plan size; it needs only\n";
   s += "# the preprocessor and assembler, so it takes no C++ flags), or the\n";
   s += "# compiler's default decimal byte-array update_plan_embedded.cc —\n";
-  s += "# or through neither (#158): a package with no embedded TU builds the\n";
+  s +=
+      "# or through neither (#158): a package with no embedded TU builds the\n";
   s += "# disk mode, whose binary maps update_plan.seeu beside itself (or\n";
   s += "# --plan FILE) at start-up and validates it exactly as an embedded\n";
   s += "# plan. That is the form for plans the linker and the loader cannot\n";
-  s += "# carry (above ~1.8 GB on macOS arm64: ld segfaults, then dyld cannot\n";
+  s +=
+      "# carry (above ~1.8 GB on macOS arm64: ld segfaults, then dyld cannot\n";
   s += "# map the image under the shared cache); tool/pack_update.py chooses\n";
   s += "# it by plan size. The two symbols still resolve: an empty plan.\n";
   s += "PLAN_NOTE=\"\"\n";
@@ -278,14 +324,16 @@ std::string BuildScript(bool relaxed_plan) {
   s += "fi\n";
   s += "$CXX $FLAGS -c update_main.cc -o update_main.o\n";
   s += "$CXX $FLAGS -c source/parallel/parallel_for.cc -o parallel_for.o\n";
-  s += "$CXX $FLAGS -c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o\n";
+  s +=
+      "$CXX $FLAGS -c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o\n";
   s += "$CXX $FLAGS -c source/tokenizer/text_ingest.cc -o text_ingest.o\n";
-  s += "for unit in executor/gemm executor/elementwise executor/activation "
-       "executor/normalization executor/loss executor/optimizer "
-       "executor/attention executor/backend executor/cpu_backend "
-       "pipeline/dataset pipeline/batch_pipeline verifier/plan_validator "
-       "storage/durable_io storage/checkpoint loader/contract loader/plan_loader gating/gate profiler/runtime_screen "
-       "dispatcher/update_engine; do\n";
+  s +=
+      "for unit in executor/gemm executor/elementwise executor/activation "
+      "executor/normalization executor/loss executor/optimizer "
+      "executor/attention executor/backend executor/cpu_backend "
+      "pipeline/dataset pipeline/batch_pipeline verifier/plan_validator "
+      "storage/durable_io storage/checkpoint loader/contract loader/plan_loader gating/gate profiler/runtime_screen "
+      "dispatcher/update_engine; do\n";
   s += "  $CXX $FLAGS -c \"runtime/$unit.cc\" -o \"$(basename $unit).o\"\n";
   s += "done\n";
   s += "# The Metal executor backend (--backend metal|auto) exists on Apple\n";
@@ -307,8 +355,9 @@ std::string BuildScript(bool relaxed_plan) {
   s += "    *) return 0 ;;\n";
   s += "  esac\n";
   s += "}\n";
-  s += "if [ \"$(uname -s)\" = \"Darwin\" ] && ! seeml_on \"${SEEML_NO_METAL:-}\" "
-       "&& \"$CXX\" --version 2>/dev/null | grep -qi clang; then\n";
+  s +=
+      "if [ \"$(uname -s)\" = \"Darwin\" ] && ! seeml_on \"${SEEML_NO_METAL:-}\" "
+      "&& \"$CXX\" --version 2>/dev/null | grep -qi clang; then\n";
   s += "  $CXX $FLAGS -x objective-c++ -fobjc-arc -c "
        "runtime/executor/metal_backend.mm -o metal_backend.o\n";
   s += "  METAL_OBJ=metal_backend.o\n";
@@ -324,7 +373,8 @@ std::string BuildScript(bool relaxed_plan) {
   // of the build host: a Linux host cross-compiling for Apple needs the
   // framework, and a Mac cross-compiling for Linux must not pass it.
   s += "ENERGY_LDFLAGS=\"\"\n";
-  s += "CXX_MACROS=$($CXX $FLAGS -dM -E -x c++ /dev/null 2>/dev/null || true)\n";
+  s +=
+      "CXX_MACROS=$($CXX $FLAGS -dM -E -x c++ /dev/null 2>/dev/null || true)\n";
   s += "case \"$CXX_MACROS\" in\n";
   s += "  *\"#define __APPLE__ \"*)\n";
   s += "    case \"$CXX_MACROS\" in\n";
@@ -332,14 +382,16 @@ std::string BuildScript(bool relaxed_plan) {
        "ENERGY_LDFLAGS=\"-framework CoreFoundation\" ;;\n";
   s += "    esac ;;\n";
   s += "esac\n";
-  s += "$CXX $FLAGS update_main.o update_plan_embedded.o update_engine.o "
-       "contract.o plan_loader.o gate.o runtime_screen.o dataset.o batch_pipeline.o gemm.o elementwise.o "
-       "activation.o normalization.o loss.o optimizer.o attention.o "
-       "backend.o cpu_backend.o $METAL_OBJ "
-       "parallel_for.o durable_io.o plan_validator.o checkpoint.o "
-       "byte_level_bpe.o text_ingest.o "
-       "$METAL_LDFLAGS $ACCEL_LDFLAGS $ENERGY_LDFLAGS -o model_update\n";
-  s += "# The .o files are intermediates; the deliverable is the binary (and,\n";
+  s +=
+      "$CXX $FLAGS update_main.o update_plan_embedded.o update_engine.o "
+      "contract.o plan_loader.o gate.o runtime_screen.o dataset.o batch_pipeline.o gemm.o elementwise.o "
+      "activation.o normalization.o loss.o optimizer.o attention.o "
+      "backend.o cpu_backend.o $METAL_OBJ "
+      "parallel_for.o durable_io.o plan_validator.o checkpoint.o "
+      "byte_level_bpe.o text_ingest.o "
+      "$METAL_LDFLAGS $ACCEL_LDFLAGS $ENERGY_LDFLAGS -o model_update\n";
+  s +=
+      "# The .o files are intermediates; the deliverable is the binary (and,\n";
   s += "# in the disk mode, the plan file beside it).\n";
   s += "rm -f ./*.o\n";
   s += "echo \"built: $(pwd)/model_update$PLAN_NOTE\"\n";
@@ -354,8 +406,8 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
   if (ec)
-    return generating::FileError(generating::kNativeEmitter,
-                                 "cannot create", out_dir);
+    return generating::FileError(generating::kNativeEmitter, "cannot create",
+                                 out_dir);
 
   EmitPaths paths{
       .plan_file = out_dir + "/update_plan.seeu",
@@ -374,8 +426,8 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
             static_cast<std::streamsize>(plan.size()));
     f.close();
     if (f.fail())
-      return generating::FileError(generating::kNativeEmitter,
-                                   "short write to", paths.plan_file);
+      return generating::FileError(generating::kNativeEmitter, "short write to",
+                                   paths.plan_file);
   }
   // A package carries exactly one embedded-plan TU, so build.sh's choice is
   // never ambiguous: whichever of the pair this emission does not write is
@@ -396,15 +448,15 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
     const auto src = std::filesystem::path(repo_root) / kMainSource;
     std::ifstream in(src, std::ios::binary);
     if (!in)
-      return generating::Error(generating::kNativeEmitter,
-                               "cannot read the generated main '" +
-                                   src.string() + "'");
+      return generating::Error(
+          generating::kNativeEmitter,
+          "cannot read the generated main '" + src.string() + "'");
     main_tu.assign(std::istreambuf_iterator<char>(in),
                    std::istreambuf_iterator<char>());
     if (in.bad() || main_tu.empty())
-      return generating::Error(generating::kNativeEmitter,
-                               "cannot read the generated main '" +
-                                   src.string() + "'");
+      return generating::Error(
+          generating::kNativeEmitter,
+          "cannot read the generated main '" + src.string() + "'");
   }
   {
     const std::string marker = "0.0 /*seeml:peak_gflops*/";
@@ -414,10 +466,10 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
                                "the runner template lost its peak marker");
     // Only a finite positive peak is a C++ literal: %.17g of an infinity
     // or a NaN ("inf", "nan") would not compile.
-    const double stated = std::isfinite(options.peak_gflops) &&
-                                  options.peak_gflops > 0.0
-                              ? options.peak_gflops
-                              : 0.0;
+    const double stated =
+        std::isfinite(options.peak_gflops) && options.peak_gflops > 0.0
+            ? options.peak_gflops
+            : 0.0;
     char peak[64];
     std::snprintf(peak, sizeof(peak), "%.17g /*seeml:peak_gflops*/", stated);
     main_tu.replace(at, marker.size(), peak);
@@ -427,10 +479,10 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
     if (gpu_at == std::string::npos)
       return generating::Error(generating::kNativeEmitter,
                                "the runner template lost its GPU peak marker");
-    const double gpu = std::isfinite(options.gpu_peak_gflops) &&
-                               options.gpu_peak_gflops > 0.0
-                           ? options.gpu_peak_gflops
-                           : 0.0;
+    const double gpu =
+        std::isfinite(options.gpu_peak_gflops) && options.gpu_peak_gflops > 0.0
+            ? options.gpu_peak_gflops
+            : 0.0;
     std::snprintf(peak, sizeof(peak), "%.17g /*seeml:gpu_peak_gflops*/", gpu);
     main_tu.replace(gpu_at, gpu_marker.size(), peak);
   }
@@ -438,29 +490,28 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
     return std::unexpected(r.error());
 
   // Vendor the runtime into the package so it builds without the repo.
-  for (const char* rel : kVendoredSources) paths.vendored_sources.push_back(rel);
+  for (const char* rel : kVendoredSources)
+    paths.vendored_sources.push_back(rel);
   for (const char* rel : kVendoredSources) {
     const auto src = std::filesystem::path(repo_root) / rel;
     const auto dst = std::filesystem::path(out_dir) / rel;
     std::filesystem::create_directories(dst.parent_path(), ec);
     if (ec)
-      return generating::FileError(generating::kNativeEmitter,
-                                   "cannot create",
+      return generating::FileError(generating::kNativeEmitter, "cannot create",
                                    dst.parent_path().string());
     std::filesystem::copy_file(
         src, dst, std::filesystem::copy_options::overwrite_existing, ec);
     if (ec)
-      return generating::Error(generating::kNativeEmitter,
-                               "cannot vendor '" + src.string() + "' (" +
-                                   ec.message() + ")");
+      return generating::Error(
+          generating::kNativeEmitter,
+          "cannot vendor '" + src.string() + "' (" + ec.message() + ")");
   }
 
   // The GEMM tile geometry is a plan property now (header v11, decided by
   // the driver from the kernel-policy table or the defaults), so the build
   // script bakes nothing host-derived: the analytic tiling it used to emit
   // ran 1.3–3.3x slower than the kernel defaults (#90).
-  if (auto r = WriteFile(paths.build_script,
-                         BuildScript(options.relaxed_plan),
+  if (auto r = WriteFile(paths.build_script, BuildScript(options.relaxed_plan),
                          /*executable=*/true);
       !r)
     return std::unexpected(r.error());

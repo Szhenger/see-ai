@@ -22,7 +22,8 @@ namespace seeml::update_rt::diag::executing {
 inline constexpr std::string_view kEngine = "UpdateEngine";
 
 /// Lifecycle failure: "UpdateEngine: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view message) {
   return Fail(kEngine, message);
 }
 

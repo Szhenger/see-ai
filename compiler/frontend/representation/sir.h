@@ -27,4 +27,4 @@
 #include "compiler/frontend/representation/operation.h"  // IWYU pragma: export
 #include "compiler/frontend/representation/block.h"      // IWYU pragma: export
 
-#endif // SEEML_COMPILER_FRONTEND_REPRESENTATION_SIR_H_
+#endif  // SEEML_COMPILER_FRONTEND_REPRESENTATION_SIR_H_

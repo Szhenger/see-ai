@@ -15,11 +15,11 @@ namespace seeml::update_rt::kernels {
 namespace up = seeml::update;
 
 void LayerNormFwd(const float* x, const float* gamma, const float* beta,
-                  float* y, float* mean, float* rstd, size_t rows,
-                  size_t cols, float eps) {
+                  float* y, float* mean, float* rstd, size_t rows, size_t cols,
+                  float eps) {
   const float kEps = eps;  // the plan's (v16); 1e-5 is the same float as ever
-  up::ParallelFor(rows, RowGrain(cols, kGrainMath), [&](size_t r0, size_t r1,
-                                                        size_t) {
+  up::ParallelFor(rows, RowGrain(cols, kGrainMath),
+                  [&](size_t r0, size_t r1, size_t) {
     for (size_t r = r0; r < r1; ++r) {
       const float* xr = x + r * cols;
       double sum = 0.0;
@@ -30,8 +30,9 @@ void LayerNormFwd(const float* x, const float* gamma, const float* beta,
         const double d = static_cast<double>(xr[c]) - mu;
         var += d * d;
       }
-      const float rs = 1.0f / std::sqrt(
-          static_cast<float>(var / static_cast<double>(cols)) + kEps);
+      const float rs =
+          1.0f /
+          std::sqrt(static_cast<float>(var / static_cast<double>(cols)) + kEps);
       mean[r] = mu;
       rstd[r] = rs;
       float* yr = y + r * cols;
@@ -47,8 +48,8 @@ void LayerNormBwd(const float* dy, const float* x, const float* gamma,
   // With x̂ = (x - μ)·rstd and g = dy·γ:
   //   dx = rstd · (g - mean(g) - x̂ · mean(g·x̂))
   const float inv_d = 1.0f / static_cast<float>(cols);
-  up::ParallelFor(rows, RowGrain(cols, kGrainMath), [&](size_t r0, size_t r1,
-                                                        size_t) {
+  up::ParallelFor(rows, RowGrain(cols, kGrainMath),
+                  [&](size_t r0, size_t r1, size_t) {
     for (size_t r = r0; r < r1; ++r) {
       const float* dyr = dy + r * cols;
       const float* xr = x + r * cols;
@@ -75,15 +76,16 @@ void LayerNormBwd(const float* dy, const float* x, const float* gamma,
 void RmsNormFwd(const float* x, const float* gamma, float* y, float* rstd,
                 size_t rows, size_t cols, float eps) {
   const float kEps = eps;
-  up::ParallelFor(rows, RowGrain(cols, kGrainMath), [&](size_t r0, size_t r1,
-                                                        size_t) {
+  up::ParallelFor(rows, RowGrain(cols, kGrainMath),
+                  [&](size_t r0, size_t r1, size_t) {
     for (size_t r = r0; r < r1; ++r) {
       const float* xr = x + r * cols;
       double ss = 0.0;
       for (size_t c = 0; c < cols; ++c)
         ss += static_cast<double>(xr[c]) * xr[c];
-      const float rs = 1.0f / std::sqrt(
-          static_cast<float>(ss / static_cast<double>(cols)) + kEps);
+      const float rs =
+          1.0f /
+          std::sqrt(static_cast<float>(ss / static_cast<double>(cols)) + kEps);
       rstd[r] = rs;
       float* yr = y + r * cols;
       for (size_t c = 0; c < cols; ++c) yr[c] = xr[c] * rs * gamma[c];
@@ -95,8 +97,8 @@ void RmsNormBwd(const float* dy, const float* x, const float* gamma,
                 const float* rstd, float* dx, size_t rows, size_t cols) {
   // With r = rstd and g = dy·γ:  dx = r · (g - x · r² · mean(g·x))
   const float inv_d = 1.0f / static_cast<float>(cols);
-  up::ParallelFor(rows, RowGrain(cols, kGrainMath), [&](size_t r0, size_t r1,
-                                                        size_t) {
+  up::ParallelFor(rows, RowGrain(cols, kGrainMath),
+                  [&](size_t r0, size_t r1, size_t) {
     for (size_t r = r0; r < r1; ++r) {
       const float* dyr = dy + r * cols;
       const float* xr = x + r * cols;

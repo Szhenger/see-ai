@@ -56,9 +56,9 @@ TEST(Gemm, NTMatchesNNWithExplicitTranspose) {
 
 TEST(Gemm, TNMatchesNNWithExplicitTranspose) {
   const size_t M = 3, N = 4, K = 5;
-  const std::vector<float> a = RandnVector(M * K, 3);    // [M, K] for NN
-  const std::vector<float> b = RandnVector(K * N, 4);    // [K, N]
-  std::vector<float> a_t(K * M);                         // [K, M]
+  const std::vector<float> a = RandnVector(M * K, 3);  // [M, K] for NN
+  const std::vector<float> b = RandnVector(K * N, 4);  // [K, N]
+  std::vector<float> a_t(K * M);                       // [K, M]
   for (size_t m = 0; m < M; ++m)
     for (size_t kk = 0; kk < K; ++kk) a_t[kk * M + m] = a[m * K + kk];
 
@@ -132,8 +132,10 @@ TEST(Gemm, EpilogueIsBitwiseIdenticalToUnfusedSequence) {
     std::vector<float> raw(M * N), summed(M * N), want(M * N), got(M * N);
     k::GemmNN(a.data(), b.data(), raw.data(), M, N, K);
     k::AddBias(raw.data(), bias.data(), summed.data(), M, N);
-    if (fwd) fwd(summed.data(), want.data(), M * N);
-    else want = summed;
+    if (fwd)
+      fwd(summed.data(), want.data(), M * N);
+    else
+      want = summed;
 
     k::GemmNN(a.data(), b.data(), got.data(), M, N, K, bias.data(), act);
     for (size_t i = 0; i < M * N; ++i) EXPECT_EQ(got[i], want[i]);
@@ -201,14 +203,16 @@ TEST(Gemm, Bf16VariantsAreBitwiseTheF32GemmsOverTheWidenedMatrix) {
   for (size_t i = 0; i < M * N; ++i) EXPECT_EQ(got[i], want[i]);
   // Round-to-nearest-even and NaN quieting, spot-checked.
   EXPECT_EQ(Float32ToBf16Bits(1.0f), 0x3F80u);
-  EXPECT_EQ(Bf16BitsToFloat32(Float32ToBf16Bits(1.00390625f)), 1.0f);  // tie -> even
+  // tie -> even
+  EXPECT_EQ(Bf16BitsToFloat32(Float32ToBf16Bits(1.00390625f)), 1.0f);
   EXPECT_EQ(Bf16BitsToFloat32(Float32ToBf16Bits(1.01171875f)), 1.015625f);
-  EXPECT_TRUE(std::isnan(Bf16BitsToFloat32(Float32ToBf16Bits(
-      std::numeric_limits<float>::quiet_NaN()))));
+  EXPECT_TRUE(std::isnan(Bf16BitsToFloat32(
+      Float32ToBf16Bits(std::numeric_limits<float>::quiet_NaN()))));
   // Infinities stay infinite; the largest finite f32 rounds up to +inf
   // (the standard overflow of round-to-nearest-even narrowing), never NaN.
   EXPECT_EQ(Float32ToBf16Bits(std::numeric_limits<float>::infinity()), 0x7F80u);
-  EXPECT_EQ(Float32ToBf16Bits(-std::numeric_limits<float>::infinity()), 0xFF80u);
+  EXPECT_EQ(Float32ToBf16Bits(-std::numeric_limits<float>::infinity()),
+            0xFF80u);
   EXPECT_EQ(Float32ToBf16Bits(std::numeric_limits<float>::max()), 0x7F80u);
   EXPECT_EQ(Float32ToBf16Bits(-0.0f), 0x8000u);
   // Negative values round by magnitude (sign-magnitude representation).
@@ -315,8 +319,7 @@ TEST(SoftmaxXEnt, ForwardIsShiftInvariantAndBoundedBelow) {
   std::vector<float> probs(C);
   float loss_a = 0.0f, loss_b = 0.0f;
   k::SoftmaxXEntFwd(logits.data(), labels.data(), &loss_a, probs.data(), N, C);
-  k::SoftmaxXEntFwd(shifted.data(), labels.data(), &loss_b, probs.data(), N,
-                    C);
+  k::SoftmaxXEntFwd(shifted.data(), labels.data(), &loss_b, probs.data(), N, C);
   EXPECT_NEAR(loss_a, loss_b, 1e-6);  // numerically stable softmax
   EXPECT_GT(loss_a, 0.0f);
 }
@@ -327,13 +330,13 @@ TEST(SoftmaxXEnt, TheMaskedPairIsThePlainPairOverTheTargetRows) {
   // written and its gradient is zero; a batch with no target has loss 0 and
   // a zero gradient.
   const size_t N = 3, C = 4;
-  const std::vector<float> logits = {1.0f, 2.0f, 0.5f, -1.0f, 3.0f, 0.0f,
-                                     0.0f, 0.0f, -2.0f, 1.0f, 1.5f, 0.25f};
+  const std::vector<float> logits = {1.0f, 2.0f, 0.5f,  -1.0f, 3.0f, 0.0f,
+                                     0.0f, 0.0f, -2.0f, 1.0f,  1.5f, 0.25f};
   const std::vector<int32_t> labels = {2, -1, 0};
   std::vector<float> probs(N * C), probs_ref(2 * C);
   float loss = 0.0f, loss_ref = 0.0f;
-  k::SoftmaxXEntMaskedFwd(logits.data(), labels.data(), &loss, probs.data(),
-                          N, C);
+  k::SoftmaxXEntMaskedFwd(logits.data(), labels.data(), &loss, probs.data(), N,
+                          C);
   std::vector<float> two_rows(logits.begin(), logits.begin() + C);
   two_rows.insert(two_rows.end(), logits.begin() + 2 * C, logits.end());
   const std::vector<int32_t> two_labels = {2, 0};
@@ -350,8 +353,8 @@ TEST(SoftmaxXEnt, TheMaskedPairIsThePlainPairOverTheTargetRows) {
   const float seed = 2.0f;
   std::vector<float> d(N * C), d_ref(2 * C);
   k::SoftmaxXEntMaskedBwd(probs.data(), labels.data(), &seed, d.data(), N, C);
-  k::SoftmaxXEntBwd(probs_ref.data(), two_labels.data(), &seed, d_ref.data(),
-                    2, C);
+  k::SoftmaxXEntBwd(probs_ref.data(), two_labels.data(), &seed, d_ref.data(), 2,
+                    C);
   for (size_t c = 0; c < C; ++c) {
     EXPECT_NEAR(d[c], d_ref[c], 1e-7);
     EXPECT_EQ(d[C + c], 0.0f);
@@ -385,8 +388,8 @@ TEST(SoftmaxXEnt, BackwardIsScaledProbsMinusOneHot) {
   k::SoftmaxXEntBwd(probs.data(), labels.data(), &seed, dlogits.data(), N, C);
 
   // dlogits = seed * (probs - onehot) / N
-  EXPECT_NEAR(dlogits[0], 0.2f, 1e-6);           // 2 * 0.2 / 2
-  EXPECT_NEAR(dlogits[2], 0.5f - 1.0f, 1e-6);    // label hit
+  EXPECT_NEAR(dlogits[0], 0.2f, 1e-6);         // 2 * 0.2 / 2
+  EXPECT_NEAR(dlogits[2], 0.5f - 1.0f, 1e-6);  // label hit
   EXPECT_NEAR(dlogits[4], 0.8f - 1.0f, 1e-6);
   // Each row of dlogits sums to zero (softmax gradient identity).
   EXPECT_NEAR(dlogits[0] + dlogits[1] + dlogits[2], 0.0f, 1e-6);
@@ -499,10 +502,10 @@ TEST(KLDistill, ScaledGradientMatchesFiniteDifferences) {
   // double against the f32 kernel pair (G13's ask: the kernel-level FD
   // check the sign/monotonicity tests never gave this loss).
   const size_t N = 2, C = 4;
-  std::vector<float> s_logits = {1.5f, -0.5f, 0.25f, 2.0f,
-                                 -1.0f, 0.0f, 0.75f, 0.5f};
-  const std::vector<float> t_logits = {0.0f, 1.0f, -1.0f, 0.5f,
-                                       2.0f, -0.5f, 0.0f, 1.0f};
+  std::vector<float> s_logits = {1.5f,  -0.5f, 0.25f, 2.0f,
+                                 -1.0f, 0.0f,  0.75f, 0.5f};
+  const std::vector<float> t_logits = {0.0f, 1.0f,  -1.0f, 0.5f,
+                                       2.0f, -0.5f, 0.0f,  1.0f};
   const float T = 2.0f, scale = T * T;
   std::vector<float> p_s(N * C), p_t(N * C), dlogits(N * C);
   float loss = 0.0f;
@@ -532,7 +535,8 @@ TEST(KLDistill, ScaledGradientMatchesFiniteDifferences) {
 TEST(Optimizers, SgdStepWithDecoupledWeightDecay) {
   std::vector<float> p = {1.0f, -2.0f};
   const std::vector<float> g = {0.5f, 0.5f};
-  EXPECT_TRUE(k::SgdStep(p.data(), g.data(), 2, /*lr=*/0.1f, /*weight_decay=*/0.2f));
+  EXPECT_TRUE(
+      k::SgdStep(p.data(), g.data(), 2, /*lr=*/0.1f, /*weight_decay=*/0.2f));
   // p -= lr * (g + wd * p)
   EXPECT_NEAR(p[0], 1.0f - 0.1f * (0.5f + 0.2f * 1.0f), 1e-6);
   EXPECT_NEAR(p[1], -2.0f - 0.1f * (0.5f + 0.2f * -2.0f), 1e-6);
@@ -543,14 +547,14 @@ TEST(Optimizers, AdamWFirstStepMatchesClosedForm) {
   const float g0 = 0.4f, p0 = 2.0f;
   std::vector<float> p = {p0}, m = {0.0f}, v = {0.0f};
   const std::vector<float> g = {g0};
-  EXPECT_TRUE(k::AdamWStep(p.data(), g.data(), m.data(), v.data(), 1, lr, b1, b2, eps, wd,
-               /*step=*/1));
+  EXPECT_TRUE(k::AdamWStep(p.data(), g.data(), m.data(), v.data(), 1, lr, b1,
+                           b2, eps, wd,
+                           /*step=*/1));
 
   // Step 1 bias correction makes m_hat = g and v_hat = g^2 exactly.
   EXPECT_NEAR(m[0], (1.0f - b1) * g0, 1e-7);
   EXPECT_NEAR(v[0], (1.0f - b2) * g0 * g0, 1e-9);
-  const float expected =
-      p0 - lr * (g0 / (std::sqrt(g0 * g0) + eps) + wd * p0);
+  const float expected = p0 - lr * (g0 / (std::sqrt(g0 * g0) + eps) + wd * p0);
   EXPECT_NEAR(p[0], expected, 1e-6);
 }
 
@@ -563,8 +567,8 @@ TEST(Optimizers, AdamWTracksIndependentReference) {
   double rp = 1.5, rm = 0.0, rv = 0.0;
   for (uint64_t step = 1; step <= 2; ++step) {
     const float gf = grads[step - 1];
-    EXPECT_TRUE(k::AdamWStep(p.data(), &gf, m.data(), v.data(), 1, lr, b1, b2, eps, wd,
-                 step));
+    EXPECT_TRUE(k::AdamWStep(p.data(), &gf, m.data(), v.data(), 1, lr, b1, b2,
+                             eps, wd, step));
 
     const double gd = gf;
     rm = b1 * rm + (1.0 - b1) * gd;
@@ -598,9 +602,7 @@ TEST(Utility, FillAndCopy) {
 
 /// Pins the pool width for one test; restores automatic resolution after.
 struct ScopedThreads {
-  explicit ScopedThreads(size_t n) {
-    seeml::update::SetParallelThreadCount(n);
-  }
+  explicit ScopedThreads(size_t n) { seeml::update::SetParallelThreadCount(n); }
   ~ScopedThreads() { seeml::update::SetParallelThreadCount(0); }
 };
 
@@ -612,14 +614,14 @@ std::vector<float> RunAtWidth(size_t threads, size_t out_size, Fn&& fill) {
   return out;
 }
 
-#define EXPECT_BITWISE_EQ_F32(a, b)                                       \
-  do {                                                                    \
-    const std::vector<float> bitwise_a_ = (a);                            \
-    const std::vector<float> bitwise_b_ = (b);                            \
-    ASSERT_EQ(bitwise_a_.size(), bitwise_b_.size());                      \
-    EXPECT_EQ(std::memcmp(bitwise_a_.data(), bitwise_b_.data(),           \
-                          bitwise_a_.size() * sizeof(float)),             \
-              0);                                                         \
+#define EXPECT_BITWISE_EQ_F32(a, b)                             \
+  do {                                                          \
+    const std::vector<float> bitwise_a_ = (a);                  \
+    const std::vector<float> bitwise_b_ = (b);                  \
+    ASSERT_EQ(bitwise_a_.size(), bitwise_b_.size());            \
+    EXPECT_EQ(std::memcmp(bitwise_a_.data(), bitwise_b_.data(), \
+                          bitwise_a_.size() * sizeof(float)),   \
+              0);                                               \
   } while (0)
 
 TEST(ParallelDeterminism, GemmNtTailPathsAreThreadCountInvariant) {
@@ -639,8 +641,7 @@ TEST(ParallelDeterminism, GemmNtTailPathsAreThreadCountInvariant) {
     k::GemmNTQ8(a.data(), q8.data(), c, M, N, K, 0.02f);
   };
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, nt), RunAtWidth(8, M * N, nt));
-  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, ntq8),
-                        RunAtWidth(8, M * N, ntq8));
+  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, ntq8), RunAtWidth(8, M * N, ntq8));
   // And the values are right: against a double reference with dequant.
   const std::vector<float> got = RunAtWidth(1, M * N, ntq8);
   for (size_t m = 0; m < M; ++m)
@@ -703,8 +704,7 @@ TEST(ParallelDeterminism, GemmFamilyIsThreadCountInvariant) {
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, nt), RunAtWidth(8, M * N, nt));
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, tn), RunAtWidth(8, M * N, tn));
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, acc), RunAtWidth(8, M * N, acc));
-  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, nnq8),
-                        RunAtWidth(8, M * N, nnq8));
+  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, M * N, nnq8), RunAtWidth(8, M * N, nnq8));
 }
 
 TEST(ParallelDeterminism, GemmTilesNeverChangeBits) {
@@ -728,7 +728,7 @@ TEST(ParallelDeterminism, GemmTilesNeverChangeBits) {
     bth[i] = seeml::update::Float32ToBf16Bits(bt[i]);
   }
   using seeml::update::EpilogueAct;
-  const k::GemmTiles candidates[] = {{64, 256}, {4, 1}, {16, 64}, {128, 4},
+  const k::GemmTiles candidates[] = {{64, 256}, {4, 1},      {16, 64}, {128, 4},
                                      {512, 16}, {256, 1024}, {8, 517}};
   auto run = [&](const k::GemmTiles& t) {
     std::vector<float> out;
@@ -788,8 +788,8 @@ TEST(ParallelDeterminism, LossReductionsAreThreadCountInvariant) {
   };
   auto kl = [&](float* out) {
     std::vector<float> p_s(N * C), p_t(N * C);
-    k::KLDistillFwd(logits.data(), targets.data(), out, p_s.data(),
-                    p_t.data(), N, C, 2.0f, 4.0f);
+    k::KLDistillFwd(logits.data(), targets.data(), out, p_s.data(), p_t.data(),
+                    N, C, 2.0f, 4.0f);
   };
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 64, xent), RunAtWidth(8, 64, xent));
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 1, mse), RunAtWidth(8, 1, mse));
@@ -806,8 +806,8 @@ TEST(ParallelDeterminism, StatefulKernelsAreThreadCountInvariant) {
 
   auto adamw = [&](float* out) {
     std::vector<float> p = p0, m = m0, v = v0;
-    EXPECT_TRUE(k::AdamWStep(p.data(), g.data(), m.data(), v.data(), n, 0.01f, 0.9f,
-                 0.999f, 1e-8f, 0.01f, 3));
+    EXPECT_TRUE(k::AdamWStep(p.data(), g.data(), m.data(), v.data(), n, 0.01f,
+                             0.9f, 0.999f, 1e-8f, 0.01f, 3));
     std::memcpy(out, p.data(), n * sizeof(float));
   };
   auto clip = [&](float* out) {
@@ -816,9 +816,7 @@ TEST(ParallelDeterminism, StatefulKernelsAreThreadCountInvariant) {
   };
   const size_t rows = 64, cols = 2048;
   const std::vector<float> dy = RandnVector(rows * cols, 34);
-  auto reduce = [&](float* out) {
-    k::ReduceRows(dy.data(), out, rows, cols);
-  };
+  auto reduce = [&](float* out) { k::ReduceRows(dy.data(), out, rows, cols); };
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, n, adamw), RunAtWidth(8, n, adamw));
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, n, clip), RunAtWidth(8, n, clip));
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 2048, reduce),
@@ -835,10 +833,10 @@ TEST(ParallelDeterminism, RowAndElementwiseKernelsAreThreadCountInvariant) {
 
   auto layernorm = [&](float* out) {
     std::vector<float> mean(rows), rstd(rows), y(n), dx(n);
-    k::LayerNormFwd(x.data(), gamma.data(), beta.data(), y.data(),
-                    mean.data(), rstd.data(), rows, cols);
-    k::LayerNormBwd(dy.data(), x.data(), gamma.data(), mean.data(),
-                    rstd.data(), dx.data(), rows, cols);
+    k::LayerNormFwd(x.data(), gamma.data(), beta.data(), y.data(), mean.data(),
+                    rstd.data(), rows, cols);
+    k::LayerNormBwd(dy.data(), x.data(), gamma.data(), mean.data(), rstd.data(),
+                    dx.data(), rows, cols);
     std::memcpy(out, y.data(), n * sizeof(float));
     std::memcpy(out + n, dx.data(), n * sizeof(float));
   };
@@ -852,10 +850,8 @@ TEST(ParallelDeterminism, RowAndElementwiseKernelsAreThreadCountInvariant) {
   };
   EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 2 * n, layernorm),
                         RunAtWidth(8, 2 * n, layernorm));
-  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 2 * n, gelu),
-                        RunAtWidth(8, 2 * n, gelu));
-  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 2 * n, silu),
-                        RunAtWidth(8, 2 * n, silu));
+  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 2 * n, gelu), RunAtWidth(8, 2 * n, gelu));
+  EXPECT_BITWISE_EQ_F32(RunAtWidth(1, 2 * n, silu), RunAtWidth(8, 2 * n, silu));
 }
 
 // --- Transformer family (plan v6) ---------------------------------------------
@@ -920,8 +916,8 @@ TEST(RmsNorm, BackwardMatchesFiniteDifferences) {
   const std::vector<float> dy = RandnVector(n, 64);
   std::vector<float> y(n), rstd(rows), dx(n);
   k::RmsNormFwd(x.data(), gamma.data(), y.data(), rstd.data(), rows, cols);
-  k::RmsNormBwd(dy.data(), x.data(), gamma.data(), rstd.data(), dx.data(),
-                rows, cols);
+  k::RmsNormBwd(dy.data(), x.data(), gamma.data(), rstd.data(), dx.data(), rows,
+                cols);
   // L = sum(dy * y): dL/dx_i must match the central difference.
   const double eps = 1e-3;
   for (size_t i = 0; i < n; ++i) {
@@ -997,8 +993,8 @@ TEST(Attention, ForwardMatchesNaiveReferenceAndIsCausal) {
           double acc = 0.0;
           for (size_t j = 0; j <= i; ++j)
             acc += (e[j] / denom) * v[(b * S + j) * D + h * d + c];
-          EXPECT_NEAR(o[(b * S + i) * D + h * d + c],
-                      static_cast<float>(acc), 1e-5);
+          EXPECT_NEAR(o[(b * S + i) * D + h * d + c], static_cast<float>(acc),
+                      1e-5);
         }
       }
 }
@@ -1152,7 +1148,8 @@ TEST(SegmentMask, StartsOutsideTheRowAreClampedNotFollowed) {
   std::vector<float> q(B * S * D, 0.5f), kk(B * S * D, 0.25f), v(B * S * D);
   for (size_t t = 0; t < v.size(); ++t) v[t] = static_cast<float>(t);
   auto run = [&](const std::vector<int32_t>& st) {
-    std::vector<float> o(B * S * D), p(B * H * S * S + 64, -7.0f);  // + a canary
+    // + a canary
+    std::vector<float> o(B * S * D), p(B * H * S * S + 64, -7.0f);
     k::AttnFwd(q.data(), kk.data(), v.data(), o.data(), p.data(), B, S, H, d,
                st.data());
     return std::make_pair(o, p);
@@ -1211,14 +1208,14 @@ AttnResult RunTiledAttention(const std::vector<float>& q,
   AttnResult r{std::vector<float>(B * S * D), std::vector<float>(B * S * D),
                std::vector<float>(B * S * D), std::vector<float>(B * S * D)};
   std::vector<float> stats(B * H * S * seeml::update::kAttnStatsWidth);
-  k::AttnFwdTiled(q.data(), kk.data(), v.data(), r.o.data(), stats.data(), B,
-                  S, H, d, starts);
+  k::AttnFwdTiled(q.data(), kk.data(), v.data(), r.o.data(), stats.data(), B, S,
+                  H, d, starts);
   k::AttnDQTiled(q.data(), kk.data(), v.data(), dout.data(), stats.data(),
                  r.dq.data(), B, S, H, d);
   k::AttnDKTiled(q.data(), kk.data(), v.data(), dout.data(), stats.data(),
                  r.dk.data(), B, S, H, d);
-  k::AttnDVTiled(q.data(), kk.data(), dout.data(), stats.data(), r.dv.data(),
-                 B, S, H, d);
+  k::AttnDVTiled(q.data(), kk.data(), dout.data(), stats.data(), r.dv.data(), B,
+                 S, H, d);
   if (stats_out) *stats_out = stats;
   return r;
 }
@@ -1245,7 +1242,7 @@ TEST(SegmentMask, TheTiledFamilyComputesTheCachedFamilysMaskedBits) {
   std::vector<int32_t> starts(B * S, -1);
   k::SegmentStarts(tokens.data(), starts.data(), B, S, eos);
   EXPECT_EQ(starts[0 * S + 32], 32);
-  EXPECT_EQ(starts[1 * S + 5], 5);   // start == i: the row sees itself only
+  EXPECT_EQ(starts[1 * S + 5], 5);  // start == i: the row sees itself only
   EXPECT_EQ(starts[1 * S + 6], 6);
   EXPECT_EQ(starts[2 * S + (S - 1)], 0);
   const std::vector<float> q = RandnVector(B * S * D, 11),
@@ -1311,8 +1308,8 @@ TEST(SegmentMask, AStatsRowsStartIsClampedNotFollowed) {
                            dout = RandnVector(B * S * D, 24);
   auto backward = [&](const std::vector<float>& pad) {
     std::vector<float> o(B * S * D), stats(B * H * S * 4);
-    k::AttnFwdTiled(q.data(), kk.data(), v.data(), o.data(), stats.data(), B,
-                    S, H, d);
+    k::AttnFwdTiled(q.data(), kk.data(), v.data(), o.data(), stats.data(), B, S,
+                    H, d);
     for (size_t i = 0; i < S; ++i) stats[i * 4 + 3] = pad[i];
     AttnResult r{o, std::vector<float>(B * S * D),
                  std::vector<float>(B * S * D), std::vector<float>(B * S * D)};
@@ -1434,7 +1431,8 @@ TEST(Activation, GeluAndSiluBackwardsMatchFiniteDifferences) {
 
   k::GeluBwd(dy.data(), x.data(), dx.data(), n);
   for (size_t i = 0; i < n; ++i) {
-    xp = x; xm = x;
+    xp = x;
+    xm = x;
     xp[i] += static_cast<float>(eps);
     xm[i] -= static_cast<float>(eps);
     k::GeluFwd(xp.data(), fwd_p.data(), n);
@@ -1445,7 +1443,8 @@ TEST(Activation, GeluAndSiluBackwardsMatchFiniteDifferences) {
 
   k::SiluBwd(dy.data(), x.data(), dx.data(), n);
   for (size_t i = 0; i < n; ++i) {
-    xp = x; xm = x;
+    xp = x;
+    xm = x;
     xp[i] += static_cast<float>(eps);
     xm[i] -= static_cast<float>(eps);
     k::SiluFwd(xp.data(), fwd_p.data(), n);
@@ -1468,13 +1467,12 @@ TEST(Gelu, BackwardStaysFiniteAtExtremeInputs) {
 
 TEST(Embed, GathersTableRowsByTokenId) {
   // table [4, 3]; tokens pick rows out of order and with a repeat.
-  const std::vector<float> table = {0, 1, 2,  10, 11, 12,
+  const std::vector<float> table = {0,  1,  2,  10, 11, 12,
                                     20, 21, 22, 30, 31, 32};
   const std::vector<int32_t> tokens = {2, 0, 3, 0};
   std::vector<float> out(tokens.size() * 3, -1.0f);
   k::EmbedFwd(tokens.data(), table.data(), out.data(), tokens.size(), 3);
-  const std::vector<float> want = {20, 21, 22, 0, 1, 2,
-                                   30, 31, 32, 0, 1, 2};
+  const std::vector<float> want = {20, 21, 22, 0, 1, 2, 30, 31, 32, 0, 1, 2};
   for (size_t i = 0; i < want.size(); ++i) EXPECT_EQ(out[i], want[i]);
 }
 
@@ -1503,24 +1501,24 @@ TEST(Rope, GoldenValuesPinTheConvention) {
   k::RopeFwd(x.data(), y.data(), B, S, H, d, base);
   // Position s = 1, pair 0: theta = 1.
   const size_t r1 = H * d;  // row offset of position 1
-  EXPECT_NEAR(y[r1 + 0],
-              static_cast<float>(x[r1 + 0] * std::cos(1.0) -
-                                 x[r1 + 1] * std::sin(1.0)),
-              1e-5);
-  EXPECT_NEAR(y[r1 + 1],
-              static_cast<float>(x[r1 + 0] * std::sin(1.0) +
-                                 x[r1 + 1] * std::cos(1.0)),
-              1e-5);
+  EXPECT_NEAR(
+      y[r1 + 0],
+      static_cast<float>(x[r1 + 0] * std::cos(1.0) - x[r1 + 1] * std::sin(1.0)),
+      1e-5);
+  EXPECT_NEAR(
+      y[r1 + 1],
+      static_cast<float>(x[r1 + 0] * std::sin(1.0) + x[r1 + 1] * std::cos(1.0)),
+      1e-5);
   // Position s = 1, pair 1: theta = base^(-2/d) = 10000^(-1/2) = 0.01.
   const double t1 = 0.01;
-  EXPECT_NEAR(y[r1 + 2],
-              static_cast<float>(x[r1 + 2] * std::cos(t1) -
-                                 x[r1 + 3] * std::sin(t1)),
-              1e-5);
-  EXPECT_NEAR(y[r1 + 3],
-              static_cast<float>(x[r1 + 2] * std::sin(t1) +
-                                 x[r1 + 3] * std::cos(t1)),
-              1e-5);
+  EXPECT_NEAR(
+      y[r1 + 2],
+      static_cast<float>(x[r1 + 2] * std::cos(t1) - x[r1 + 3] * std::sin(t1)),
+      1e-5);
+  EXPECT_NEAR(
+      y[r1 + 3],
+      static_cast<float>(x[r1 + 2] * std::sin(t1) + x[r1 + 3] * std::cos(t1)),
+      1e-5);
 }
 
 TEST(Attention, TheTiledFamilyIsTheCachedFamilyBitForBit) {
@@ -1528,7 +1526,9 @@ TEST(Attention, TheTiledFamilyIsTheCachedFamilyBitForBit) {
   // recompute every probability, with the cached kernels' expressions in
   // the cached kernels' orders — so O, dQ, dK and dV are the cached
   // family's floats exactly, at any width, and no S x S buffer exists.
-  struct Shape { size_t B, S, H, d; };
+  struct Shape {
+    size_t B, S, H, d;
+  };
   for (const Shape sh : {Shape{1, 1, 1, 4}, Shape{2, 7, 3, 5},
                          Shape{2, 64, 2, 8}, Shape{1, 130, 4, 16}}) {
     const size_t n = sh.B * sh.S * sh.H * sh.d;
@@ -1677,8 +1677,8 @@ TEST(KernelBatch, FusedClipStepsEqualClipThenStep) {
         EXPECT_TRUE(k::AdamWStep(pa.data(), g.data(), ma.data(), va.data(), n,
                                  1e-2f, 0.9f, 0.999f, 1e-8f, 0.01f, step));
         std::vector<float> raw = g0;
-        EXPECT_TRUE(k::AdamWStep(pb.data(), raw.data(), mb.data(), vb.data(),
-                                 n, 1e-2f, 0.9f, 0.999f, 1e-8f, 0.01f, step,
+        EXPECT_TRUE(k::AdamWStep(pb.data(), raw.data(), mb.data(), vb.data(), n,
+                                 1e-2f, 0.9f, 0.999f, 1e-8f, 0.01f, step,
                                  clip));
         EXPECT_BITWISE_EQ_F32(raw, g0);  // the fused step never writes g
       }
@@ -1731,8 +1731,8 @@ TEST(KernelBatch, FusedClipRefusesANonFiniteNormAndTouchesNothing) {
 // pairing threshold (K = 64) and its odd row and leftover columns.
 
 std::vector<float> ReferenceNN(const std::vector<float>& A,
-                               const std::vector<float>& B, size_t M,
-                               size_t N, size_t K, float alpha, bool a_t,
+                               const std::vector<float>& B, size_t M, size_t N,
+                               size_t K, float alpha, bool a_t,
                                std::vector<float> C) {
   auto a_at = [&](size_t k, size_t m) {
     return a_t ? A[k * M + m] : A[m * K + k];
@@ -1757,8 +1757,8 @@ std::vector<float> ReferenceNN(const std::vector<float>& A,
 }
 
 std::vector<float> ReferenceNT(const std::vector<float>& A,
-                               const std::vector<float>& B, size_t M,
-                               size_t N, size_t K, float alpha) {
+                               const std::vector<float>& B, size_t M, size_t N,
+                               size_t K, float alpha) {
   std::vector<float> C(M * N);
   for (size_t m = 0; m < M; ++m)
     for (size_t n = 0; n < N; ++n) {
@@ -1775,7 +1775,7 @@ struct GemmShape {
   size_t M, N, K;
 };
 constexpr GemmShape kGemmShapes[] = {
-    {1, 1, 1},      {3, 5, 7},      {4, 4, 4},     {5, 9, 3},
+    {1, 1, 1},      {3, 5, 7},      {4, 4, 4},       {5, 9, 3},
     {67, 129, 66},  {130, 257, 63}, {131, 517, 203},  // ragged everywhere
     {8, 1100, 300},                                   // column bands
     {2, 700, 900},  {257, 33, 64},  {66, 131, 65},    // NT pairing edges
@@ -1822,14 +1822,18 @@ TEST(GemmRedesign, SixVariantsAgainstADoubleReferenceAtATileCrossingShape) {
   };
   struct Plain {
     std::function<double(size_t, size_t, size_t)> term;
-    double operator()(size_t m, size_t n, size_t k) const { return term(m, n, k); }
+    double operator()(size_t m, size_t n, size_t k) const {
+      return term(m, n, k);
+    }
     double finish(size_t, size_t, double s) const { return s; }
   };
   struct Acc {
     const std::vector<float>* c0;
     std::function<double(size_t, size_t, size_t)> term;
     size_t N;
-    double operator()(size_t m, size_t n, size_t k) const { return term(m, n, k); }
+    double operator()(size_t m, size_t n, size_t k) const {
+      return term(m, n, k);
+    }
     double finish(size_t m, size_t n, double s) const {
       return (*c0)[m * N + n] + s;
     }
@@ -1839,23 +1843,29 @@ TEST(GemmRedesign, SixVariantsAgainstADoubleReferenceAtATileCrossingShape) {
     std::vector<float> c(M * N);
     k::GemmNN(A.data(), B.data(), c.data(), M, N, K);
     check("nn", c, Plain{[&](size_t m, size_t n, size_t kk) {
-      return static_cast<double>(A[m * K + kk]) * B[kk * N + n]; }});
+      return static_cast<double>(A[m * K + kk]) * B[kk * N + n];
+    }});
     k::GemmNT(A.data(), Bt.data(), c.data(), M, N, K);
     check("nt", c, Plain{[&](size_t m, size_t n, size_t kk) {
-      return static_cast<double>(A[m * K + kk]) * Bt[n * K + kk]; }});
+      return static_cast<double>(A[m * K + kk]) * Bt[n * K + kk];
+    }});
     k::GemmTN(At.data(), B.data(), c.data(), M, N, K);
     check("tn", c, Plain{[&](size_t m, size_t n, size_t kk) {
-      return static_cast<double>(At[kk * M + m]) * B[kk * N + n]; }});
+      return static_cast<double>(At[kk * M + m]) * B[kk * N + n];
+    }});
     c = C0;
     k::GemmAccNN(A.data(), B.data(), c.data(), M, N, K, alpha);
     check("acc", c, Acc{&C0, [&](size_t m, size_t n, size_t kk) {
-      return alpha * static_cast<double>(A[m * K + kk]) * B[kk * N + n]; }, N});
+      return alpha * static_cast<double>(A[m * K + kk]) * B[kk * N + n];
+    }, N});
     k::GemmNNQ8(A.data(), q.data(), c.data(), M, N, K, qs);
     check("nn.q8", c, Plain{[&](size_t m, size_t n, size_t kk) {
-      return qs * static_cast<double>(A[m * K + kk]) * q[kk * N + n]; }});
+      return qs * static_cast<double>(A[m * K + kk]) * q[kk * N + n];
+    }});
     k::GemmNTQ8(A.data(), qt.data(), c.data(), M, N, K, qs);
     check("nt.q8", c, Plain{[&](size_t m, size_t n, size_t kk) {
-      return qs * static_cast<double>(A[m * K + kk]) * qt[n * K + kk]; }});
+      return qs * static_cast<double>(A[m * K + kk]) * qt[n * K + kk];
+    }});
   }
 }
 
@@ -1873,8 +1883,10 @@ TEST(Gemm, PerColumnInt8ScalesAgainstADoubleReference) {
     qt[i] = static_cast<int8_t>((i * 89 + 5) % 255 - 127);
   }
   std::vector<float> cs_n(N), cs_k(K);
-  for (size_t i = 0; i < N; ++i) cs_n[i] = 1e-3f * static_cast<float>(1 + i % 29);
-  for (size_t i = 0; i < K; ++i) cs_k[i] = 2e-3f * static_cast<float>(1 + i % 17);
+  for (size_t i = 0; i < N; ++i)
+    cs_n[i] = 1e-3f * static_cast<float>(1 + i % 29);
+  for (size_t i = 0; i < K; ++i)
+    cs_k[i] = 2e-3f * static_cast<float>(1 + i % 17);
   for (const size_t threads : {size_t{1}, size_t{8}}) {
     ScopedThreads scoped(threads);
     std::vector<float> nn(M * N), nt(M * N);
@@ -1890,8 +1902,8 @@ TEST(Gemm, PerColumnInt8ScalesAgainstADoubleReference) {
         for (size_t kk = 0; kk < K; ++kk) {
           const double a = A[m * K + kk];
           const double t_nn = a * q[kk * N + n];
-          const double t_nt = a * (static_cast<double>(qt[n * K + kk]) *
-                                   cs_k[kk]);
+          const double t_nt =
+              a * (static_cast<double>(qt[n * K + kk]) * cs_k[kk]);
           s_nn += t_nn;
           s_nt += t_nt;
           mag_nn += std::fabs(t_nn);
@@ -1921,7 +1933,8 @@ TEST(GemmRedesign, TheNNFamilyIsTheReferenceReductionExactly) {
     // The runtime defaults, a tiling that forces the panel clamp, and the
     // smallest legal one.
     for (const k::GemmTiles tiles :
-         {k::kDefaultGemmTiles, k::GemmTiles{4096, 100000}, k::GemmTiles{4, 1}}) {
+         {k::kDefaultGemmTiles, k::GemmTiles{4096, 100000},
+          k::GemmTiles{4, 1}}) {
       for (const size_t threads : {size_t{1}, size_t{8}}) {
         ScopedThreads scoped(threads);
         std::vector<float> got(M * N, 9.0f);  // must be overwritten
@@ -1950,7 +1963,8 @@ TEST(GemmRedesign, TheAddendIsTheGemmThenAnAddExactly) {
     const auto Bnn = RandnVector(K * N, 7100 + N);
     const auto D = RandnVector(M * N, 7200 + K);
     for (const k::GemmTiles tiles :
-         {k::kDefaultGemmTiles, k::GemmTiles{4096, 100000}, k::GemmTiles{4, 1}}) {
+         {k::kDefaultGemmTiles, k::GemmTiles{4096, 100000},
+          k::GemmTiles{4, 1}}) {
       for (const size_t threads : {size_t{1}, size_t{8}}) {
         ScopedThreads scoped(threads);
         std::vector<float> plain(M * N), want(M * N), got(M * N, 9.0f);
@@ -1987,7 +2001,8 @@ TEST(GemmRedesign, TheNTFamilyIsTheReferenceReductionExactly) {
     const auto A = RandnVector(M * K, 4000 + M);
     const auto B = RandnVector(N * K, 5000 + N);
     const auto want = ReferenceNT(A, B, M, N, K, 1.0f);
-    for (const k::GemmTiles tiles : {k::kDefaultGemmTiles, k::GemmTiles{8, 3}}) {
+    for (const k::GemmTiles tiles :
+         {k::kDefaultGemmTiles, k::GemmTiles{8, 3}}) {
       for (const size_t threads : {size_t{1}, size_t{8}}) {
         ScopedThreads scoped(threads);
         std::vector<float> got(M * N, 9.0f);
@@ -2002,7 +2017,8 @@ TEST(GemmRedesign, PackedInt8AndBf16WeightsWidenToTheSameBits) {
   // The panel widens a tile once instead of once per sweep; widening is
   // exact, so the q8 and bf16 GEMMs must equal the f32 GEMMs run over the
   // widened matrix (times the dequant scale, which rides alpha).
-  for (const GemmShape& sh : {GemmShape{131, 517, 203}, GemmShape{6, 900, 70}}) {
+  for (const GemmShape& sh :
+       {GemmShape{131, 517, 203}, GemmShape{6, 900, 70}}) {
     const size_t M = sh.M, N = sh.N, K = sh.K;
     const auto A = RandnVector(M * K, 77);
     std::vector<int8_t> q(K * N);
@@ -2024,8 +2040,8 @@ TEST(GemmRedesign, PackedInt8AndBf16WeightsWidenToTheSameBits) {
     std::vector<float> exact(K * N);
     std::vector<uint16_t> half(K * N);
     for (size_t i = 0; i < exact.size(); ++i) {
-      exact[i] = static_cast<float>(static_cast<int>((i * 13) % 64) - 32) *
-                 0.125f;
+      exact[i] =
+          static_cast<float>(static_cast<int>((i * 13) % 64) - 32) * 0.125f;
       half[i] = seeml::update::Float32ToBf16Bits(exact[i]);
     }
     const auto want_h = ReferenceNN(A, exact, M, N, K, 1.0f, false, zeros);
@@ -2052,8 +2068,8 @@ TEST(FusedMap, EveryStageMatchesItsStandaloneKernelInSequence) {
   using up::MakeFusedStage;
   // Sizes around the 1024-float block and the parallel grain; values that
   // exercise the activations' interesting ranges.
-  for (const size_t n : {size_t{1}, size_t{1023}, size_t{1024}, size_t{1025},
-                         size_t{70001}}) {
+  for (const size_t n :
+       {size_t{1}, size_t{1023}, size_t{1024}, size_t{1025}, size_t{70001}}) {
     const auto x = RandnVector(n, 11, 2.0f);
     const auto y = RandnVector(n, 12);
     const auto z = RandnVector(n, 13);
@@ -2081,9 +2097,9 @@ TEST(FusedMap, EveryStageMatchesItsStandaloneKernelInSequence) {
       // exactly where a contraction would change bits.
       k::Scale(x.data(), t1.data(), a1, n);
       k::AddEW(y.data(), t1.data(), want.data(), n);
-      const uint64_t lora =
-          uint64_t{MakeFusedStage(FusedStage::kScale, 1)} |
-          uint64_t{MakeFusedStage(FusedStage::kAdd, 1, true)} << 8;
+      const uint64_t lora = uint64_t{MakeFusedStage(FusedStage::kScale, 1)} |
+                            uint64_t{MakeFusedStage(FusedStage::kAdd, 1, true)}
+                                << 8;
       std::fill(got.begin(), got.end(), 9.0f);
       k::FusedMap(x.data(), others, got.data(), n, lora, imm);
       EXPECT_BITWISE_EQ_F32(want, got);
@@ -2092,10 +2108,9 @@ TEST(FusedMap, EveryStageMatchesItsStandaloneKernelInSequence) {
       k::GeluFwd(x.data(), t1.data(), n);
       k::ReluFwd(t1.data(), t2.data(), n);
       k::MulEW(t2.data(), z.data(), want.data(), n);
-      const uint64_t acts =
-          uint64_t{MakeFusedStage(FusedStage::kGelu)} |
-          uint64_t{MakeFusedStage(FusedStage::kRelu)} << 8 |
-          uint64_t{MakeFusedStage(FusedStage::kMul, 2)} << 16;
+      const uint64_t acts = uint64_t{MakeFusedStage(FusedStage::kGelu)} |
+                            uint64_t{MakeFusedStage(FusedStage::kRelu)} << 8 |
+                            uint64_t{MakeFusedStage(FusedStage::kMul, 2)} << 16;
       std::fill(got.begin(), got.end(), 9.0f);
       k::FusedMap(x.data(), others, got.data(), n, acts, imm);
       EXPECT_BITWISE_EQ_F32(want, got);

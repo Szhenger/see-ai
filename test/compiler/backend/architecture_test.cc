@@ -79,8 +79,9 @@ TEST(HostArch, HostKeyIsPureCanonicalAndOneLine) {
   // The separator cannot come from the brand string, and line breaks are
   // whitespace — collapsed like any other run of it.
   arch.cpu_model = "Odd;Vendor\nCPU";
-  EXPECT_EQ(HostKey(arch), "arm64;Odd_Vendor CPU;cores=10;l1d=131072;"
-                           "l2=16777216;simd=4");
+  EXPECT_EQ(HostKey(arch),
+            "arm64;Odd_Vendor CPU;cores=10;l1d=131072;"
+            "l2=16777216;simd=4");
   // An empty brand string reads "unknown" rather than an empty field.
   arch.cpu_model = "";
   EXPECT_EQ(HostKey(arch).find("arm64;unknown;"), 0u);
@@ -183,21 +184,27 @@ TEST(KernelPolicyTable, RejectsWhatItCannotTrust) {
   expect_error("{\"schema\": 2, \"hosts\": {}}", "\"schema\" must be 1");
   expect_error("{\"schema\": 1}", "\"hosts\" must be an object");
   expect_error("{\"schema\": 1, \"hosts\": {\"h\": 3}}", "must be an object");
-  expect_error("{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64}}}}",
-               "gemm_tile_n must be a number");
-  expect_error("{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 6, "
-               "\"gemm_tile_n\": 16}}}}",
-               "not a multiple of the kernel's 4-wide unroll");
-  expect_error("{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64, "
-               "\"gemm_tile_n\": 0}}}}",
-               "must be positive");
-  expect_error("{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64.5, "
-               "\"gemm_tile_n\": 16}}}}",
-               "whole number");
-  expect_error("{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64, "
-               "\"gemm_tile_n\": 16,}}}}",
-               "expected a string key");
-  expect_error("{\"schema\": 1, \"schema\": 1, \"hosts\": {}}", "duplicate key");
+  expect_error(
+      "{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64}}}}",
+      "gemm_tile_n must be a number");
+  expect_error(
+      "{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 6, "
+      "\"gemm_tile_n\": 16}}}}",
+      "not a multiple of the kernel's 4-wide unroll");
+  expect_error(
+      "{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64, "
+      "\"gemm_tile_n\": 0}}}}",
+      "must be positive");
+  expect_error(
+      "{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64.5, "
+      "\"gemm_tile_n\": 16}}}}",
+      "whole number");
+  expect_error(
+      "{\"schema\": 1, \"hosts\": {\"h\": {\"cpu\": {\"gemm_tile_k\": 64, "
+      "\"gemm_tile_n\": 16,}}}}",
+      "expected a string key");
+  expect_error("{\"schema\": 1, \"schema\": 1, \"hosts\": {}}",
+               "duplicate key");
   expect_error("{\"schema\": 1, \"hosts\": {\"a\\x\": {}}}", "unknown escape");
 }
 
@@ -230,9 +237,9 @@ TEST(KernelPolicyTable, GemmTilesFlagIsStrict) {
   ASSERT_TRUE(ok.has_value());
   EXPECT_EQ(ok->gemm_tile_k, 128u);
   EXPECT_EQ(ok->gemm_tile_n, 512u);
-  for (const char* bad : {"", "64", "64,", ",64", "64x256", "6,16", "0,16",
-                          "64,0", "64,16,4", "1e2,16", "-64,16",
-                          "99999999999,16"})
+  for (const char* bad :
+       {"", "64", "64,", ",64", "64x256", "6,16", "0,16", "64,0", "64,16,4",
+        "1e2,16", "-64,16", "99999999999,16"})
     EXPECT_FALSE(ParseGemmTilesFlag(bad).has_value());
 }
 

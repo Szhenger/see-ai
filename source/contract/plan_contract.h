@@ -42,10 +42,8 @@ namespace contract_detail {
              &train_bytes) ||
       !MulOk(header.merge_instr_count, sizeof(UpdateInstruction),
              &merge_bytes) ||
-      !MulOk(header.eval_instr_count, sizeof(UpdateInstruction),
-             &eval_bytes) ||
-      !MulOk(header.step_instr_count, sizeof(UpdateInstruction),
-             &step_bytes) ||
+      !MulOk(header.eval_instr_count, sizeof(UpdateInstruction), &eval_bytes) ||
+      !MulOk(header.step_instr_count, sizeof(UpdateInstruction), &step_bytes) ||
       !MulOk(header.emit_count, sizeof(EmitEntry), &emit_bytes))
     return contract_detail::Violation("plan section size overflows");
   // The rodata section's offset is proven aligned (CR2 #143 N05): every
@@ -56,8 +54,8 @@ namespace contract_detail {
   if (header.rodata_size != 0 &&
       header.rodata_offset % kSeeuRodataOffsetAlignment != 0)
     return contract_detail::Violation(
-        "rodata section is not " +
-        std::to_string(kSeeuRodataOffsetAlignment) + "-byte aligned");
+        "rodata section is not " + std::to_string(kSeeuRodataOffsetAlignment) +
+        "-byte aligned");
   if (!RangeOk(header.train_instr_offset, train_bytes, plan_size) ||
       !RangeOk(header.merge_instr_offset, merge_bytes, plan_size) ||
       !RangeOk(header.eval_instr_offset, eval_bytes, plan_size) ||
@@ -73,9 +71,8 @@ namespace contract_detail {
   // the runtime default. Below v11 the words are padding and must be zero.
   if (header.version < kSeeuGemmTilesVersion &&
       (header.gemm_tile_k != 0 || header.gemm_tile_n != 0))
-    return contract_detail::Violation(
-        "plan carries GEMM tile fields below v" +
-        std::to_string(kSeeuGemmTilesVersion));
+    return contract_detail::Violation("plan carries GEMM tile fields below v" +
+                                      std::to_string(kSeeuGemmTilesVersion));
   if (header.gemm_tile_k % 4 != 0)
     return contract_detail::Violation(
         "plan gemm_tile_k " + std::to_string(header.gemm_tile_k) +
@@ -136,8 +133,9 @@ namespace contract_detail {
     };
     for (const Rule& r : rules)
       if (!std::isfinite(r.value) || !r.in_range)
-        return contract_detail::Violation(std::string("plan header ") + r.name +
-                                      " is not a finite value in its range");
+        return contract_detail::Violation(
+            std::string("plan header ") + r.name +
+            " is not a finite value in its range");
   }
 
   // The header's I/O slots are written by the data feeder each step and
@@ -149,28 +147,25 @@ namespace contract_detail {
   if (IsRodataRef(header.input_ref) || IsSourceRef(header.input_ref) ||
       RefOffset(header.input_ref) % sizeof(float) != 0 ||
       !MulOk(header.input_floats, sizeof(float), &input_bytes) ||
-      !RangeOk(RefOffset(header.input_ref), input_bytes,
-               header.arena_size))
+      !RangeOk(RefOffset(header.input_ref), input_bytes, header.arena_size))
     return contract_detail::Violation("plan input slot out of bounds");
   if (header.label_kind != 0 &&
-      (IsRodataRef(header.label_ref) ||
-       IsSourceRef(header.label_ref) ||
+      (IsRodataRef(header.label_ref) || IsSourceRef(header.label_ref) ||
        RefOffset(header.label_ref) % sizeof(float) != 0 ||
        !RangeOk(RefOffset(header.label_ref), header.label_bytes,
                 header.arena_size)))
     return contract_detail::Violation("plan label slot out of bounds");
   if (IsRodataRef(header.loss_ref) || IsSourceRef(header.loss_ref) ||
       RefOffset(header.loss_ref) % sizeof(float) != 0 ||
-      !RangeOk(RefOffset(header.loss_ref), sizeof(float),
-               header.arena_size))
+      !RangeOk(RefOffset(header.loss_ref), sizeof(float), header.arena_size))
     return contract_detail::Violation("plan loss slot out of bounds");
 
   // The data contract (v22, S2 #148 / S3 #149): below v22 the words are
   // padding and must be zero; above, the flags carry no unknown bit, a
   // split carries a finite fraction in (0, 1) and only a split carries
   // split fields, and a pinned corpus names its hash.
-  const bool data_tail = header.tokenizer_hash != 0 || header.corpus_hash != 0 ||
-                         header.split_seed != 0 ||
+  const bool data_tail = header.tokenizer_hash != 0 ||
+                         header.corpus_hash != 0 || header.split_seed != 0 ||
                          header.val_split_hash != 0 ||
                          header.val_frac_bits != 0 || header.data_flags != 0;
   if (header.version < kSeeuDataContractVersion && data_tail)

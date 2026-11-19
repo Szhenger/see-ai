@@ -116,7 +116,8 @@ struct ExportReport {
 /// The warmup a spec trains with: kWarmupAuto resolved against the budget.
 inline uint64_t ResolvedWarmup(const OptimizerSpec& o, uint64_t default_steps) {
   if (o.warmup_steps != kWarmupAuto) return o.warmup_steps;
-  return o.lr_schedule == LrSchedule::kCosineWithWarmup ? default_steps / 20 : 0;
+  return o.lr_schedule == LrSchedule::kCosineWithWarmup ? default_steps / 20
+                                                        : 0;
 }
 
 struct UpdateConfig {

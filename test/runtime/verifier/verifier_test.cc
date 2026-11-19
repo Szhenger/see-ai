@@ -41,10 +41,10 @@ up::UpdateInstruction AddEw(uint64_t x, uint64_t y, uint64_t out,
 }
 
 TEST(PlanValidator, AcceptsInBoundsOperands) {
-  EXPECT_OK(ValidateInstruction(AddEw(up::MakeArenaRef(0),
-                                      up::MakeArenaRef(256),
-                                      up::MakeArenaRef(512), 64),
-                                kArena, kRodata, up::kSeeuVersion));
+  EXPECT_OK(
+      ValidateInstruction(AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256),
+                                up::MakeArenaRef(512), 64),
+                          kArena, kRodata, up::kSeeuVersion));
 }
 
 TEST(PlanValidator, Bf16GemmsAreVersionGatedAndRodataPinned) {
@@ -59,8 +59,8 @@ TEST(PlanValidator, Bf16GemmsAreVersionGatedAndRodataPinned) {
   g.out[1] = 8;
   g.out[2] = 16;
   EXPECT_OK(ValidateInstruction(g, kArena, kRodata, up::kSeeuVersion));
-  EXPECT_ERROR(ValidateInstruction(g, kArena, kRodata,
-                                   up::kSeeuBf16Version - 1));
+  EXPECT_ERROR(
+      ValidateInstruction(g, kArena, kRodata, up::kSeeuBf16Version - 1));
   // bf16 B is two bytes per element: 128 elements fit in 256 rodata bytes
   // and would not as f32 — an f32 extent check would over-reject.
   g.out[1] = 8;
@@ -98,8 +98,8 @@ TEST(PlanValidator, AccumulateIsVersionGatedAndInPlace) {
   acc.in[1] = up::MakeArenaRef(256);  // src
   acc.out[0] = 32;
   EXPECT_OK(ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion));
-  EXPECT_ERROR(ValidateInstruction(acc, kArena, kRodata,
-                                   up::kSeeuGradAccumVersion - 1));
+  EXPECT_ERROR(
+      ValidateInstruction(acc, kArena, kRodata, up::kSeeuGradAccumVersion - 1));
   acc.in[1] = up::MakeArenaRef(64);  // src overlaps the written dst
   EXPECT_ERROR(ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion));
   acc.in[1] = up::MakeRodataRef(0);  // a rodata source is fine
@@ -111,9 +111,7 @@ TEST(PlanValidator, AccumulateIsVersionGatedAndInPlace) {
 TEST(PlanValidator, KlLossScaleIsVersionGated) {
   // N=2, C=3 -> 6 floats per logit/prob tensor, disjoint arena slots; the
   // loss is one float. T = 2 in the low word; the v8 scale in the high word.
-  const auto f32 = [](float f) {
-    return uint64_t{std::bit_cast<uint32_t>(f)};
-  };
+  const auto f32 = [](float f) { return uint64_t{std::bit_cast<uint32_t>(f)}; };
   up::UpdateInstruction fwd;
   fwd.opcode = static_cast<uint16_t>(up::OpCode::kKLDistillFwd);
   fwd.in[0] = up::MakeArenaRef(0);
@@ -124,14 +122,14 @@ TEST(PlanValidator, KlLossScaleIsVersionGated) {
   fwd.out[1] = (uint64_t{2} << 32) | 3;
   fwd.out[2] = f32(2.0f);  // no scale: means 1.0 at any version
   EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
-  EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata,
-                                up::kSeeuKlScaleVersion - 1));
+  EXPECT_OK(
+      ValidateInstruction(fwd, kArena, kRodata, up::kSeeuKlScaleVersion - 1));
 
   fwd.out[2] = (f32(4.0f) << 32) | f32(2.0f);  // T^2 scale, the v8 form
   EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
   // A pre-v8 plan never wrote the high word: corruption, not a feature.
-  EXPECT_ERROR(ValidateInstruction(fwd, kArena, kRodata,
-                                   up::kSeeuKlScaleVersion - 1));
+  EXPECT_ERROR(
+      ValidateInstruction(fwd, kArena, kRodata, up::kSeeuKlScaleVersion - 1));
   // A written scale must be a finite positive float — 0 or NaN would train
   // on nothing, silently.
   // (an all-zero high word is "absent" and accepted; a signed zero is not)
@@ -149,8 +147,8 @@ TEST(PlanValidator, KlLossScaleIsVersionGated) {
   bwd.out[0] = (uint64_t{2} << 32) | 3;
   bwd.out[1] = (f32(4.0f) << 32) | f32(2.0f);
   EXPECT_OK(ValidateInstruction(bwd, kArena, kRodata, up::kSeeuVersion));
-  EXPECT_ERROR(ValidateInstruction(bwd, kArena, kRodata,
-                                   up::kSeeuKlScaleVersion - 1));
+  EXPECT_ERROR(
+      ValidateInstruction(bwd, kArena, kRodata, up::kSeeuKlScaleVersion - 1));
 }
 
 TEST(PlanValidator, TransformerOpcodesAreVersionGated) {
@@ -186,11 +184,11 @@ TEST(PlanValidator, RmsNormBackwardProvesTheStatsRef) {
   // (rows floats) must be proven like any operand, not trusted.
   up::UpdateInstruction bwd;
   bwd.opcode = static_cast<uint16_t>(up::OpCode::kRmsNormBwd);
-  bwd.in[0] = up::MakeArenaRef(0);    // dy [4 x 8]
-  bwd.in[1] = up::MakeArenaRef(128);  // x
-  bwd.in[2] = up::MakeArenaRef(256);  // gamma [8]
-  bwd.in[3] = up::MakeArenaRef(512);  // dx (write)
-  bwd.out[0] = up::MakeArenaRef(768); // rstd [4]
+  bwd.in[0] = up::MakeArenaRef(0);     // dy [4 x 8]
+  bwd.in[1] = up::MakeArenaRef(128);   // x
+  bwd.in[2] = up::MakeArenaRef(256);   // gamma [8]
+  bwd.in[3] = up::MakeArenaRef(512);   // dx (write)
+  bwd.out[0] = up::MakeArenaRef(768);  // rstd [4]
   bwd.out[1] = (uint64_t{4} << 32) | 8;
   EXPECT_OK(ValidateInstruction(bwd, kArena, kRodata, up::kSeeuVersion));
   bwd.out[0] = up::MakeArenaRef(kArena - 4);  // one float short of 4
@@ -219,9 +217,9 @@ TEST(PlanValidator, TheTiledAttentionFamilyIsVersionedAndBounded) {
   fwd.out[0] = up::MakeArenaRef(1024 - 64);  // stats row runs off the arena
   EXPECT_ERROR(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
 
-  for (const up::OpCode op : {up::OpCode::kAttnDQTiled,
-                              up::OpCode::kAttnDKTiled,
-                              up::OpCode::kAttnDVTiled}) {
+  for (const up::OpCode op :
+       {up::OpCode::kAttnDQTiled, up::OpCode::kAttnDKTiled,
+        up::OpCode::kAttnDVTiled}) {
     up::UpdateInstruction bwd;
     bwd.opcode = static_cast<uint16_t>(op);
     bwd.in[0] = up::MakeArenaRef(0);
@@ -258,9 +256,9 @@ TEST(PlanValidator, TheRelaxedBitReachesTheTiledAttentionFamilyAtV20) {
   EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
   EXPECT_ERROR(ValidateInstruction(fwd, kArena, kRodata,
                                    up::kSeeuRelaxedAttentionVersion - 1));
-  for (const up::OpCode op : {up::OpCode::kAttnDQTiled,
-                              up::OpCode::kAttnDKTiled,
-                              up::OpCode::kAttnDVTiled}) {
+  for (const up::OpCode op :
+       {up::OpCode::kAttnDQTiled, up::OpCode::kAttnDKTiled,
+        up::OpCode::kAttnDVTiled}) {
     up::UpdateInstruction bwd;
     bwd.opcode = static_cast<uint16_t>(op);
     bwd.flags = up::kFlagRelaxed;
@@ -294,9 +292,9 @@ TEST(PlanValidator, AttentionBackwardExtentsAreProven) {
   // it must not alias the reads.
   up::UpdateInstruction dp;
   dp.opcode = static_cast<uint16_t>(up::OpCode::kAttnDP);
-  dp.in[0] = up::MakeArenaRef(0);    // dO [4 x 8] = 128 B
-  dp.in[1] = up::MakeArenaRef(128);  // v
-  dp.in[2] = up::MakeArenaRef(256);  // dP: B*H*S*S = 32 floats = 128 B
+  dp.in[0] = up::MakeArenaRef(0);       // dO [4 x 8] = 128 B
+  dp.in[1] = up::MakeArenaRef(128);     // v
+  dp.in[2] = up::MakeArenaRef(256);     // dP: B*H*S*S = 32 floats = 128 B
   dp.out[0] = (uint64_t{1} << 32) | 4;  // B=1, S=4
   dp.out[1] = (uint64_t{2} << 32) | 4;  // H=2, d=4
   EXPECT_OK(ValidateInstruction(dp, kArena, kRodata, up::kSeeuVersion));
@@ -384,12 +382,11 @@ TEST(PlanValidator, RopeBaseMustBeAUsableFloat) {
     rope.out[2] = std::bit_cast<uint32_t>(ok_base);
     EXPECT_OK(ValidateInstruction(rope, kArena, kRodata, up::kSeeuVersion));
   }
-  for (const uint64_t bad : {uint64_t{0}, uint64_t{0x7FC00000u},
-                             uint64_t{0x7F800000u},
-                             uint64_t{std::bit_cast<uint32_t>(1.0f)},
-                             uint64_t{std::bit_cast<uint32_t>(-10000.0f)},
-                             (uint64_t{1} << 32) |
-                                 std::bit_cast<uint32_t>(10000.0f)}) {
+  for (const uint64_t bad :
+       {uint64_t{0}, uint64_t{0x7FC00000u}, uint64_t{0x7F800000u},
+        uint64_t{std::bit_cast<uint32_t>(1.0f)},
+        uint64_t{std::bit_cast<uint32_t>(-10000.0f)},
+        (uint64_t{1} << 32) | std::bit_cast<uint32_t>(10000.0f)}) {
     rope.out[2] = bad;
     EXPECT_ERROR(ValidateInstruction(rope, kArena, kRodata, up::kSeeuVersion));
   }
@@ -407,10 +404,10 @@ TEST(PlanValidator, RejectsReadsPastTheArena) {
 
 TEST(PlanValidator, RejectsWritesIntoRodata) {
   // The frozen weights must be physically unwritable from the stream.
-  EXPECT_ERROR(ValidateInstruction(AddEw(up::MakeArenaRef(0),
-                                         up::MakeArenaRef(256),
-                                         up::MakeRodataRef(0), 16),
-                                   kArena, kRodata, up::kSeeuVersion));
+  EXPECT_ERROR(
+      ValidateInstruction(AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256),
+                                up::MakeRodataRef(0), 16),
+                          kArena, kRodata, up::kSeeuVersion));
   up::UpdateInstruction fill;
   fill.opcode = static_cast<uint16_t>(up::OpCode::kFill);
   fill.in[0] = up::MakeRodataRef(0);
@@ -419,9 +416,10 @@ TEST(PlanValidator, RejectsWritesIntoRodata) {
 }
 
 TEST(PlanValidator, RejectsNullRefsAndUnknownOpcodes) {
-  up::UpdateInstruction null_ref = AddEw(up::kNullRef, up::MakeArenaRef(0),
-                                         up::MakeArenaRef(256), 16);
-  EXPECT_ERROR(ValidateInstruction(null_ref, kArena, kRodata, up::kSeeuVersion));
+  up::UpdateInstruction null_ref =
+      AddEw(up::kNullRef, up::MakeArenaRef(0), up::MakeArenaRef(256), 16);
+  EXPECT_ERROR(
+      ValidateInstruction(null_ref, kArena, kRodata, up::kSeeuVersion));
 
   up::UpdateInstruction bogus;
   bogus.opcode = 0xFFFF;
@@ -450,8 +448,9 @@ TEST(PlanValidator, RejectsWriteRangesAliasingOtherOperands) {
   // overlaps another operand is undefined behavior, so a plan carrying one
   // must be a load error, never a dispatch.
   const auto r = ValidateInstruction(
-      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(512),
-            up::MakeArenaRef(128), 64),  // out 128..384 overlaps in0 0..256
+      // out 128..384 overlaps in0 0..256
+      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(512), up::MakeArenaRef(128),
+            64),
       kArena, kRodata, up::kSeeuVersion);
   ASSERT_FALSE(r.has_value());
   EXPECT_STR_CONTAINS(r.error(), "alias");
@@ -526,9 +525,9 @@ TEST(PlanValidator, ASourceRefIsReadOnlyAndBelongsToTheEvalProgram) {
   // v17 (E12, #95): bit 62 addresses the source model file. The eval
   // program may read f32 weights through it; no other program may, no
   // plan below v17 may, and nothing may write through it.
-  up::UpdateInstruction gemm = GemmNN(up::MakeArenaRef(0),
-                                      up::MakeSourceRef(4096),
-                                      up::MakeArenaRef(512), 4, 4, 4);
+  up::UpdateInstruction gemm =
+      GemmNN(up::MakeArenaRef(0), up::MakeSourceRef(4096),
+             up::MakeArenaRef(512), 4, 4, 4);
   EXPECT_OK(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion,
                                 /*allow_source=*/true));
   auto ex = DescribeInstruction(gemm, kArena, kRodata, up::kSeeuVersion,
@@ -548,14 +547,13 @@ TEST(PlanValidator, ASourceRefIsReadOnlyAndBelongsToTheEvalProgram) {
                                    up::kSeeuShippedEvalVersion - 1, true));
   up::UpdateInstruction into = GemmNN(up::MakeArenaRef(0), up::MakeArenaRef(64),
                                       up::MakeSourceRef(0), 4, 4, 4);
-  EXPECT_ERROR(ValidateInstruction(into, kArena, kRodata, up::kSeeuVersion,
-                                   true));
+  EXPECT_ERROR(
+      ValidateInstruction(into, kArena, kRodata, up::kSeeuVersion, true));
   // A source extent never aliases an arena write at the same offset.
-  up::UpdateInstruction same = GemmNN(up::MakeArenaRef(0),
-                                      up::MakeSourceRef(512),
-                                      up::MakeArenaRef(512), 4, 4, 4);
-  EXPECT_OK(ValidateInstruction(same, kArena, kRodata, up::kSeeuVersion,
-                                true));
+  up::UpdateInstruction same =
+      GemmNN(up::MakeArenaRef(0), up::MakeSourceRef(512), up::MakeArenaRef(512),
+             4, 4, 4);
+  EXPECT_OK(ValidateInstruction(same, kArena, kRodata, up::kSeeuVersion, true));
 }
 
 TEST(PlanValidator, PerColumnInt8ScalesAreARodataVectorFromV17) {
@@ -566,10 +564,12 @@ TEST(PlanValidator, PerColumnInt8ScalesAreARodataVectorFromV17) {
   q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
   q8.flags = up::kFlagQ8ColScale;
   q8.in[0] = up::MakeArenaRef(0);
-  q8.in[1] = up::MakeRodataRef(0);          // K*N int8 = 128 B
+  q8.in[1] = up::MakeRodataRef(0);  // K*N int8 = 128 B
   q8.in[2] = up::MakeArenaRef(512);
-  q8.in[3] = up::MakeRodataRef(128);        // N floats = 32 B
-  q8.out[0] = M; q8.out[1] = N; q8.out[2] = K;
+  q8.in[3] = up::MakeRodataRef(128);  // N floats = 32 B
+  q8.out[0] = M;
+  q8.out[1] = N;
+  q8.out[2] = K;
   EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
   EXPECT_ERROR(ValidateInstruction(q8, kArena, kRodata,
                                    up::kSeeuShippedEvalVersion - 1));
@@ -578,7 +578,7 @@ TEST(PlanValidator, PerColumnInt8ScalesAreARodataVectorFromV17) {
   q8.in[3] = up::MakeRodataRef(kRodata - 16);  // runs off the section
   EXPECT_ERROR(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
   q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNTQ8);
-  q8.in[3] = up::MakeRodataRef(128);        // K floats = 64 B for NT
+  q8.in[3] = up::MakeRodataRef(128);  // K floats = 64 B for NT
   EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
   q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNN);
   EXPECT_ERROR(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
@@ -592,20 +592,22 @@ TEST(PlanValidator, TheRelaxedBitIsAFrozenGemmPermissionFromV18) {
   up::UpdateInstruction g;
   g.opcode = static_cast<uint16_t>(up::OpCode::kGemmNN);
   g.flags = up::kFlagRelaxed;
-  g.in[0] = up::MakeArenaRef(0);     // M*K f32 = 128 B
-  g.in[1] = up::MakeRodataRef(0);    // K*N f32 = 128 B
-  g.in[2] = up::MakeArenaRef(512);   // M*N f32 = 64 B
-  g.out[0] = M; g.out[1] = N; g.out[2] = K;
+  g.in[0] = up::MakeArenaRef(0);    // M*K f32 = 128 B
+  g.in[1] = up::MakeRodataRef(0);   // K*N f32 = 128 B
+  g.in[2] = up::MakeArenaRef(512);  // M*N f32 = 64 B
+  g.out[0] = M;
+  g.out[1] = N;
+  g.out[2] = K;
   EXPECT_OK(ValidateInstruction(g, kArena, kRodata, up::kSeeuVersion));
-  EXPECT_ERROR(ValidateInstruction(g, kArena, kRodata,
-                                   up::kSeeuRelaxedVersion - 1));
+  EXPECT_ERROR(
+      ValidateInstruction(g, kArena, kRodata, up::kSeeuRelaxedVersion - 1));
   // At the instruction level the bit is an opcode permission — which
   // program may carry it is the executor contract's rule (contract.cc).
   EXPECT_OK(ValidateInstruction(g, kArena, kRodata, up::kSeeuVersion,
                                 /*allow_source=*/true));
   // It composes with the epilogue on NN and with the addend on NT.
-  g.flags = up::kFlagRelaxed | up::MakeEpilogueFlags(false,
-                                                     up::EpilogueAct::kGelu);
+  g.flags =
+      up::kFlagRelaxed | up::MakeEpilogueFlags(false, up::EpilogueAct::kGelu);
   EXPECT_OK(ValidateInstruction(g, kArena, kRodata, up::kSeeuVersion));
   up::UpdateInstruction nt = g;
   nt.opcode = static_cast<uint16_t>(up::OpCode::kGemmNT);
@@ -620,7 +622,8 @@ TEST(PlanValidator, TheRelaxedBitIsAFrozenGemmPermissionFromV18) {
   EXPECT_OK(ValidateInstruction(q8, kArena, kRodata, up::kSeeuVersion));
   up::UpdateInstruction bf = g;
   bf.flags = up::kFlagRelaxed;
-  bf.opcode = static_cast<uint16_t>(up::OpCode::kGemmNTBF16);  // N*K bf16 = 64 B
+  // N*K bf16 = 64 B
+  bf.opcode = static_cast<uint16_t>(up::OpCode::kGemmNTBF16);
   EXPECT_OK(ValidateInstruction(bf, kArena, kRodata, up::kSeeuVersion));
   up::UpdateInstruction tn = g;
   tn.flags = up::kFlagRelaxed;
@@ -630,8 +633,10 @@ TEST(PlanValidator, TheRelaxedBitIsAFrozenGemmPermissionFromV18) {
   up::UpdateInstruction add;
   add.opcode = static_cast<uint16_t>(up::OpCode::kAddEW);
   add.flags = up::kFlagRelaxed;
-  add.in[0] = up::MakeArenaRef(0); add.in[1] = up::MakeArenaRef(64);
-  add.in[2] = up::MakeArenaRef(128); add.out[0] = 16;
+  add.in[0] = up::MakeArenaRef(0);
+  add.in[1] = up::MakeArenaRef(64);
+  add.in[2] = up::MakeArenaRef(128);
+  add.out[0] = 16;
   EXPECT_ERROR(ValidateInstruction(add, kArena, kRodata, up::kSeeuVersion));
 }
 
@@ -649,8 +654,8 @@ TEST(PlanValidator, TheImmWordIsANormEpsilonAndNothingElse) {
   EXPECT_OK(ValidateInstruction(rms, kArena, kRodata, up::kSeeuVersion));
   rms.imm = std::bit_cast<uint32_t>(1e-6f);
   EXPECT_OK(ValidateInstruction(rms, kArena, kRodata, up::kSeeuVersion));
-  const auto old = ValidateInstruction(rms, kArena, kRodata,
-                                       up::kSeeuNormEpsVersion - 1);
+  const auto old =
+      ValidateInstruction(rms, kArena, kRodata, up::kSeeuNormEpsVersion - 1);
   ASSERT_FALSE(old.has_value());
   EXPECT_STR_CONTAINS(old.error(), "imm");
   for (const float bad : {-1e-6f, INFINITY, NAN}) {
@@ -669,14 +674,16 @@ TEST(PlanValidator, TheGemmImmWordIsAFiniteNonzeroAlphaFromV19) {
   // v19 (F7 #138): the three f32 GEMMs carry a scalar alpha's f32 bits in
   // imm (0 = 1.0); below v19, beside kFlagRelaxed, zero / non-finite, or on
   // a narrow-weight GEMM it is corruption.
-  for (const up::OpCode op : {up::OpCode::kGemmNN, up::OpCode::kGemmNT,
-                              up::OpCode::kGemmTN}) {
+  for (const up::OpCode op :
+       {up::OpCode::kGemmNN, up::OpCode::kGemmNT, up::OpCode::kGemmTN}) {
     up::UpdateInstruction gemm;
     gemm.opcode = static_cast<uint16_t>(op);
     gemm.in[0] = up::MakeArenaRef(0);
     gemm.in[1] = up::MakeArenaRef(256);
     gemm.in[2] = up::MakeArenaRef(512);
-    gemm.out[0] = 4; gemm.out[1] = 4; gemm.out[2] = 4;
+    gemm.out[0] = 4;
+    gemm.out[1] = 4;
+    gemm.out[2] = 4;
     EXPECT_OK(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
     gemm.imm = std::bit_cast<uint32_t>(2.0f);
     EXPECT_OK(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
@@ -687,7 +694,8 @@ TEST(PlanValidator, TheGemmImmWordIsAFiniteNonzeroAlphaFromV19) {
     EXPECT_STR_CONTAINS(old.error(), "imm");
     for (const float bad : {INFINITY, NAN}) {
       gemm.imm = std::bit_cast<uint32_t>(bad);
-      EXPECT_ERROR(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
+      EXPECT_ERROR(
+          ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
     }
     gemm.imm = std::bit_cast<uint32_t>(-0.0f);  // nonzero bits, zero value
     EXPECT_ERROR(ValidateInstruction(gemm, kArena, kRodata, up::kSeeuVersion));
@@ -695,12 +703,14 @@ TEST(PlanValidator, TheGemmImmWordIsAFiniteNonzeroAlphaFromV19) {
   EXPECT_EQ(up::GemmAlphaOf(0), 1.0f);
   // Alpha beside the relaxed bit: the relaxed family is the frozen-weight
   // products and no relaxed kernel takes an alpha.
-  up::UpdateInstruction relaxed = GemmNN(up::MakeArenaRef(0), up::MakeRodataRef(0),
-                                         up::MakeArenaRef(512), 4, 4, 4);
+  up::UpdateInstruction relaxed =
+      GemmNN(up::MakeArenaRef(0), up::MakeRodataRef(0), up::MakeArenaRef(512),
+             4, 4, 4);
   relaxed.flags = up::kFlagRelaxed;
   EXPECT_OK(ValidateInstruction(relaxed, kArena, kRodata, up::kSeeuVersion));
   relaxed.imm = std::bit_cast<uint32_t>(2.0f);
-  const auto r = ValidateInstruction(relaxed, kArena, kRodata, up::kSeeuVersion);
+  const auto r =
+      ValidateInstruction(relaxed, kArena, kRodata, up::kSeeuVersion);
   ASSERT_FALSE(r.has_value());
   EXPECT_STR_CONTAINS(r.error(), "relaxed");
   // A narrow-weight GEMM defines no imm word.
@@ -720,8 +730,8 @@ TEST(PlanValidator, RejectsFlagsOnPreFlagsPlans) {
                                       up::MakeArenaRef(512), 4, 4, 4);
   gemm.flags = up::kFlagEpilogueBias;
   gemm.in[3] = up::MakeArenaRef(256);
-  const auto r = ValidateInstruction(gemm, kArena, kRodata,
-                                     up::kSeeuFlagsVersion - 1);
+  const auto r =
+      ValidateInstruction(gemm, kArena, kRodata, up::kSeeuFlagsVersion - 1);
   ASSERT_FALSE(r.has_value());
   EXPECT_STR_CONTAINS(r.error(), "flags");
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
@@ -769,8 +779,9 @@ TEST(PlanValidator, TheGemmAddendIsAVersionedReadOfTheWholeResultShape) {
   // in[3]. M = N = K = 4: A at 0, B at 64, C at 512, D at 256 (64 B each).
   for (const up::OpCode op :
        {up::OpCode::kGemmNN, up::OpCode::kGemmNT, up::OpCode::kGemmTN}) {
-    up::UpdateInstruction gemm = GemmNN(
-        up::MakeArenaRef(0), up::MakeArenaRef(64), up::MakeArenaRef(512), 4, 4, 4);
+    up::UpdateInstruction gemm =
+        GemmNN(up::MakeArenaRef(0), up::MakeArenaRef(64), up::MakeArenaRef(512),
+               4, 4, 4);
     gemm.opcode = static_cast<uint16_t>(op);
     gemm.flags = up::kFlagGemmAddend;
     gemm.in[3] = up::MakeArenaRef(256);
@@ -867,19 +878,19 @@ TEST(PlanValidator, RejectsZeroExtentOperands) {
   sm.out[1] = 4;
   EXPECT_OK(ValidateInstruction(sm, kArena, kRodata, up::kSeeuVersion));
 
-  EXPECT_ERROR(ValidateInstruction(
-      AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256), up::MakeArenaRef(512),
-            0),
-      kArena, kRodata, up::kSeeuVersion));
+  EXPECT_ERROR(
+      ValidateInstruction(AddEw(up::MakeArenaRef(0), up::MakeArenaRef(256),
+                                up::MakeArenaRef(512), 0),
+                          kArena, kRodata, up::kSeeuVersion));
 }
 
 TEST(PlanValidator, RejectsMisalignedRefs) {
   // Kernels cast arena + offset straight to float*/int32_t*: an unaligned
   // offset is UB on strict-alignment targets, so it must be a load error.
-  EXPECT_ERROR(ValidateInstruction(AddEw(up::MakeArenaRef(2),
-                                         up::MakeArenaRef(256),
-                                         up::MakeArenaRef(512), 16),
-                                   kArena, kRodata, up::kSeeuVersion));
+  EXPECT_ERROR(
+      ValidateInstruction(AddEw(up::MakeArenaRef(2), up::MakeArenaRef(256),
+                                up::MakeArenaRef(512), 16),
+                          kArena, kRodata, up::kSeeuVersion));
   // Quantized B is 1-byte-per-element rodata: any offset is fine there.
   up::UpdateInstruction q8;
   q8.opcode = static_cast<uint16_t>(up::OpCode::kGemmNNQ8);
@@ -919,10 +930,10 @@ TEST(PlanValidator, EveryCompiledInstructionValidates) {
   auto check = [&](uint64_t offset, uint64_t count) {
     for (uint64_t i = 0; i < count; ++i) {
       up::UpdateInstruction ins;
-      std::memcpy(&ins,
-                  compiled.plan.data() + offset + i * sizeof(ins),
+      std::memcpy(&ins, compiled.plan.data() + offset + i * sizeof(ins),
                   sizeof(ins));
-      EXPECT_OK(ValidateInstruction(ins, h.arena_size, h.rodata_size, h.version));
+      EXPECT_OK(
+          ValidateInstruction(ins, h.arena_size, h.rodata_size, h.version));
     }
   };
   check(h.train_instr_offset, h.train_instr_count);
@@ -951,7 +962,8 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   const uint64_t mul2r = MakeFusedStage(FusedStage::kMul, 2, true);
   const uint64_t silu = MakeFusedStage(FusedStage::kSilu);
   const uint64_t half = std::bit_cast<uint32_t>(0.5f);
-  auto check = [&](up::UpdateInstruction ins, uint32_t version = up::kSeeuVersion) {
+  auto check = [&](up::UpdateInstruction ins,
+                   uint32_t version = up::kSeeuVersion) {
     return ValidateInstruction(ins, kArena, kRodata, version);
   };
 
@@ -964,8 +976,7 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   // Four stages, both slots, both immediates.
   up::UpdateInstruction full = FusedMap(
       silu | add1 << 8 |
-          (uint64_t{MakeFusedStage(FusedStage::kScale, 1)} << 16) |
-          mul2r << 24,
+          (uint64_t{MakeFusedStage(FusedStage::kScale, 1)} << 16) | mul2r << 24,
       half << 32);
   full.in[1] = up::MakeArenaRef(256);
   full.in[2] = up::MakeRodataRef(0);
@@ -973,22 +984,24 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   EXPECT_OK(check(full));
 
   // Every way a program can lie:
-  EXPECT_ERROR(check(FusedMap(0)));                        // empty
-  EXPECT_ERROR(check(FusedMap(7)));                        // unknown kind
-  EXPECT_ERROR(check(FusedMap(silu | uint64_t{1} << 40)));  // bytes past 4 stages
-  EXPECT_ERROR(check(FusedMap(silu | silu << 16)));        // data after the end
-  EXPECT_ERROR(check(FusedMap(silu | 0x10)));              // arg on a unary
+  EXPECT_ERROR(check(FusedMap(0)));  // empty
+  EXPECT_ERROR(check(FusedMap(7)));  // unknown kind
+  // bytes past 4 stages
+  EXPECT_ERROR(check(FusedMap(silu | uint64_t{1} << 40)));
+  EXPECT_ERROR(check(FusedMap(silu | silu << 16)));  // data after the end
+  EXPECT_ERROR(check(FusedMap(silu | 0x10)));        // arg on a unary
   EXPECT_ERROR(check(FusedMap(MakeFusedStage(FusedStage::kAdd, 0))));  // slot 0
-  EXPECT_ERROR(check(FusedMap(add1)));                     // slot 1 named, absent
+  EXPECT_ERROR(check(FusedMap(add1)));  // slot 1 named, absent
   up::UpdateInstruction stray = FusedMap(silu);
-  stray.in[2] = up::MakeArenaRef(512);                     // slot 2 present, unnamed
+  stray.in[2] = up::MakeArenaRef(512);  // slot 2 present, unnamed
   EXPECT_ERROR(check(stray));
-  EXPECT_ERROR(check(FusedMap(silu, half)));               // immediate set, unused
+  EXPECT_ERROR(check(FusedMap(silu, half)));  // immediate set, unused
   EXPECT_ERROR(check(FusedMap(
-      scale0, std::bit_cast<uint32_t>(std::numeric_limits<float>::infinity()))));
-  EXPECT_ERROR(check(FusedMap(scale0 | 0x80, half)));      // run-is-right on scale
+      scale0,
+      std::bit_cast<uint32_t>(std::numeric_limits<float>::infinity()))));
+  EXPECT_ERROR(check(FusedMap(scale0 | 0x80, half)));  // run-is-right on scale
   up::UpdateInstruction alias = FusedMap(silu);
-  alias.in[3] = alias.in[0];                               // in-place is not the ABI
+  alias.in[3] = alias.in[0];  // in-place is not the ABI
   EXPECT_ERROR_CONTAINS(check(alias), "alias");
   up::UpdateInstruction oob = FusedMap(silu);
   oob.out[0] = 1 << 20;
@@ -1001,9 +1014,7 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
 TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
   // CR1 #142: every float an instruction carries as bits is proven finite
   // and within its range before a kernel multiplies by it.
-  const auto f32 = [](float f) {
-    return uint64_t{std::bit_cast<uint32_t>(f)};
-  };
+  const auto f32 = [](float f) { return uint64_t{std::bit_cast<uint32_t>(f)}; };
   const float nan = std::bit_cast<float>(0x7FC00000u);
   const auto refused = [&](const up::UpdateInstruction& ins, uint32_t version,
                            const char* needle) {
@@ -1042,7 +1053,7 @@ TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
   refused(seg_bad, up::kSeeuVersion, "alias");
   up::UpdateInstruction fwd_seg;
   fwd_seg.opcode = static_cast<uint16_t>(up::OpCode::kAttnFwdSeg);
-  fwd_seg.in[0] = up::MakeArenaRef(0);     // q: B*S*H*d = 1*4*1*2 = 8 floats
+  fwd_seg.in[0] = up::MakeArenaRef(0);  // q: B*S*H*d = 1*4*1*2 = 8 floats
   fwd_seg.in[1] = up::MakeArenaRef(64);
   fwd_seg.in[2] = up::MakeArenaRef(128);
   fwd_seg.in[3] = up::MakeArenaRef(192);
@@ -1132,8 +1143,8 @@ TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
     fwd.out[2] = f32(t);
     bwd.out[1] = f32(t);
     EXPECT_OK(ValidateInstruction(fwd, kArena, kRodata, up::kSeeuVersion));
-    EXPECT_OK(ValidateInstruction(bwd, kArena, kRodata,
-                                  up::kSeeuKlScaleVersion - 1));
+    EXPECT_OK(
+        ValidateInstruction(bwd, kArena, kRodata, up::kSeeuKlScaleVersion - 1));
   }
   for (const float t : {0.0f, -2.0f, nan, INFINITY, 1e-4f, 1e4f}) {
     fwd.out[2] = f32(t);

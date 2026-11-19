@@ -48,6 +48,8 @@ void Field(const char* name, size_t offset, size_t size) {
 
 // Every field of a packed struct, and — the point — a proof that the list
 // is complete: the fields' sizes must add up to the struct's.
+// (Field lists, several to a line.)
+// clang-format off
 #define PLAN_HEADER_FIELDS(X)                                                  \
   X(magic) X(version) X(arena_size) X(persistent_size) X(input_ref)           \
   X(input_floats) X(label_ref) X(label_bytes) X(label_kind) X(optimizer_kind) \
@@ -70,6 +72,7 @@ void Field(const char* name, size_t offset, size_t size) {
 #define LEDGER_ENTRY_FIELDS(X) X(pass) X(arithmetic) X(instructions) X(why)
 #define CKPT_FIELDS(X) \
   X(magic) X(version) X(plan_hash) X(step) X(persistent_size) X(payload_hash)
+// clang-format on
 
 #define SIZE_OF(T, f) +sizeof(T::f)
 #define SIZE_OF_PlanHeader(f) SIZE_OF(up::PlanHeader, f)
@@ -84,7 +87,8 @@ static_assert(0 PLAN_METADATA_FIELDS(SIZE_OF_PlanMetadata) ==
 static_assert(0 LEDGER_ENTRY_FIELDS(SIZE_OF_LedgerEntry) ==
                   sizeof(up::LedgerEntry),
               "LedgerEntry: the manifest's field list is incomplete");
-static_assert(0 PLAN_HEADER_FIELDS(SIZE_OF_PlanHeader) == sizeof(up::PlanHeader),
+static_assert(0 PLAN_HEADER_FIELDS(SIZE_OF_PlanHeader) ==
+                  sizeof(up::PlanHeader),
               "PlanHeader: the manifest's field list is missing a field");
 static_assert(0 INSTRUCTION_FIELDS(SIZE_OF_UpdateInstruction) ==
                   sizeof(up::UpdateInstruction),
@@ -110,8 +114,7 @@ struct Named {
 void Enum(const char* key, const Named* values, size_t count, bool last) {
   std::printf("    \"%s\": {", key);
   for (size_t i = 0; i < count; ++i)
-    std::printf("%s\"%s\": %u", i ? ", " : "", values[i].name,
-                values[i].value);
+    std::printf("%s\"%s\": %u", i ? ", " : "", values[i].name, values[i].value);
   std::printf("}%s\n", last ? "" : ",");
 }
 
@@ -119,70 +122,80 @@ void Enum(const char* key, const Named* values, size_t count, bool last) {
 void PrintContainers() {
   using K = up::SmfOpKind;
   const Named smf_ops[] = {
-      {"matmul", unsigned(K::kMatMul)},       {"add_bias", unsigned(K::kAddBias)},
-      {"relu", unsigned(K::kRelu)},           {"gelu", unsigned(K::kGelu)},
-      {"silu", unsigned(K::kSilu)},           {"mul", unsigned(K::kMul)},
-      {"layer_norm", unsigned(K::kLayerNorm)}, {"add", unsigned(K::kAdd)},
-      {"rms_norm", unsigned(K::kRmsNorm)},    {"rope", unsigned(K::kRope)},
-      {"attention", unsigned(K::kAttention)}, {"embedding", unsigned(K::kEmbedding)},
+      {"matmul", unsigned(K::kMatMul)},
+      {"add_bias", unsigned(K::kAddBias)},
+      {"relu", unsigned(K::kRelu)},
+      {"gelu", unsigned(K::kGelu)},
+      {"silu", unsigned(K::kSilu)},
+      {"mul", unsigned(K::kMul)},
+      {"layer_norm", unsigned(K::kLayerNorm)},
+      {"add", unsigned(K::kAdd)},
+      {"rms_norm", unsigned(K::kRmsNorm)},
+      {"rope", unsigned(K::kRope)},
+      {"attention", unsigned(K::kAttention)},
+      {"embedding", unsigned(K::kEmbedding)},
   };
   static_assert(sizeof(smf_ops) / sizeof(smf_ops[0]) == up::kSmfOpKindMax + 1,
                 "an SMF op kind is missing from the manifest");
-  std::printf("  \"smf\": {\n    \"magic\": %u, \"version\": %u, "
-              "\"min_version\": %u, \"default_rope_base\": %g,\n",
-              up::kSmfMagic, up::kSmfVersion, up::kSmfMinVersion,
-              static_cast<double>(up::kSmfDefaultRopeBase));
+  std::printf(
+      "  \"smf\": {\n    \"magic\": %u, \"version\": %u, "
+      "\"min_version\": %u, \"default_rope_base\": %g,\n",
+      up::kSmfMagic, up::kSmfVersion, up::kSmfMinVersion,
+      static_cast<double>(up::kSmfDefaultRopeBase));
   Enum("op_kinds", smf_ops, sizeof(smf_ops) / sizeof(smf_ops[0]), true);
-  std::printf("  },\n  \"sds\": {\"magic\": %u, \"version\": %u, "
-              "\"min_version\": %u, \"header_bytes\": %llu, "
-              "\"header_bytes_v3\": %llu, \"flag_masked\": %u, "
-              "\"label_kind_max\": %u},\n",
-              rt::kSdsMagic, rt::kSdsVersion, rt::kSdsMinVersion,
-              static_cast<unsigned long long>(rt::kSdsHeaderBytes),
-              static_cast<unsigned long long>(rt::kSdsHeaderBytesV3),
-              rt::kSdsFlagMasked, rt::kSdsLabelKindMax);
+  std::printf(
+      "  },\n  \"sds\": {\"magic\": %u, \"version\": %u, "
+      "\"min_version\": %u, \"header_bytes\": %llu, "
+      "\"header_bytes_v3\": %llu, \"flag_masked\": %u, "
+      "\"label_kind_max\": %u},\n",
+      rt::kSdsMagic, rt::kSdsVersion, rt::kSdsMinVersion,
+      static_cast<unsigned long long>(rt::kSdsHeaderBytes),
+      static_cast<unsigned long long>(rt::kSdsHeaderBytesV3),
+      rt::kSdsFlagMasked, rt::kSdsLabelKindMax);
   // The SMF tokenizer section (S2 #148): the one byte layout the Python
   // plane writes and the core reads, so its head is held to the header by
   // the same seam as the containers.
   namespace tk = seeml::tokenizer;
-  std::printf("  \"smtk\": {\"magic\": %u, \"version\": %u, "
-              "\"head_bytes\": %llu, \"kinds\": {\"byte_level_bpe\": %u}, "
-              "\"pre_tokenizers\": {\"gpt2\": %u, \"digits_then_gpt2\": %u}, "
-              "\"flags\": {\"add_prefix_space\": %u, \"nfc\": %u}},\n",
-              tk::kSmtkMagic, tk::kSmtkVersion,
-              static_cast<unsigned long long>(tk::kSmtkHeadBytes),
-              static_cast<unsigned>(tk::TokenizerKind::kByteLevelBpe),
-              static_cast<unsigned>(tk::PreTokenizer::kGpt2),
-              static_cast<unsigned>(tk::PreTokenizer::kDigitsThenGpt2),
-              tk::kSmtkFlagAddPrefixSpace, tk::kSmtkFlagNfc);
+  std::printf(
+      "  \"smtk\": {\"magic\": %u, \"version\": %u, "
+      "\"head_bytes\": %llu, \"kinds\": {\"byte_level_bpe\": %u}, "
+      "\"pre_tokenizers\": {\"gpt2\": %u, \"digits_then_gpt2\": %u}, "
+      "\"flags\": {\"add_prefix_space\": %u, \"nfc\": %u}},\n",
+      tk::kSmtkMagic, tk::kSmtkVersion,
+      static_cast<unsigned long long>(tk::kSmtkHeadBytes),
+      static_cast<unsigned>(tk::TokenizerKind::kByteLevelBpe),
+      static_cast<unsigned>(tk::PreTokenizer::kGpt2),
+      static_cast<unsigned>(tk::PreTokenizer::kDigitsThenGpt2),
+      tk::kSmtkFlagAddPrefixSpace, tk::kSmtkFlagNfc);
 }
 
 /// "seeu": the plan — its header constants, instruction flags, opcodes,
 /// on-disk structs, data-contract flags and metadata section.
 void PrintSeeu() {
   using F = up::FusedStage;
-  const Named fused[] = {{"end", unsigned(F::kEnd)},   {"add", unsigned(F::kAdd)},
-                         {"mul", unsigned(F::kMul)},   {"scale", unsigned(F::kScale)},
-                         {"relu", unsigned(F::kRelu)}, {"gelu", unsigned(F::kGelu)},
-                         {"silu", unsigned(F::kSilu)}};
-  std::printf("  \"seeu\": {\n    \"magic\": %u, \"version\": %u, "
-              "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "
-              "\"source_bit\": %d, "
-              "\"rodata_alignment\": %llu, \"rodata_offset_alignment\": %llu, "
-              "\"gemm_panel_floats\": %llu,\n",
-              up::kSeeuMagic, up::kSeeuVersion, up::kSeeuOldestReadable,
-              std::countr_zero(up::kRodataBit), std::countr_zero(up::kSourceBit),
-              static_cast<unsigned long long>(up::kSeeuRodataAlignment),
-              static_cast<unsigned long long>(up::kSeeuRodataOffsetAlignment),
-              static_cast<unsigned long long>(up::kDefaultGemmPanelFloats));
-  std::printf("    \"flags\": {\"epilogue_bias\": %u, \"epilogue_act_shift\": "
-              "%u, \"epilogue_act_mask\": %u, \"gemm_addend\": %u, "
-              "\"q8_col_scale\": %u, \"relaxed\": %u},\n",
-              unsigned(up::kFlagEpilogueBias),
-              unsigned(up::kFlagEpilogueActShift),
-              unsigned(up::kFlagEpilogueActMask),
-              unsigned(up::kFlagGemmAddend),
-              unsigned(up::kFlagQ8ColScale), unsigned(up::kFlagRelaxed));
+  const Named fused[] = {
+      {"end", unsigned(F::kEnd)},   {"add", unsigned(F::kAdd)},
+      {"mul", unsigned(F::kMul)},   {"scale", unsigned(F::kScale)},
+      {"relu", unsigned(F::kRelu)}, {"gelu", unsigned(F::kGelu)},
+      {"silu", unsigned(F::kSilu)}};
+  std::printf(
+      "  \"seeu\": {\n    \"magic\": %u, \"version\": %u, "
+      "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "
+      "\"source_bit\": %d, "
+      "\"rodata_alignment\": %llu, \"rodata_offset_alignment\": %llu, "
+      "\"gemm_panel_floats\": %llu,\n",
+      up::kSeeuMagic, up::kSeeuVersion, up::kSeeuOldestReadable,
+      std::countr_zero(up::kRodataBit), std::countr_zero(up::kSourceBit),
+      static_cast<unsigned long long>(up::kSeeuRodataAlignment),
+      static_cast<unsigned long long>(up::kSeeuRodataOffsetAlignment),
+      static_cast<unsigned long long>(up::kDefaultGemmPanelFloats));
+  std::printf(
+      "    \"flags\": {\"epilogue_bias\": %u, \"epilogue_act_shift\": "
+      "%u, \"epilogue_act_mask\": %u, \"gemm_addend\": %u, "
+      "\"q8_col_scale\": %u, \"relaxed\": %u},\n",
+      unsigned(up::kFlagEpilogueBias), unsigned(up::kFlagEpilogueActShift),
+      unsigned(up::kFlagEpilogueActMask), unsigned(up::kFlagGemmAddend),
+      unsigned(up::kFlagQ8ColScale), unsigned(up::kFlagRelaxed));
   // CR1 #142: the distillation temperature's bounds, as f32 bits — the
   // exact values the validator compares against, so the Python plane's
   // copy is held to them bit for bit.
@@ -190,12 +203,12 @@ void PrintSeeu() {
               std::bit_cast<uint32_t>(up::kKlTemperatureMin),
               std::bit_cast<uint32_t>(up::kKlTemperatureMax));
   Enum("fused_stages", fused, sizeof(fused) / sizeof(fused[0]), false);
-  std::printf("    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "
-              "\"arg_mask\": %u, \"run_is_right\": %u, \"max_stages\": %zu},\n",
-              unsigned(up::kFusedStageKindMask),
-              unsigned(up::kFusedStageArgShift),
-              unsigned(up::kFusedStageArgMask),
-              unsigned(up::kFusedStageRunIsRight), up::kFusedMapMaxStages);
+  std::printf(
+      "    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "
+      "\"arg_mask\": %u, \"run_is_right\": %u, \"max_stages\": %zu},\n",
+      unsigned(up::kFusedStageKindMask), unsigned(up::kFusedStageArgShift),
+      unsigned(up::kFusedStageArgMask), unsigned(up::kFusedStageRunIsRight),
+      up::kFusedMapMaxStages);
   std::printf("    \"opcodes\": {");
   for (unsigned op = 0; op <= up::kOpCodeMax; ++op)
     std::printf("%s\"%s\": %u", op ? ", " : "",
@@ -216,48 +229,49 @@ void PrintSeeu() {
          [] { PLAN_METADATA_FIELDS(X) });
 #undef X
 #define X(f) SEEML_FIELD(up::LedgerEntry, f);
-  Struct("LedgerEntry", sizeof(up::LedgerEntry),
-         [] { LEDGER_ENTRY_FIELDS(X) }, true);
+  Struct("LedgerEntry", sizeof(up::LedgerEntry), [] { LEDGER_ENTRY_FIELDS(X) },
+         true);
 #undef X
   // The data-contract flags (v22) and the metadata section (v23, S4 / S5 /
   // S6): the manifest words the header has no room for, and the ledger.
-  std::printf("    },\n    \"data_flags\": {\"masked_loss\": %u, "
-              "\"corpus_pinned\": %u, \"split\": %u, \"metadata\": %u},\n"
-              "    \"metadata\": {\"magic\": %u, \"format\": %u, "
-              "\"version\": %u, \"ledger_max\": %u,\n"
-              "      \"export_flags\": {\"report\": %u, "
-              "\"tokenizer_parity\": %u, \"logits_parity\": %u},\n"
-              "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u}}\n"
-              "  },\n",
-              up::kDataFlagMaskedLoss, up::kDataFlagCorpusPinned,
-              up::kDataFlagSplit, up::kDataFlagMetadata,
-              up::kPlanMetadataMagic, up::kPlanMetadataFormat,
-              up::kSeeuMetadataVersion, up::kLedgerMaxEntries,
-              up::kExportReportPresent, up::kExportTokenizerParity,
-              up::kExportLogitsParity, up::kLedgerExact, up::kLedgerReordered);
+  std::printf(
+      "    },\n    \"data_flags\": {\"masked_loss\": %u, "
+      "\"corpus_pinned\": %u, \"split\": %u, \"metadata\": %u},\n"
+      "    \"metadata\": {\"magic\": %u, \"format\": %u, "
+      "\"version\": %u, \"ledger_max\": %u,\n"
+      "      \"export_flags\": {\"report\": %u, "
+      "\"tokenizer_parity\": %u, \"logits_parity\": %u},\n"
+      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u}}\n"
+      "  },\n",
+      up::kDataFlagMaskedLoss, up::kDataFlagCorpusPinned, up::kDataFlagSplit,
+      up::kDataFlagMetadata, up::kPlanMetadataMagic, up::kPlanMetadataFormat,
+      up::kSeeuMetadataVersion, up::kLedgerMaxEntries, up::kExportReportPresent,
+      up::kExportTokenizerParity, up::kExportLogitsParity, up::kLedgerExact,
+      up::kLedgerReordered);
 }
 
 /// "sekp": the checkpoint.
 void PrintSekp() {
-  std::printf("  \"sekp\": {\n    \"magic\": %u, \"version\": %u, "
-              "\"oldest_readable\": %u,\n    \"flags\": {\"has_val_initial\": "
-              "%u, \"has_accuracy\": %u, \"has_best_payload\": %u, "
-              "\"has_best\": %u, \"has_binding\": %u},\n    \"structs\": {\n",
-              rt::kCkptMagic, rt::kCkptVersion, rt::kCkptOldestReadable,
-              rt::kCkptHasValInitial, rt::kCkptHasAccuracy,
-              rt::kCkptHasBestPayload, rt::kCkptHasBest,
-              rt::kCkptHasBinding);
+  std::printf(
+      "  \"sekp\": {\n    \"magic\": %u, \"version\": %u, "
+      "\"oldest_readable\": %u,\n    \"flags\": {\"has_val_initial\": "
+      "%u, \"has_accuracy\": %u, \"has_best_payload\": %u, "
+      "\"has_best\": %u, \"has_binding\": %u},\n    \"structs\": {\n",
+      rt::kCkptMagic, rt::kCkptVersion, rt::kCkptOldestReadable,
+      rt::kCkptHasValInitial, rt::kCkptHasAccuracy, rt::kCkptHasBestPayload,
+      rt::kCkptHasBest, rt::kCkptHasBinding);
 #define X(f) SEEML_FIELD(rt::CkptHeader, f);
   Struct("CkptHeader", sizeof(rt::CkptHeader), [] { CKPT_FIELDS(X) });
 #undef X
-  Struct("CkptHeaderV4Tail", sizeof(rt::CkptHeaderV4Tail), [] {
-    SEEML_FIELD(rt::CkptHeaderV4Tail, horizon_steps);
-  });
+  Struct("CkptHeaderV4Tail", sizeof(rt::CkptHeaderV4Tail),
+         [] { SEEML_FIELD(rt::CkptHeaderV4Tail, horizon_steps); });
+  // clang-format off
 #define CKPT_V5_FIELDS(X)                                                  \
   X(shuffle_origin) X(train_samples) X(val_samples) X(best_step)           \
   X(best_payload_hash) X(flags) X(val_initial_loss_bits)                   \
   X(val_initial_accuracy_bits) X(best_loss_bits) X(best_accuracy_bits)     \
   X(stale_evals)
+  // clang-format on
 #define SIZE_OF_V5(f) +sizeof(rt::CkptHeaderV5Tail::f)
   static_assert(0 CKPT_V5_FIELDS(SIZE_OF_V5) == sizeof(rt::CkptHeaderV5Tail),
                 "a CkptHeaderV5Tail field is missing from the manifest");
@@ -287,11 +301,12 @@ void PrintRecipe() {
                   static_cast<unsigned long long>(f.umin),
                   static_cast<unsigned long long>(f.umax));
     if (f.kind == up::recipe::Kind::kFloat)
-      std::printf(", \"min\": %s, \"max\": %s, \"min_open\": %s, "
-                  "\"max_open\": %s",
-                  up::recipe::Number(f.fmin).c_str(),
-                  up::recipe::Number(f.fmax).c_str(),
-                  f.min_open ? "true" : "false", f.max_open ? "true" : "false");
+      std::printf(
+          ", \"min\": %s, \"max\": %s, \"min_open\": %s, "
+          "\"max_open\": %s",
+          up::recipe::Number(f.fmin).c_str(),
+          up::recipe::Number(f.fmax).c_str(), f.min_open ? "true" : "false",
+          f.max_open ? "true" : "false");
     if (f.kind == up::recipe::Kind::kEnum)
       std::printf(", \"choices\": \"%s\"", f.choices);
     std::printf("}");
@@ -315,13 +330,14 @@ void PrintScreens() {
     first_screen = false;
     for (size_t i = 0; i < screen->rows.size(); ++i) {
       const seeml::update::StatRow& row = screen->rows[i];
-      std::printf("%s\n      {\"key\": \"%s\", \"kind\": \"%s\", "
-                  "\"unit\": \"%s\", \"verbose\": %s, \"volatile\": %s, "
-                  "\"optional\": %s}",
-                  i ? "," : "", row.key, seeml::update::StatKindName(row.kind),
-                  row.unit, row.flags & seeml::update::kStatVerbose ? "true" : "false",
-                  row.flags & seeml::update::kStatVolatile ? "true" : "false",
-                  row.flags & seeml::update::kStatOptional ? "true" : "false");
+      std::printf(
+          "%s\n      {\"key\": \"%s\", \"kind\": \"%s\", "
+          "\"unit\": \"%s\", \"verbose\": %s, \"volatile\": %s, "
+          "\"optional\": %s}",
+          i ? "," : "", row.key, seeml::update::StatKindName(row.kind),
+          row.unit, row.flags & seeml::update::kStatVerbose ? "true" : "false",
+          row.flags & seeml::update::kStatVolatile ? "true" : "false",
+          row.flags & seeml::update::kStatOptional ? "true" : "false");
     }
     std::printf("],\n      \"tables\": [");
     for (size_t i = 0; i < screen->tables.size(); ++i) {
@@ -329,13 +345,14 @@ void PrintScreens() {
       std::printf("%s{\"key\": \"%s\", \"columns\": [", i ? ", " : "",
                   table.key);
       for (size_t c = 0; c < table.columns.size(); ++c)
-        std::printf("%s{\"key\": \"%s\", \"kind\": \"%s\", \"unit\": \"%s\", "
-                    "\"volatile\": %s}",
-                    c ? ", " : "", table.columns[c].key,
-                    seeml::update::StatKindName(table.columns[c].kind),
-                    table.columns[c].unit,
-                    table.columns[c].flags & seeml::update::kStatVolatile ? "true"
-                                                                         : "false");
+        std::printf(
+            "%s{\"key\": \"%s\", \"kind\": \"%s\", \"unit\": \"%s\", "
+            "\"volatile\": %s}",
+            c ? ", " : "", table.columns[c].key,
+            seeml::update::StatKindName(table.columns[c].kind),
+            table.columns[c].unit,
+            table.columns[c].flags & seeml::update::kStatVolatile ? "true"
+                                                                  : "false");
       std::printf("]}");
     }
     std::printf("]}");

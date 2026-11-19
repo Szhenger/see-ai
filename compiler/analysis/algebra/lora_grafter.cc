@@ -13,9 +13,7 @@ namespace updating = seeml::diag::updating;
 
 namespace {
 
-bool IsTeacherValue(const sir::Value* v) {
-  return v->id().starts_with("t::");
-}
+bool IsTeacherValue(const sir::Value* v) { return v->id().starts_with("t::"); }
 
 int64_t Dim(const sir::Value* v, size_t i) { return v->shape().dims.at(i); }
 
@@ -87,13 +85,15 @@ SelectTargets(sir::Block& block, const LoRASpec& spec) {
   for (size_t i = 0; i < spec.target_filters.size(); ++i) {
     if (eligible_hits[i] > 0) continue;
     const std::string& f = spec.target_filters[i];
-    return updating::Error(
-        updating::kLoraGrafter,
-        ineligible_hits[i].empty()
-            ? "--targets '" + f + "' matches no eligible weight: no MatMul "
-              "weight's name contains it"
-            : "--targets '" + f + "' matches no eligible weight, only ones "
-              "LoRA cannot adapt — " + ineligible_hits[i]);
+    return updating::Error(updating::kLoraGrafter,
+                           ineligible_hits[i].empty()
+                               ? "--targets '" + f +
+                                     "' matches no eligible weight: no MatMul "
+                                     "weight's name contains it"
+                               : "--targets '" + f +
+                                     "' matches no eligible weight, only ones "
+                                     "LoRA cannot adapt — " +
+                                     ineligible_hits[i]);
   }
 
   if (targets.empty())
@@ -142,8 +142,7 @@ void GraftSite(GraftState& state, sir::Operation* target) {
 
   // Record C's consumers *before* creating the add op, so the rewire step
   // below naturally excludes the new LoRA subgraph itself.
-  std::vector<sir::Operation*> consumers(c->users().begin(),
-                                         c->users().end());
+  std::vector<sir::Operation*> consumers(c->users().begin(), c->users().end());
 
   // Later graft sites of a tied weight get suffixed ids for their compute
   // subgraph — Block::verify enforces id uniqueness, and ambiguous ids
@@ -165,16 +164,13 @@ void GraftSite(GraftState& state, sir::Operation* target) {
     a_op->setAttribute("trainable", int64_t{1});
     a_op->setAttribute("init", std::string("randn"));
     a_op->setAttribute("std", 1.0f / std::sqrt(static_cast<float>(k)));
-    a_op->setAttribute("seed",
-                       static_cast<int64_t>(spec.seed + adapter_index));
-    a = a_op->addResult(base + ".lora_A", sir::DataType::F32,
-                        sir::Shape{k, r});
+    a_op->setAttribute("seed", static_cast<int64_t>(spec.seed + adapter_index));
+    a = a_op->addResult(base + ".lora_A", sir::DataType::F32, sir::Shape{k, r});
 
     auto b_op = std::make_unique<sir::Operation>("sc_mem.param");
     b_op->setAttribute("trainable", int64_t{1});
     b_op->setAttribute("init", std::string("zeros"));
-    b = b_op->addResult(base + ".lora_B", sir::DataType::F32,
-                        sir::Shape{r, m});
+    b = b_op->addResult(base + ".lora_B", sir::DataType::F32, sir::Shape{r, m});
     new_ops.push_back(std::move(a_op));
     new_ops.push_back(std::move(b_op));
   } else {
@@ -185,8 +181,8 @@ void GraftSite(GraftState& state, sir::Operation* target) {
   auto t_op = std::make_unique<sir::Operation>("sc_high.matmul");
   t_op->addOperand(x);
   t_op->addOperand(a);
-  sir::Value* t = t_op->addResult(base + ".lora_t", sir::DataType::F32,
-                                  sir::Shape{n, r});
+  sir::Value* t =
+      t_op->addResult(base + ".lora_t", sir::DataType::F32, sir::Shape{n, r});
 
   // The scale is the GEMM's own alpha (F7 #138, carrying E10 #93 the
   // last inch): C' = C + s*(t@B), with s on the u = t@B matmul rather
@@ -206,15 +202,14 @@ void GraftSite(GraftState& state, sir::Operation* target) {
   if (scale != 1.0f) u_op->setAttribute("alpha", scale);
   u_op->addOperand(t);
   u_op->addOperand(b);
-  sir::Value* u = u_op->addResult(base + ".lora_u", sir::DataType::F32,
-                                  sir::Shape{n, m});
+  sir::Value* u =
+      u_op->addResult(base + ".lora_u", sir::DataType::F32, sir::Shape{n, m});
 
   auto add_op = std::make_unique<sir::Operation>("sc_high.add");
   add_op->addOperand(c);
   add_op->addOperand(u);
   sir::Value* c_prime = add_op->addResult(base + ".lora_out",
-                                          sir::DataType::F32,
-                                          sir::Shape{n, m});
+                                          sir::DataType::F32, sir::Shape{n, m});
 
   new_ops.push_back(std::move(t_op));
   new_ops.push_back(std::move(u_op));
@@ -228,8 +223,8 @@ void GraftSite(GraftState& state, sir::Operation* target) {
 
   if (is_new_adapter) {
     adapter_for_weight[w] = adapters.size();
-    adapters.push_back({.frozen_weight = w, .A = a, .B = b, .scale = scale,
-                        .id_base = base});
+    adapters.push_back(
+        {.frozen_weight = w, .A = a, .B = b, .scale = scale, .id_base = base});
     ++adapter_index;
   }
 }

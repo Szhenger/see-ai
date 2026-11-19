@@ -142,7 +142,8 @@ std::expected<ByteLevelBpe, std::string> ByteLevelBpe::Load(
   if (flags & ~kSmtkFlagsKnown) return Refuse("unknown flags");
   if (flags & kSmtkFlagAddPrefixSpace)
     return Refuse("add_prefix_space is not implemented");
-  if (flags & kSmtkFlagNfc) return Refuse("the NFC normalizer is not implemented");
+  if (flags & kSmtkFlagNfc)
+    return Refuse("the NFC normalizer is not implemented");
   t.info_.vocab_size = head->vocab_size;
   t.info_.num_merges = head->num_merges;
   t.info_.num_special = head->num_special;
@@ -164,7 +165,8 @@ std::expected<ByteLevelBpe, std::string> ByteLevelBpe::Load(
   for (uint32_t id = 0; id < t.info_.vocab_size; ++id) {
     const uint16_t len = r.Read<uint16_t>();
     std::string bytes = r.ReadBytes(len);
-    if (!r.ok) return Refuse("truncated vocabulary at id " + std::to_string(id));
+    if (!r.ok)
+      return Refuse("truncated vocabulary at id " + std::to_string(id));
     if (bytes.empty()) return Refuse("empty token at id " + std::to_string(id));
     t.tokens_.push_back(std::move(bytes));
   }
@@ -177,12 +179,14 @@ std::expected<ByteLevelBpe, std::string> ByteLevelBpe::Load(
   for (int b = 0; b < 256; ++b) {
     const char c = static_cast<char>(b);
     auto it = t.ids_.find(std::string_view(&c, 1));
-    t.byte_token_[b] = it == t.ids_.end() ? -1 : static_cast<int32_t>(it->second);
+    t.byte_token_[b] =
+        it == t.ids_.end() ? -1 : static_cast<int32_t>(it->second);
   }
 
-  for (int32_t* id : {&t.info_.eos_id, &t.info_.bos_id, &t.info_.unk_id,
-                      &t.info_.pad_id})
-    if (*id < -1 || (*id >= 0 && static_cast<uint32_t>(*id) >= t.info_.vocab_size))
+  for (int32_t* id :
+       {&t.info_.eos_id, &t.info_.bos_id, &t.info_.unk_id, &t.info_.pad_id})
+    if (*id < -1 ||
+        (*id >= 0 && static_cast<uint32_t>(*id) >= t.info_.vocab_size))
       return Refuse("a special id is out of range");
 
   if (t.info_.num_merges > section.size() / 12)
@@ -191,16 +195,20 @@ std::expected<ByteLevelBpe, std::string> ByteLevelBpe::Load(
   for (uint32_t rank = 0; rank < t.info_.num_merges; ++rank) {
     const uint32_t a = r.Read<uint32_t>(), b = r.Read<uint32_t>(),
                    c = r.Read<uint32_t>();
-    if (!r.ok) return Refuse("truncated merges at rank " + std::to_string(rank));
+    if (!r.ok)
+      return Refuse("truncated merges at rank " + std::to_string(rank));
     if (a >= t.info_.vocab_size || b >= t.info_.vocab_size ||
         c >= t.info_.vocab_size)
-      return Refuse("merge " + std::to_string(rank) + " names an id out of range");
+      return Refuse("merge " + std::to_string(rank) +
+                    " names an id out of range");
     if (t.tokens_[a] + t.tokens_[b] != t.tokens_[c])
-      return Refuse("merge " + std::to_string(rank) + " does not produce the "
+      return Refuse("merge " + std::to_string(rank) +
+                    " does not produce the "
                     "concatenation of its parts");
     const uint64_t key = (uint64_t{a} << 32) | b;
     if (!t.merges_.emplace(key, (uint64_t{rank} << 32) | c).second)
-      return Refuse("merge " + std::to_string(rank) + " repeats an earlier pair");
+      return Refuse("merge " + std::to_string(rank) +
+                    " repeats an earlier pair");
   }
   for (uint32_t i = 0; i < t.info_.num_special; ++i) {
     const uint32_t id = r.Read<uint32_t>();
@@ -257,7 +265,7 @@ void ByteLevelBpe::SplitGpt2(
     const size_t next = Decode(text, i, &cp);
     // Contractions: the apostrophe and one of the lowercase suffixes.
     if (cp == '\'') {
-      static constexpr std::string_view kSuffixes[] = {"s", "t", "re", "ve",
+      static constexpr std::string_view kSuffixes[] = {"s", "t",  "re", "ve",
                                                        "m", "ll", "d"};
       bool matched = false;
       for (std::string_view suf : kSuffixes) {
@@ -410,14 +418,15 @@ void ByteLevelBpe::EncodePiece(std::string_view piece,
     next[k] = k + 1 < n ? k + 1 : kNone;
   }
   struct Candidate {
-    uint64_t ranked;  // rank << 32 | merged id, as merges_ stores it
-    size_t at;        // the left symbol's position
+    uint64_t ranked;       // rank << 32 | merged id, as merges_ stores it
+    size_t at;             // the left symbol's position
     uint32_t left, right;  // the pair the entry was made for
     bool operator>(const Candidate& o) const {
       return ranked != o.ranked ? ranked > o.ranked : at > o.at;
     }
   };
-  std::priority_queue<Candidate, std::vector<Candidate>, std::greater<Candidate>>
+  std::priority_queue<Candidate, std::vector<Candidate>,
+                      std::greater<Candidate>>
       heap;
   auto offer = [&](size_t at) {
     const size_t nx = next[at];
@@ -431,7 +440,8 @@ void ByteLevelBpe::EncodePiece(std::string_view piece,
     const Candidate c = heap.top();
     heap.pop();
     const size_t nx = next[c.at];
-    if (!alive[c.at] || nx == kNone || ids[c.at] != c.left || ids[nx] != c.right)
+    if (!alive[c.at] || nx == kNone || ids[c.at] != c.left ||
+        ids[nx] != c.right)
       continue;  // stale
     ids[c.at] = static_cast<uint32_t>(c.ranked & 0xFFFFFFFFu);
     alive[nx] = false;

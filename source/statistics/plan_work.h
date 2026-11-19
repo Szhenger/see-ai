@@ -43,9 +43,8 @@ inline uint64_t GemmFlops(std::span<const UpdateInstruction> program) {
       case OpCode::kGemmNTQ8:
       case OpCode::kGemmNNBF16:
       case OpCode::kGemmNTBF16:
-        flops = SatAdd(flops,
-                       SatMul(SatMul(SatMul(2, ins.out[0]), ins.out[1]),
-                              ins.out[2]));
+        flops = SatAdd(flops, SatMul(SatMul(SatMul(2, ins.out[0]), ins.out[1]),
+                                     ins.out[2]));
         break;
       default:
         break;
@@ -93,8 +92,8 @@ inline uint64_t AttentionFlops(std::span<const UpdateInstruction> program) {
         macs = AttnMacs(hi(ins.out[0]), lo(ins.out[0]), hi(ins.out[1]),
                         lo(ins.out[1]));
         break;
-      case OpCode::kAttnDQTiled:  // dP and dQ: out[2] = B|S|H|d, 16 bits each
-      case OpCode::kAttnDKTiled:  // dK
+      case OpCode::kAttnDQTiled:    // dP and dQ: out[2] = B|S|H|d, 16 bits each
+      case OpCode::kAttnDKTiled:    // dK
       case OpCode::kAttnDVTiled: {  // dV
         const AttnGeometry g = UnpackAttnGeometry(ins.out[2]);
         products =
@@ -125,9 +124,14 @@ inline std::vector<GemmShape> GemmCensus(
   std::vector<GemmShape> shapes;
   for (const UpdateInstruction& ins : program) {
     switch (static_cast<OpCode>(ins.opcode)) {
-      case OpCode::kGemmNN: case OpCode::kGemmNT: case OpCode::kGemmTN:
-      case OpCode::kGemmAccNN: case OpCode::kGemmNNQ8: case OpCode::kGemmNTQ8:
-      case OpCode::kGemmNNBF16: case OpCode::kGemmNTBF16:
+      case OpCode::kGemmNN:
+      case OpCode::kGemmNT:
+      case OpCode::kGemmTN:
+      case OpCode::kGemmAccNN:
+      case OpCode::kGemmNNQ8:
+      case OpCode::kGemmNTQ8:
+      case OpCode::kGemmNNBF16:
+      case OpCode::kGemmNTBF16:
         break;
       default:
         continue;
@@ -147,11 +151,11 @@ inline std::vector<GemmShape> GemmCensus(
   }
   std::sort(shapes.begin(), shapes.end(),
             [](const GemmShape& a, const GemmShape& b) {
-              if (a.flops != b.flops) return a.flops > b.flops;
-              if (a.m != b.m) return a.m < b.m;
-              if (a.n != b.n) return a.n < b.n;
-              return a.k < b.k;
-            });
+    if (a.flops != b.flops) return a.flops > b.flops;
+    if (a.m != b.m) return a.m < b.m;
+    if (a.n != b.n) return a.n < b.n;
+    return a.k < b.k;
+  });
   return shapes;
 }
 
@@ -164,16 +168,13 @@ struct PlanWork {
 
   /// GEMM FLOPs per optimizer step: G train passes plus the step program.
   uint64_t GemmFlopsPerStep() const {
-    return SatAdd(
-        SatMul(train_gemm_flops, micro_batches),
-        step_gemm_flops);
+    return SatAdd(SatMul(train_gemm_flops, micro_batches), step_gemm_flops);
   }
   uint64_t AttentionFlopsPerStep() const {
     return SatMul(train_attention_flops, micro_batches);
   }
   uint64_t FlopsPerStep() const {
-    return SatAdd(GemmFlopsPerStep(),
-                                    AttentionFlopsPerStep());
+    return SatAdd(GemmFlopsPerStep(), AttentionFlopsPerStep());
   }
 };
 

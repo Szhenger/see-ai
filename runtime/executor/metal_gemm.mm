@@ -58,8 +58,7 @@ MetalGemmRunner::Create(const std::string& msl_source, size_t tile_m,
     id<MTLLibrary> lib = [impl->device newLibraryWithSource:src
                                                     options:nil
                                                       error:&err];
-    if (!lib)
-      return std::unexpected(NsError(err, "MSL compilation failed"));
+    if (!lib) return std::unexpected(NsError(err, "MSL compilation failed"));
 
     const char* names[4] = {"seeml_matmul", "seeml_matmul_nt",
                             "seeml_matmul_tn", "seeml_gemm_acc"};
@@ -69,12 +68,11 @@ MetalGemmRunner::Create(const std::string& msl_source, size_t tile_m,
       if (!fn)
         return std::unexpected(std::string("missing kernel '") + names[i] +
                                "' in emitted source");
-      impl->pipeline[i] = [impl->device newComputePipelineStateWithFunction:fn
-                                                                      error:&err];
+      impl->pipeline[i] =
+          [impl->device newComputePipelineStateWithFunction:fn error:&err];
       if (!impl->pipeline[i])
         return std::unexpected(NsError(err, "pipeline creation failed"));
-      if (impl->pipeline[i].maxTotalThreadsPerThreadgroup <
-          tile_m * tile_n)
+      if (impl->pipeline[i].maxTotalThreadsPerThreadgroup < tile_m * tile_n)
         return std::unexpected(
             "threadgroup " + std::to_string(tile_m) + "x" +
             std::to_string(tile_n) + " exceeds the device limit of " +
@@ -90,8 +88,7 @@ MetalGemmRunner::MetalGemmRunner(std::unique_ptr<Impl> impl)
 
 MetalGemmRunner::~MetalGemmRunner() = default;
 
-std::expected<void, std::string> MetalGemmRunner::Run(Kind kind,
-                                                      const float* a,
+std::expected<void, std::string> MetalGemmRunner::Run(Kind kind, const float* a,
                                                       const float* b, float* c,
                                                       size_t m, size_t n,
                                                       size_t k, float alpha) {
@@ -111,17 +108,20 @@ std::expected<void, std::string> MetalGemmRunner::Run(Kind kind,
     const size_t a_bytes = m * k * sizeof(float);
     const size_t b_bytes = k * n * sizeof(float);
     const size_t c_bytes = m * n * sizeof(float);
-    id<MTLBuffer> ab = [impl_->device newBufferWithBytes:a
-                                                  length:a_bytes
-                                                 options:MTLResourceStorageModeShared];
-    id<MTLBuffer> bb = [impl_->device newBufferWithBytes:b
-                                                  length:b_bytes
-                                                 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> ab =
+        [impl_->device newBufferWithBytes:a
+                                   length:a_bytes
+                                  options:MTLResourceStorageModeShared];
+    id<MTLBuffer> bb =
+        [impl_->device newBufferWithBytes:b
+                                   length:b_bytes
+                                  options:MTLResourceStorageModeShared];
     // kAccNN reads C's prior contents; the pure GEMMs overwrite every
     // element, but uploading is cheaper than reasoning about it.
-    id<MTLBuffer> cb = [impl_->device newBufferWithBytes:c
-                                                  length:c_bytes
-                                                 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> cb =
+        [impl_->device newBufferWithBytes:c
+                                   length:c_bytes
+                                  options:MTLResourceStorageModeShared];
     if (!ab || !bb || !cb) return std::unexpected("buffer allocation failed");
 
     struct {
@@ -143,9 +143,9 @@ std::expected<void, std::string> MetalGemmRunner::Run(Kind kind,
     // One threadgroup per (tile_n x tile_m) output tile; the kernel guards
     // the ragged edge, but the staging loops need full threadgroups.
     const MTLSize tg = MTLSizeMake(impl_->tile_n, impl_->tile_m, 1);
-    const MTLSize grid = MTLSizeMake((n + impl_->tile_n - 1) / impl_->tile_n,
-                                     (m + impl_->tile_m - 1) / impl_->tile_m,
-                                     1);
+    const MTLSize grid =
+        MTLSizeMake((n + impl_->tile_n - 1) / impl_->tile_n,
+                    (m + impl_->tile_m - 1) / impl_->tile_m, 1);
     [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
     [enc endEncoding];
     [cmd commit];

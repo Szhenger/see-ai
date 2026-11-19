@@ -102,9 +102,9 @@ class ByteLevelBpe {
   int32_t byte_token_[256];                             // -1 = none
   // (a << 32 | b) -> rank << 32 | c
   std::unordered_map<uint64_t, uint64_t> merges_;
-  std::vector<uint32_t> special_;                       // longest first
-  std::vector<uint8_t> special_flag_;                   // id -> is special
-  bool special_lead_[256] = {};  // a special token starts with this byte
+  std::vector<uint32_t> special_;      // longest first
+  std::vector<uint8_t> special_flag_;  // id -> is special
+  bool special_lead_[256] = {};        // a special token starts with this byte
 };
 
 /// ContentHash64 of a section: the tokenizer identity (SDS v3, plan v22).

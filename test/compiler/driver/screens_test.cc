@@ -35,7 +35,7 @@ using seeml::testing::MakeTinyTokenDecoder;
 uint64_t U(const Screen& s, const char* key) {
   const StatValue* v = s.Get(key);
   return v && std::holds_alternative<uint64_t>(*v) ? std::get<uint64_t>(*v)
-                                                    : UINT64_MAX;
+                                                   : UINT64_MAX;
 }
 double R(const Screen& s, const char* key) {
   const StatValue* v = s.Get(key);
@@ -86,8 +86,10 @@ TEST(CompileScreens, EveryScreenIsCompleteForEveryFixtureFamily) {
     cases.push_back({"mlp, distilled", MakeMlp(6, 10, 3, 4), c,
                      MakeMlp(6, 14, 3, 5), true});
   }
-  cases.push_back({"token decoder", MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41),
-                   BaseConfig(16), {}});
+  cases.push_back({"token decoder",
+                   MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41),
+                   BaseConfig(16),
+                   {}});
   for (Case& c : cases) {
     auto compiled = UpdateCompiler(c.config).Compile(
         c.model, c.with_teacher ? &c.teacher : nullptr);
@@ -190,11 +192,13 @@ TEST(CompileScreens, TheTargetIsTheOneThePolicyWasReadFor) {
   // plan's bytes are the same either way.
   SmfModel model = MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41);
   UpdateConfig config = BaseConfig(16);
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate native, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate native,
+                       UpdateCompiler(config).Compile(model));
   EXPECT_TRUE(T(native.screens.backend, "target")
                   .starts_with(HostKey(DetectHostArch()) + "; GPU "));
   config.target_host = "apple_m9_10p6e";
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate cross, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate cross,
+                       UpdateCompiler(config).Compile(model));
   EXPECT_EQ(T(cross.screens.backend, "target"),
             std::string("apple_m9_10p6e (--target-host); GPU not described"));
   EXPECT_TRUE(native.plan == cross.plan);
@@ -257,8 +261,9 @@ TEST(CompileScreens, TheNumbersAreThePlansOwn) {
 }
 
 TEST(CompileScreens, OptionalRowsAppearExactlyWhenTheyApply) {
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
-                       UpdateCompiler(BaseConfig(4)).Compile(MakeMlp(6, 10, 3, 1)));
+  ASSERT_OK_AND_ASSIGN(
+      CompiledUpdate plain,
+      UpdateCompiler(BaseConfig(4)).Compile(MakeMlp(6, 10, 3, 1)));
   EXPECT_TRUE(plain.screens.frontend.Get("vocabulary") == nullptr);
   EXPECT_TRUE(plain.screens.frontend.Get("teacher_ops") == nullptr);
   EXPECT_TRUE(plain.screens.backend.Get("step_instructions") == nullptr);
@@ -289,9 +294,9 @@ TEST(CompileScreens, TheDefaultConsoleFitsTheSixtyLineBudget) {
   UpdateConfig config = BaseConfig(16);
   config.peak_gflops = 100.0;
   config.grad_accum_steps = 2;
-  ASSERT_OK_AND_ASSIGN(
-      CompiledUpdate c,
-      UpdateCompiler(config).Compile(MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41)));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
+                       UpdateCompiler(config).Compile(
+                           MakeTinyTokenDecoder(16, 8, 2, 8, 16, 41)));
   const std::string text = RenderCompileScreens(c.screens, false);
   const std::string verbose = RenderCompileScreens(c.screens, true);
   EXPECT_TRUE(Lines(text) <= 60);
@@ -345,14 +350,16 @@ void ExpectGolden(const std::string& fixture, const std::string& actual) {
   size_t e = 0, a = 0, line = 1;
   while (true) {
     const size_t en = expected.find('\n', e), an = actual.find('\n', a);
-    const std::string el = expected.substr(e, en == std::string::npos ? std::string::npos : en - e);
-    const std::string al = actual.substr(a, an == std::string::npos ? std::string::npos : an - a);
+    const std::string el = expected.substr(
+        e, en == std::string::npos ? std::string::npos : en - e);
+    const std::string al =
+        actual.substr(a, an == std::string::npos ? std::string::npos : an - a);
     if (el != al || en == std::string::npos || an == std::string::npos) {
-      ADD_FAILURE(fixture + ": golden block differs at line " +
-                  std::to_string(line) + ":\n    golden: " + el +
-                  "\n    now:    " + al +
-                  "\n  (a deliberate change: SEEML_UPDATE_GOLDEN=1, then review "
-                  "the diff)");
+      ADD_FAILURE(
+          fixture + ": golden block differs at line " + std::to_string(line) +
+          ":\n    golden: " + el + "\n    now:    " + al +
+          "\n  (a deliberate change: SEEML_UPDATE_GOLDEN=1, then review "
+          "the diff)");
       return;
     }
     e = en + 1;
@@ -384,8 +391,8 @@ TEST(GoldenScreens, TheDecWideShape) {
   config.optimizer.lr_schedule = LrSchedule::kConstant;
   config.default_steps = 300;
   config.peak_gflops = 3500.0;
-  SmfModel model = seeml::testing::MakeTokenDecoderStack(4096, 512, 8, 256,
-                                                         1024, 4, 7);
+  SmfModel model =
+      seeml::testing::MakeTokenDecoderStack(4096, 512, 8, 256, 1024, 4, 7);
   const auto t0 = std::chrono::steady_clock::now();
   ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(config).Compile(model));
   std::printf("  [ note ] dec_wide compiled in %.0f ms\n",

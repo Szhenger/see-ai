@@ -29,7 +29,8 @@ void Operation::setOperand(size_t i, Value* newVal) {
 
 Value* Operation::addResult(std::string id, DataType dt, Shape sh) {
     if (id.empty())
-        id = "%" + std::to_string(id_counter_.fetch_add(1, std::memory_order_relaxed));
+        id = "%" + std::to_string(
+                       id_counter_.fetch_add(1, std::memory_order_relaxed));
 
     auto val = std::make_unique<Value>(std::move(id), dt, std::move(sh), this);
     results_.push_back(std::move(val));
@@ -58,8 +59,10 @@ void Operation::print(std::ostream& os) const {
                 os << "<";
                 for (size_t d = 0; d < dims.size(); ++d) {
                     if (d) os << "x";
-                    if (dims[d] == Shape::kDynamic) os << "?";
-                    else os << dims[d];
+                    if (dims[d] == Shape::kDynamic)
+                        os << "?";
+                    else
+                        os << dims[d];
                 }
                 os << ">";
             }
@@ -108,4 +111,4 @@ std::string Operation::toString() const {
     return oss.str();
 }
 
-} // namespace seeml::sir
+}  // namespace seeml::sir

@@ -6,14 +6,16 @@
 
 namespace seeml::sir {
 
-std::unique_ptr<Operation> OpBuilder::batchNorm(
-    Value* input, Value* scale, Value* bias,
-    Value* running_mean, Value* running_var, float epsilon) {
-    assert(input        && "batchNorm: null input");
-    assert(scale        && "batchNorm: null scale");
-    assert(bias         && "batchNorm: null bias");
+std::unique_ptr<Operation> OpBuilder::batchNorm(Value* input, Value* scale,
+                                                Value* bias,
+                                                Value* running_mean,
+                                                Value* running_var,
+                                                float epsilon) {
+    assert(input && "batchNorm: null input");
+    assert(scale && "batchNorm: null scale");
+    assert(bias && "batchNorm: null bias");
     assert(running_mean && "batchNorm: null running_mean");
-    assert(running_var  && "batchNorm: null running_var");
+    assert(running_var && "batchNorm: null running_var");
 
     auto op = std::make_unique<Operation>("sc_high.batch_norm");
     op->addOperand(input);

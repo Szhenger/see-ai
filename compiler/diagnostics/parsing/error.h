@@ -23,14 +23,14 @@ namespace seeml::diag::parsing {
 inline constexpr std::string_view kUnit = "Parser";
 
 /// Graph-level failure: "Parser: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view message) {
   return Fail(kUnit, message);
 }
 
 /// Op-shaped failure: "Parser: <kind> '<name>' <what>".
-[[nodiscard]] inline std::unexpected<std::string> OpError(std::string_view kind,
-                                                          std::string_view name,
-                                                          std::string_view what) {
+[[nodiscard]] inline std::unexpected<std::string> OpError(
+    std::string_view kind, std::string_view name, std::string_view what) {
   std::string m;
   m.reserve(kind.size() + name.size() + what.size() + 4);
   m.append(kind).append(" '").append(name).append("' ").append(what);

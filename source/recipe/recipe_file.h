@@ -57,9 +57,12 @@ struct Cursor {
       if (c == '\\') {
         if (i >= s.size()) return false;
         const char e = s[i++];
-        if (e == '"' || e == '\\' || e == '/') c = e;
-        else if (e == 'n') c = '\n';
-        else if (e == 't') c = '\t';
+        if (e == '"' || e == '\\' || e == '/')
+          c = e;
+        else if (e == 'n')
+          c = '\n';
+        else if (e == 't')
+          c = '\t';
         else {
           bad_escape = true;
           return false;
@@ -97,8 +100,10 @@ struct Cursor {
     return i > from;
   };
   if (i < t.size() && t[i] == '-') ++i;
-  if (i < t.size() && t[i] == '0') ++i;
-  else if (!digits()) return false;
+  if (i < t.size() && t[i] == '0')
+    ++i;
+  else if (!digits())
+    return false;
   if (i < t.size() && t[i] == '.') {
     ++i;
     if (!digits()) return false;
@@ -135,9 +140,8 @@ struct Cursor {
     while (true) {
       std::string key;
       if (!c.String(&key))
-        return c.bad_escape
-                   ? bad(std::string("a field name uses ") + kEscapes)
-                   : bad("expected a field name in quotes");
+        return c.bad_escape ? bad(std::string("a field name uses ") + kEscapes)
+                            : bad("expected a field name in quotes");
       const Field* f = FindField(key);
       if (!f) return bad("unknown field '" + key + "'");
       if (values.contains(key)) return bad("field '" + key + "' appears twice");
@@ -162,9 +166,10 @@ struct Cursor {
           // to; its bound is Apply's ("nan" and "Infinity" are not JSON
           // either, and are refused here by the same rule).
           if (!file_detail::IsJsonNumber(value))
-            return bad("field '" + key + "' takes a JSON number (no leading "
-                       "'+', '.' or zero, digits after a '.'), got '" + value +
-                       "'");
+            return bad("field '" + key +
+                       "' takes a JSON number (no leading "
+                       "'+', '.' or zero, digits after a '.'), got '" +
+                       value + "'");
           break;
         case Kind::kBool:
           value = std::string(c.Token());

@@ -48,12 +48,13 @@ class KernelProfile {
                  static_cast<unsigned long long>(fwd_passes_),
                  static_cast<unsigned long long>(bwd_passes_));
     if (lowrank_fused)
-      std::fprintf(out,
-                   "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
-                   "store dropped (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 "
-                   "keeps the pairs apart)\n",
-                   static_cast<unsigned long long>(lowrank_fused),
-                   static_cast<unsigned long long>(lowrank_dropped));
+      std::fprintf(
+          out,
+          "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
+          "store dropped (k_gemm_*_lr; SEEML_METAL_UNFUSED_LOWRANK=1 "
+          "keeps the pairs apart)\n",
+          static_cast<unsigned long long>(lowrank_fused),
+          static_cast<unsigned long long>(lowrank_dropped));
     for (const auto& r : rows)
       std::fprintf(out, "  %8.3f s  %5.1f%%  %7llu x %8.1f us  %s\n",
                    r.second.seconds,
@@ -96,23 +97,25 @@ class SpanLog {
                  "busy %.3f s, CPU wall %.3f s, outside the GPU %.3f s "
                  "(%.1f%% of the wall; %.2f us per dispatch)\n",
                  rows_.size(), static_cast<unsigned long long>(dispatches), gpu,
-                 wall,
-                 wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
+                 wall, wall - gpu, wall > 0 ? 100.0 * (wall - gpu) / wall : 0.0,
                  dispatches
                      ? 1e6 * (wall - gpu) / static_cast<double>(dispatches)
                      : 0.0);
     if (lowrank_fused)
-      std::fprintf(out,
-                   "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
-                   "store dropped\n",
-                   static_cast<unsigned long long>(lowrank_fused),
-                   static_cast<unsigned long long>(lowrank_dropped));
+      std::fprintf(
+          out,
+          "  low-rank epilogue: %llu fused dispatch(es), %llu with C's "
+          "store dropped\n",
+          static_cast<unsigned long long>(lowrank_fused),
+          static_cast<unsigned long long>(lowrank_dropped));
     // Per buffer size: the train, eval and merge programs are told apart by
     // their dispatch counts (one buffer per ExecuteRange).
     std::map<uint64_t, std::array<double, 3>> by_size;  // n, gpu, wall
     for (const Row& s : rows_) {
       auto& v = by_size[s.dispatches];
-      v[0] += 1; v[1] += s.gpu_seconds; v[2] += s.wall_seconds;
+      v[0] += 1;
+      v[1] += s.gpu_seconds;
+      v[2] += s.wall_seconds;
     }
     for (const auto& [n, v] : by_size)
       std::fprintf(out,

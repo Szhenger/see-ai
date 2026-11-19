@@ -42,10 +42,9 @@ int64_t mulOrDynamic(int64_t a, int64_t b) {
 }  // namespace
 
 std::unique_ptr<Operation> OpBuilder::conv2d(
-    Value* input, Value* filter, Value* bias,
-    std::vector<int64_t> strides, std::vector<int64_t> pads,
-    std::vector<int64_t> dilations, int64_t group) {
-    assert(input  && "conv2d: null input");
+    Value* input, Value* filter, Value* bias, std::vector<int64_t> strides,
+    std::vector<int64_t> pads, std::vector<int64_t> dilations, int64_t group) {
+    assert(input && "conv2d: null input");
     assert(filter && "conv2d: null filter");
     assert(input->shape().rank() == 4 && "conv2d: input must be NCHW");
     assert(filter->shape().rank() == 4 && "conv2d: filter must be OIHW");
@@ -54,29 +53,29 @@ std::unique_ptr<Operation> OpBuilder::conv2d(
 
     const auto& in = input->shape().dims;
     const auto& f = filter->shape().dims;
-    Shape out{in[0], f[0],
-              spatialDim(in[2], f[2], pads[0], pads[2], strides[0],
-                         dilations[0]),
-              spatialDim(in[3], f[3], pads[1], pads[3], strides[1],
-                         dilations[1])};
+    Shape out{
+        in[0], f[0],
+        spatialDim(in[2], f[2], pads[0], pads[2], strides[0], dilations[0]),
+        spatialDim(in[3], f[3], pads[1], pads[3], strides[1], dilations[1])};
 
     auto op = std::make_unique<Operation>("sc_high.conv2d");
     op->addOperand(input);
     op->addOperand(filter);
     if (bias) op->addOperand(bias);
 
-    op->setAttribute("strides",   std::move(strides));
-    op->setAttribute("pads",      std::move(pads));
+    op->setAttribute("strides", std::move(strides));
+    op->setAttribute("pads", std::move(pads));
     op->setAttribute("dilations", std::move(dilations));
-    op->setAttribute("group",     group);
+    op->setAttribute("group", group);
 
     op->addResult("", input->dtype(), std::move(out));
     return op;
 }
 
-std::unique_ptr<Operation> OpBuilder::im2col(
-    Value* input, std::vector<int64_t> kernel_shape,
-    std::vector<int64_t> strides, std::vector<int64_t> pads) {
+std::unique_ptr<Operation> OpBuilder::im2col(Value* input,
+                                             std::vector<int64_t> kernel_shape,
+                                             std::vector<int64_t> strides,
+                                             std::vector<int64_t> pads) {
     assert(input && "im2col: null input");
     assert(input->shape().rank() == 4 && "im2col: input must be NCHW");
     assert(kernel_shape.size() == 2 && strides.size() == 2 &&
@@ -84,19 +83,19 @@ std::unique_ptr<Operation> OpBuilder::im2col(
            "im2col: geometry is {kh,kw} / {sh,sw} / {t,l,b,r}");
 
     const auto& in = input->shape().dims;
-    const int64_t oh = spatialDim(in[2], kernel_shape[0], pads[0], pads[2],
-                                  strides[0], 1);
-    const int64_t ow = spatialDim(in[3], kernel_shape[1], pads[1], pads[3],
-                                  strides[1], 1);
-    Shape out{mulOrDynamic(in[0], mulOrDynamic(oh, ow)),
-              mulOrDynamic(in[1],
-                           mulOrDynamic(kernel_shape[0], kernel_shape[1]))};
+    const int64_t oh =
+        spatialDim(in[2], kernel_shape[0], pads[0], pads[2], strides[0], 1);
+    const int64_t ow =
+        spatialDim(in[3], kernel_shape[1], pads[1], pads[3], strides[1], 1);
+    Shape out{
+        mulOrDynamic(in[0], mulOrDynamic(oh, ow)),
+        mulOrDynamic(in[1], mulOrDynamic(kernel_shape[0], kernel_shape[1]))};
 
     auto op = std::make_unique<Operation>("sc_low.im2col");
     op->addOperand(input);
     op->setAttribute("kernel_shape", std::move(kernel_shape));
-    op->setAttribute("strides",      std::move(strides));
-    op->setAttribute("pads",         std::move(pads));
+    op->setAttribute("strides", std::move(strides));
+    op->setAttribute("pads", std::move(pads));
     op->addResult("", input->dtype(), std::move(out));
     return op;
 }

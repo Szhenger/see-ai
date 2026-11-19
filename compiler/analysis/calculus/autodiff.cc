@@ -44,10 +44,9 @@ struct AdContext {
     sir::Operation* sum = block->appendOp("sc_high.add");
     sum->addOperand(it->second);
     sum->addOperand(grad);
-    sir::Value* acc = sum->addResult(
-        std::string(primal->id()) + ".grad_acc" +
-            std::to_string(fresh_counter++),
-        grad->dtype(), grad->shape());
+    sir::Value* acc = sum->addResult(std::string(primal->id()) + ".grad_acc" +
+                                         std::to_string(fresh_counter++),
+                                     grad->dtype(), grad->shape());
     it->second = acc;
   }
 };
@@ -74,122 +73,115 @@ void RegisterLinearVjps(VjpTable& table) {
   // C = alpha * X @ W (alpha = 1 when unset, plan v19): dX = alpha *
   // dC @ W^T, dW = alpha * X^T @ dC — the constant rides each adjoint
   // product's own alpha, never a pass of its own.
-  table.emplace(
-      "sc_high.matmul", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* w = op->operand(1);
-        sir::Value* dc = ctx.GradOf(op->result(0));
-        const auto alpha = op->getAttrAs<float>("alpha");
-        if (ctx.Needs(x)) {
-          sir::Value* dx = Emit1(
-              ctx, "sc_low.matmul_nt", {dc, w},
-              std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-              x->shape());
-          if (alpha) dx->definingOp()->setAttribute("alpha", *alpha);
-          ctx.Accumulate(x, dx);
-        }
-        if (ctx.Needs(w)) {
-          sir::Value* dw = Emit1(
-              ctx, "sc_low.matmul_tn", {x, dc},
-              std::string(w->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-              w->shape());
-          if (alpha) dw->definingOp()->setAttribute("alpha", *alpha);
-          ctx.Accumulate(w, dw);
-        }
-        return true;
-      });
+  table.emplace("sc_high.matmul", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* w = op->operand(1);
+    sir::Value* dc = ctx.GradOf(op->result(0));
+    const auto alpha = op->getAttrAs<float>("alpha");
+    if (ctx.Needs(x)) {
+      sir::Value* dx = Emit1(
+          ctx, "sc_low.matmul_nt", {dc, w},
+          std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+          x->shape());
+      if (alpha) dx->definingOp()->setAttribute("alpha", *alpha);
+      ctx.Accumulate(x, dx);
+    }
+    if (ctx.Needs(w)) {
+      sir::Value* dw = Emit1(
+          ctx, "sc_low.matmul_tn", {x, dc},
+          std::string(w->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+          w->shape());
+      if (alpha) dw->definingOp()->setAttribute("alpha", *alpha);
+      ctx.Accumulate(w, dw);
+    }
+    return true;
+  });
 
   // C = A + B (same shape): gradient flows to both, pruning decides which.
-  table.emplace(
-      "sc_high.add", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* dc = ctx.GradOf(op->result(0));
-        ctx.Accumulate(op->operand(0), dc);
-        ctx.Accumulate(op->operand(1), dc);
-        return true;
-      });
+  table.emplace("sc_high.add", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* dc = ctx.GradOf(op->result(0));
+    ctx.Accumulate(op->operand(0), dc);
+    ctx.Accumulate(op->operand(1), dc);
+    return true;
+  });
 
   // Y[N,M] = X + b[M]: dX = dY; db = sum over rows of dY.
-  table.emplace(
-      "sc_high.add_bias", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        ctx.Accumulate(op->operand(0), dy);
-        sir::Value* b = op->operand(1);
-        if (ctx.Needs(b)) {
-          sir::Value* db = Emit1(
-              ctx, "sc_low.reduce_rows", {dy},
-              std::string(b->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-              b->shape());
-          ctx.Accumulate(b, db);
-        }
-        return true;
-      });
+  table.emplace("sc_high.add_bias", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    ctx.Accumulate(op->operand(0), dy);
+    sir::Value* b = op->operand(1);
+    if (ctx.Needs(b)) {
+      sir::Value* db = Emit1(
+          ctx, "sc_low.reduce_rows", {dy},
+          std::string(b->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+          b->shape());
+      ctx.Accumulate(b, db);
+    }
+    return true;
+  });
 }
 
 /// The activation functions and the elementwise product.
 void RegisterElementwiseVjps(VjpTable& table) {
   // Y = max(X, 0): dX = dY * 1[X > 0]  (subgradient 0 at the kink)
-  table.emplace(
-      "sc_high.relu", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        sir::Value* dx = Emit1(
-            ctx, "sc_low.relu_grad", {dy, x},
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
+  table.emplace("sc_high.relu", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    sir::Value* dx =
+        Emit1(ctx, "sc_low.relu_grad", {dy, x},
+              std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+              x->shape());
+    ctx.Accumulate(x, dx);
+    return true;
+  });
 
   // Y = gelu(X) (tanh approximation): dX = dY * gelu'(X). The backward
   // kernel differentiates the same approximation the forward evaluates,
   // so the pair is exactly consistent under finite differences.
-  table.emplace(
-      "sc_high.gelu", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        sir::Value* dx = Emit1(
-            ctx, "sc_low.gelu_grad", {dy, x},
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
-
-  // Y = X * sigmoid(X): dX = dY * (s(X) * (1 + X * (1 - s(X)))).
-  table.emplace(
-      "sc_high.silu", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        sir::Value* dx = Emit1(
-            ctx, "sc_low.silu_grad", {dy, x},
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
-
-  // C = X * Y (elementwise): dX = dC * Y, dY = dC * X.
-  table.emplace(
-      "sc_high.mul", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* y = op->operand(1);
-        sir::Value* dc = ctx.GradOf(op->result(0));
-        if (ctx.Needs(x)) {
-          sir::Value* dx = Emit1(
-              ctx, "sc_low.mul", {dc, y},
+  table.emplace("sc_high.gelu", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    sir::Value* dx =
+        Emit1(ctx, "sc_low.gelu_grad", {dy, x},
               std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
               x->shape());
-          ctx.Accumulate(x, dx);
-        }
-        if (ctx.Needs(y)) {
-          sir::Value* dy = Emit1(
-              ctx, "sc_low.mul", {dc, x},
-              std::string(y->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-              y->shape());
-          ctx.Accumulate(y, dy);
-        }
-        return true;
-      });
+    ctx.Accumulate(x, dx);
+    return true;
+  });
+
+  // Y = X * sigmoid(X): dX = dY * (s(X) * (1 + X * (1 - s(X)))).
+  table.emplace("sc_high.silu", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    sir::Value* dx =
+        Emit1(ctx, "sc_low.silu_grad", {dy, x},
+              std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+              x->shape());
+    ctx.Accumulate(x, dx);
+    return true;
+  });
+
+  // C = X * Y (elementwise): dX = dC * Y, dY = dC * X.
+  table.emplace("sc_high.mul", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* y = op->operand(1);
+    sir::Value* dc = ctx.GradOf(op->result(0));
+    if (ctx.Needs(x)) {
+      sir::Value* dx = Emit1(
+          ctx, "sc_low.mul", {dc, y},
+          std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+          x->shape());
+      ctx.Accumulate(x, dx);
+    }
+    if (ctx.Needs(y)) {
+      sir::Value* dy = Emit1(
+          ctx, "sc_low.mul", {dc, x},
+          std::string(y->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+          y->shape());
+      ctx.Accumulate(y, dy);
+    }
+    return true;
+  });
 }
 
 /// The two norms.
@@ -197,41 +189,39 @@ void RegisterNormVjps(VjpTable& table) {
   // (Y, mean, rstd) = layer_norm(X, gamma, beta). Only dX is synthesized:
   // gamma/beta are frozen base weights (LoRA adapts MatMuls only), so an
   // adjoint can never be demanded for them by construction.
-  table.emplace(
-      "sc_high.layer_norm", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* gamma = op->operand(1);
-        if (ctx.Needs(gamma) || ctx.Needs(op->operand(2)))
-          return false;  // trainable affine params are unsupported
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(x)) return true;
-        sir::Value* dx = Emit1(
-            ctx, "sc_low.layer_norm_grad",
-            {dy, x, gamma, op->result(1), op->result(2)},
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
+  table.emplace("sc_high.layer_norm", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* gamma = op->operand(1);
+    if (ctx.Needs(gamma) || ctx.Needs(op->operand(2)))
+      return false;  // trainable affine params are unsupported
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(x)) return true;
+    sir::Value* dx =
+        Emit1(ctx, "sc_low.layer_norm_grad",
+              {dy, x, gamma, op->result(1), op->result(2)},
+              std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+              x->shape());
+    ctx.Accumulate(x, dx);
+    return true;
+  });
 
   // (Y, rstd) = rms_norm(X, gamma). Only dX is synthesized: gamma is a
   // frozen base weight (LoRA adapts MatMuls only), so an adjoint can
   // never be demanded for it by construction.
-  table.emplace(
-      "sc_high.rms_norm", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* gamma = op->operand(1);
-        if (ctx.Needs(gamma))
-          return false;  // trainable gamma is unsupported — refuse
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(x)) return true;
-        sir::Value* dx = Emit1(
-            ctx, "sc_low.rms_norm_grad", {dy, x, gamma, op->result(1)},
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
+  table.emplace("sc_high.rms_norm", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* gamma = op->operand(1);
+    if (ctx.Needs(gamma))
+      return false;  // trainable gamma is unsupported — refuse
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(x)) return true;
+    sir::Value* dx =
+        Emit1(ctx, "sc_low.rms_norm_grad", {dy, x, gamma, op->result(1)},
+              std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+              x->shape());
+    ctx.Accumulate(x, dx);
+    return true;
+  });
 }
 
 /// The rotation, attention (both families) and the constant scale.
@@ -239,26 +229,25 @@ void RegisterAttentionVjps(VjpTable& table) {
   // Y = rope(X): a per-pair orthogonal rotation; dX rotates dY by the
   // negated angle. Geometry attrs (heads/seq/base) are copied so
   // lowering can reconstruct the position layout.
-  table.emplace(
-      "sc_high.rope", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(x)) return true;
-        sir::Operation* g = ctx.block->appendOp("sc_low.rope_grad");
-        g->setAttribute("heads", op->getAttrAs<int64_t>("heads").value_or(1));
-        g->setAttribute("seq", op->getAttrAs<int64_t>("seq").value_or(1));
-        if (auto base = op->getAttrAs<float>("base"))
-          g->setAttribute("base", *base);
-        g->addOperand(dy);
-        // The angle table (RopeTableHoister), when the forward has one:
-        // the transpose rotation reads the same angles.
-        if (op->numOperands() > 1) g->addOperand(op->operand(1));
-        sir::Value* dx = g->addResult(
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            sir::DataType::F32, x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
+  table.emplace("sc_high.rope", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(x)) return true;
+    sir::Operation* g = ctx.block->appendOp("sc_low.rope_grad");
+    g->setAttribute("heads", op->getAttrAs<int64_t>("heads").value_or(1));
+    g->setAttribute("seq", op->getAttrAs<int64_t>("seq").value_or(1));
+    if (auto base = op->getAttrAs<float>("base"))
+      g->setAttribute("base", *base);
+    g->addOperand(dy);
+    // The angle table (RopeTableHoister), when the forward has one:
+    // the transpose rotation reads the same angles.
+    if (op->numOperands() > 1) g->addOperand(op->operand(1));
+    sir::Value* dx = g->addResult(
+        std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+        sir::DataType::F32, x->shape());
+    ctx.Accumulate(x, dx);
+    return true;
+  });
 
   // (O, P) = attention(Q, K, V) with P = softmax(mask(QK^T/sqrt(d))).
   // Decomposed VJP over the cached P:
@@ -269,159 +258,147 @@ void RegisterAttentionVjps(VjpTable& table) {
   // probabilities it needs. dQ writes the softmax-backward rowsum into
   // the stats row and dK reads it, so dQ is emitted first and nothing
   // reorders a program.
-  table.emplace(
-      "sc_high.attention", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* q = op->operand(0);
-        sir::Value* k = op->operand(1);
-        sir::Value* v = op->operand(2);
-        sir::Value* probs = op->result(1);
-        sir::Value* dout = ctx.GradOf(op->result(0));
-        const int64_t heads = op->getAttrAs<int64_t>("heads").value_or(1);
-        const int64_t seq = op->getAttrAs<int64_t>("seq").value_or(1);
-        auto emit = [&](const char* mnemonic,
-                        std::initializer_list<sir::Value*> operands,
-                        sir::Value* like) {
-          sir::Operation* g = ctx.block->appendOp(mnemonic);
-          g->setAttribute("heads", heads);
-          g->setAttribute("seq", seq);
-          for (sir::Value* o : operands) g->addOperand(o);
-          return g->addResult(std::string(like->id()) + ".d" +
-                                  std::to_string(ctx.fresh_counter++),
-                              sir::DataType::F32, like->shape());
-        };
-        if (op->hasAttribute("tiled")) {
-          sir::Value* stats = probs;
-          // The dQ pass also produces delta, which dK consumes; it runs
-          // whenever either is needed (DCE keeps it: it writes storage).
-          if (ctx.Needs(q) || ctx.Needs(k)) {
-            sir::Value* dq = emit("sc_low.attn_dq_tiled",
-                                  {q, k, v, dout, stats}, q);
-            if (ctx.Needs(q)) ctx.Accumulate(q, dq);
-          }
-          if (ctx.Needs(k))
-            ctx.Accumulate(k, emit("sc_low.attn_dk_tiled",
-                                   {q, k, v, dout, stats}, k));
-          if (ctx.Needs(v))
-            ctx.Accumulate(v, emit("sc_low.attn_dv_tiled",
-                                   {q, k, v, dout, stats}, v));
-          return true;
-        }
-        if (ctx.Needs(v)) ctx.Accumulate(v, emit("sc_low.attn_dv",
-                                                 {probs, dout}, v));
-        if (ctx.Needs(q) || ctx.Needs(k)) {
-          sir::Value* dp = emit("sc_low.attn_dp", {dout, v}, probs);
-          sir::Value* ds = emit("sc_low.softmax_rows_grad", {probs, dp},
-                                probs);
-          if (ctx.Needs(q))
-            ctx.Accumulate(q, emit("sc_low.attn_dq", {ds, k}, q));
-          if (ctx.Needs(k))
-            ctx.Accumulate(k, emit("sc_low.attn_dk", {ds, q}, k));
-        }
-        return true;
-      });
+  table.emplace("sc_high.attention", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* q = op->operand(0);
+    sir::Value* k = op->operand(1);
+    sir::Value* v = op->operand(2);
+    sir::Value* probs = op->result(1);
+    sir::Value* dout = ctx.GradOf(op->result(0));
+    const int64_t heads = op->getAttrAs<int64_t>("heads").value_or(1);
+    const int64_t seq = op->getAttrAs<int64_t>("seq").value_or(1);
+    auto emit = [&](const char* mnemonic,
+                    std::initializer_list<sir::Value*> operands,
+                    sir::Value* like) {
+      sir::Operation* g = ctx.block->appendOp(mnemonic);
+      g->setAttribute("heads", heads);
+      g->setAttribute("seq", seq);
+      for (sir::Value* o : operands) g->addOperand(o);
+      return g->addResult(
+          std::string(like->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+          sir::DataType::F32, like->shape());
+    };
+    if (op->hasAttribute("tiled")) {
+      sir::Value* stats = probs;
+      // The dQ pass also produces delta, which dK consumes; it runs
+      // whenever either is needed (DCE keeps it: it writes storage).
+      if (ctx.Needs(q) || ctx.Needs(k)) {
+        sir::Value* dq =
+            emit("sc_low.attn_dq_tiled", {q, k, v, dout, stats}, q);
+        if (ctx.Needs(q)) ctx.Accumulate(q, dq);
+      }
+      if (ctx.Needs(k))
+        ctx.Accumulate(k,
+                       emit("sc_low.attn_dk_tiled", {q, k, v, dout, stats}, k));
+      if (ctx.Needs(v))
+        ctx.Accumulate(v,
+                       emit("sc_low.attn_dv_tiled", {q, k, v, dout, stats}, v));
+      return true;
+    }
+    if (ctx.Needs(v))
+      ctx.Accumulate(v, emit("sc_low.attn_dv", {probs, dout}, v));
+    if (ctx.Needs(q) || ctx.Needs(k)) {
+      sir::Value* dp = emit("sc_low.attn_dp", {dout, v}, probs);
+      sir::Value* ds = emit("sc_low.softmax_rows_grad", {probs, dp}, probs);
+      if (ctx.Needs(q)) ctx.Accumulate(q, emit("sc_low.attn_dq", {ds, k}, q));
+      if (ctx.Needs(k)) ctx.Accumulate(k, emit("sc_low.attn_dk", {ds, q}, k));
+    }
+    return true;
+  });
 
   // Y = alpha * X: dX = alpha * dY.
-  table.emplace(
-      "sc_high.scale", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* x = op->operand(0);
-        sir::Value* dy = ctx.GradOf(op->result(0));
-        sir::Operation* g = ctx.block->appendOp("sc_low.scale");
-        g->setAttribute("alpha", op->getAttrAs<float>("alpha").value_or(1.0f));
-        g->addOperand(dy);
-        sir::Value* dx = g->addResult(
-            std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
-            sir::DataType::F32, x->shape());
-        ctx.Accumulate(x, dx);
-        return true;
-      });
+  table.emplace("sc_high.scale", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* x = op->operand(0);
+    sir::Value* dy = ctx.GradOf(op->result(0));
+    sir::Operation* g = ctx.block->appendOp("sc_low.scale");
+    g->setAttribute("alpha", op->getAttrAs<float>("alpha").value_or(1.0f));
+    g->addOperand(dy);
+    sir::Value* dx = g->addResult(
+        std::string(x->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+        sir::DataType::F32, x->shape());
+    ctx.Accumulate(x, dx);
+    return true;
+  });
 }
 
 /// The losses.
 void RegisterLossVjps(VjpTable& table) {
   // (loss, probs) = softmax_xent(logits, labels)
   // dlogits = seed * (probs - onehot(labels)) / N
-  table.emplace(
-      "sc_high.softmax_xent", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* logits = op->operand(0);
-        sir::Value* labels = op->operand(1);
-        sir::Value* probs = op->result(1);
-        sir::Value* seed = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(logits)) return true;
-        sir::Value* dl =
-            Emit1(ctx, "sc_low.softmax_xent_grad", {probs, labels, seed},
-                  std::string(logits->id()) + ".d" +
-                      std::to_string(ctx.fresh_counter++),
-                  logits->shape());
-        ctx.Accumulate(logits, dl);
-        return true;
-      });
+  table.emplace("sc_high.softmax_xent", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* logits = op->operand(0);
+    sir::Value* labels = op->operand(1);
+    sir::Value* probs = op->result(1);
+    sir::Value* seed = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(logits)) return true;
+    sir::Value* dl = Emit1(
+        ctx, "sc_low.softmax_xent_grad", {probs, labels, seed},
+        std::string(logits->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+        logits->shape());
+    ctx.Accumulate(logits, dl);
+    return true;
+  });
 
   // The masked cross-entropy (S3 #149): the same rule over the target
   // rows; the kernel zeroes the ignored rows' gradient and divides by
   // the target count.
-  table.emplace(
-      "sc_high.softmax_xent_masked", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* logits = op->operand(0);
-        sir::Value* labels = op->operand(1);
-        sir::Value* probs = op->result(1);
-        sir::Value* seed = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(logits)) return true;
-        sir::Value* dl = Emit1(
-            ctx, "sc_low.softmax_xent_masked_grad", {probs, labels, seed},
-            std::string(logits->id()) + ".d" +
-                std::to_string(ctx.fresh_counter++),
-            logits->shape());
-        ctx.Accumulate(logits, dl);
-        return true;
-      });
+  table.emplace("sc_high.softmax_xent_masked",
+                [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* logits = op->operand(0);
+    sir::Value* labels = op->operand(1);
+    sir::Value* probs = op->result(1);
+    sir::Value* seed = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(logits)) return true;
+    sir::Value* dl = Emit1(
+        ctx, "sc_low.softmax_xent_masked_grad", {probs, labels, seed},
+        std::string(logits->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+        logits->shape());
+    ctx.Accumulate(logits, dl);
+    return true;
+  });
 
   // loss = mean((pred - target)^2): dpred = seed * 2(pred - target)/count
-  table.emplace(
-      "sc_high.mse", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* pred = op->operand(0);
-        sir::Value* target = op->operand(1);
-        if (ctx.Needs(target))
-          return false;  // d/dtarget unsupported — refuse, don't drop
-        sir::Value* seed = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(pred)) return true;
-        sir::Value* dp =
-            Emit1(ctx, "sc_low.mse_grad", {pred, target, seed},
-                  std::string(pred->id()) + ".d" +
-                      std::to_string(ctx.fresh_counter++),
-                  pred->shape());
-        ctx.Accumulate(pred, dp);
-        return true;
-      });
+  table.emplace("sc_high.mse", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* pred = op->operand(0);
+    sir::Value* target = op->operand(1);
+    if (ctx.Needs(target))
+      return false;  // d/dtarget unsupported — refuse, don't drop
+    sir::Value* seed = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(pred)) return true;
+    sir::Value* dp = Emit1(
+        ctx, "sc_low.mse_grad", {pred, target, seed},
+        std::string(pred->id()) + ".d" + std::to_string(ctx.fresh_counter++),
+        pred->shape());
+    ctx.Accumulate(pred, dp);
+    return true;
+  });
 
   // (loss, p_s, p_t) = kl_distill(student_logits, teacher_logits)
   // dstudent = seed * loss_scale * (p_s - p_t) / (N * T) — the exact
   // derivative of the forward's loss_scale * mean KL (loss_scale = T^2
   // gives Hinton's T*(p_s - p_t)/N). The teacher branch is frozen by
   // construction, so no adjoint ever flows into it.
-  table.emplace(
-      "sc_high.kl_distill", [](sir::Operation* op, AdContext& ctx) {
-        sir::Value* s_logits = op->operand(0);
-        if (ctx.Needs(op->operand(1)))
-          return false;  // d/dteacher unsupported — refuse, don't drop
-        sir::Value* p_s = op->result(1);
-        sir::Value* p_t = op->result(2);
-        sir::Value* seed = ctx.GradOf(op->result(0));
-        if (!ctx.Needs(s_logits)) return true;
-        sir::Operation* g = ctx.block->appendOp("sc_low.kl_grad");
-        g->setAttribute("temperature",
-                        op->getAttrAs<float>("temperature").value_or(1.0f));
-        g->setAttribute("loss_scale",
-                        op->getAttrAs<float>("loss_scale").value_or(1.0f));
-        g->addOperand(p_s);
-        g->addOperand(p_t);
-        g->addOperand(seed);
-        sir::Value* ds = g->addResult(
-            std::string(s_logits->id()) + ".d" +
-                std::to_string(ctx.fresh_counter++),
-            sir::DataType::F32, s_logits->shape());
-        ctx.Accumulate(s_logits, ds);
-        return true;
-      });
+  table.emplace("sc_high.kl_distill", [](sir::Operation* op, AdContext& ctx) {
+    sir::Value* s_logits = op->operand(0);
+    if (ctx.Needs(op->operand(1)))
+      return false;  // d/dteacher unsupported — refuse, don't drop
+    sir::Value* p_s = op->result(1);
+    sir::Value* p_t = op->result(2);
+    sir::Value* seed = ctx.GradOf(op->result(0));
+    if (!ctx.Needs(s_logits)) return true;
+    sir::Operation* g = ctx.block->appendOp("sc_low.kl_grad");
+    g->setAttribute("temperature",
+                    op->getAttrAs<float>("temperature").value_or(1.0f));
+    g->setAttribute("loss_scale",
+                    op->getAttrAs<float>("loss_scale").value_or(1.0f));
+    g->addOperand(p_s);
+    g->addOperand(p_t);
+    g->addOperand(seed);
+    sir::Value* ds = g->addResult(std::string(s_logits->id()) + ".d" +
+                                      std::to_string(ctx.fresh_counter++),
+                                  sir::DataType::F32, s_logits->shape());
+    ctx.Accumulate(s_logits, ds);
+    return true;
+  });
 }
 
 /// Every rule, registered family by family in the one order the table has
@@ -466,9 +443,8 @@ TrainableAutodiff::Run(sir::Block& block, sir::Value* loss,
   });
 
   if (!ctx.Needs(loss))
-    return updating::Error(
-        updating::kAutodiff,
-        "loss does not depend on any trainable parameter");
+    return updating::Error(updating::kAutodiff,
+                           "loss does not depend on any trainable parameter");
 
   // --- Seed dL/dL = 1.0 ----------------------------------------------------
   sir::Operation* fill = block.appendOp("sc_low.fill");
@@ -499,12 +475,10 @@ TrainableAutodiff::Run(sir::Block& block, sir::Value* loss,
     auto rule = registry.find(mnemonic);
     if (rule == registry.end())
       return updating::Error(updating::kAutodiff,
-                             "no VJP rule for '" +
-                                 std::string(mnemonic) + "'");
+                             "no VJP rule for '" + std::string(mnemonic) + "'");
     if (!rule->second(op, ctx))
       return updating::Error(updating::kAutodiff,
-                             "VJP failed for '" +
-                                 std::string(mnemonic) + "'");
+                             "VJP failed for '" + std::string(mnemonic) + "'");
   }
 
   // --- Collect the parameter gradients. ------------------------------------
@@ -513,15 +487,14 @@ TrainableAutodiff::Run(sir::Block& block, sir::Value* loss,
   for (sir::Value* p : trainables) {
     sir::Value* g = ctx.GradOf(p);
     if (!g)
-      return updating::Error(updating::kAutodiff,
-                             "no gradient reached '" +
-                                 std::string(p->id()) + "'");
+      return updating::Error(
+          updating::kAutodiff,
+          "no gradient reached '" + std::string(p->id()) + "'");
     param_grads[p] = g;
   }
 
   seeml::diag::Note(updating::kAutodiff,
-                    "built adjoints for " +
-                        std::to_string(param_grads.size()) +
+                    "built adjoints for " + std::to_string(param_grads.size()) +
                         " trainable parameter(s)");
   return param_grads;
 }

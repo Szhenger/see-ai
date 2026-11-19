@@ -37,10 +37,10 @@
 namespace seeml::tokenizer {
 
 struct IngestOptions {
-  uint64_t seq_len = 0;          // S: records are S + 1 ids
-  bool one_document = false;     // a .txt: the file is one document, no EOS,
-                                 // sanitizer counts only (bit-exact with the
-                                 // exporter's --text-corpus)
+  uint64_t seq_len = 0;       // S: records are S + 1 ids
+  bool one_document = false;  // a .txt: the file is one document, no EOS,
+                              // sanitizer counts only (bit-exact with the
+                              // exporter's --text-corpus)
 };
 
 /// One input document: plain text (every position a loss target), or a
@@ -62,18 +62,18 @@ struct SanitizeCounts {
 };
 
 struct DropRecord {
-  uint64_t index = 0;        // the document's index in the input
-  std::string reason;        // "empty", "duplicate of N", "degenerate"
+  uint64_t index = 0;  // the document's index in the input
+  std::string reason;  // "empty", "duplicate of N", "degenerate"
 };
 
 /// The manifest: what came in, what was kept, and why not.
 struct IngestManifest {
   uint64_t documents_in = 0;
   uint64_t documents_kept = 0;
-  uint64_t chat_documents = 0;      // prompt / response pairs among them
+  uint64_t chat_documents = 0;  // prompt / response pairs among them
   uint64_t dropped_zero_target_windows = 0;  // masked windows with no target
-  uint64_t target_tokens = 0;       // positions the loss counts (masked)
-  uint64_t total_tokens = 0;        // positions in the records (windows x S)
+  uint64_t target_tokens = 0;  // positions the loss counts (masked)
+  uint64_t total_tokens = 0;   // positions in the records (windows x S)
   uint64_t dropped_empty = 0;
   uint64_t dropped_duplicate = 0;
   uint64_t dropped_degenerate = 0;  // fewer than two ids: no target
@@ -96,7 +96,7 @@ struct IngestResult {
                               // empty when every position is a target)
   bool masked = false;
   IngestManifest manifest;
-  uint64_t corpus_hash = 0;   // ContentHash64 of `sds`
+  uint64_t corpus_hash = 0;  // ContentHash64 of `sds`
   uint64_t tokenizer_hash = 0;
 };
 

@@ -34,8 +34,8 @@ Dataset MakeCorpus() {
       inputs[i * kDim + d] = static_cast<float>(i * kDim + d);
     lab[i] = static_cast<int32_t>(i);
   }
-  auto ds = Dataset::FromMemory(std::move(inputs), std::move(labels),
-                                kSamples, kDim, /*label_kind=*/1,
+  auto ds = Dataset::FromMemory(std::move(inputs), std::move(labels), kSamples,
+                                kDim, /*label_kind=*/1,
                                 /*label_dim=*/0);
   if (!ds) std::abort();
   return std::move(*ds);

@@ -71,11 +71,10 @@ inline constexpr size_t kGemmRowBlock = 4;
 // (even a perfectly predicted one) keeps the compiler from hoisting the
 // row addresses — measured, it cost the whole register-blocking gain.
 template <bool kTransposedA, typename BType>
-void BlockedNNImpl(const float* SEEML_RESTRICT A,
-                   const BType* SEEML_RESTRICT B, float* SEEML_RESTRICT C,
-                   size_t m_begin, size_t m_end, size_t n_begin, size_t n_end,
-                   size_t N, size_t K, float alpha, size_t a_stride,
-                   const GemmTiles& tiles,
+void BlockedNNImpl(const float* SEEML_RESTRICT A, const BType* SEEML_RESTRICT B,
+                   float* SEEML_RESTRICT C, size_t m_begin, size_t m_end,
+                   size_t n_begin, size_t n_end, size_t N, size_t K,
+                   float alpha, size_t a_stride, const GemmTiles& tiles,
                    const float* SEEML_RESTRICT col_scale) {
   auto a_at = [&](size_t k, size_t m) {
     if constexpr (kTransposedA)
@@ -234,16 +233,15 @@ inline GemmGrid PlanGemmGrid(size_t M, size_t N, size_t K,
   const size_t min_rows =
       (M + up::kMaxParallelChunks - 1) / up::kMaxParallelChunks;
   if (g.band_rows < min_rows)
-    g.band_rows = (min_rows + kGemmRowBlock - 1) / kGemmRowBlock *
-                  kGemmRowBlock;
+    g.band_rows =
+        (min_rows + kGemmRowBlock - 1) / kGemmRowBlock * kGemmRowBlock;
   g.bands_m = (M + g.band_rows - 1) / g.band_rows;
   g.band_cols = N;
   g.bands_n = 1;
   // How many tasks the work is worth, and whether the rows fall short.
   const size_t per_row = N * K;
-  const size_t work = per_row != 0 && M > SIZE_MAX / per_row
-                          ? SIZE_MAX
-                          : M * per_row;
+  const size_t work =
+      per_row != 0 && M > SIZE_MAX / per_row ? SIZE_MAX : M * per_row;
   const size_t want = MinZ(kGemmWantTasks, work / kGemmTaskWork);
   const size_t tile_n = FitToPanel(tiles).n;
   if (g.bands_m < want && N > tile_n) {
@@ -343,9 +341,10 @@ template <typename BType>
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((always_inline))
 #endif
-inline void NtRow(const float* SEEML_RESTRICT a_row,
-                  const BType* SEEML_RESTRICT B, float* SEEML_RESTRICT c_row,
-                  size_t n0, size_t n1, size_t K, float alpha) {
+inline void
+NtRow(const float* SEEML_RESTRICT a_row, const BType* SEEML_RESTRICT B,
+      float* SEEML_RESTRICT c_row, size_t n0, size_t n1, size_t K,
+      float alpha) {
   size_t n = n0;
   for (; n + 4 <= n1; n += 4) {
     const BType* SEEML_RESTRICT b0 = B + (n + 0) * K;
@@ -584,12 +583,12 @@ void GemmNN(const float* A, const float* B, float* C, size_t M, size_t N,
             const GemmTiles& tiles, const float* addend, float alpha) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    ZeroCell(C, N, m0, m1, n0, n1);
-                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, K,
-                              /*a_transposed=*/false, tiles);
-                    if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
-                    EpilogueRows(C, bias, m0, m1, n0, n1, N, act);
-                  });
+    ZeroCell(C, N, m0, m1, n0, n1);
+    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, K,
+              /*a_transposed=*/false, tiles);
+    if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
+    EpilogueRows(C, bias, m0, m1, n0, n1, N, act);
+  });
 }
 
 void GemmNT(const float* A, const float* B, float* C, size_t M, size_t N,
@@ -597,9 +596,9 @@ void GemmNT(const float* A, const float* B, float* C, size_t M, size_t N,
             float alpha) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    BlockedNT(A, B, C, m0, m1, n0, n1, N, K, alpha, tiles.n);
-                    if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
-                  });
+    BlockedNT(A, B, C, m0, m1, n0, n1, N, K, alpha, tiles.n);
+    if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
+  });
 }
 
 void GemmTN(const float* A, const float* B, float* C, size_t M, size_t N,
@@ -607,20 +606,20 @@ void GemmTN(const float* A, const float* B, float* C, size_t M, size_t N,
             float alpha) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    ZeroCell(C, N, m0, m1, n0, n1);
-                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, M,
-                              /*a_transposed=*/true, tiles);
-                    if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
-                  });
+    ZeroCell(C, N, m0, m1, n0, n1);
+    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, M,
+              /*a_transposed=*/true, tiles);
+    if (addend) AddendRows(C, addend, m0, m1, n0, n1, N);
+  });
 }
 
 void GemmAccNN(const float* A, const float* B, float* C, size_t M, size_t N,
                size_t K, float alpha, const GemmTiles& tiles) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, K,
-                              /*a_transposed=*/false, tiles);
-                  });
+    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, alpha, K,
+              /*a_transposed=*/false, tiles);
+  });
 }
 
 void GemmNNQ8(const float* A, const int8_t* B, float* C, size_t M, size_t N,
@@ -628,14 +627,13 @@ void GemmNNQ8(const float* A, const int8_t* B, float* C, size_t M, size_t N,
               const GemmTiles& tiles, const float* col_scale) {
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    ZeroCell(C, N, m0, m1, n0, n1);
-                    // Per-column scales (v17) join B's panel widening; the
-                    // per-tensor form folds its one scale into A.
-                    BlockedNN(A, B, C, m0, m1, n0, n1, N, K,
-                              col_scale ? 1.0f : scale, K,
-                              /*a_transposed=*/false, tiles, col_scale);
-                    EpilogueRows(C, /*bias=*/nullptr, m0, m1, n0, n1, N, act);
-                  });
+    ZeroCell(C, N, m0, m1, n0, n1);
+    // Per-column scales (v17) join B's panel widening; the
+    // per-tensor form folds its one scale into A.
+    BlockedNN(A, B, C, m0, m1, n0, n1, N, K, col_scale ? 1.0f : scale, K,
+              /*a_transposed=*/false, tiles, col_scale);
+    EpilogueRows(C, /*bias=*/nullptr, m0, m1, n0, n1, N, act);
+  });
 }
 
 // Per-column int8 scales in the dX GEMM (v17) sit on the reduction axis:
@@ -651,51 +649,50 @@ void GemmNTQ8(const float* A, const int8_t* B, float* C, size_t M, size_t N,
   if (!k_scale) {
     ForEachGemmTask(M, N, K, tiles,
                     [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                      BlockedNT(A, B, C, m0, m1, n0, n1, N, K, scale,
-                                tiles.n);
-                    });
+      BlockedNT(A, B, C, m0, m1, n0, n1, N, K, scale, tiles.n);
+    });
     return;
   }
-  const size_t chunk_rows =
-      std::max<size_t>(2, (kNtScaledFloatsMax / std::max<size_t>(1, K)) & ~size_t{1});
+  const size_t chunk_rows = std::max<size_t>(
+      2, (kNtScaledFloatsMax / std::max<size_t>(1, K)) & ~size_t{1});
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    thread_local std::vector<float> scaled;
-                    for (size_t r0 = m0; r0 < m1; r0 += chunk_rows) {
-                      const size_t rows = MinZ(chunk_rows, m1 - r0);
-                      if (scaled.size() < rows * K) scaled.resize(rows * K);
-                      for (size_t r = 0; r < rows; ++r)
-                        for (size_t k = 0; k < K; ++k)
-                          scaled[r * K + k] = A[(r0 + r) * K + k] * k_scale[k];
-                      BlockedNT(scaled.data(), B, C + r0 * N, 0, rows, n0, n1,
-                                N, K, 1.0f, tiles.n);
-                    }
-                  });
+    thread_local std::vector<float> scaled;
+    for (size_t r0 = m0; r0 < m1; r0 += chunk_rows) {
+      const size_t rows = MinZ(chunk_rows, m1 - r0);
+      if (scaled.size() < rows * K) scaled.resize(rows * K);
+      for (size_t r = 0; r < rows; ++r)
+        for (size_t k = 0; k < K; ++k)
+          scaled[r * K + k] = A[(r0 + r) * K + k] * k_scale[k];
+      BlockedNT(scaled.data(), B, C + r0 * N, 0, rows, n0, n1, N, K, 1.0f,
+                tiles.n);
+    }
+  });
 }
 
 // bf16 B: the same blocked cores over up::Bf16 elements, whose
 // static_cast<float> is the exact widening — bit-identical to GemmNN /
 // GemmNT over the widened f32 matrix.
-void GemmNNBF16(const float* A, const uint16_t* B, float* C, size_t M,
-                size_t N, size_t K, const float* bias, up::EpilogueAct act,
+void GemmNNBF16(const float* A, const uint16_t* B, float* C, size_t M, size_t N,
+                size_t K, const float* bias, up::EpilogueAct act,
                 const GemmTiles& tiles) {
   const auto* Bh = reinterpret_cast<const up::Bf16*>(B);
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    ZeroCell(C, N, m0, m1, n0, n1);
-                    BlockedNN(A, Bh, C, m0, m1, n0, n1, N, K, 1.0f, K,
-                              /*a_transposed=*/false, tiles);
-                    EpilogueRows(C, bias, m0, m1, n0, n1, N, act);
-                  });
+    ZeroCell(C, N, m0, m1, n0, n1);
+    BlockedNN(A, Bh, C, m0, m1, n0, n1, N, K, 1.0f, K,
+              /*a_transposed=*/false, tiles);
+    EpilogueRows(C, bias, m0, m1, n0, n1, N, act);
+  });
 }
 
-void GemmNTBF16(const float* A, const uint16_t* B, float* C, size_t M,
-                size_t N, size_t K, const GemmTiles& tiles) {
+void GemmNTBF16(const float* A, const uint16_t* B, float* C, size_t M, size_t N,
+                size_t K, const GemmTiles& tiles) {
   const auto* Bh = reinterpret_cast<const up::Bf16*>(B);
   ForEachGemmTask(M, N, K, tiles,
                   [&](size_t m0, size_t m1, size_t n0, size_t n1) {
-                    BlockedNT(A, Bh, C, m0, m1, n0, n1, N, K, 1.0f, tiles.n);
-                  });
+    BlockedNT(A, Bh, C, m0, m1, n0, n1, N, K, 1.0f, tiles.n);
+  });
 }
 
 }  // namespace seeml::update_rt::kernels

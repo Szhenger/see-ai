@@ -86,8 +86,7 @@ struct Programs {
   uint64_t fwd_classes = 0;
   for (const auto* program : {&train, &merge, &eval, &step})
     for (const up::UpdateInstruction& ins : *program)
-      if (static_cast<up::OpCode>(ins.opcode) ==
-              up::OpCode::kSoftmaxXEntFwd ||
+      if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kSoftmaxXEntFwd ||
           static_cast<up::OpCode>(ins.opcode) ==
               up::OpCode::kSoftmaxXEntMaskedFwd) {
         if (fwd_classes != 0 && fwd_classes != ins.out[1])
@@ -122,9 +121,8 @@ void ScanSourceReads(const Programs& programs, const up::PlanHeader& header,
                                         /*allow_source=*/true))
         for (size_t i = 0; i < ex->count; ++i)
           if (ex->ranges[i].source) {
-            source_required =
-                std::max(source_required,
-                         ex->ranges[i].off + ex->ranges[i].bytes);
+            source_required = std::max(source_required,
+                                       ex->ranges[i].off + ex->ranges[i].bytes);
             if (program == &train || program == &step)
               train_reads_source = true;
             else if (program == &merge)
@@ -161,7 +159,7 @@ void ScanEvalTail(const std::vector<up::UpdateInstruction>& eval,
       eval_softmax_cols = ins.out[1];
       if (ins.in[2] == header.loss_ref && ins.out[0] == header.batch)
         eval_tail = {op == up::OpCode::kSoftmaxXEntFwd ? EvalTail::kXent
-                                                        : EvalTail::kXentMasked,
+                                                       : EvalTail::kXentMasked,
                      ins.in[3], ins.in[1], ins.out[1]};
     } else if (op == up::OpCode::kMseFwd && ins.in[2] == header.loss_ref &&
                header.batch > 0 && ins.out[0] % header.batch == 0) {
@@ -324,9 +322,9 @@ std::expected<Arena, std::string> AllocateArena(const up::PlanHeader& header,
   // zero-copy shared buffer; on the CPU path the alignment changes the
   // allocation's address and nothing else.
   if (header.arena_size > SIZE_MAX - kArenaAlignment)
-    return diag::executing::Error(
-        "plan arena of " + std::to_string(header.arena_size) +
-        " bytes exceeds this host's address space");
+    return diag::executing::Error("plan arena of " +
+                                  std::to_string(header.arena_size) +
+                                  " bytes exceeds this host's address space");
   // An arena the host cannot hold is refused before the allocation is
   // attempted: the executing fuzzer (CR3 #144 F22) reached aligned_alloc
   // with a header asking for exabytes — an abort under the sanitizer, and
@@ -335,15 +333,15 @@ std::expected<Arena, std::string> AllocateArena(const up::PlanHeader& header,
   // allocation's own failure, as before.
   if (const uint64_t host = up::DetectHostMemoryBytes();
       host != 0 && header.arena_size > host)
-    return diag::executing::Error(
-        "plan arena of " + std::to_string(header.arena_size) +
-        " bytes exceeds this host's memory (" + std::to_string(host) +
-        " bytes)");
+    return diag::executing::Error("plan arena of " +
+                                  std::to_string(header.arena_size) +
+                                  " bytes exceeds this host's memory (" +
+                                  std::to_string(host) + " bytes)");
   const size_t arena_bytes =
       (static_cast<size_t>(header.arena_size) + (kArenaAlignment - 1)) &
       ~size_t{kArenaAlignment - 1};
-  uint8_t* arena = static_cast<uint8_t*>(
-      std::aligned_alloc(kArenaAlignment, arena_bytes));
+  uint8_t* arena =
+      static_cast<uint8_t*>(std::aligned_alloc(kArenaAlignment, arena_bytes));
   if (!arena) return diag::executing::Error("arena allocation failed");
   std::memset(arena, 0, arena_bytes);
   std::memcpy(arena, plan + header.persist_init_offset,

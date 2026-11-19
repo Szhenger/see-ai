@@ -33,10 +33,14 @@ enum class StatKind : uint8_t { kCount = 0, kBytes = 1, kReal = 2, kText = 3 };
 
 inline constexpr const char* StatKindName(StatKind kind) {
   switch (kind) {
-    case StatKind::kCount: return "count";
-    case StatKind::kBytes: return "bytes";
-    case StatKind::kReal: return "real";
-    case StatKind::kText: return "text";
+    case StatKind::kCount:
+      return "count";
+    case StatKind::kBytes:
+      return "bytes";
+    case StatKind::kReal:
+      return "real";
+    case StatKind::kText:
+      return "text";
   }
   return "unknown";
 }
@@ -50,13 +54,13 @@ inline constexpr uint8_t kStatVolatile = 1u << 1;
 inline constexpr uint8_t kStatOptional = 1u << 2;
 
 struct StatRow {
-  const char* key;         // the report key (snake_case)
-  const char* label;       // the console label
+  const char* key;    // the report key (snake_case)
+  const char* label;  // the console label
   StatKind kind;
   const char* unit;        // "" for a dimensionless number; bytes carry "B"
   const char* derivation;  // one clause: where the number comes from
   uint8_t flags = 0;
-  int precision = 0;       // decimals of a kReal on the console
+  int precision = 0;  // decimals of a kReal on the console
 };
 
 struct StatColumn {
@@ -220,9 +224,7 @@ inline std::string Padded(std::string s, size_t width) {
 class Screen {
  public:
   explicit Screen(const ScreenSpec& spec)
-      : spec_(&spec),
-        values_(spec.rows.size()),
-        tables_(spec.tables.size()) {}
+      : spec_(&spec), values_(spec.rows.size()), tables_(spec.tables.size()) {}
 
   const ScreenSpec& spec() const { return *spec_; }
 
@@ -274,8 +276,8 @@ class Screen {
   /// The value of `key`, or nullptr when the key is unknown or unset.
   const StatValue* Get(std::string_view key) const {
     const int i = RowIndex(key);
-    if (i < 0 || std::holds_alternative<std::monostate>(
-                     values_[static_cast<size_t>(i)]))
+    if (i < 0 ||
+        std::holds_alternative<std::monostate>(values_[static_cast<size_t>(i)]))
       return nullptr;
     return &values_[static_cast<size_t>(i)];
   }
@@ -312,8 +314,7 @@ class Screen {
     for (size_t t = 0; t < tables_.size(); ++t) {
       if (tables_[t].empty()) continue;
       const StatTable& table = spec_->tables[t];
-      out += std::string("  ") + table.label + " — " + table.derivation +
-             "\n";
+      out += std::string("  ") + table.label + " — " + table.derivation + "\n";
       for (const auto& cells : tables_[t]) {
         std::string line = "   ";
         for (size_t c = 0; c < cells.size(); ++c) {
@@ -417,8 +418,9 @@ class Screen {
       return;
     }
     if (!screen_detail::Fits(spec_->rows[static_cast<size_t>(i)].kind, v)) {
-      problems_.push_back("row '" + std::string(key) + "' set with the wrong kind (it is " +
-                          StatKindName(spec_->rows[static_cast<size_t>(i)].kind) + ")");
+      problems_.push_back(
+          "row '" + std::string(key) + "' set with the wrong kind (it is " +
+          StatKindName(spec_->rows[static_cast<size_t>(i)].kind) + ")");
       return;
     }
     values_[static_cast<size_t>(i)] = std::move(v);

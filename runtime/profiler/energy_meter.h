@@ -97,11 +97,16 @@ class EnergyMeter {
       if (value <= 0) continue;
       const std::string unit = Str(get_unit_(row));
       double scale = 0.0;
-      if (unit == "nJ") scale = 1e-9;
-      else if (unit == "uJ" || unit == "\xC2\xB5J") scale = 1e-6;
-      else if (unit == "mJ") scale = 1e-3;
-      else if (unit == "J") scale = 1.0;
-      else continue;
+      if (unit == "nJ")
+        scale = 1e-9;
+      else if (unit == "uJ" || unit == "\xC2\xB5J")
+        scale = 1e-6;
+      else if (unit == "mJ")
+        scale = 1e-3;
+      else if (unit == "J")
+        scale = 1.0;
+      else
+        continue;
       out.joules[Str(get_name_(row))] += static_cast<double>(value) * scale;
     }
     const bool sampled = delta != nullptr;
@@ -134,8 +139,8 @@ class EnergyMeter {
                                        CFTypeRef);
   using CreateSamples = CFDictionaryRef (*)(void*, CFMutableDictionaryRef,
                                             CFTypeRef);
-  using CreateSamplesDelta = CFDictionaryRef (*)(CFDictionaryRef, CFDictionaryRef,
-                                                 CFTypeRef);
+  using CreateSamplesDelta = CFDictionaryRef (*)(CFDictionaryRef,
+                                                 CFDictionaryRef, CFTypeRef);
   using ChannelGetString = CFStringRef (*)(CFDictionaryRef);
   using SimpleGetInteger = int64_t (*)(CFDictionaryRef, int);
 
@@ -161,8 +166,8 @@ class EnergyMeter {
         dlsym(lib_, "IOReportCopyChannelsInGroup"));
     auto create_sub = reinterpret_cast<CreateSubscription>(
         dlsym(lib_, "IOReportCreateSubscription"));
-    create_samples_ = reinterpret_cast<CreateSamples>(
-        dlsym(lib_, "IOReportCreateSamples"));
+    create_samples_ =
+        reinterpret_cast<CreateSamples>(dlsym(lib_, "IOReportCreateSamples"));
     create_delta_ = reinterpret_cast<CreateSamplesDelta>(
         dlsym(lib_, "IOReportCreateSamplesDelta"));
     get_name_ = reinterpret_cast<ChannelGetString>(

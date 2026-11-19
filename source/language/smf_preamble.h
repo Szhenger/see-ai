@@ -50,19 +50,29 @@ inline constexpr size_t kSmfPreambleMaxBytes = 4 * 4 + 2 * (2 + 65535) + 8 + 16;
     std::memcpy(dst, bytes + pos, len);
     pos += len;
   };
-  auto u32 = [&] { uint32_t v = 0; take(&v, 4); return v; };
-  auto u64 = [&] { uint64_t v = 0; take(&v, 8); return v; };
+  auto u32 = [&] {
+    uint32_t v = 0;
+    take(&v, 4);
+    return v;
+  };
+  auto u64 = [&] {
+    uint64_t v = 0;
+    take(&v, 8);
+    return v;
+  };
   auto skip_str = [&] {
     uint16_t len = 0;
     take(&len, 2);
     if (ok && len > n - pos) ok = false;
     if (ok) pos += len;
   };
-  if (u32() != kSmfMagic || !ok) return std::unexpected("not an SMF model (bad magic)");
+  if (u32() != kSmfMagic || !ok)
+    return std::unexpected("not an SMF model (bad magic)");
   SmfPreamble p;
   p.version = u32();
   if (!ok || p.version < kSmfMinVersion || p.version > kSmfVersion)
-    return std::unexpected("unsupported SMF version " + std::to_string(p.version));
+    return std::unexpected("unsupported SMF version " +
+                           std::to_string(p.version));
   (void)u32();  // num_tensors
   (void)u32();  // num_ops
   skip_str();   // input_name

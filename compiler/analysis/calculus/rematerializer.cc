@@ -31,9 +31,7 @@ bool Recomputable(const sir::Operation& op) {
          m == "sc_high.embedding";
 }
 
-uint64_t Bytes(const sir::Value* v) {
-  return v->shape().byteSize(v->dtype());
-}
+uint64_t Bytes(const sir::Value* v) { return v->shape().byteSize(v->dtype()); }
 
 }  // namespace
 
@@ -52,7 +50,8 @@ std::expected<Rematerialization, std::string> Rematerializer::Run(
   std::unordered_map<const sir::Operation*, double> pos;
   pos.reserve(ops.size() * 2);
   for (size_t i = 0; i < ops.size(); ++i) pos[ops[i]] = static_cast<double>(i);
-  auto position = [&](const sir::Operation* op) -> std::expected<double, std::string> {
+  auto position =
+      [&](const sir::Operation* op) -> std::expected<double, std::string> {
     if (auto it = pos.find(op); it != pos.end()) return it->second;
     return updating::Error(updating::kRematerializer,
                            "reader outside the program: " + op->toString());
@@ -139,18 +138,19 @@ std::expected<Rematerialization, std::string> Rematerializer::Run(
     renamed.reserve(op->numResults());
     for (const auto& r : op->results())
       renamed.emplace_back(
-          r.get(), clone->addResult(std::string(r->id()) + ".remat",
-                                    r->dtype(), r->shape()));
+          r.get(), clone->addResult(std::string(r->id()) + ".remat", r->dtype(),
+                                    r->shape()));
 
     // Right before the anchor: after the op that precedes it now.
     const auto current = block.operations();
-    const auto at = std::find_if(
-        current.begin(), current.end(),
-        [&](const std::unique_ptr<sir::Operation>& p) { return p.get() == anchor; });
+    const auto at = std::find_if(current.begin(), current.end(),
+                                 [&](const std::unique_ptr<sir::Operation>& p) {
+      return p.get() == anchor;
+    });
     if (at == current.begin() || at == current.end())
-      return updating::Error(updating::kRematerializer,
-                             "backward reader has no predecessor: " +
-                                 anchor->toString());
+      return updating::Error(
+          updating::kRematerializer,
+          "backward reader has no predecessor: " + anchor->toString());
     sir::Operation* pred = std::prev(at)->get();
     sir::Operation* copy = clone.get();
     std::vector<std::unique_ptr<sir::Operation>> inserted;

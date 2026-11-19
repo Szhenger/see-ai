@@ -136,50 +136,51 @@ using namespace seeml::update;
 }
 
 void PrintUsage() {
-  std::fprintf(stderr,
-               "usage: seeml-update-compile --source model.smf --out dir/\n"
-               "  [--recipe recipe.json]  the fields below as one JSON object;\n"
-               "                      a flag overrides the field it names;\n"
-               "                      a boolean flag --x has the form --no-x\n"
-               "  [--data-batch N] [--loss xent|mse|kl|xent+kl]\n"
-               "  [--teacher t.smf] [--distill-weight W] [--temperature T]\n"
-               "  [--lora-rank R] [--lora-alpha A] [--lora-seed S]\n"
-               "  [--lora-scaling alpha_over_r|alpha_over_sqrt_r]  the adapter scale\n"
-               "  [--targets substr,...] [--optimizer adamw|sgd] [--lr LR]\n"
-               "  [--weight-decay WD] [--clip-norm C]\n"
-               "  [--lr-schedule cosine|const] [--warmup N] [--allow-zero-lr]\n"
-               "  [--weight-decay WD] [--clip-norm C] [--clip-mode per_tensor|global]\n"
-               "  [--lr-schedule const|cosine] [--warmup N] [--allow-zero-lr]\n"
-               "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
-               "  [--precision f32|certified-bf16]\n"
-               "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
-               "  [--remat auto|off|on] [--memory-budget-mib N]\n"
-               "  [--adapter-only] [--validation-scores shipped|plan]\n"
-               "  [--data corpus.txt|.jsonl|.sds]  the training data: raw text is\n"
-               "                      tokenized with the model's section into\n"
-               "                      <out>/corpus.sds; the plan is pinned to it\n"
-               "  [--val-frac F] [--split-seed S]  the held-out split, compiled\n"
-               "                      from the corpus and named in the plan\n"
-               "  [--masked-loss]     the cross-entropy over target positions\n"
-               "  [--segment-mask auto|off|on]  no attention across a window's "
-               "documents (default off; auto: when the --data corpus holds such windows)\n"
-               "                      alone (labels of -1 ignored); implied by\n"
-               "                      a --data corpus that carries a mask\n"
-               "  [--steps N]\n"
-               "  [--grad-accum G]\n"
-               "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
-               "  [--no-rope-table]\n"
-               "  [--no-fuse-clip]\n"
-               "  [--report out.json] [--dump-sir out.txt]\n"
-               "  [--kernel-policy table.json] [--target-host KEY]\n"
-               "  [--gemm-tiles K,N]\n"
-               "  [--no-embed] [--build] [--version]\n"
-               "  [--gpu-peak-gflops G]  the target GPU's peak: the GPU-denominated\n"
-               "                      predicted step (and a Metal run's)\n"
-               "  [--peak-gflops G]   the target's peak; the backend screen then\n"
-               "                      predicts a step's time from the plan's work\n"
-               "  [--verbose]         every screen row, the per-pass and per-adapter\n"
-               "                      tables, and each pass's note\n");
+  std::fprintf(
+      stderr,
+      "usage: seeml-update-compile --source model.smf --out dir/\n"
+      "  [--recipe recipe.json]  the fields below as one JSON object;\n"
+      "                      a flag overrides the field it names;\n"
+      "                      a boolean flag --x has the form --no-x\n"
+      "  [--data-batch N] [--loss xent|mse|kl|xent+kl]\n"
+      "  [--teacher t.smf] [--distill-weight W] [--temperature T]\n"
+      "  [--lora-rank R] [--lora-alpha A] [--lora-seed S]\n"
+      "  [--lora-scaling alpha_over_r|alpha_over_sqrt_r]  the adapter scale\n"
+      "  [--targets substr,...] [--optimizer adamw|sgd] [--lr LR]\n"
+      "  [--weight-decay WD] [--clip-norm C]\n"
+      "  [--lr-schedule cosine|const] [--warmup N] [--allow-zero-lr]\n"
+      "  [--weight-decay WD] [--clip-norm C] [--clip-mode per_tensor|global]\n"
+      "  [--lr-schedule const|cosine] [--warmup N] [--allow-zero-lr]\n"
+      "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
+      "  [--precision f32|certified-bf16]\n"
+      "  [--attention auto|cached|tiled] [--attention-cache-budget-mib N]\n"
+      "  [--remat auto|off|on] [--memory-budget-mib N]\n"
+      "  [--adapter-only] [--validation-scores shipped|plan]\n"
+      "  [--data corpus.txt|.jsonl|.sds]  the training data: raw text is\n"
+      "                      tokenized with the model's section into\n"
+      "                      <out>/corpus.sds; the plan is pinned to it\n"
+      "  [--val-frac F] [--split-seed S]  the held-out split, compiled\n"
+      "                      from the corpus and named in the plan\n"
+      "  [--masked-loss]     the cross-entropy over target positions\n"
+      "  [--segment-mask auto|off|on]  no attention across a window's "
+      "documents (default off; auto: when the --data corpus holds such windows)\n"
+      "                      alone (labels of -1 ignored); implied by\n"
+      "                      a --data corpus that carries a mask\n"
+      "  [--steps N]\n"
+      "  [--grad-accum G]\n"
+      "  [--no-fuse-epilogue] [--no-fuse-elementwise] [--no-fuse-addend]\n"
+      "  [--no-rope-table]\n"
+      "  [--no-fuse-clip]\n"
+      "  [--report out.json] [--dump-sir out.txt]\n"
+      "  [--kernel-policy table.json] [--target-host KEY]\n"
+      "  [--gemm-tiles K,N]\n"
+      "  [--no-embed] [--build] [--version]\n"
+      "  [--gpu-peak-gflops G]  the target GPU's peak: the GPU-denominated\n"
+      "                      predicted step (and a Metal run's)\n"
+      "  [--peak-gflops G]   the target's peak; the backend screen then\n"
+      "                      predicts a step's time from the plan's work\n"
+      "  [--verbose]         every screen row, the per-pass and per-adapter\n"
+      "                      tables, and each pass's note\n");
 }
 
 /// Strict argument cursor: every flag must be known, every value must parse
@@ -331,7 +332,8 @@ struct CompileArgs {
   }
   policy_request.table_path = args.TakeValue("--kernel-policy");
   policy_request.target_host = args.TakeValue("--target-host");
-  if (policy_request.target_host) config.target_host = *policy_request.target_host;
+  if (policy_request.target_host)
+    config.target_host = *policy_request.target_host;
   return std::nullopt;
 }
 
@@ -344,8 +346,7 @@ struct CompileArgs {
     // every recipe float is: no whitespace, no hex, nothing non-finite.
     double peak = 0.0;
     if (!recipe::ParseF64Strict(*v, &peak) || !(peak > 0.0))
-      return Usage("--peak-gflops must be a positive number, got '" + *v +
-                   "'");
+      return Usage("--peak-gflops must be a positive number, got '" + *v + "'");
     config.peak_gflops = peak;
   }
   // The GPU half of the target description (S6 #152): the backend screen
@@ -364,8 +365,7 @@ struct CompileArgs {
 /// What no flag took, and the flags that cannot stand together: checked
 /// last, when every flag has been taken.
 [[nodiscard]] std::optional<int> RefuseLeftovers(const Args& args,
-                                                 bool no_embed,
-                                                 bool want_build,
+                                                 bool no_embed, bool want_build,
                                                  const UpdateConfig& config) {
   if (const auto& m = args.MissingValue())
     return Usage(*m + " requires a value");
@@ -376,27 +376,28 @@ struct CompileArgs {
   // below its limit, disk from it) and drives the build itself. Refuse
   // here so a --no-embed package is always packed before it is built.
   if (no_embed && want_build)
-    return Usage("--build needs the embedded plan TU that --no-embed skips; "
-                 "run `python3 tool/pack_update.py <out> --build` instead (it "
-                 "embeds the plan, or leaves it beside the binary above its "
-                 "embed limit)");
+    return Usage(
+        "--build needs the embedded plan TU that --no-embed skips; "
+        "run `python3 tool/pack_update.py <out> --build` instead (it "
+        "embeds the plan, or leaves it beside the binary above its "
+        "embed limit)");
   // A relaxed plan (v18) is buildable only beside a numerics certificate,
   // and only the Python plane issues one: --build here would link an
   // uncertified relaxed binary (2026-09-24 review, N17). The emitted
   // build.sh refuses the same way, so no path builds one by hand.
   if (want_build && config.precision == Precision::kCertifiedBf16)
-    return Usage("--build cannot certify a --precision certified-bf16 plan; "
-                 "emit it, run `python3 tool/certify_numerics.py certify <out> "
-                 "--corpus <corpus.sds>`, then `python3 tool/pack_update.py "
-                 "<out> --build`");
+    return Usage(
+        "--build cannot certify a --precision certified-bf16 plan; "
+        "emit it, run `python3 tool/certify_numerics.py certify <out> "
+        "--corpus <corpus.sds>`, then `python3 tool/pack_update.py "
+        "<out> --build`");
   return std::nullopt;
 }
 
 /// The command line: every flag taken in the order that decides which
 /// refusal wins. The error is the exit code — 2 for a bad command line, 1
 /// for a recipe file that cannot be read, 0 after --help or --version.
-[[nodiscard]] std::expected<CompileArgs, int> ParseArgs(int argc,
-                                                        char** argv) {
+[[nodiscard]] std::expected<CompileArgs, int> ParseArgs(int argc, char** argv) {
   if (argc > 255) return std::unexpected(Usage("too many arguments"));
   Args args(argc, argv);
 
@@ -631,8 +632,9 @@ void PrintScreens(const CompiledUpdate* compiled, bool verbose) {
               reinterpret_cast<const char*>(compiled->corpus_sds.data()),
               compiled->corpus_sds.size()))
         return Fail(*why);
-      if (auto why = WriteStaged(manifest_file, compiled->corpus_manifest.data(),
-                                  compiled->corpus_manifest.size()))
+      if (auto why =
+              WriteStaged(manifest_file, compiled->corpus_manifest.data(),
+                          compiled->corpus_manifest.size()))
         return Fail(*why);
       std::fprintf(stderr,
                    "seeml-update-compile: wrote %s (the canonical corpus the "
@@ -689,17 +691,17 @@ void PrintReportScalars(std::FILE* f, const ReportContext& context) {
   // null when no embedded TU was written (--no-embed): the packer's stub
   // is the package's TU then, and the emitter has no path to report.
   const std::string embedded_tu_json =
-      paths->embedded_tu.empty()
-          ? "null"
-          : "\"" + JsonEscape(paths->embedded_tu) + "\"";
+      paths->embedded_tu.empty() ? "null"
+                                 : "\"" + JsonEscape(paths->embedded_tu) + "\"";
   // The corpus the plan is pinned to (S2 #148): null without --data.
   const std::string corpus_json =
-      corpus_file.empty() ? "null"
-                          : "\"" + JsonEscape(corpus_file) + "\"";
+      corpus_file.empty() ? "null" : "\"" + JsonEscape(corpus_file) + "\"";
   // The exact resident footprint the final gate checked (the arena plus
   // the plan blob), which the step-0 estimate is a lower bound on.
   const uint64_t exact_footprint =
       compiled->arena_size + static_cast<uint64_t>(compiled->plan.size());
+  // The format is laid out a JSON key to a line.
+  // clang-format off
   std::fprintf(f,
                "{\n"
                "  \"schema\": 1,\n"
@@ -806,6 +808,7 @@ void PrintReportScalars(std::FILE* f, const ReportContext& context) {
                embedded_tu_json.c_str(), policy->source.c_str(),
                JsonEscape(policy->host_key).c_str(),
                compiled->gemm_tile_k, compiled->gemm_tile_n);
+  // clang-format on
 }
 
 /// The report's lists: the adapters, the vendored sources, the passes and
@@ -819,8 +822,8 @@ void PrintReportLists(std::FILE* f, const ReportContext& context) {
                  "%s\n    {\"weight\": \"%s\", \"k\": %" PRId64
                  ", \"m\": %" PRId64 ", \"rank\": %" PRId64
                  ", \"scale\": %g, \"quant_scale\": %g, \"bf16\": %s}",
-                 i ? "," : "", JsonEscape(a.weight_name).c_str(), a.k, a.m,
-                 a.r, a.scale, a.quant_scale, a.bf16 ? "true" : "false");
+                 i ? "," : "", JsonEscape(a.weight_name).c_str(), a.k, a.m, a.r,
+                 a.scale, a.quant_scale, a.bf16 ? "true" : "false");
   }
   // The package's exact contents (P6): what the packer vendors against.
   std::fprintf(f, "\n  ],\n  \"vendored_sources\": [");
@@ -834,21 +837,19 @@ void PrintReportLists(std::FILE* f, const ReportContext& context) {
   for (size_t i = 0; i < compiled->pass_timings.size(); ++i) {
     const auto& t = compiled->pass_timings[i];
     std::fprintf(f, "%s\n    {\"name\": \"%s\", \"ops\": %zu, \"ms\": %.3f}",
-                 i ? "," : "", JsonEscape(t.name).c_str(), t.ops_after,
-                 t.ms);
+                 i ? "," : "", JsonEscape(t.name).c_str(), t.ops_after, t.ms);
   }
   // The statistics screens (S0 #146): the same rows the console printed,
   // every one of them, by key — the schema seeml-abi publishes. Additive,
   // so the report stays schema 1, as every key added since has been
   // (footprint_estimate, adapter_only, relaxed_attention, ...).
   std::fprintf(f, "\n  ],\n  \"screens\": {");
-  const Screen* screens[] = {&compiled->screens.frontend,
-                             &compiled->screens.analysis,
-                             &compiled->screens.backend,
-                             &compiled->screens.runtime};
+  const Screen* screens[] = {
+      &compiled->screens.frontend, &compiled->screens.analysis,
+      &compiled->screens.backend, &compiled->screens.runtime};
   for (size_t i = 0; i < 4; ++i)
-    std::fprintf(f, "%s\n    \"%s\": %s", i ? "," : "",
-                 screens[i]->spec().name, screens[i]->Json(4).c_str());
+    std::fprintf(f, "%s\n    \"%s\": %s", i ? "," : "", screens[i]->spec().name,
+                 screens[i]->Json(4).c_str());
   std::fprintf(f, "\n  }\n}\n");
 }
 
@@ -904,8 +905,8 @@ int main(int argc, char** argv) {
   }
 
   if (args.report_path)
-    if (auto rc = WriteReport(
-            {args, &*compiled, &*paths, &*policy, corpus_file}))
+    if (auto rc =
+            WriteReport({args, &*compiled, &*paths, &*policy, corpus_file}))
       return *rc;
 
   if (args.want_build) {

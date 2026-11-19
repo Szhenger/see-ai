@@ -83,7 +83,7 @@ class ExecutorBackend {
  public:
   virtual ~ExecutorBackend() = default;
 
-  virtual const char* name() const = 0;   // "cpu" | "metal"
+  virtual const char* name() const = 0;    // "cpu" | "metal"
   virtual std::string device() const = 0;  // human-readable device label
 
   /// Binds the address spaces for the plan about to execute. `arena` is

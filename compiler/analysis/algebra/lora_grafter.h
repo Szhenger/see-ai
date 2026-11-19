@@ -25,7 +25,7 @@ struct GraftedAdapter {
   seeml::sir::Value* frozen_weight = nullptr;  // W  [K, M] (rodata)
   seeml::sir::Value* A = nullptr;              // A  [K, r] (randn init)
   seeml::sir::Value* B = nullptr;              // B  [r, M] (zeros init)
-  float scale = 1.0f;                           // α / r
+  float scale = 1.0f;                          // α / r
   // Unique per-site naming stem ("w", or "w@1" for the second graft onto a
   // tied weight); every value id derived from this adapter uses it, keeping
   // ids unique across the training AND merge programs (Block::verify

@@ -22,15 +22,13 @@ namespace generating = seeml::diag::generating;
 /// message that cannot be attributed to one of these escaped the partition.
 constexpr std::string_view kRegisteredUnits[] = {
     diag::tokenizing::kContainer,      diag::tokenizing::kIngressor,
-    diag::tokenizing::kCorpus,
-    diag::parsing::kUnit,              diag::passing::kPassManager,
-    diag::updating::kAutodiff,
+    diag::tokenizing::kCorpus,         diag::parsing::kUnit,
+    diag::passing::kPassManager,       diag::updating::kAutodiff,
     diag::updating::kLoraGrafter,      diag::updating::kMergeBuilder,
     diag::updating::kOptimizer,        diag::updating::kEpilogueFuser,
     diag::updating::kRopeTable,        diag::updating::kChainFuser,
     diag::updating::kAddendFuser,      diag::updating::kAttentionTiling,
-    diag::updating::kRematerializer,
-    diag::architecting::kHostArch,
+    diag::updating::kRematerializer,   diag::architecting::kHostArch,
     diag::architecting::kKernelPolicy, diag::generating::kDriver,
     diag::generating::kArenaBinder,    diag::generating::kInstructionLowering,
     diag::generating::kNativeEmitter,
@@ -80,15 +78,13 @@ std::expected<void, std::string> VerifyAnalysisContract(
     const std::unordered_map<seeml::sir::Value*, seeml::sir::Value*>&
         param_grads,
     const MergeProgram& merge) {
-  if (adapters.empty())
-    return Broken("analysis", "no adapters were grafted");
+  if (adapters.empty()) return Broken("analysis", "no adapters were grafted");
   if (auto v = block.verify(); !v)
     return Broken("analysis", "training SIR is corrupt: " + v.error());
 
   for (const GraftedAdapter& a : adapters) {
     if (!a.frozen_weight || !a.A || !a.B)
-      return Broken("analysis",
-                    "adapter '" + a.id_base + "' has null values");
+      return Broken("analysis", "adapter '" + a.id_base + "' has null values");
     for (seeml::sir::Value* p : {a.A, a.B}) {
       const seeml::sir::Operation* def = p->definingOp();
       if (!def || def->mnemonic() != "sc_mem.param")
@@ -106,8 +102,7 @@ std::expected<void, std::string> VerifyAnalysisContract(
                       std::to_string(param_grads.size()) + " gradients for " +
                       std::to_string(adapters.size()) + " adapter(s))");
 
-  if (!merge.block)
-    return Broken("analysis", "merge program was never built");
+  if (!merge.block) return Broken("analysis", "merge program was never built");
   if (auto v = merge.block->verify(); !v)
     return Broken("analysis", "merge program is corrupt: " + v.error());
   if (merge.outputs.size() != adapters.size())
@@ -137,25 +132,24 @@ std::expected<void, std::string> VerifyGeneratedPlan(
     if (auto why = PlanHeaderViolation(header, compiled.plan.size()))
       return Broken("backend",
                     "the emitted plan's header fails the device's load "
-                    "contract: " + *why);
+                    "contract: " +
+                        *why);
     if (auto why = PlanMetadataViolation(header, compiled.plan.data(),
                                          compiled.plan.size()))
       return Broken("backend",
                     "the emitted plan's metadata fails the device's load "
-                    "contract: " + *why);
+                    "contract: " +
+                        *why);
   }
   if (compiled.train_instruction_count == 0 ||
       compiled.eval_instruction_count == 0 ||
       compiled.merge_instruction_count == 0)
-    return Broken("backend", "a lowered program is empty (train " +
-                                 std::to_string(
-                                     compiled.train_instruction_count) +
-                                 ", eval " +
-                                 std::to_string(
-                                     compiled.eval_instruction_count) +
-                                 ", merge " +
-                                 std::to_string(
-                                     compiled.merge_instruction_count) + ")");
+    return Broken(
+        "backend",
+        "a lowered program is empty (train " +
+            std::to_string(compiled.train_instruction_count) + ", eval " +
+            std::to_string(compiled.eval_instruction_count) + ", merge " +
+            std::to_string(compiled.merge_instruction_count) + ")");
   if (compiled.eval_instruction_count > compiled.train_instruction_count)
     return Broken("backend",
                   "eval program is larger than the training program that "
@@ -166,12 +160,14 @@ std::expected<void, std::string> VerifyGeneratedPlan(
   // accumulates, and then it must step every trainable (one step and one
   // zero per parameter, plus optional clips).
   if ((compiled.grad_accum_steps > 1) != (compiled.step_instruction_count > 0))
-    return Broken("backend", "step program presence disagrees with "
-                             "grad_accum_steps");
+    return Broken("backend",
+                  "step program presence disagrees with "
+                  "grad_accum_steps");
   if (compiled.grad_accum_steps > 1 &&
       compiled.step_instruction_count < 4 * num_adapters)
-    return Broken("backend", "step program too short to step every "
-                             "trainable");
+    return Broken("backend",
+                  "step program too short to step every "
+                  "trainable");
   if (compiled.arena_size == 0 ||
       compiled.arena_size < compiled.persistent_size)
     return Broken("backend", "arena cannot contain its persistent segment");
@@ -187,8 +183,9 @@ std::expected<void, std::string> VerifyGeneratedPlan(
                                  " of " + std::to_string(num_adapters) +
                                  " adapter(s)");
   if (compiled.params.size() != 2 * num_adapters)
-    return Broken("backend", "parameter debug hooks do not cover the "
-                             "trainable set");
+    return Broken("backend",
+                  "parameter debug hooks do not cover the "
+                  "trainable set");
   return {};
 }
 

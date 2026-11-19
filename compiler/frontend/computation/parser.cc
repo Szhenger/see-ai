@@ -56,9 +56,8 @@ std::expected<sir::Value*, std::string> BuildForward(
       return o;
     };
     auto bind_result = [&](sir::Operation* o) {
-      resolver.Bind(op.output,
-                    o->addResult(prefix + op.output, sir::DataType::F32,
-                                 out_shape));
+      resolver.Bind(op.output, o->addResult(prefix + op.output,
+                                            sir::DataType::F32, out_shape));
     };
     switch (op.kind) {
       case SmfOpKind::kMatMul:
@@ -89,7 +88,8 @@ std::expected<sir::Value*, std::string> BuildForward(
         sir::Operation* rn = emit("sc_high.rms_norm");
         // SMF v6 attr2: the model's epsilon. Default-valued ones set no
         // attribute, so a v5 model's SIR (and plan) is what it always was.
-        if (op.attr2 != 0) rn->setAttribute("eps", std::bit_cast<float>(op.attr2));
+        if (op.attr2 != 0)
+          rn->setAttribute("eps", std::bit_cast<float>(op.attr2));
         bind_result(rn);
         // Row statistic cached for the backward kernel.
         rn->addResult(prefix + op.output + ".rstd", sir::DataType::F32,
@@ -123,7 +123,8 @@ std::expected<sir::Value*, std::string> BuildForward(
       case SmfOpKind::kLayerNorm: {
         const int64_t rows = out_shape.dims.at(0);
         sir::Operation* ln = emit("sc_high.layer_norm");
-        if (op.attr2 != 0) ln->setAttribute("eps", std::bit_cast<float>(op.attr2));
+        if (op.attr2 != 0)
+          ln->setAttribute("eps", std::bit_cast<float>(op.attr2));
         bind_result(ln);
         // Row statistics cached for the backward kernel.
         ln->addResult(prefix + op.output + ".mean", sir::DataType::F32,
@@ -134,9 +135,9 @@ std::expected<sir::Value*, std::string> BuildForward(
       }
       default:
         // Topology refused every kind it does not know; unreachable.
-        return parsing::OpError("Op", op.name,
-                                "unsupported op kind " +
-                                    std::to_string(static_cast<int>(op.kind)));
+        return parsing::OpError(
+            "Op", op.name,
+            "unsupported op kind " + std::to_string(static_cast<int>(op.kind)));
     }
   }
 

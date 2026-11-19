@@ -52,7 +52,7 @@ void WriteBytes(const std::string& path, const uint8_t* data, size_t size) {
 
 namespace {
 // The bounds an accepted plan must meet before the harness executes it.
-constexpr uint64_t kFuzzArenaCap = 64ull << 20;       // 64 MiB
+constexpr uint64_t kFuzzArenaCap = 64ull << 20;  // 64 MiB
 constexpr uint64_t kFuzzInstructionCap = 4096;
 constexpr uint64_t kFuzzGemmWorkCap = 100000000ull;  // M*N*K summed
 
@@ -85,11 +85,12 @@ bool ExecuteOnce(seeml::update_rt::UpdateEngine& engine,
   // The loader proved every section in bounds; the GEMM work is summed
   // with saturation, so a fuzzed dimension cannot wrap the cap away.
   uint64_t work = 0;
-  const struct { uint64_t off, count; } programs[] = {
-      {h.train_instr_offset, h.train_instr_count},
-      {h.merge_instr_offset, h.merge_instr_count},
-      {h.eval_instr_offset, h.eval_instr_count},
-      {h.step_instr_offset, h.step_instr_count}};
+  const struct {
+    uint64_t off, count;
+  } programs[] = {{h.train_instr_offset, h.train_instr_count},
+                  {h.merge_instr_offset, h.merge_instr_count},
+                  {h.eval_instr_offset, h.eval_instr_count},
+                  {h.step_instr_offset, h.step_instr_count}};
   for (const auto& p : programs)
     for (uint64_t i = 0; i < p.count; ++i) {
       seeml::update::UpdateInstruction ins;
@@ -128,8 +129,8 @@ bool ExecuteOnce(seeml::update_rt::UpdateEngine& engine,
       return false;
     }
     data = seeml::update_rt::Dataset::FromMemory(
-        std::move(inputs), std::move(labels), h.batch, input_dim,
-        h.label_kind, label_dim);
+        std::move(inputs), std::move(labels), h.batch, input_dim, h.label_kind,
+        label_dim);
   }
   if (!data) return false;
   seeml::update_rt::TrainOptions options;

@@ -22,11 +22,10 @@ std::expected<MergeProgram, std::string> MergeBuilder::Run(
   std::unordered_set<const sir::Value*> seen_weights;
   for (const GraftedAdapter& adapter : adapters)
     if (!seen_weights.insert(adapter.frozen_weight).second)
-      return updating::Error(
-          updating::kMergeBuilder,
-          "two adapters share frozen weight '" +
-              std::string(adapter.frozen_weight->id()) +
-              "'; tied weights must share one adapter pair");
+      return updating::Error(updating::kMergeBuilder,
+                             "two adapters share frozen weight '" +
+                                 std::string(adapter.frozen_weight->id()) +
+                                 "'; tied weights must share one adapter pair");
 
   MergeProgram program;
   program.block = std::make_unique<sir::Block>();
@@ -51,9 +50,9 @@ std::expected<MergeProgram, std::string> MergeBuilder::Run(
     fill->setAttribute("value", 0.0f);
     // Named from the adapter's unique id stem; one delta per unique frozen
     // weight (tied weights share a single adapter pair).
-    sir::Value* delta = fill->addResult(adapter.id_base + ".delta",
-                                        sir::DataType::F32,
-                                        adapter.frozen_weight->shape());
+    sir::Value* delta =
+        fill->addResult(adapter.id_base + ".delta", sir::DataType::F32,
+                        adapter.frozen_weight->shape());
 
     sir::Operation* acc = program.block->appendOp("sc_low.gemm_acc");
     acc->setAttribute("alpha", adapter.scale);
