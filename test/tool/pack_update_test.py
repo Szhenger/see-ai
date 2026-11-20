@@ -134,6 +134,18 @@ class SeamTest(unittest.TestCase):
         self.assertIn(".globl SEEML_SYM(kSeemlUpdatePlan)\n", stub)
         self.assertIn(".globl SEEML_SYM(kSeemlUpdatePlanSize)\n", stub)
 
+    def test_the_certified_hash_define_is_the_emitters(self):
+        # F2 #206: the packer refuses a relaxed package whose build.sh does
+        # not pass the certified seal to the runner; the text it looks for
+        # is the emitter's, and the macro is the driver's.
+        emitter = repo_file("compiler/backend/packaging/native_emitter.cc")
+        self.assertIn(pu.CERTIFIED_HASH_DEFINE, emitter)
+        driver = repo_file("runtime/host/update_main.cc")
+        self.assertIn("#ifndef SEEML_CERTIFIED_PLAN_HASH\n"
+                      "#define SEEML_CERTIFIED_PLAN_HASH 0ull\n", driver)
+        self.assertEqual(pu.ATTESTATION_FILE, "numerics_certificate.attest")
+        self.assertIn(pu.ATTESTATION_FILE, emitter)
+
     def test_the_driver_reads_the_plan_file_the_packer_leaves(self):
         # The disk mode's contract (#158): the packer leaves PLAN_FILE
         # beside the binary, and the generated driver maps exactly that
@@ -142,7 +154,11 @@ class SeamTest(unittest.TestCase):
         self.assertIn(f'kPlanFileName = "{pu.PLAN_FILE}"', driver)
         self.assertIn('ExecutableDir(argv[0]) + "/" + kPlanFileName', driver)
         self.assertIn('"--plan"', driver)
-        self.assertIn("LoadFromFileMapped(plan_path)", driver)
+        # Both routes load under the one relaxed permit the binary was
+        # built with (F2 #206): the certified seal, or none.
+        self.assertIn("LoadFromFileMapped(plan_path, kRelaxedPermit)", driver)
+        self.assertIn("RelaxedPlanPermit::CertifiedPlan(", driver)
+        self.assertNotIn("UncertifiedForMeasurement", driver)
 
     def test_plan_magic_matches_the_plan_schema(self):
         schema = repo_file("source/plan/schema.h")

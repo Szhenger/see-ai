@@ -5,11 +5,18 @@
 // =============================================================================
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 #include "compiler/backend/packaging/native_emitter.h"
 #include "compiler/driver/update_compiler.h"
@@ -77,9 +84,18 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   EXPECT_STR_CONTAINS(main_tu,
                       "ExecutableDir(argv[0]) + \"/\" + kPlanFileName");
   EXPECT_STR_CONTAINS(main_tu, "kPlanFileName = \"update_plan.seeu\"");
-  EXPECT_STR_CONTAINS(main_tu, "engine.LoadFromFileMapped(plan_path)");
+  // Both routes load under the one relaxed permit the binary has: the seal
+  // its build compiled in, zero unless build.sh's certificate gate passed
+  // (F2 #206). The runner has no flag that widens it.
+  EXPECT_STR_CONTAINS(main_tu,
+                      "engine.LoadFromFileMapped(plan_path, kRelaxedPermit)");
   EXPECT_STR_CONTAINS(
-      main_tu, "engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize)");
+      main_tu, "engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize,");
+  EXPECT_STR_CONTAINS(main_tu,
+                      "RelaxedPlanPermit::CertifiedPlan(\n"
+                      "          SEEML_CERTIFIED_PLAN_HASH)");
+  EXPECT_STR_CONTAINS(main_tu, "#define SEEML_CERTIFIED_PLAN_HASH 0ull");
+  EXPECT_EQ(main_tu.find("UncertifiedForMeasurement"), std::string::npos);
   EXPECT_STR_CONTAINS(main_tu, "this package carries no embedded plan");
   EXPECT_STR_CONTAINS(main_tu, "[--plan update_plan.seeu]");
 
@@ -277,11 +293,26 @@ TEST(NativeEmitter, TheDiskModeBranchOfBuildScriptCompilesAnEmptyPlan) {
   }
 }
 
+/// The SHA-256 of `path` as the host's own tool prints it; empty when the
+/// host has neither tool.
+std::string Sha256Of(const std::string& path, const std::string& scratch) {
+  const std::string cmd =
+      "{ if command -v shasum >/dev/null 2>&1; then shasum -a 256 \"" + path +
+      "\"; else sha256sum \"" + path + "\"; fi; } > \"" + scratch +
+      "\" 2>/dev/null";
+  if (std::system(cmd.c_str()) != 0) return "";
+  const std::string line = ReadText(scratch);
+  return line.size() >= 64 ? line.substr(0, 64) : "";
+}
+
 TEST(NativeEmitter, RelaxedPlanBuildScriptDemandsTheCertificate) {
   // N17: a relaxed plan's build.sh refuses, before its first compile
   // line, unless a granted numerics certificate for exactly these plan
   // bytes sits beside the plan; an exact plan's script never mentions
-  // one.
+  // one. F2 #206: the gate is the attestation line, checked whole against
+  // the three files' bytes, and a gate that passes compiles the plan's
+  // seal into the runner — on that one unit. Every case below runs the
+  // real emitted script; CXX is a logger, so nothing is compiled.
   ScopedTempDir dir;
   SmfModel model = MakeMlp(6, 10, 3, 4);
   ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
@@ -289,16 +320,26 @@ TEST(NativeEmitter, RelaxedPlanBuildScriptDemandsTheCertificate) {
   EmitOptions options;
   options.embed_plan_tu = false;
   options.relaxed_plan = true;
+  const std::string pkg = (dir.path() / "relaxed").string();
   ASSERT_OK_AND_ASSIGN(
       EmitPaths relaxed,
-      EmitNativePackage(compiled.plan, (dir.path() / "relaxed").string(),
-                        RepoRoot(), options));
+      EmitNativePackage(compiled.plan, pkg, RepoRoot(), options));
   const std::string script = ReadText(relaxed.build_script);
   EXPECT_STR_CONTAINS(script, "numerics_certificate.json");
-  EXPECT_STR_CONTAINS(script, "\"verdict\": \"granted\"");
+  EXPECT_STR_CONTAINS(script, "numerics_certificate.attest");
   EXPECT_STR_CONTAINS(script, "shasum -a 256 update_plan.seeu");
+  EXPECT_STR_CONTAINS(script, "shasum -a 256 numerics_certificate.json");
   EXPECT_STR_CONTAINS(script, "SEEML_ACCELERATE");
   EXPECT_LT(script.find("numerics_certificate.json"), script.find("$CXX "));
+  // The two greps a nested or refused document satisfied are gone.
+  EXPECT_EQ(script.find("grep -q '\"verdict\""), std::string::npos);
+  EXPECT_EQ(script.find("\\\"sha256\\\""), std::string::npos);
+  // The seal is read at the header's own offset.
+  EXPECT_STR_CONTAINS(
+      script,
+      "skip=" + std::to_string(offsetof(PlanHeader, plan_hash)) + " count=8");
+  EXPECT_STR_CONTAINS(
+      script, "$CXX $FLAGS $CERT_FLAGS -c update_main.cc -o update_main.o\n");
 
   options.relaxed_plan = false;
   ASSERT_OK_AND_ASSIGN(
@@ -306,8 +347,136 @@ TEST(NativeEmitter, RelaxedPlanBuildScriptDemandsTheCertificate) {
       EmitNativePackage(compiled.plan, (dir.path() / "exact").string(),
                         RepoRoot(), options));
   const std::string plain = ReadText(exact.build_script);
-  EXPECT_EQ(plain.find("numerics_certificate.json"), std::string::npos);
+  EXPECT_EQ(plain.find("numerics_certificate"), std::string::npos);
   EXPECT_EQ(plain.find("SEEML_ACCELERATE"), std::string::npos);
+  // An exact package's runner is built with no relaxed permit at all.
+  EXPECT_EQ(plain.find("SEEML_CERTIFIED_PLAN_HASH"), std::string::npos);
+  EXPECT_EQ(plain.find("CERT_FLAGS"), std::string::npos);
+  EXPECT_STR_CONTAINS(plain,
+                      "$CXX $FLAGS -c update_main.cc -o update_main.o\n");
+
+#ifndef _WIN32
+  // The logger: every compiler invocation, one line each.
+  const std::string cxx = dir.File("cxx.sh");
+  const std::string cxx_log = dir.File("cxx.log");
+  std::ofstream(cxx) << "#!/bin/sh\necho \"$*\" >> \"" << cxx_log << "\"\n";
+  std::filesystem::permissions(cxx, std::filesystem::perms::owner_all);
+  const std::string out = dir.File("build.log");
+  auto build = [&] {
+    std::filesystem::remove(cxx_log);
+    const int status = std::system(("CXX=\"" + cxx + "\" sh \"" + pkg +
+                                    "/build.sh\" > \"" + out + "\" 2>&1")
+                                       .c_str());
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  };
+  auto refused = [&](const char* says) {
+    EXPECT_EQ(build(), 1);
+    EXPECT_STR_CONTAINS(ReadText(out), says);
+    // Refused before the first compile line.
+    EXPECT_FALSE(std::filesystem::exists(cxx_log));
+  };
+  auto write = [&](const char* name, const std::string& text) {
+    std::ofstream(pkg + "/" + name, std::ios::binary) << text;
+  };
+  const std::string plan_sha = Sha256Of(relaxed.plan_file, dir.File("sha"));
+  if (plan_sha.empty()) SKIP("no shasum or sha256sum on this host");
+  PlanHeader header;
+  std::memcpy(&header, compiled.plan.data(), sizeof(header));
+  char seal[17];
+  std::snprintf(seal, sizeof(seal), "%016llx",
+                static_cast<unsigned long long>(header.plan_hash));
+  auto attestation = [&](const std::string& plan, const std::string& hash,
+                         const std::string& cert) {
+    return "seeml-numerics-certificate v1 granted plan-sha256=" + plan +
+           " plan-seal=" + hash + " certificate-sha256=" + cert + "\n";
+  };
+
+  // No certificate at all.
+  refused("no numerics_certificate.json");
+
+  // The document the two greps let through: refused at the top level, a
+  // nested "granted", this plan's SHA-256 under a "sha256" key.
+  const std::string nested =
+      "{\n  \"verdict\": \"refused\",\n  \"plan\": {\"sha256\": \"" + plan_sha +
+      "\"},\n  \"evidence\": {\"earlier\": {\"verdict\": \"granted\"}}\n}\n";
+  write("numerics_certificate.json", nested);
+  refused("no numerics_certificate.attest");
+
+  // A granted certificate and its attestation: the gate passes, and the
+  // plan's seal — read by the script with dd and od, by this test from the
+  // header struct — is defined on the runner's compile line and no other.
+  const std::string granted = "{\n  \"verdict\": \"granted\"\n}\n";
+  write("numerics_certificate.json", granted);
+  const std::string granted_sha =
+      Sha256Of(pkg + "/numerics_certificate.json", dir.File("sha"));
+  const std::string attested = attestation(plan_sha, seal, granted_sha);
+  write("numerics_certificate.attest", attested);
+  ASSERT_EQ(build(), 0);
+  const std::string define =
+      std::string("-DSEEML_CERTIFIED_PLAN_HASH=0x") + seal + "ull";
+  size_t defined = 0, main_lines = 0;
+  {
+    std::ifstream log(cxx_log);
+    for (std::string line; std::getline(log, line);) {
+      const bool has = line.find(define) != std::string::npos;
+      const bool main_tu =
+          line.find("-c update_main.cc -o update_main.o") != std::string::npos;
+      defined += has;
+      main_lines += main_tu;
+      EXPECT_EQ(has, main_tu);
+      EXPECT_EQ(line.find("SEEML_CERTIFIED_PLAN_HASH") != std::string::npos,
+                has);
+    }
+  }
+  EXPECT_EQ(defined, 1u);
+  EXPECT_EQ(main_lines, 1u);
+
+  // The attestation beside ANOTHER certificate file — the refused, nested
+  // document, or the granted one with its verdict flipped: its SHA-256 is
+  // not the attested one, whatever it says inside.
+  write("numerics_certificate.json", nested);
+  refused("does not attest");
+  write("numerics_certificate.json", "{\n  \"verdict\": \"refused\"\n}\n");
+  refused("does not attest");
+  write("numerics_certificate.json", granted);
+  ASSERT_EQ(build(), 0);
+
+  // An attestation for another plan: by SHA-256, and by seal alone.
+  write("numerics_certificate.attest",
+        attestation(std::string(64, '0'), seal, granted_sha));
+  refused("does not attest");
+  write("numerics_certificate.attest",
+        attestation(plan_sha, "0000000000000000", granted_sha));
+  refused("does not attest");
+  // The plan recompiled under the same certificate and attestation.
+  {
+    std::vector<uint8_t> other = compiled.plan;
+    other.back() ^= 1;
+    std::ofstream(relaxed.plan_file, std::ios::binary)
+        .write(reinterpret_cast<const char*>(other.data()),
+               static_cast<std::streamsize>(other.size()));
+  }
+  write("numerics_certificate.attest", attested);
+  refused("does not attest");
+  std::ofstream(relaxed.plan_file, std::ios::binary)
+      .write(reinterpret_cast<const char*>(compiled.plan.data()),
+             static_cast<std::streamsize>(compiled.plan.size()));
+  ASSERT_EQ(build(), 0);
+
+  // The line must be the whole file: a second line, a "refused" in the
+  // line's place with the granted line nested after it, an empty file.
+  write("numerics_certificate.attest", attested + attested);
+  refused("does not attest");
+  write("numerics_certificate.attest",
+        "seeml-numerics-certificate v1 refused\n" + attested);
+  refused("does not attest");
+  write("numerics_certificate.attest", "");
+  refused("does not attest");
+  // A plan too short to carry a seal.
+  write("numerics_certificate.attest", attested);
+  write("update_plan.seeu", "SEEU");
+  refused("too short to carry a plan seal");
+#endif
 }
 
 TEST(NativeEmitter, CreatesMissingOutputDir) {

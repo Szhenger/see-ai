@@ -8,6 +8,7 @@
 
 #include "compiler/diagnostics/generating/error.h"
 #include "source/parallel/parallel_for.h"
+#include "source/plan/schema.h"
 
 namespace seeml::update {
 
@@ -220,14 +221,28 @@ std::string BuildScript(bool relaxed_plan) {
   s += "CXX=\"${CXX:-c++}\"\n";
   if (relaxed_plan) {
     // "No certificate, no relaxed plan" (P3), enforced where the binary
-    // is made and not only where tool/pack_update.py makes it: a
-    // certificate that is absent, refused, or issued for other plan
-    // bytes stops the build before a single object is compiled
-    // (2026-09-24 review, N17).
-    s +=
-        "# This plan carries relaxed GEMMs (--precision certified-bf16, plan\n";
-    s += "# v18): it may be built only beside the numerics certificate that\n";
-    s += "# tool/certify_numerics.py granted for exactly these plan bytes.\n";
+    // is made and not only where tool/pack_update.py makes it
+    // (2026-09-24 review, N17) — and, since F2 #206, carried into the
+    // binary: the gate that passes compiles the plan's seal into the
+    // runner (SEEML_CERTIFIED_PLAN_HASH), and the runner refuses every
+    // other relaxed plan at load.
+    //
+    // The gate is the attestation, not the JSON. This script runs on the
+    // device with POSIX sh and no parser, and the two greps it used to be
+    // were satisfied by a refused document with a nested "granted". So
+    // tool/certify_numerics.py writes, beside a certificate the full check
+    // passed, one fixed line naming the plan's SHA-256, the plan's seal
+    // and the certificate file's SHA-256; the script recomputes the line
+    // from the three files' bytes and requires the attestation to be
+    // exactly it. Any other certificate file — a refusal, an edit, a
+    // nested document — has another SHA-256 and does not build.
+    s += "# This plan carries relaxed instructions (--precision "
+         "certified-bf16,\n";
+    s += "# plan v18): it is built only beside the numerics certificate "
+         "that\n";
+    s += "# tool/certify_numerics.py granted for exactly these plan bytes, "
+         "and\n";
+    s += "# the binary it builds runs no other relaxed plan (F2 #206).\n";
     s += "if [ ! -f numerics_certificate.json ]; then\n";
     s +=
         "  echo \"build.sh: update_plan.seeu carries relaxed GEMMs and this\" \\\n";
@@ -238,24 +253,62 @@ std::string BuildScript(bool relaxed_plan) {
         "       \"[--source <model.smf>], then tool/pack_update.py <pkg> --build\" >&2\n";
     s += "  exit 1\n";
     s += "fi\n";
-    s += "grep -q '\"verdict\": \"granted\"' numerics_certificate.json || {\n";
-    s +=
-        "  echo \"build.sh: numerics_certificate.json is not a granted certificate\" >&2\n";
+    s += "if [ ! -f numerics_certificate.attest ]; then\n";
+    s += "  echo \"build.sh: this package has no numerics_certificate.attest "
+         "— the\" \\\n";
+    s += "       \"attestation tool/certify_numerics.py writes beside a "
+         "GRANTED\" \\\n";
+    s += "       \"certificate (a refused one has none): re-run certify, or\" "
+         "\\\n";
+    s += "       \"tool/pack_update.py <pkg>, which re-checks the "
+         "certificate in full\" >&2\n";
     s += "  exit 1\n";
-    s += "}\n";
+    s += "fi\n";
     s += "if command -v shasum >/dev/null 2>&1; then\n";
     s += "  PLAN_SHA=$(shasum -a 256 update_plan.seeu | cut -d' ' -f1)\n";
+    s += "  CERT_SHA=$(shasum -a 256 numerics_certificate.json | cut -d' ' "
+         "-f1)\n";
     s += "else\n";
     s += "  PLAN_SHA=$(sha256sum update_plan.seeu | cut -d' ' -f1)\n";
+    s += "  CERT_SHA=$(sha256sum numerics_certificate.json | cut -d' ' "
+         "-f1)\n";
     s += "fi\n";
-    s +=
-        "grep -q \"\\\"sha256\\\": \\\"$PLAN_SHA\\\"\" numerics_certificate.json || {\n";
-    s +=
-        "  echo \"build.sh: numerics_certificate.json was issued for a different\" \\\n";
-    s +=
-        "       \"plan (SHA-256 mismatch): re-certify after recompiling\" >&2\n";
+    // The seal: PlanHeader::plan_hash, eight bytes little-endian. Read a
+    // byte at a time and reversed here, so the host's own byte order never
+    // enters; the offset is the header's, taken from the struct this
+    // compiler was built with.
+    s += "# The plan's seal (PlanHeader::plan_hash): 8 bytes little-endian "
+         "at\n";
+    s += "# offset " + std::to_string(offsetof(PlanHeader, plan_hash)) +
+         " of the plan file.\n";
+    s += "set -- $(dd if=update_plan.seeu bs=1 skip=" +
+         std::to_string(offsetof(PlanHeader, plan_hash)) +
+         " count=8 2>/dev/null | od -An -tx1)\n";
+    s += "if [ $# -ne 8 ]; then\n";
+    s += "  echo \"build.sh: update_plan.seeu is too short to carry a plan "
+         "seal\" >&2\n";
     s += "  exit 1\n";
-    s += "}\n";
+    s += "fi\n";
+    s += "PLAN_SEAL=\"$8$7$6$5$4$3$2$1\"\n";
+    s += "ATTESTATION=\"seeml-numerics-certificate v1 granted "
+         "plan-sha256=$PLAN_SHA plan-seal=$PLAN_SEAL "
+         "certificate-sha256=$CERT_SHA\"\n";
+    s += "if [ \"$(cat numerics_certificate.attest)\" != \"$ATTESTATION\" ]; "
+         "then\n";
+    s += "  echo \"build.sh: numerics_certificate.attest does not attest "
+         "this\" \\\n";
+    s += "       \"certificate for this plan: it was written for other plan "
+         "bytes\" \\\n";
+    s += "       \"(SHA-256 or seal mismatch: re-certify after recompiling) "
+         "or for\" \\\n";
+    s += "       \"another numerics_certificate.json (one edited or replaced "
+         "since it\" \\\n";
+    s += "       \"was granted is not a granted certificate)\" >&2\n";
+    s += "  exit 1\n";
+    s += "fi\n";
+    s += "# The gate passed: this binary may run this relaxed plan, and no "
+         "other.\n";
+    s += "CERT_FLAGS=\"-DSEEML_CERTIFIED_PLAN_HASH=0x${PLAN_SEAL}ull\"\n";
   }
   s += "# The CPU GEMM tile geometry travels IN THE PLAN (header v11): the\n";
   s += "# compiler decided it from a measured kernel-policy table or left\n";
@@ -322,7 +375,12 @@ std::string BuildScript(bool relaxed_plan) {
   s += "  rm -f update_plan_none.cc\n";
   s += "  PLAN_NOTE=\" (no embedded plan: ship update_plan.seeu beside it)\"\n";
   s += "fi\n";
-  s += "$CXX $FLAGS -c update_main.cc -o update_main.o\n";
+  // The certified seal reaches the one unit that loads the plan. An exact
+  // plan's script never mentions it: its runner is built with no relaxed
+  // permit, and its build.sh is byte for byte what it was before F2 #206.
+  s += relaxed_plan
+           ? "$CXX $FLAGS $CERT_FLAGS -c update_main.cc -o update_main.o\n"
+           : "$CXX $FLAGS -c update_main.cc -o update_main.o\n";
   s += "$CXX $FLAGS -c source/parallel/parallel_for.cc -o parallel_for.o\n";
   s +=
       "$CXX $FLAGS -c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o\n";

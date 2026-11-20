@@ -1218,9 +1218,12 @@ TEST(UpdateSystem, RelaxedCpuBitsAreThreadCountInvariant) {
     std::vector<uint8_t> states[2];
     for (int t = 0; t < 2; ++t) {
       seeml::update::SetParallelThreadCount(t == 0 ? 1 : 8);
+      // The measurement permit (F2 #206): this suite proves the relaxed
+      // kernels' bits; no package, so no certificate, stands behind it.
       UpdateEngine engine;
-      ASSERT_OK(
-          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK(engine.LoadFromMemory(
+          compiled.plan.data(), compiled.plan.size(),
+          seeml::update_rt::RelaxedPlanPermit::UncertifiedForMeasurement()));
       ASSERT_OK_AND_ASSIGN(Dataset data,
                            seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
       data.EnableShuffle(9);
@@ -1264,9 +1267,14 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
       ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
                            UpdateCompiler(config).Compile(model));
       const PlanHeader h = HeaderOf(compiled);
+      // The relaxed arm loads under the measurement permit (F2 #206); the
+      // exact arm under the default, which no exact plan needs widened.
       UpdateEngine engine;
-      ASSERT_OK(
-          engine.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK(engine.LoadFromMemory(
+          compiled.plan.data(), compiled.plan.size(),
+          relaxed
+              ? seeml::update_rt::RelaxedPlanPermit::UncertifiedForMeasurement()
+              : seeml::update_rt::RelaxedPlanPermit{}));
       ASSERT_OK_AND_ASSIGN(Dataset data,
                            seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
       data.EnableShuffle(9);
@@ -1314,8 +1322,9 @@ TEST(UpdateSystem, RelaxedArithmeticChangesNoCpuBits) {
           EXPECT_NEAR(report.loss_curve[i], want_curve[i],
                       1e-2f * std::fabs(want_curve[i]) + 1e-4f);
         UpdateEngine again;
-        ASSERT_OK(
-            again.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+        ASSERT_OK(again.LoadFromMemory(
+            compiled.plan.data(), compiled.plan.size(),
+            seeml::update_rt::RelaxedPlanPermit::UncertifiedForMeasurement()));
         ASSERT_OK_AND_ASSIGN(
             Dataset data2, seeml::testing::MakeTokenCorpus(128, 4, vocab, 43));
         data2.EnableShuffle(9);
