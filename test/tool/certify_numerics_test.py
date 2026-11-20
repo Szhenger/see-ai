@@ -50,8 +50,8 @@ def granted(plan_path, **over):
             "contract": {"family": cn.FAMILY, "model_lanes": 8,
                          "unit_roundoff": cn.UNIT_ROUNDOFF,
                          "sites": ["attn.fwd"]},
-            "evidence": {}, "tolerances": {"site_rel": 1e-5,
-                                           "loss_rel": 1e-4},
+            "evidence": {"steps": 20},
+            "tolerances": {"site_rel": 1e-5, "loss_rel": 1e-4},
             "verdict": "granted", "reasons": []}
     cert.update(over)
     cert["digest"] = cn.self_digest(cert)
@@ -245,11 +245,187 @@ class CertificateTest(unittest.TestCase):
         self.assertEqual(cn.tolerance_notes(at_default), [])
         self.assertEqual(cn.check_certificate(at_default, self.plan), [])
         self.assertEqual(cn.tolerance_notes({}), [])
-        self.assertEqual(cn.check_certificate(loose, self.plan), [])  # legal
+        # Legal: looser than the defaults and at the ceilings, not above
+        # them (F2 #206) — a NOTE where the binary is built, not a refusal.
+        self.assertEqual(cn.check_certificate(loose, self.plan), [])
+        self.assertEqual(cn.check_certificate(flagged, self.plan), [])
         odd = granted(self.plan, contract=dict(flagged["contract"],
                                                family="relaxed-something"))
         self.assertIn("unknown contract family",
                       cn.check_certificate(odd, self.plan)[0])
+
+    def test_a_tolerance_above_its_ceiling_is_a_refusal(self):
+        # F2 #206: `--max-*-error 1e30` was "granted" and packed with three
+        # NOTE lines — a tolerance had only to be finite and positive. Each
+        # now has a ceiling per contract family, the loosest value the
+        # project ever shipped a certificate under; above it the document
+        # is not a certificate, for check_certificate and so for certify,
+        # verify and pack_update alike.
+        self.assertEqual(cn.TOLERANCE_CEILINGS, {
+            family: {"site_rel": 1e-4, "relaxed_gemm_rel": 2.0 ** -7,
+                     "loss_rel": 1e-2} for family in cn.FAMILIES})
+        for family in cn.FAMILIES:
+            contract = {"family": family, "model_lanes": 8,
+                        "unit_roundoff": cn.UNIT_ROUNDOFF,
+                        "sites": ["attn.fwd"]}
+            ceilings = cn.TOLERANCE_CEILINGS[family]
+            for key, default in cn.FAMILY_DEFAULTS[family].items():
+                self.assertLessEqual(default, ceilings[key])
+            at = granted(self.plan, contract=contract,
+                         tolerances=dict(ceilings))
+            self.assertEqual(cn.check_certificate(at, self.plan), [])
+            for key, ceiling in ceilings.items():
+                for value in (ceiling * 1.001, ceiling * 10, 1.0, 1e30):
+                    with self.subTest(family=family, key=key, value=value):
+                        loose = granted(self.plan, contract=contract,
+                                        tolerances=dict(ceilings,
+                                                        **{key: value}))
+                        problems = cn.check_certificate(loose, self.plan)
+                        self.assertEqual(len(problems), 1, problems)
+                        self.assertIn(f"tolerance {key} {value:.1e} is "
+                                      f"looser than its ceiling "
+                                      f"{ceiling:.1e}", problems[0])
+                        self.assertEqual(cn.strength_problems(loose),
+                                         problems)
+        # The issue's certificate: all three at 1e30, one step.
+        absurd = granted(self.plan,
+                         tolerances={"site_rel": 1e30,
+                                     "relaxed_gemm_rel": 1e30,
+                                     "loss_rel": 1e30},
+                         evidence={"steps": 1})
+        problems = cn.check_certificate(absurd, self.plan)
+        self.assertEqual(len(problems), 4, problems)
+        self.assertEqual(sum("looser than its ceiling" in p
+                             for p in problems), 3)
+        self.assertIn("below the floor of 2", problems[3])
+        # ... refused by verify,
+        path = os.path.join(self._tmp.name, pack_update.CERTIFICATE_FILE)
+        with open(path, "w") as f:
+            json.dump(absurd, f)
+        status, log = run(cn, ["verify", path, "--plan", self.plan])
+        self.assertEqual(status, 3, log)
+        self.assertEqual(log.count("NOT VERIFIED tolerance"), 3)
+        self.assertIn("NOT VERIFIED the free run is 1 step(s)", log)
+        # ... and by the packer, which used to print three NOTE lines; an
+        # attestation an earlier pack left does not survive the refusal.
+        attest = os.path.join(self._tmp.name, cn.ATTESTATION_FILE)
+        with open(attest, "w") as f:
+            f.write("stale\n")
+        with self.assertRaisesRegex(pack_update.PackError,
+                                    "looser than its ceiling"):
+            pack_update.check_certificate(self._tmp.name, self.plan)
+        self.assertFalse(os.path.exists(attest))
+
+    def test_one_step_is_not_evidence(self):
+        self.assertEqual(cn.MIN_EVIDENCE_STEPS, 2)
+        ok = granted(self.plan, evidence={"steps": cn.MIN_EVIDENCE_STEPS})
+        self.assertEqual(cn.check_certificate(ok, self.plan), [])
+        for steps, says in ((1, "below the floor of 2"),
+                            (0, "below the floor of 2"),
+                            (-5, "below the floor of 2"),
+                            (None, "records no evidence steps"),
+                            (20.0, "records no evidence steps"),
+                            ("20", "records no evidence steps"),
+                            (True, "records no evidence steps")):
+            with self.subTest(steps=steps):
+                cert = granted(self.plan, evidence={"steps": steps})
+                problems = cn.check_certificate(cert, self.plan)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(says, problems[0])
+        bare = granted(self.plan, evidence={})
+        self.assertIn("records no evidence steps",
+                      cn.check_certificate(bare, self.plan)[0])
+        # The command line holds the floor before any plan is read.
+        for steps in ("1", "0", "-3"):
+            status, log = run(cn, ["certify", self.plan, "--corpus", "c",
+                                   f"--steps={steps}"])
+            self.assertEqual(status, 2, log)
+            self.assertIn("--steps must be at least 2", log)
+            self.assertIn("one step is not evidence", log)
+
+    def test_the_ledgers_certificates_are_inside_the_ceilings(self):
+        # The ceilings and the floor were chosen to admit every certificate
+        # the project has shipped (docs/ledger). The plans are not in the
+        # ledger, so this holds the documents to the plan-independent half
+        # of the check — and names the two issued at the ceilings.
+        ledger = os.path.join(REPO, "docs", "ledger")
+        found = {}
+        for root, _, files in os.walk(ledger):
+            for name in files:
+                if not name.endswith(".json"):
+                    continue
+                with open(os.path.join(root, name)) as f:
+                    try:
+                        doc = json.load(f)
+                    except ValueError:
+                        continue
+                if isinstance(doc, dict) and doc.get("kind") == cn.CERT_KIND:
+                    found[os.path.relpath(os.path.join(root, name),
+                                          ledger)] = doc
+        self.assertEqual(sorted(found), [
+            "f2-2026-10-15/pkg_relaxed/numerics_certificate.json",
+            "f2-2026-10-23/numerics_certificate.json",
+            "f2-2026-10-23/numerics_certificate_defaults_refused.json",
+            "f2-2026-10-30/numerics_certificate.json",
+            "f3-2026-10-30/numerics_certificate.json"])
+        at_ceiling = []
+        for name, cert in sorted(found.items()):
+            with self.subTest(certificate=name):
+                self.assertEqual(cn.strength_problems(cert), [])
+                self.assertEqual(cert["digest"], cn.self_digest(cert))
+                ceilings = cn.TOLERANCE_CEILINGS[cert["contract"]["family"]]
+                if (cert["tolerances"]["site_rel"] == ceilings["site_rel"]
+                        and cert["tolerances"]["loss_rel"]
+                        == ceilings["loss_rel"]
+                        and cert["evidence"]["steps"]
+                        == cn.MIN_EVIDENCE_STEPS):
+                    at_ceiling.append(name)
+        # SmolLM2-135M, 2026-10-15 and 2026-10-23: site 1e-4, loss 1e-2,
+        # two steps — the evidence the ceilings and the floor are read off.
+        self.assertEqual(at_ceiling, [
+            "f2-2026-10-15/pkg_relaxed/numerics_certificate.json",
+            "f2-2026-10-23/numerics_certificate.json"])
+
+    def test_the_attestation_is_one_exact_line(self):
+        # F2 #206: what the package's build.sh checks in place of the JSON.
+        cert_path = os.path.join(self._tmp.name, cn.CERT_FILE)
+        self.assertEqual(cn.attestation_path(cert_path),
+                         os.path.join(self._tmp.name, cn.ATTESTATION_FILE))
+        self.assertEqual(cn.attestation_path("/x/other.cert"),
+                         "/x/other.cert.attest")
+        with open(cert_path, "w") as f:
+            json.dump(granted(self.plan), f)
+        with open(self.plan, "rb") as f:
+            raw = f.read()
+        at = fx.formats.PLAN_HEADER.offsets["plan_hash"]
+        seal = f"{int.from_bytes(raw[at:at + 8], 'little'):016x}"
+        self.assertEqual(cn.plan_seal(self.plan), seal)
+        line = cn.attestation_line(cert_path, self.plan)
+        self.assertEqual(
+            line, "seeml-numerics-certificate v1 granted "
+                  f"plan-sha256={cn.sha256_file(self.plan)} "
+                  f"plan-seal={seal} "
+                  f"certificate-sha256={cn.sha256_file(cert_path)}")
+        self.assertRegex(line, r"\Aseeml-numerics-certificate v1 granted "
+                               r"plan-sha256=[0-9a-f]{64} "
+                               r"plan-seal=[0-9a-f]{16} "
+                               r"certificate-sha256=[0-9a-f]{64}\Z")
+        path = cn.write_attestation(cert_path, self.plan)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), line.encode("ascii") + b"\n")
+        # The line names the certificate FILE: any other bytes there —
+        # a verdict flipped, a key added — are another line.
+        with open(cert_path, "a") as f:
+            f.write(" ")
+        self.assertNotEqual(cn.attestation_line(cert_path, self.plan), line)
+        cn.remove_attestation(cert_path)
+        self.assertFalse(os.path.exists(path))
+        cn.remove_attestation(cert_path)  # absent is fine
+        short = os.path.join(self._tmp.name, "short.seeu")
+        with open(short, "wb") as f:
+            f.write(raw[:at + 4])
+        with self.assertRaisesRegex(fx.PlanError, "too short to carry"):
+            cn.plan_seal(short)
 
     def test_a_vacuous_tolerance_certifies_nothing(self):
         for value in (0.0, -1e-5, float("inf"), float("nan")):
@@ -292,11 +468,22 @@ class CertificateTest(unittest.TestCase):
             json.dump(granted(self.plan), f)
         summary = pack_update.check_certificate(pkg, self.plan)
         self.assertEqual(summary["family"], cn.FAMILY)
+        # The full check passed, so the packer settles the attestation the
+        # package's build.sh trusts in its place (F2 #206) ...
+        attest = os.path.join(pkg, cn.ATTESTATION_FILE)
+        self.assertEqual(summary["attestation"], attest)
+        self.assertEqual(summary["certified_plan_seal"],
+                         cn.plan_seal(self.plan))
+        with open(attest) as f:
+            self.assertEqual(f.read(),
+                             cn.attestation_line(path, self.plan) + "\n")
         with open(self.plan, "ab") as f:
             f.write(b"\0")
         with self.assertRaisesRegex(pack_update.PackError,
                                     "does not vouch for this plan"):
             pack_update.check_certificate(pkg, self.plan)
+        # ... and takes it away again when the check fails.
+        self.assertFalse(os.path.exists(attest))
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
@@ -534,6 +721,48 @@ class CertifyPlansTest(unittest.TestCase):
         self.assertIn("exceeds 1.0e-03", log)
         self.assertIn(f"contract {cn.FLAGGED_FAMILY} over 1 enforced site",
                       log)
+        # A refusal is written, and has no attestation (F2 #206): the
+        # package's build.sh, which trusts that one line, cannot build
+        # beside it — whatever the document says inside.
+        cert_path = os.path.join(pkg, cn.CERT_FILE)
+        attest_path = os.path.join(pkg, cn.ATTESTATION_FILE)
+        self.assertTrue(os.path.exists(cert_path))
+        self.assertFalse(os.path.exists(attest_path))
+        done = build_sh()
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("no numerics_certificate.attest", done.stderr)
+        # The issue's second hole: tolerances of 1e30 over one step were
+        # "granted". One step is a bad command line; a tolerance above its
+        # ceiling is refused before anything is measured, no certificate
+        # is written, and the refusal already there is left as it was.
+        with open(cert_path, "rb") as f:
+            refusal = f.read()
+        loose = ["--max-site-error", "1e30", "--max-relaxed-gemm-error",
+                 "1e30", "--max-loss-deviation", "1e30"]
+        status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                               "--steps", "1", *loose])
+        self.assertEqual(status, 2, log)
+        self.assertIn("--steps must be at least 2", log)
+        status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                               "--steps", "4", *loose])
+        self.assertEqual(status, 3, log)
+        for key, ceiling in (("site_rel", "1.0e-04"),
+                             ("relaxed_gemm_rel", "7.8e-03"),
+                             ("loss_rel", "1.0e-02")):
+            self.assertIn(f"REFUSED tolerance {key} 1.0e+30 is looser than "
+                          f"its ceiling {ceiling}", log)
+        self.assertIn("refused — no certificate written", log)
+        self.assertNotIn("granted", log)
+        with open(cert_path, "rb") as f:
+            self.assertEqual(f.read(), refusal)
+        self.assertFalse(os.path.exists(attest_path))
+        # One above its ceiling is enough, whichever it is.
+        for flag in ("--max-site-error=2e-4", "--max-loss-deviation=2e-2",
+                     "--max-relaxed-gemm-error=1e-2"):
+            status, log = run(cn, ["certify", pkg, "--corpus", corpus,
+                                   "--steps", "4", flag])
+            self.assertEqual(status, 3, log)
+            self.assertIn("is looser than its ceiling", log)
         # Only the flagged instructions are enforced: an absurd tolerance on
         # the reduction sites, which every backend runs exact, refuses
         # nothing under this contract.
@@ -548,6 +777,15 @@ class CertifyPlansTest(unittest.TestCase):
         with open(os.path.join(pkg, cn.CERT_FILE)) as f:
             cert = json.load(f)
         self.assertEqual(cert["verdict"], "granted")
+        # Granted — at the loss ceiling, 1e-2 — and attested: the one line
+        # for exactly this plan and exactly this certificate file.
+        self.assertIn(f"attested — wrote {attest_path}", log)
+        with open(attest_path) as f:
+            attested = f.read()
+        self.assertEqual(attested, cn.attestation_line(
+            cert_path, os.path.join(pkg, cn.PLAN_FILE)) + "\n")
+        self.assertIn(f"plan-seal={plan.plan_hash:016x} ", attested)
+        self.assertIn(f"plan-sha256={cert['plan']['sha256']} ", attested)
         self.assertEqual(cert["contract"]["family"], cn.FLAGGED_FAMILY)
         self.assertEqual(cert["contract"]["sites"], [cn.RELAXED_GEMM_SITE])
         self.assertGreater(len(cert["evidence"]["sites"]), 1)  # all measured
@@ -581,26 +819,116 @@ class CertifyPlansTest(unittest.TestCase):
             [n.split()[0] for n in
              packed["numerics_certificate"]["looser_than_defaults"]],
             ["loss_rel"])
-        # Packed beside its certificate, the script gets past the
-        # preflight; a refused certificate, or one for other plan bytes,
-        # stops it again.
+        self.assertEqual(packed["numerics_certificate"]["attestation"],
+                         attest_path)
+        self.assertEqual(
+            packed["numerics_certificate"]["certified_plan_seal"],
+            f"{plan.plan_hash:016x}")
+        with open(attest_path) as f:
+            self.assertEqual(f.read(), attested)  # the packer's is the same
+        # Packed beside its certificate, the script gets past the gate —
+        # and compiles the plan's seal into the runner, on the one unit
+        # that loads the plan (F2 #206). CXX is a logger here.
+        cxx = os.path.join(self.dir, "cxx.sh")
+        cxx_log = os.path.join(self.dir, "cxx.log")
+        with open(cxx, "w") as f:
+            f.write(f'#!/bin/sh\necho "$*" >> "{cxx_log}"\n')
+        os.chmod(cxx, 0o755)
+        done = subprocess.run(["sh", "build.sh"], cwd=pkg,
+                              env=dict(os.environ, CXX=cxx),
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        with open(cxx_log) as f:
+            compiles = f.read().splitlines()
+        define = f"-DSEEML_CERTIFIED_PLAN_HASH=0x{plan.plan_hash:016x}ull"
+        self.assertEqual([define in line for line in compiles],
+                         ["-c update_main.cc " in line for line in compiles])
+        self.assertEqual(sum(define in line for line in compiles), 1)
+        # A refused certificate, a document that nests a granted one, or
+        # one for other plan bytes stops it again — the JSON is another
+        # file than the one attested, whatever it says. (Before F2 #206
+        # the gate was two greps: the nested document below built.)
         self.assertEqual(build_sh().returncode, 0)
-        cert_path = os.path.join(pkg, cn.CERT_FILE)
         with open(cert_path) as f:
             text = f.read()
-        with open(cert_path, "w") as f:
-            f.write(text.replace('"verdict": "granted"',
-                                 '"verdict": "refused"'))
-        done = build_sh()
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("not a granted certificate", done.stderr)
-        with open(cert_path, "w") as f:
-            f.write(text.replace(cert["plan"]["sha256"], "0" * 64))
-        done = build_sh()
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("SHA-256 mismatch", done.stderr)
+        nested = json.dumps({
+            "verdict": "refused", "plan": {"sha256": cert["plan"]["sha256"]},
+            "evidence": {"earlier": json.loads(text)}}, indent=2)
+        self.assertIn('"verdict": "granted"', nested)
+        self.assertIn(f'"sha256": "{cert["plan"]["sha256"]}"', nested)
+        for other in (text.replace('"verdict": "granted"',
+                                   '"verdict": "refused"'),
+                      nested,
+                      text.replace(cert["plan"]["sha256"], "0" * 64)):
+            with open(cert_path, "w") as f:
+                f.write(other)
+            done = build_sh()
+            self.assertEqual(done.returncode, 1, done.stderr)
+            self.assertIn("does not attest", done.stderr)
         with open(cert_path, "w") as f:
             f.write(text)
+        self.assertEqual(build_sh().returncode, 0)
+        # The attestation for another plan, or a line that is not the
+        # whole file.
+        for other in (attested.replace(f"{plan.plan_hash:016x}", "0" * 16),
+                      attested.replace(cert["plan"]["sha256"], "0" * 64),
+                      "seeml-numerics-certificate v1 refused\n" + attested,
+                      attested + attested, ""):
+            with open(attest_path, "w") as f:
+                f.write(other)
+            done = build_sh()
+            self.assertEqual(done.returncode, 1, done.stderr)
+            self.assertIn("does not attest", done.stderr)
+        with open(attest_path, "w") as f:
+            f.write(attested)
+        self.assertEqual(build_sh().returncode, 0)
+        # The issue's certificate, forged as the old certifier wrote it
+        # (1e30 tolerances, a fresh digest): verify refuses it, the packer
+        # refuses it — it printed NOTE lines before — and takes the
+        # attestation away, so build.sh refuses it too.
+        forged = json.loads(text)
+        forged["tolerances"] = {key: 1e30 for key in forged["tolerances"]}
+        forged["evidence"]["steps"] = 1
+        forged["digest"] = cn.self_digest(forged)
+        fx.write_report(cert_path, forged)
+        status, log = run(cn, ["verify", cert_path, "--plan", pkg])
+        self.assertEqual(status, 3, log)
+        self.assertEqual(log.count("is looser than its ceiling"), 3)
+        self.assertIn("below the floor of 2", log)
+        status, log = run(pack_update, [pkg])
+        self.assertEqual(status, 1, log)
+        self.assertIn("does not vouch for this plan", log)
+        self.assertIn("tolerance loss_rel 1.0e+30 is looser than its "
+                      "ceiling 1.0e-02", log)
+        self.assertNotIn("NOTE", log)
+        self.assertFalse(os.path.exists(attest_path))
+        done = build_sh()
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("no numerics_certificate.attest", done.stderr)
+        # The real certificate again: the packer re-attests it.
+        with open(cert_path, "w") as f:
+            f.write(text)
+        self.assertEqual(run(pack_update, [pkg])[0], 0)
+        with open(attest_path) as f:
+            self.assertEqual(f.read(), attested)
+        self.assertEqual(build_sh().returncode, 0)
+        # A relaxed plan beside a build.sh without the device-side gate —
+        # an exact plan's script, or one from an emitter before F2 #206 —
+        # is not packed: its runner would carry no certified seal.
+        script_path = os.path.join(pkg, "build.sh")
+        with open(script_path) as f:
+            script = f.read()
+        self.assertIn(pack_update.CERTIFIED_HASH_DEFINE, script)
+        with open(script_path, "w") as f:
+            f.write(script.replace(" $CERT_FLAGS", "").replace(
+                'CERT_FLAGS="' + pack_update.CERTIFIED_HASH_DEFINE + '"\n',
+                ""))
+        status, log = run(pack_update, [pkg])
+        self.assertEqual(status, 1, log)
+        self.assertIn("does not build the device-side certificate gate", log)
+        with open(script_path, "w") as f:
+            f.write(script)
+        self.assertEqual(run(pack_update, [pkg])[0], 0)
         # F72 / F42: a measured run keys its relaxed GEMMs under the
         # certificate's site name, names the plan it measured, and says how
         # many of those GEMMs the C++ backend ran on a relaxed kernel. On a

@@ -56,6 +56,19 @@ inside the certified tolerances. tool/pack_update.py refuses to package
 a plan beside a certificate that does not verify against it, and the
 emitted build.sh of a relaxed plan refuses to build without one.
 
+A certificate has a strength floor (F2 #206), held by `certify`, `verify`
+and tool/pack_update.py alike: no tolerance looser than its ceiling
+(TOLERANCE_CEILINGS: site 1e-4, relaxed GEMM 2^-7, loss 1e-2 — the loosest
+this project has shipped a certificate under), and a free run of at least
+MIN_EVIDENCE_STEPS (2). Looser is not a certificate, whatever it says.
+
+Beside a GRANTED certificate `certify` writes its attestation,
+numerics_certificate.attest: one fixed line naming the plan's SHA-256, the
+plan's seal and the certificate file's SHA-256. It is what the package's
+build.sh — POSIX sh on the device, no JSON parser — checks, whole, before
+it compiles the plan's seal into the runner; a refusal has none (and
+removes a stale one), so no document that says "refused" builds.
+
 Usage:
     certify_numerics.py certify PLAN_OR_PACKAGE --corpus c.sds
         [--steps N] [--lanes W] [--seed S] [--val-fraction F]
@@ -81,6 +94,18 @@ CERT_SCHEMA = 1
 CERT_KIND = "seeml-numerics-certificate"
 CERT_FILE = "numerics_certificate.json"
 PLAN_FILE = "update_plan.seeu"
+# The attestation (F2 #206): the one line a shell can check exactly. The
+# emitted build.sh (compiler/backend/packaging/native_emitter.cc) rebuilds
+# it from the three files' bytes — `shasum`/`sha256sum` of the plan and of
+# the certificate, `od` of the plan's seal — and requires the file to be
+# that line and nothing else. Pinning the certificate's own SHA-256 is what
+# makes the JSON's content irrelevant to the shell: any edit to it (a
+# verdict flipped, a nested document) is another file. Written only after
+# check_certificate has passed, so the line implies the full check.
+ATTESTATION_FILE = "numerics_certificate.attest"
+ATTESTATION_FORMAT = ("seeml-numerics-certificate v1 granted "
+                      "plan-sha256={plan_sha256} plan-seal={plan_seal} "
+                      "certificate-sha256={certificate_sha256}")
 # The two contracts a certificate can state (F2 #130's decision,
 # 2026-10-30). A certificate certifies the relaxations its plan takes:
 #
@@ -112,6 +137,36 @@ FAMILY_DEFAULTS = {
     FLAGGED_FAMILY: {"site_rel": 1e-5, "relaxed_gemm_rel": 2.0 ** -7,
                      "loss_rel": 1e-3},
 }
+# The ceilings (F2 #206): a tolerance looser than its ceiling is a refusal
+# by check_certificate — so by `certify`, `verify` and tool/pack_update.py —
+# where one between the default and the ceiling is a NOTE. Before this a
+# tolerance had only to be finite and positive, and `--max-*-error 1e30`
+# was "granted". Each ceiling is the loosest value a certificate this
+# project shipped was issued under (docs/ledger/f2-2026-10-15 and
+# f2-2026-10-23: SmolLM2-135M at site 1e-4 and loss 1e-2, the softmax
+# cross-entropy site having refused at 1e-5; the tree's own relaxed
+# fixtures certify at loss 1e-2), so every certificate in the ledger still
+# passes and nothing looser ever has:
+#   site_rel          1e-4 = 10x the default of both families
+#   relaxed_gemm_rel  2^-7 = the default (4x one bf16 rounding, 2^-9): the
+#                     bound is the kernel's arithmetic, not the model's,
+#                     and no certificate was ever issued above it
+#   loss_rel          1e-2 = 10x the flagged default (F2's 1e-3 line),
+#                     100x the reduction family's
+TOLERANCE_CEILINGS = {
+    FAMILY: {"site_rel": 1e-4, "relaxed_gemm_rel": 2.0 ** -7,
+             "loss_rel": 1e-2},
+    FLAGGED_FAMILY: {"site_rel": 1e-4, "relaxed_gemm_rel": 2.0 ** -7,
+                     "loss_rel": 1e-2},
+}
+# The floor on the free run (F2 #206). One step is not evidence: both arms
+# start from the same state, so its one loss compares a single forward
+# pass, no update is ever consumed by a later step, and the gate trend
+# (last loss below first) is false in both arms by construction. Two is
+# the least that carries an update's consequence, and the least the ledger
+# holds (f2-2026-10-15 / f2-2026-10-23, where the interpreter costs minutes
+# a step at 135M parameters); `certify` defaults to 20.
+MIN_EVIDENCE_STEPS = 2
 # The relaxed GEMM family (plan v18, kFlagRelaxed): the activation input of
 # a frozen-weight GEMM rounded to bfloat16 once (8 significant bits) before
 # an f32-accumulating multiply against the exact stored weight — what the
@@ -415,6 +470,24 @@ def cmd_certify(args):
                 else args.max_relaxed_gemm_error)
     loss_tol = (defaults["loss_rel"] if args.max_loss_deviation is None
                 else args.max_loss_deviation)
+    # The strength floor (F2 #206), before anything is measured: a
+    # certificate asked for above a ceiling would be refused by every
+    # check_certificate afterwards, so it is refused here and none is
+    # written. The ceilings follow the plan's family, which is why this is
+    # a refusal (3) and not an argument error.
+    weak = strength_problems({
+        "contract": {"family": family},
+        "tolerances": {"site_rel": site_tol, "relaxed_gemm_rel": gemm_tol,
+                       "loss_rel": loss_tol},
+        "evidence": {"steps": args.steps}})
+    if weak:
+        for problem in weak:
+            print(f"certify_numerics: REFUSED {problem}")
+        print("certify_numerics: refused — no certificate written "
+              "(--max-site-error, --max-relaxed-gemm-error, "
+              "--max-loss-deviation and --steps are held to "
+              "TOLERANCE_CEILINGS and MIN_EVIDENCE_STEPS)")
+        return 3
     relax = is_flagged if family == FLAGGED_FAMILY else is_site
 
     # Lockstep evidence rides the reference arm of the free run: the
@@ -537,7 +610,111 @@ def cmd_certify(args):
                                    CERT_FILE)
     fx.write_report(out, cert)
     print(f"certify_numerics: {cert['verdict']} — wrote {out}")
+    # The attestation (F2 #206), only for a certificate the full check
+    # passes; anything else leaves none behind, so the package's build.sh
+    # cannot build beside a refusal.
+    problems = check_certificate(cert, plan_path)
+    if problems:
+        remove_attestation(out)
+        if not reasons:  # granted by the measurements, refused by the check
+            for problem in problems:
+                print(f"certify_numerics: NOT VERIFIED {problem}")
+            return 3
+    else:
+        print("certify_numerics: attested — wrote "
+              f"{write_attestation(out, plan_path)}")
     return 3 if reasons else 0
+
+
+def strength_problems(cert):
+    """Every reason `cert` is too weak to be a certificate, whatever plan
+    it names (empty = it is strong enough): a tolerance above its family's
+    ceiling, a free run shorter than the floor (F2 #206). A function of
+    the document alone, so the ledger's certificates can be held to it
+    without their plans. Tolerances that are not positive finite numbers
+    are check_certificate's to name."""
+    problems = []
+    contract = cert.get("contract")
+    family = contract.get("family") if isinstance(contract, dict) else None
+    ceilings = TOLERANCE_CEILINGS.get(family, TOLERANCE_CEILINGS[FAMILY])
+    tolerances = cert.get("tolerances")
+    for key, ceiling in ceilings.items():
+        value = (tolerances if isinstance(tolerances, dict) else {}).get(key)
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value > ceiling):
+            problems.append(f"tolerance {key} {value:.1e} is looser than "
+                            f"its ceiling {ceiling:.1e}: above it a "
+                            "certificate certifies nothing")
+    evidence = cert.get("evidence")
+    steps = evidence.get("steps") if isinstance(evidence, dict) else None
+    if not isinstance(steps, int) or isinstance(steps, bool):
+        problems.append("the certificate records no evidence steps "
+                        f"({steps!r})")
+    elif steps < MIN_EVIDENCE_STEPS:
+        problems.append(f"the free run is {steps} step(s), below the "
+                        f"floor of {MIN_EVIDENCE_STEPS}: one step is not "
+                        "evidence")
+    return problems
+
+
+def plan_seal(plan_path):
+    """The plan's seal — PlanHeader::plan_hash, 8 bytes little-endian at
+    the header's offset — as 16 hex digits, read as the emitted build.sh
+    reads it (`od`): from the file, not from a parsed plan."""
+    at = fx.formats.PLAN_HEADER.offsets["plan_hash"]
+    try:
+        with open(plan_path, "rb") as f:
+            f.seek(at)
+            raw = f.read(8)
+    except OSError as e:
+        raise fx.PlanError(f"cannot read {plan_path}: {e}")
+    if len(raw) != 8:
+        raise fx.PlanError(f"{plan_path}: too short to carry a plan seal")
+    return f"{int.from_bytes(raw, 'little'):016x}"
+
+
+def attestation_path(cert_path):
+    """Where a certificate's attestation lives: beside it, the same name
+    with `.attest` for `.json` (numerics_certificate.attest in a
+    package)."""
+    stem = cert_path[:-5] if cert_path.endswith(".json") else cert_path
+    return stem + ".attest"
+
+
+def attestation_line(cert_path, plan_path):
+    """The one line that attests `cert_path` for `plan_path`, from the two
+    files' bytes — the line build.sh recomputes."""
+    return ATTESTATION_FORMAT.format(
+        plan_sha256=sha256_file(plan_path), plan_seal=plan_seal(plan_path),
+        certificate_sha256=sha256_file(cert_path))
+
+
+def write_attestation(cert_path, plan_path):
+    """Writes the attestation of a certificate the caller has just passed
+    through check_certificate — never call it otherwise: the line is what
+    the device-side build trusts in place of the full check. Returns its
+    path."""
+    path = attestation_path(cert_path)
+    line = attestation_line(cert_path, plan_path)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="ascii", newline="\n") as f:
+            f.write(line + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        raise fx.PlanError(f"cannot write {path}: {e}")
+    return path
+
+
+def remove_attestation(cert_path):
+    """A certificate that does not verify leaves no attestation behind."""
+    try:
+        os.unlink(attestation_path(cert_path))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        raise fx.PlanError(
+            f"cannot remove {attestation_path(cert_path)}: {e}")
 
 
 def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
@@ -582,6 +759,9 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
         if cert["contract"]["family"] not in FAMILIES:
             problems.append(f"unknown contract family "
                             f"{cert['contract']['family']!r}")
+        # F2 #206: a tolerance above its ceiling, or a free run below the
+        # floor, is a refusal here — not a NOTE where the binary is built.
+        problems.extend(strength_problems(cert))
         # v18 / v20: a plan whose train / step programs carry relaxed
         # instructions is vouched for only by a certificate that priced
         # every one of their sites — gemm.relaxed for the GEMMs, each
@@ -607,9 +787,10 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
 def tolerance_notes(cert):
     """Each certified tolerance looser than `certify`'s default for the
     certificate's contract family, as a sentence (empty: none is). Not a
-    verification failure — the tolerances are the issuer's to set — but
-    one the packager repeats where the binary is built, so the choice is
-    read there rather than discovered when a row is measured (F2 #130)."""
+    verification failure — up to its ceiling (TOLERANCE_CEILINGS, F2 #206)
+    a tolerance is the issuer's to set — but one the packager repeats
+    where the binary is built, so the choice is read there rather than
+    discovered when a row is measured (F2 #130)."""
     notes = []
     if not isinstance(cert, dict):
         return notes
@@ -763,7 +944,9 @@ def build_parser():
     c = sub.add_parser("certify")
     c.add_argument("target", help="a .seeu plan or an emitted package dir")
     c.add_argument("--corpus", required=True)
-    c.add_argument("--steps", type=int, default=20)
+    c.add_argument("--steps", type=int, default=20,
+                   help="the free run's length: default 20, at least "
+                        f"{MIN_EVIDENCE_STEPS}")
     c.add_argument("--lanes", type=int, default=8)
     c.add_argument("--seed", type=int, default=0)
     c.add_argument("--val-fraction", type=float, default=None,
@@ -773,17 +956,18 @@ def build_parser():
     # (FAMILY_DEFAULTS), so they are resolved once the plan is read.
     c.add_argument("--max-site-error", type=float, default=None,
                    help="tolerance for each enforced reduction site: "
-                        "default 1e-5")
+                        "default 1e-5, ceiling 1e-4")
     c.add_argument("--max-relaxed-gemm-error", type=float, default=None,
                    help="tolerance for the v18 relaxed GEMM site (bf16 "
-                        "input rounding): default 2^-7")
+                        "input rounding): default 2^-7, which is also its "
+                        "ceiling")
     c.add_argument("--source", metavar="SMF", default=None,
                    help="the source model (v17 plans whose eval program "
                         "reads it)")
     c.add_argument("--max-loss-deviation", type=float, default=None,
                    help="tolerance for the free run's loss and validation "
                         "deviation: default 1e-3 for a plan with relaxed "
-                        "instructions, 1e-4 for an exact one")
+                        "instructions, 1e-4 for an exact one; ceiling 1e-2")
     c.add_argument("--out", default=None)
     c.set_defaults(fn=cmd_certify)
     v = sub.add_parser("verify")
@@ -801,8 +985,10 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "certify":
-        if args.steps < 1:
-            print("certify_numerics: ERROR --steps must be positive",
+        if args.steps < MIN_EVIDENCE_STEPS:
+            print("certify_numerics: ERROR --steps must be at least "
+                  f"{MIN_EVIDENCE_STEPS} (got {args.steps}): one step is "
+                  "not evidence — no update is consumed by a later step",
                   file=sys.stderr)
             return 2
         for name in ("max_site_error", "max_relaxed_gemm_error",
