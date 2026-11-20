@@ -207,7 +207,7 @@ With it, the two holes on the same path (#206):
   steps, so `certify`, `verify` and `pack_update.py` refuse what was a NOTE:
   site 1e-4, relaxed GEMM 2⁻⁷, loss 1e-2, at least 2 steps — the loosest
   values any certificate in `docs/ledger/` was issued under (the 10-15 and
-  10-23 SmolLM2-135M certificates sit exactly there), so every ledger
+  10-23 SmolLM-135M certificates sit exactly there), so every ledger
   certificate still passes and `--max-*-error 1e30 --steps 1` does not.
 - The emitted `build.sh` no longer greps the JSON (a refused document with
   a nested `"verdict": "granted"` built). `certify` writes, beside a grant

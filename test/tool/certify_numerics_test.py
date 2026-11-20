@@ -380,7 +380,7 @@ class CertificateTest(unittest.TestCase):
                         and cert["evidence"]["steps"]
                         == cn.MIN_EVIDENCE_STEPS):
                     at_ceiling.append(name)
-        # SmolLM2-135M, 2026-10-15 and 2026-10-23: site 1e-4, loss 1e-2,
+        # SmolLM-135M, 2026-10-15 and 2026-10-23: site 1e-4, loss 1e-2,
         # two steps — the evidence the ceilings and the floor are read off.
         self.assertEqual(at_ceiling, [
             "f2-2026-10-15/pkg_relaxed/numerics_certificate.json",

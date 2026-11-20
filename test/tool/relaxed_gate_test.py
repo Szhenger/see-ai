@@ -131,9 +131,10 @@ class RelaxedGateTest(unittest.TestCase):
              "60", "--val-frac", "0.25", "--seed", "3", "--force",
              "--backend", backend, "--out", out, "--report", report, *flags],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if backend == "metal" and done.stderr.startswith("backend: "):
-            self.skipTest(f"no Metal device on this host "
-                          f"({done.stderr.strip()})")
+        if backend == "metal" and any(
+                line.startswith("backend: ")
+                for line in done.stderr.splitlines()):
+            self.skipTest("this host has no Metal device")
         return done, out, report
 
     def refused(self, done, out, report, says):

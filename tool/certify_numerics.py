@@ -143,7 +143,7 @@ FAMILY_DEFAULTS = {
 # tolerance had only to be finite and positive, and `--max-*-error 1e30`
 # was "granted". Each ceiling is the loosest value a certificate this
 # project shipped was issued under (docs/ledger/f2-2026-10-15 and
-# f2-2026-10-23: SmolLM2-135M at site 1e-4 and loss 1e-2, the softmax
+# f2-2026-10-23: SmolLM-135M at site 1e-4 and loss 1e-2, the softmax
 # cross-entropy site having refused at 1e-5; the tree's own relaxed
 # fixtures certify at loss 1e-2), so every certificate in the ledger still
 # passes and nothing looser ever has:
