@@ -123,7 +123,6 @@ using namespace seeml::update;
 /// A failure of the work itself — an unreadable or malformed input file, a
 /// compile refusal, an unwritable output: exit 1.
 [[nodiscard]] int Fail(const std::string& msg) {
-int Fail(const std::string& msg) {
   std::fprintf(stderr, "seeml-update-compile: %s\n", msg.c_str());
   return 1;
 }
@@ -132,7 +131,6 @@ int Fail(const std::string& msg) {
 /// outside its bound, flags that contradict each other: exit 2, before any
 /// model is read.
 [[nodiscard]] int Usage(const std::string& msg) {
-int Usage(const std::string& msg) {
   std::fprintf(stderr, "seeml-update-compile: %s\n", msg.c_str());
   return 2;
 }
@@ -286,31 +284,6 @@ struct CompileArgs {
   std::optional<std::string> dump_sir_path, report_path;
   KernelPolicyRequest policy_request;
   bool no_embed = false, verbose = false, want_build = false;
-}  // namespace
-
-int main(int argc, char** argv) {
-  if (argc > 255) return Usage("too many arguments");
-  Args args(argc, argv);
-
-  if (args.Take("--help") || args.Take("-h")) {
-    PrintUsage();
-    return 0;
-  }
-
-  if (args.Take("--version")) {
-    std::printf("seeml-update-compile %s\n", kSeemlVersion);
-    return 0;
-  }
-
-  const auto source_path = args.TakeValue("--source");
-  const auto out_dir = args.TakeValue("--out");
-  if (!source_path || !out_dir) {
-    if (const auto& m = args.MissingValue())
-      return Usage(*m + " requires a value");
-    PrintUsage();
-    return Usage("--source and --out are required");
-  }
-
   UpdateConfig config;
 };
 
@@ -348,28 +321,6 @@ int main(int argc, char** argv) {
   }
   return std::nullopt;
 }
-  // --data (S2 #148): raw text or a pre-tokenized SDS the frontend holds to
-  // the model and pins the plan to; the canonical corpus and its manifest
-  // are written beside the plan after the compile.
-  const auto data_path = args.TakeValue("--data");
-  if (data_path) config.data_path = *data_path;
-  const auto teacher_path = args.TakeValue("--teacher");
-  if (const auto& m = args.MissingValue())
-    return Usage(*m + " requires a value");
-  if (auto ok = recipe::Apply(
-          recipe_values,
-          {.teacher = teacher_path.has_value(), .data = data_path.has_value()},
-          &config);
-      !ok)
-    return Usage(ok.error());
-  config.fuse_epilogues = !args.Take("--no-fuse-epilogue");
-  // Debug: the final SIR, rendered only when a destination is named.
-  const auto dump_sir_path = args.TakeValue("--dump-sir");
-  config.dump_sir = dump_sir_path.has_value();
-  config.fuse_elementwise = !args.Take("--no-fuse-elementwise");
-  config.fuse_gemm_addend = !args.Take("--no-fuse-addend");
-  config.rope_table = !args.Take("--no-rope-table");
-  config.fuse_clip = !args.Take("--no-fuse-clip");
 
 /// --gemm-tiles, --kernel-policy and --target-host: the policy as requested.
 [[nodiscard]] std::optional<int> TakeKernelPolicy(
@@ -396,8 +347,6 @@ int main(int argc, char** argv) {
     double peak = 0.0;
     if (!recipe::ParseF64Strict(*v, &peak) || !(peak > 0.0))
       return Usage("--peak-gflops must be a positive number, got '" + *v + "'");
-      return Usage("--peak-gflops must be a positive number, got '" + *v +
-                   "'");
     config.peak_gflops = peak;
   }
   // The GPU half of the target description (S6 #152): the backend screen
@@ -432,10 +381,6 @@ int main(int argc, char** argv) {
         "run `python3 tool/pack_update.py <out> --build` instead (it "
         "embeds the plan, or leaves it beside the binary above its "
         "embed limit)");
-    return Usage("--build needs the embedded plan TU that --no-embed skips; "
-                 "run `python3 tool/pack_update.py <out> --build` instead (it "
-                 "embeds the plan, or leaves it beside the binary above its "
-                 "embed limit)");
   // A relaxed plan (v18) is buildable only beside a numerics certificate,
   // and only the Python plane issues one: --build here would link an
   // uncertified relaxed binary (2026-09-24 review, N17). The emitted
@@ -518,10 +463,6 @@ int main(int argc, char** argv) {
   const bool verbose = args.Take("--verbose");
   if (auto rc = TakePeaks(args, config)) return std::unexpected(*rc);
   const bool want_build = args.Take("--build");
-    return Usage("--build cannot certify a --precision certified-bf16 plan; "
-                 "emit it, run `python3 tool/certify_numerics.py certify <out> "
-                 "--corpus <corpus.sds>`, then `python3 tool/pack_update.py "
-                 "<out> --build`");
 
   if (auto rc = RefuseLeftovers(args, no_embed, want_build, config))
     return std::unexpected(*rc);

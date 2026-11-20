@@ -4,9 +4,6 @@ What the tree already does, written down (S8, #154). Where the tree is not
 yet uniform, the rule is stated and the gap is named. Layout is not written
 down here: it is what `clang-format` 19 makes of the committed `.clang-format`
 files (section 1, "Formatting").
-yet uniform, the rule is stated and the gap is named. There is no
-`.clang-format` yet: formatting is by hand, and no change reformats code it
-does not otherwise touch.
 
 ## 1. Two dialects, by subsystem
 
@@ -72,7 +69,6 @@ and the check is the same file list with `--dry-run -Werror` in place of
 - `.git-blame-ignore-revs` names the commit that reformatted the tree:
   `git config blame.ignoreRevsFile .git-blame-ignore-revs` makes `git blame`
   look through it.
-80 columns (about 640 lines run past 80 today and 17 past 100; add none).
 
 A file belongs to the dialect of the namespace it *defines* in. The passes,
 sema, the parser and the lowering live in `seeml::update` and are Google
@@ -102,8 +98,6 @@ methods to `seeml::sir` or camelCase ones anywhere else.
   there it also covers the `…Violation` checks, the strict parsers, the
   bounds helpers and the durable-I/O calls whose `bool` is a write's fate.
   A result dropped on purpose (a best-effort close) says so with `(void)`.
-  this but for five declarations; `source/` (2 uses) and `tool/` (0) do not
-  yet — new and touched declarations take it.
 - Propagate with an early return:
   `if (auto r = Step(); !r) return std::unexpected(r.error());`
 

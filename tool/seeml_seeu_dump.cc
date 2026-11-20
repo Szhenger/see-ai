@@ -406,17 +406,6 @@ int main(int argc, char** argv) {
                  argv[1]);
     return 2;
   }
-  // The plan comes first. A flag in its place — a typo'd one, or a real one
-  // ahead of the file — is a bad command line (exit 2), not a file that
-  // cannot be opened (exit 1).
-  if (argv[1][0] == '-') {
-    std::fprintf(stderr,
-                 "seeml-seeu-dump: unknown argument '%s' where the plan file "
-                 "belongs\n"
-                 "usage: seeml-seeu-dump plan.seeu [--instrs | --json]\n",
-                 argv[1]);
-    return 2;
-  }
   bool want_instrs = false;
   bool want_json = false;
   for (int i = 2; i < argc; ++i) {

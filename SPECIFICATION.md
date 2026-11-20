@@ -404,8 +404,6 @@ test of the compiler-emitted GEMM source.
   `test/tool/` (counted on macOS, 2026-11-19; the live counts are the suite
   list of `build/build.sh`, each suite's `--list`, and what `unittest
   discover` reports).
-  0 no test failed / 1 fail / 2 usage or empty selection. 25 suite executables mirror the source tree
-  one-to-one; 345 tests at v1.2.3.
 - **Fixtures** (`test/support/`) — seeded in-process builders for models,
   corpora, and arena probes; a RAII temp-dir. The checked-in binary golden
   files are the four SMF / SDS fixtures of `test/fixtures/golden/`, written
