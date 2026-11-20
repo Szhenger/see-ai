@@ -14,6 +14,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(REPO, "tool"))
+from seeml import formats  # noqa: E402
+from seeml.content_hash import content_hash64  # noqa: E402
 
 BUILD = os.environ.get("SEEML_BUILD_DIR", os.path.join(REPO, "build"))
 COMPILER = os.path.join(BUILD, "seeml-update-compile")
@@ -252,52 +254,63 @@ class RunnerFlagsTest(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr[-1500:])
         with open(ckpt, "rb") as f:
             own = f.read()
-        # This plan's checkpoint is a resume, bound to the first run's seed.
+        # This plan's checkpoint is a resume, bound to the first run's seed:
+        # another is a refused checkpoint (exit 1, CR4 #221), not a usage
+        # error — the refusal needs the corpus and the file read.
         r = self.update("--checkpoint", ckpt, "--resume", "--seed", "2",
                         "--force")
-        self.assertEqual(r.returncode, 2, r.stderr[-1500:])
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
         self.assertIn("--resume refused", r.stderr)
-        # The same record bound to another plan (the SEKP header's plan-hash
-        # word, bytes 8..15) is one the engine's load refuses before it
-        # starts fresh: it binds this run to nothing, so another seed is no
-        # usage error ...
+        # --resume is strict (CR4 #221): the same record bound to another
+        # plan (the SEKP header's plan-hash word, bytes 8..15, the header
+        # resealed so its integrity hash holds) is refused by name, exit 1,
+        # and the file left as it was — never a fresh run over it.
         stale = os.path.join(self.dir, "stale.ckpt")
         other = bytearray(own)
         other[8] ^= 0xFF
+        at = formats.SEKP_HEADER_BYTES - 8
+        head = bytearray(other[:formats.SEKP_HEADER_BYTES])
+        head[at:at + 8] = bytes(8)
+        other[at:at + 8] = content_hash64(bytes(head)).to_bytes(8, "little")
         with open(stale, "wb") as f:
             f.write(other)
         r = self.update("--checkpoint", stale, "--resume", "--seed", "2",
                         "--force")
-        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
-        self.assertIn("no checkpoint resumed", r.stderr)
-        self.assertNotIn("--resume refused", r.stderr)
-        # ... and the fresh run's --steps rule is the one that holds.
-        with open(stale, "wb") as f:
-            f.write(other)
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
+        self.assertIn("belongs to a different plan", r.stderr)
+        with open(stale, "rb") as f:
+            self.assertEqual(f.read(), bytes(other))
+        # Refused before the rules a resume changes: the fresh run's --steps
+        # rule never gets to speak for a file that is there.
         r = self.update("--checkpoint", stale, "--resume", "--seed", "2",
+                        "--steps", "3")
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
+        self.assertIn("belongs to a different plan", r.stderr)
+        # With no file at the path there is nothing to resume: a fresh run,
+        # whose --steps rule holds.
+        absent = os.path.join(self.dir, "absent.ckpt")
+        r = self.update("--checkpoint", absent, "--resume", "--seed", "2",
                         "--steps", "3")
         self.assertEqual(r.returncode, 2, r.stderr[-1500:])
         self.assertIn("must exceed the plan's compiled warmup", r.stderr)
         # A resume's --steps counts further steps: from step 6, two more
         # end at 8, past the warmup, and the engine's rule admits it.
-        with open(ckpt, "wb") as f:
-            f.write(own)
         r = self.update("--checkpoint", ckpt, "--resume", "--seed", "1",
                         "--steps", "2", "--force")
         self.assertEqual(r.returncode, 0, r.stderr[-1500:])
-        self.assertNotIn("no checkpoint resumed", r.stderr)
-        # A checkpoint of this plan that does not load (truncated): the
-        # peek calls it a resume, the engine starts fresh — and the engine's
-        # own warmup rule refuses the 2-step horizon the runner's early
-        # check could not see.
+        self.assertNotIn("nothing to resume", r.stderr)
+        # A checkpoint of this plan that does not load (truncated) is
+        # refused, exit 1, and left as it was.
         broken = os.path.join(self.dir, "broken.ckpt")
         with open(broken, "wb") as f:
             f.write(own[:200])
         r = self.update("--checkpoint", broken, "--resume", "--seed", "1",
                         "--steps", "2", "--force")
-        self.assertNotEqual(r.returncode, 0, r.stderr[-1500:])
-        self.assertIn("does not exceed the plan's compiled warmup", r.stderr)
-
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
+        self.assertIn("--resume refused", r.stderr)
+        self.assertIn("truncated checkpoint", r.stderr)
+        with open(broken, "rb") as f:
+            self.assertEqual(f.read(), own[:200])
 
 if __name__ == "__main__":
     unittest.main()

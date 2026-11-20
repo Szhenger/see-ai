@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "runtime/storage/checkpoint.h"
+#include "runtime/storage/checkpoint_format.h"
 #include "runtime/storage/durable_io.h"
 #include "runtime/diagnostics/executing/error.h"
 #include "runtime/loader/contract.h"
@@ -30,6 +31,9 @@
 namespace seeml::update_rt {
 
 namespace up = seeml::update;
+
+static_assert(LossWindows::kMax == kCkptWindowMax,
+              "the train-loss windows are the checkpoint's ring");
 
 namespace {
 
@@ -297,6 +301,8 @@ std::expected<void, std::string> UpdateEngine::Initialize(
   merged_ = false;
   binding_ = {};
   gate_.Reset();
+  windows_ = LossWindows{};
+  resume_evaluations_ = 0;
   return {};
 }
 
@@ -597,51 +603,52 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         "the train program (an adapter-only plan) — bind it with "
         "BindSourceModel before training");
   const bool explicit_steps = steps != 0;
+  // Every evaluation of this call is clocked, a resume's re-measurements
+  // included.
+  eval_seconds_ = 0.0;
+  resume_evaluations_ = 0;
   if (auto r = ValidateDataset(data); !r) return std::unexpected(r.error());
   if (options.validation)
     if (auto r = ValidateDataset(*options.validation); !r)
       return std::unexpected(r.error());
 
+  // --resume is strict (CR4 #221). No file at the path is "nothing to
+  // resume" and a fresh run, said so. A file that IS there and cannot be
+  // resumed — unreadable, corrupt, another plan's, another run's — fails the
+  // call: falling through to a fresh run would overwrite it at the first
+  // periodic checkpoint, and would hand the caller a full-budget run it did
+  // not ask for.
+  bool from_checkpoint = false;
   if (options.resume && !options.checkpoint_path.empty()) {
-    if (auto r = LoadCheckpoint(options.checkpoint_path); !r) {
-      std::fprintf(stderr, "seeml-update: no checkpoint resumed (%s)\n",
-                   r.error().c_str());
-    } else if (step_ > 0) {
-      // The run binding (v5): the checkpoint's segment was trained on ONE
-      // shuffle stream over ONE train/validation split. A different seed
-      // or split would silently move the boundary — training on the first
-      // run's validation rows — so it is refused, not adjusted.
-      if (binding_.bound) {
-        const uint64_t val_n =
-            options.validation ? options.validation->num_samples() : 0;
-        if (binding_.shuffle_origin != data.shuffle_origin() ||
-            binding_.train_samples != data.num_samples() ||
-            binding_.val_samples != val_n)
-          return diag::executing::Error(
-              "resume refused: the checkpoint was written on a different "
-              "shuffle seed or train/validation split (" +
-              std::to_string(binding_.train_samples) + " train / " +
-              std::to_string(binding_.val_samples) +
-              " validation samples); resume with the first run's --seed "
-              "and --val-frac");
-      }
-      // Replay the feeder to where the interrupted run stood: step_ batches
-      // of header_.batch rows each. Without this, a resumed process serves
-      // the permutation from the top, and its batch order — hence its
-      // final bits — diverges from the same run left uninterrupted. The
-      // dataset owns the rows-to-cursor exchange rate (token corpora
-      // advance one record per seq_len rows) and replays per-epoch
-      // permutations from the shuffle seed, so the position is exact even
-      // across epoch boundaries.
-      // Under accumulation each optimizer step consumed G micro-batches.
-      uint64_t served = 0;
-      if (!MulOk(step_, header_.batch, &served) ||
-          !MulOk(served, grad_accum_, &served))
-        return diag::executing::Error(
-            "resumed step count overflows the "
-            "feeder position");
-      if (auto r = data.SkipServed(served); !r)
+    if (!CheckpointExists(options.checkpoint_path)) {
+      std::fprintf(stderr,
+                   "seeml-update: no checkpoint at '%s': nothing to resume, "
+                   "starting a fresh run\n",
+                   options.checkpoint_path.c_str());
+    } else {
+      // A refused resume leaves the engine — the segment, the step, the
+      // horizon, the binding, the gate, the windows — and the feeder as
+      // they were: the refusal is the call's only effect.
+      const std::vector<uint8_t> held_segment(arena_,
+                                              arena_ + header_.persistent_size);
+      const uint64_t held_step = step_, held_horizon = horizon_;
+      const RunBinding held_binding = binding_;
+      const GateState held_gate = gate_;
+      const LossWindows held_windows = windows_;
+      const bool held_merged = merged_;
+      const Dataset::ServingPos held_pos = data.SaveServingPos();
+      if (auto r = ResumeFromCheckpoint(data, options, explicit_steps); !r) {
+        std::memcpy(arena_, held_segment.data(), held_segment.size());
+        step_ = held_step;
+        horizon_ = held_horizon;
+        binding_ = held_binding;
+        gate_ = held_gate;
+        windows_ = held_windows;
+        merged_ = held_merged;
+        data.RestoreServingPos(held_pos);
         return std::unexpected(r.error());
+      }
+      from_checkpoint = true;
     }
   }
 
@@ -689,11 +696,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         " steps): the run would end inside the ramp");
 
   // The run binding every checkpoint of this run will carry.
-  binding_.bound = true;
-  binding_.shuffle_origin = data.shuffle_origin();
-  binding_.train_samples = data.num_samples();
-  binding_.val_samples =
-      options.validation ? options.validation->num_samples() : 0;
+  binding_ = BindingOf(data, options.validation);
 
   // Periodic evaluation (E9): "auto" resolves against the RUN — its
   // horizon, already decided above — never against this call's step count,
@@ -708,14 +711,17 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   TrainReport report;
   report.eval_every = eval_every;
   report.patience = track_best ? options.patience : 0;
-  eval_seconds_ = 0.0;
+  report.resumed_step = from_checkpoint ? step_ : 0;
+  report.resume_evaluations = resume_evaluations_;
   if (options.validation) {
     report.has_validation = true;
     if (resumed && gate_.has_val_initial) {
-      // The gate's "before" is the SOURCE model's score, which only the
-      // first run could measure: a resumed run that re-measured would score
-      // the resumed adapter as its baseline and reject an update that
-      // merely held steady over the resumed segment.
+      // The gate's "before" is the SOURCE model's score — not the resumed
+      // adapter's, which would be the baseline of an evaluation made here
+      // and would reject an update that merely held steady over the resumed
+      // segment. A resume from a checkpoint has just re-measured this number
+      // on the source state and found the stored bits (CR4 #221); a second
+      // Train call in one process carries the one its first call measured.
       report.val_initial_loss = gate_.val_initial_loss;
       report.has_val_accuracy = gate_.val_initial_has_accuracy;
       report.val_initial_accuracy = gate_.val_initial_accuracy;
@@ -727,9 +733,9 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       report.val_initial_accuracy = v->accuracy;
       if (resumed)
         std::fprintf(stderr,
-                     "seeml-update: note — the checkpoint predates the "
-                     "stored source-model score; the gate's baseline is the "
-                     "resumed state's loss %.6f\n",
+                     "seeml-update: note — the run so far measured no "
+                     "source-model score; the gate's baseline is the "
+                     "current state's loss %.6f\n",
                      v->loss);
       gate_.has_val_initial = true;
       gate_.val_initial_loss = v->loss;
@@ -766,16 +772,15 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
           ? nullptr
           : reinterpret_cast<uint8_t*>(WritePtr(header_.label_ref));
 
-  constexpr uint64_t kMaxWindow = 20;
-  const uint64_t window =
-      std::max<uint64_t>(1, std::min<uint64_t>(kMaxWindow, steps / 5));
-  double first_sum = 0.0;
-  uint64_t first_n = 0;
-  // The last window is over the steps actually run, kept as a ring: a run
-  // stopped early (patience, should_stop) ends at its own last steps, not
-  // at the requested run's — which it never reached. A run of all its
-  // steps sums the same losses in the same order as before.
-  float last_losses[kMaxWindow] = {};
+  // The train-loss gate's windows (runtime/gating/gate.h). The last window
+  // is over the steps actually run, kept as a ring: a run stopped early
+  // (patience, should_stop) ends at its own last steps, not at the requested
+  // run's — which it never reached. They are the RUN's (CR4 #221): a call
+  // that resumed a checkpoint carries on with the windows the checkpoint
+  // holds — the first run's size, its first window, its ring — so the gate
+  // weighs the whole run, and a finished run resumed weighs what it weighed.
+  // Any other call starts them, sized by its own step count, as before.
+  if (!(from_checkpoint && windows_.live())) windows_.Start(steps);
   if (options.record_loss_curve) report.loss_curve.reserve(steps);
 
   // N12 (2026-11-16 review, D4): the checkpoint of the evaluation that
@@ -819,15 +824,21 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         // restore one into the arena — either would put a different run in
         // the checkpoint (N12's failure, again). Skipped when this step's
         // periodic checkpoint already holds this state, or when no step ran.
-        if (executed > 0 && !options.checkpoint_path.empty() &&
-            !(options.checkpoint_every &&
-              step_ % options.checkpoint_every == 0)) {
-          DurableWriteStats written;
-          if (auto r = SaveCheckpoint(options.checkpoint_path, &written); !r)
-            return std::unexpected(r.error());
-          ++report.checkpoints;
-          report.checkpoint_bytes += written.bytes;
-          report.checkpoint_fsyncs += written.fsyncs;
+        // The report says whether the file holds the state the run stopped
+        // at (CR4 #221): it does once a step ran, and before the first step
+        // only when this call resumed from that very file — a fresh run
+        // stopped before its first step has written nothing.
+        if (!options.checkpoint_path.empty()) {
+          if (executed > 0 && !(options.checkpoint_every &&
+                                step_ % options.checkpoint_every == 0)) {
+            DurableWriteStats written;
+            if (auto r = SaveCheckpoint(options.checkpoint_path, &written); !r)
+              return std::unexpected(r.error());
+            ++report.checkpoints;
+            report.checkpoint_bytes += written.bytes;
+            report.checkpoint_fsyncs += written.fsyncs;
+          }
+          report.stop_checkpointed = executed > 0 || from_checkpoint;
         }
         break;
       }
@@ -870,11 +881,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
                                       std::to_string(step_) +
                                       " — aborting the update");
       if (options.record_loss_curve) report.loss_curve.push_back(loss);
-      if (s - start < window) {
-        first_sum += loss;
-        ++first_n;
-      }
-      last_losses[(s - start) % window] = loss;
+      windows_.Observe(loss);
       if (options.log_every && (s - start) % options.log_every == 0)
         std::fprintf(stderr, "seeml-update: step %llu  loss %.6f\n",
                      static_cast<unsigned long long>(step_), loss);
@@ -918,14 +925,8 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   }
 
   report.steps = executed;
-  report.initial_avg_loss =
-      first_n ? static_cast<float>(first_sum / first_n) : 0.0f;
-  const uint64_t last_n = std::min(executed, window);
-  double last_sum = 0.0;
-  for (uint64_t i = executed - last_n; i < executed; ++i)  // oldest first
-    last_sum += last_losses[i % window];
-  report.final_avg_loss =
-      last_n ? static_cast<float>(last_sum / last_n) : report.initial_avg_loss;
+  report.initial_avg_loss = windows_.FirstMean();
+  report.final_avg_loss = windows_.LastMean();
 
   // A stopped run is not weighed (#202 item 1): the host commits nothing and
   // the resume re-enters from the checkpoint written at the stop, so the
@@ -1160,10 +1161,223 @@ std::expected<void, std::string> UpdateEngine::CommitToModel(
   return edit->Commit();
 }
 
+uint32_t UpdateEngine::CheckpointBackend() const {
+  return backend_kind_ == BackendKind::kMetal ? kCkptBackendMetal
+                                              : kCkptBackendCpu;
+}
+
+UpdateEngine::RunBinding UpdateEngine::BindingOf(
+    const Dataset& data, const Dataset* validation) const {
+  RunBinding b;
+  b.bound = true;
+  b.shuffle_origin = data.shuffle_origin();
+  b.train_samples = data.num_samples();
+  b.val_samples = validation ? validation->num_samples() : 0;
+  b.corpus_hash = data.content_hash();
+  b.split_hash = data.split_hash();
+  b.backend = CheckpointBackend();
+  return b;
+}
+
+// The strict resume (CR4 #221). The checkpoint is an input: the storage
+// role has verified the file as a file (version, header hash, field bounds,
+// length, plan, payload hashes); here it is held to the RUN — and the two
+// numbers the gate will weigh are measured again instead of read.
+std::expected<void, std::string> UpdateEngine::ResumeFromCheckpoint(
+    Dataset& data, const TrainOptions& options, bool explicit_steps) {
+  const std::string& path = options.checkpoint_path;
+  auto refuse = [&](const std::string& why) {
+    return diag::executing::Error("resume refused: '" + path + "' " + why);
+  };
+  if (auto r = LoadCheckpoint(path); !r)
+    return refuse("cannot be resumed (" + r.error() + "); it is left as it is");
+  auto hex = [](uint64_t v) {
+    char buf[20];
+    std::snprintf(buf, sizeof buf, "%016llx",
+                  static_cast<unsigned long long>(v));
+    return std::string(buf);
+  };
+  // A run writes no checkpoint before its first step, and every one it
+  // writes carries its binding and its horizon.
+  if (step_ == 0)
+    return refuse(
+        "holds step 0 (field 'step'): a run writes no checkpoint "
+        "before its first step");
+  if (!binding_.bound)
+    return refuse(
+        "carries no run binding (field 'flags'): it was not "
+        "written by a training run, and a resume is held to the "
+        "run's corpus, split, seed and backend");
+  if (horizon_ == 0)
+    return refuse("carries no horizon (field 'horizon_steps')");
+  const RunBinding now = BindingOf(data, options.validation);
+  // The backend first: the stored losses are one backend's bits, and the
+  // re-measurement below compares bit for bit — which only the backend
+  // that wrote them can reproduce. Refused by name rather than compared at
+  // a tolerance: a tolerance is a band a wrong number fits in, and a run
+  // that changes backend midway is neither backend's uninterrupted run.
+  if (binding_.backend != now.backend)
+    return refuse(std::string("was written on the ") +
+                  (binding_.backend == kCkptBackendMetal ? "metal"
+                   : binding_.backend == kCkptBackendCpu ? "cpu"
+                                                         : "unstated") +
+                  " backend and this run is on " + backend_name() +
+                  " (field 'backend'): the gate's losses are re-measured "
+                  "bit for bit, which holds on one backend only — resume "
+                  "on the backend the run started on");
+  // The run binding (v5): the checkpoint's segment was trained on ONE
+  // shuffle stream over ONE train/validation split. A different seed or
+  // split would silently move the boundary — training on the first run's
+  // validation rows — so it is refused, not adjusted.
+  if (binding_.shuffle_origin != now.shuffle_origin ||
+      binding_.train_samples != now.train_samples ||
+      binding_.val_samples != now.val_samples)
+    return diag::executing::Error(
+        "resume refused: the checkpoint was written on a different "
+        "shuffle seed or train/validation split (" +
+        std::to_string(binding_.train_samples) + " train / " +
+        std::to_string(binding_.val_samples) +
+        " validation samples); resume with the first run's --seed "
+        "and --val-frac");
+  // The corpus and the split themselves (v6): the same record counts are
+  // not the same records. Both hashes are compared as they are — 0 is "the
+  // dataset names none" (an in-memory corpus; a positional split), and a
+  // named one never resumes an unnamed one.
+  if (binding_.corpus_hash != now.corpus_hash)
+    return refuse("was written over another corpus (content hash " +
+                  hex(binding_.corpus_hash) + "; this run's is " +
+                  hex(now.corpus_hash) +
+                  ", field 'corpus_hash'): resume with the first run's "
+                  "--data");
+  if (binding_.split_hash != now.split_hash)
+    return refuse("was written over another validation split (split hash " +
+                  hex(binding_.split_hash) + "; this run's is " +
+                  hex(now.split_hash) + ", field 'split_hash')");
+  // The fields only the run bounds. A stated horizon on a resume of the
+  // remainder must be the run's own; an explicit step count is a request
+  // for more steps on a schedule stretched to cover them (E8), which
+  // re-decides the horizon below.
+  if (options.horizon_steps != 0 && !explicit_steps &&
+      options.horizon_steps != horizon_)
+    return refuse("has a horizon of " + std::to_string(horizon_) +
+                  " steps and this run states " +
+                  std::to_string(options.horizon_steps) +
+                  " (field 'horizon_steps')");
+  // Equality is the checkpoint of the evaluation that spent the patience
+  // (N12); more than the run's patience is a count no run of it reaches.
+  if (options.patience > 0 && gate_.stale_evals > options.patience)
+    return refuse("counts " + std::to_string(gate_.stale_evals) +
+                  " evaluations without a new best, past this run's "
+                  "patience of " +
+                  std::to_string(options.patience) + " (field 'stale_evals')");
+  if (options.validation && !gate_.has_val_initial)
+    return refuse(
+        "carries no source-model validation score (field "
+        "'val_initial_loss') though its run had a validation set");
+
+  // The gate's numbers, measured again — before the feeder moves, so every
+  // refusal comes before anything the run would build on.
+  if (options.validation)
+    if (auto r = RemeasureGate(*options.validation, path); !r)
+      return std::unexpected(r.error());
+
+  // Replay the feeder to where the interrupted run stood: step_ batches
+  // of header_.batch rows each. Without this, a resumed process serves
+  // the permutation from the top, and its batch order — hence its
+  // final bits — diverges from the same run left uninterrupted. The
+  // dataset owns the rows-to-cursor exchange rate (token corpora
+  // advance one record per seq_len rows) and replays per-epoch
+  // permutations from the shuffle seed, so the position is exact even
+  // across epoch boundaries.
+  // Under accumulation each optimizer step consumed G micro-batches.
+  uint64_t served = 0;
+  if (!MulOk(step_, header_.batch, &served) ||
+      !MulOk(served, grad_accum_, &served))
+    return diag::executing::Error(
+        "resumed step count overflows the "
+        "feeder position");
+  if (auto r = data.SkipServed(served); !r) return std::unexpected(r.error());
+  return {};
+}
+
+// The gate's numbers are not taken from the checkpoint on trust (CR4 #221).
+// The starting validation loss is the SOURCE model's: the persistent
+// segment at the plan's initial image (LoRA's B is zero there, so the
+// adapted function is the source's) is exactly the state a fresh run's
+// first evaluation scores, through this same EvaluateMetrics — so on the
+// backend that wrote the checkpoint the bits are the stored ones, or the
+// file is not this run's. The best state's loss is measured from the best
+// payload the same way. The restored segment is set aside for the passes
+// and put back, byte for byte, on every path out.
+std::expected<void, std::string> UpdateEngine::RemeasureGate(
+    Dataset& validation, const std::string& path) {
+  const size_t bytes = static_cast<size_t>(header_.persistent_size);
+  const std::vector<uint8_t> held(arena_, arena_ + bytes);
+  auto restore = [&] { std::memcpy(arena_, held.data(), bytes); };
+
+  // The plan's initial image of the segment, as AllocateArena lays it down.
+  const size_t init =
+      std::min(bytes, static_cast<size_t>(header_.persist_init_size));
+  std::memset(arena_, 0, bytes);
+  std::memcpy(arena_, plan_ + header_.persist_init_offset, init);
+  auto source = EvaluateMetrics(validation);
+  ++resume_evaluations_;
+  if (!source) {
+    restore();
+    return std::unexpected(source.error());
+  }
+  EvalMetrics best;
+  if (gate_.has_best) {
+    std::memcpy(arena_, gate_.best_state.data(), bytes);
+    auto scored = EvaluateMetrics(validation);
+    ++resume_evaluations_;
+    if (!scored) {
+      restore();
+      return std::unexpected(scored.error());
+    }
+    best = *scored;
+  }
+  restore();
+
+  auto bits = [](float v) { return std::bit_cast<uint32_t>(v); };
+  auto mismatch = [&](const char* field, const char* what, float stored,
+                      float measured) {
+    char buf[256];
+    std::snprintf(buf, sizeof buf,
+                  "states %s of %.9g (bits %08x) but it measures %.9g (bits "
+                  "%08x) on this run's held-out records [backend %s] (field "
+                  "'%s'): the gate's numbers are re-measured, not trusted",
+                  what, static_cast<double>(stored), bits(stored),
+                  static_cast<double>(measured), bits(measured), backend_name(),
+                  field);
+    return diag::executing::Error("resume refused: '" + path + "' " + buf);
+  };
+  if (bits(source->loss) != bits(gate_.val_initial_loss))
+    return mismatch("val_initial_loss", "a source-model validation loss",
+                    gate_.val_initial_loss, source->loss);
+  // The accuracy the --require-accuracy gate compares against is read from
+  // the same record, so it is held the same way.
+  if (source->has_accuracy != gate_.val_initial_has_accuracy ||
+      bits(source->accuracy) != bits(gate_.val_initial_accuracy))
+    return mismatch("val_initial_accuracy",
+                    "a source-model validation accuracy",
+                    gate_.val_initial_accuracy, source->accuracy);
+  if (gate_.has_best) {
+    if (bits(best.loss) != bits(gate_.best_loss))
+      return mismatch("best_loss", "a best-state validation loss",
+                      gate_.best_loss, best.loss);
+    if (bits(best.accuracy) != bits(gate_.best_accuracy))
+      return mismatch("best_accuracy", "a best-state validation accuracy",
+                      gate_.best_accuracy, best.accuracy);
+  }
+  return {};
+}
+
 std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
     const std::string& path, DurableWriteStats* stats) const {
   // The run horizon rides along (v4): a resume trains the remainder to it;
-  // and (v5) the run binding, the source model's score and the best state.
+  // (v5) the run binding, the source model's score and the best state; and
+  // (v6) the corpus, the split, the backend and the train-loss windows.
   CheckpointRecord record;
   record.step = step_;
   record.horizon_steps = horizon_;
@@ -1173,6 +1387,17 @@ std::expected<void, std::string> UpdateEngine::SaveCheckpoint(
   record.shuffle_origin = binding_.shuffle_origin;
   record.train_samples = binding_.train_samples;
   record.val_samples = binding_.val_samples;
+  record.corpus_hash = binding_.corpus_hash;
+  record.split_hash = binding_.split_hash;
+  // The backend is the engine's whether or not a run bound anything: the
+  // stored losses are its bits.
+  record.backend = CheckpointBackend();
+  record.has_windows = windows_.live();
+  record.window = windows_.window;
+  record.window_count = windows_.count;
+  record.first_window_sum = windows_.first_sum;
+  std::copy(std::begin(windows_.last), std::end(windows_.last),
+            std::begin(record.last_losses));
   record.has_val_initial = gate_.has_val_initial;
   record.has_accuracy = gate_.val_initial_has_accuracy;
   record.val_initial_loss = gate_.val_initial_loss;
@@ -1197,11 +1422,22 @@ std::expected<void, std::string> UpdateEngine::LoadCheckpoint(
                                      header_.persistent_size, arena_);
   if (!record) return std::unexpected(record.error());
   step_ = record->step;
-  horizon_ = record->horizon_steps;  // 0 from a v3 file: the plan's default
+  horizon_ = record->horizon_steps;  // 0: saved outside a run (plan default)
   binding_.bound = record->has_binding;
   binding_.shuffle_origin = record->shuffle_origin;
   binding_.train_samples = record->train_samples;
   binding_.val_samples = record->val_samples;
+  binding_.corpus_hash = record->corpus_hash;
+  binding_.split_hash = record->split_hash;
+  binding_.backend = record->backend;
+  windows_ = LossWindows{};
+  if (record->has_windows) {
+    windows_.window = record->window;
+    windows_.count = record->window_count;
+    windows_.first_sum = record->first_window_sum;
+    std::copy(std::begin(record->last_losses), std::end(record->last_losses),
+              std::begin(windows_.last));
+  }
   gate_.has_val_initial = record->has_val_initial;
   gate_.val_initial_has_accuracy = record->has_accuracy;
   gate_.val_initial_loss = record->val_initial_loss;
