@@ -173,6 +173,54 @@ the softmax cross-entropy's 4.49e-5 printed as evidence; the branch tip's
 `verify` and `pack_update.py --build` accept the certificate
 (`docs/ledger/f2-2026-10-30/`). Every acceptance line is met.
 
+## Status 2026-11-20
+
+Design item 1 — "a header field or section recording the certificate hash;
+the validator refuses relaxed instructions without it" — was not delivered
+by the lines above: the acceptance line checked off was the narrower "every
+build path refuses an uncertified relaxed plan", and the device checked
+nothing. The 2026-11-17 review reproduced it (#206): an exact package's
+`model_update --plan <relaxed plan> --backend metal` exited 0, committed,
+and reported 480 relaxed executions with no certificate anywhere.
+
+It is delivered now, in another form than the item's wording, and the
+difference is deliberate: **the binding is in the binary, not in the plan.**
+A certificate hashes the plan, so it cannot sit inside the plan it hashes
+(the note under `kFlagRelaxed` has said so since v18), and a header field
+would have cost a plan version for a value the plan cannot carry. Instead
+the build path that has checked a granted certificate compiles that plan's
+seal (`PlanHeader::plan_hash`) into the runner
+(`-DSEEML_CERTIFIED_PLAN_HASH`, zero when no certificate was checked), and
+the loader — not the validator, which still admits the bit on the version
+alone — refuses a plan with any `kFlagRelaxed` instruction unless its seal
+is that hash: embedded, disk mode, and `--plan` alike (`RelaxedPlanPermit`,
+`VerifyRelaxedPermit`; `runtime/loader/contract.h`). No plan-format change,
+no version bump; an exact plan and an exact package are untouched. The
+loader's default is no permit; the callers that run a relaxed plan without
+a certificate say so by name (`UncertifiedForMeasurement`:
+`seeml-plan-probe --relaxed-for-measurement`, the fuzzer, the test suites).
+The runner has no such flag.
+
+With it, the two holes on the same path (#206):
+
+- `check_certificate` holds tolerance ceilings and a floor on evidence
+  steps, so `certify`, `verify` and `pack_update.py` refuse what was a NOTE:
+  site 1e-4, relaxed GEMM 2⁻⁷, loss 1e-2, at least 2 steps — the loosest
+  values any certificate in `docs/ledger/` was issued under (the 10-15 and
+  10-23 SmolLM2-135M certificates sit exactly there), so every ledger
+  certificate still passes and `--max-*-error 1e30 --steps 1` does not.
+- The emitted `build.sh` no longer greps the JSON (a refused document with
+  a nested `"verdict": "granted"` built). `certify` writes, beside a grant
+  only, `numerics_certificate.attest` — one line over the plan's SHA-256,
+  the plan's seal and the certificate file's SHA-256 — and the script
+  requires the file to be exactly the line it recomputes.
+
+What the gate is: relaxed arithmetic does not run without a certificate
+having been checked at build time, against accident and against a swapped
+plan file. What it is not: the seal is a 64-bit non-cryptographic hash and
+the device never sees the certificate, so it does not stop someone who
+forges a seal collision or rebuilds the binary (`docs/formats.md`).
+
 ## Acceptance
 
 - [x] SmolLM-135M GPU tok/s measured against F1's MLX-LM all-bf16 row on
