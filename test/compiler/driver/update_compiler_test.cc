@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/egressor/model_writer.h"
@@ -21,6 +22,7 @@
 #include "runtime/pipeline/dataset.h"
 #include "source/contract/split.h"
 #include "source/identity/hash.h"
+#include "source/language/dataset_format.h"
 #include "source/plan/metadata.h"
 #include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
@@ -1630,6 +1632,186 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
   EXPECT_ERROR_CONTAINS(
       UpdateCompiler(feature_cfg).Compile(MakeMlp(kInDim, kHidden, kOutDim, 3)),
       "carries no labels, but the loss stages class-index labels");
+}
+
+/// A byte vocabulary (id = byte) with one special EOS token, `<eos>` (id
+/// 256): the tokenizer section the corpus tests below compile raw text by.
+std::vector<uint8_t> ByteEosSection() {
+  std::vector<uint8_t> b;
+  auto u32 = [&](uint32_t v) {
+    for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+  };
+  for (uint32_t v : {0x4B544D53u, 1u, 1u, 2u, 0u, 257u, 0u, 1u, 256u,
+                     0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+    u32(v);
+  for (int v = 0; v < 256; ++v) {
+    b.push_back(1);
+    b.push_back(0);
+    b.push_back(static_cast<uint8_t>(v));
+  }
+  const std::string eos = "<eos>";
+  b.push_back(static_cast<uint8_t>(eos.size()));
+  b.push_back(0);
+  b.insert(b.end(), eos.begin(), eos.end());
+  u32(256);
+  return b;
+}
+
+/// The records of a token SDS (v2 or v3, unmasked), each as its bytes.
+std::vector<std::string> RecordsOf(const std::vector<uint8_t>& sds) {
+  uint32_t version = 0;
+  uint64_t n = 0, seq = 0;
+  std::memcpy(&version, sds.data() + 4, 4);
+  std::memcpy(&n, sds.data() + 8, 8);
+  std::memcpy(&seq, sds.data() + 16, 8);
+  const size_t head = version >= 3 ? 64 : 40, width = (seq + 1) * 4;
+  std::vector<std::string> out;
+  for (uint64_t r = 0; r < n; ++r)
+    out.emplace_back(
+        reinterpret_cast<const char*>(sds.data()) + head + r * width, width);
+  return out;
+}
+
+TEST(UpdateCompiler, NoHeldOutRecordOfRawTextHasATwinInTraining) {
+  // #222 (S2 / S3): every raw-text kind is sanitized, and a window equal to
+  // one already kept is dropped before the split — so the held-out records
+  // of a compiled split have no byte-identical twin among the training
+  // records, checked here on the compiled corpus itself.
+  seeml::testing::ScopedTempDir dir;
+  auto write = [&](const std::string& name, const std::string& bytes) {
+    const std::string path = dir.File(name);
+    std::ofstream f(path, std::ios::binary);
+    f << bytes;
+    return path;
+  };
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(257, 8, 2, 4, 16, 43);
+  model.tokenizer = ByteEosSection();
+  UpdateConfig cfg = BaseConfig(16);
+  cfg.default_steps = 8;
+  cfg.val_frac = 0.25f;
+  std::string line_txt, spaces_jsonl;
+  for (int i = 0; i < 10; ++i) line_txt += "the cat sat on the mat.\n";
+  for (int k = 0; k < 10; ++k)
+    spaces_jsonl += "{\"text\": \"the cat sat on the mat." +
+                    std::string(static_cast<size_t>(k), ' ') + "\"}\n";
+  for (const auto& [name, text] :
+       {std::pair<std::string, std::string>{"line.txt", line_txt},
+        {"spaces.jsonl", spaces_jsonl}}) {
+    cfg.data_path = write(name, text);
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(cfg).Compile(model));
+    const std::vector<std::string> records = RecordsOf(c.corpus_sds);
+    const std::vector<uint64_t> held =
+        HeldOutIndices(records.size(), cfg.split_seed, cfg.val_frac);
+    ASSERT_TRUE(!held.empty());
+    uint64_t twins = 0;
+    for (const uint64_t h : held)
+      for (uint64_t t = 0; t < records.size(); ++t)
+        if (!std::binary_search(held.begin(), held.end(), t) &&
+            records[t] == records[h]) {
+          ++twins;
+          break;
+        }
+    EXPECT_EQ(twins, 0u);
+    EXPECT_EQ(c.corpus_held_out_twins, 0u);
+    // The drop is counted: in the manifest, and on the default screen.
+    EXPECT_STR_CONTAINS(c.corpus_manifest, "\"dropped_duplicate_windows\": ");
+    EXPECT_TRUE(c.corpus_manifest.find("\"dropped_duplicate_windows\": 0,") ==
+                std::string::npos);
+    const std::string console = RenderCompileScreens(c.screens, false);
+    EXPECT_STR_CONTAINS(console, "duplicate windows");
+    EXPECT_STR_CONTAINS(console, "held-out twins");
+    EXPECT_STR_CONTAINS(c.screens.frontend.Json(0), "\"validation_twins\": 0");
+  }
+
+  // A dirty .txt compiles to the clean one's corpus, the three counts in
+  // the manifest and on the default screen; the clean one shows no row.
+  cfg.val_frac = 0.0f;
+  const std::string clean =
+      "the quick brown fox jumps over the lazy dog; a stitch in time.\n";
+  const std::string dirty =
+      clean.substr(0, 10) + "\x01" + clean.substr(10, 20) + "\xe2\x80\xae" +
+      clean.substr(30, 20) + "\xff\xfe" + clean.substr(50);
+  cfg.data_path = write("clean.txt", clean);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c_clean,
+                       UpdateCompiler(cfg).Compile(model));
+  cfg.data_path = write("dirty.txt", dirty);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c_dirty,
+                       UpdateCompiler(cfg).Compile(model));
+  EXPECT_TRUE(c_dirty.corpus_sds == c_clean.corpus_sds);
+  EXPECT_EQ(HeaderOf(c_dirty).corpus_hash, HeaderOf(c_clean).corpus_hash);
+  EXPECT_STR_CONTAINS(c_dirty.corpus_manifest, "\"invalid_utf8_bytes\": 2,");
+  EXPECT_STR_CONTAINS(c_dirty.corpus_manifest, "\"control_chars\": 1,");
+  EXPECT_STR_CONTAINS(c_dirty.corpus_manifest, "\"bidi_controls\": 1,");
+  EXPECT_STR_CONTAINS(RenderCompileScreens(c_dirty.screens, false),
+                      "2 invalid UTF-8 byte(s), 1 control char(s), 1 bidi "
+                      "control(s) removed");
+  EXPECT_TRUE(std::string(RenderCompileScreens(c_clean.screens, true))
+                  .find("sanitized") == std::string::npos);
+
+  // All duplicates: one record survives (no refusal for want of a complete
+  // window), and a split of one record is refused by name.
+  cfg.data_path = write("same.txt", std::string(40, 'a'));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c_same,
+                       UpdateCompiler(cfg).Compile(model));
+  EXPECT_EQ(RecordsOf(c_same.corpus_sds).size(), 1u);
+  EXPECT_STR_CONTAINS(c_same.corpus_manifest,
+                      "\"dropped_duplicate_windows\": 7,");
+  cfg.val_frac = 0.25f;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "a held-out split needs at least two records");
+}
+
+TEST(UpdateCompiler, AGivenSdsWithTwinsCompilesUnmodifiedAndStatesThem) {
+  // #222: a given SDS is pinned by its hash and never rewritten; under a
+  // compiled split the held-out records with a byte-identical twin in
+  // training are counted — a stated fact on the screen and in the result
+  // the report carries, not a refusal.
+  seeml::testing::ScopedTempDir dir;
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(257, 8, 2, 4, 16, 43);
+  model.tokenizer = ByteEosSection();
+  // 8 records of 5 ids: A, B, C, D each twice.
+  std::vector<int32_t> ids;
+  for (int r = 0; r < 8; ++r)
+    for (int j = 0; j < 5; ++j) ids.push_back(10 * (r % 4) + j);
+  std::vector<uint8_t> sds;
+  WriteSdsTokenCorpus([&](const void* p, size_t n) {
+    const auto* b = static_cast<const uint8_t*>(p);
+    sds.insert(sds.end(), b, b + n);
+  }, 8, 4, model.TokenizerHash(), false, ids.data(), nullptr);
+  const std::string path = dir.File("twins.sds");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(sds.data()),
+            static_cast<std::streamsize>(sds.size()));
+  }
+  UpdateConfig cfg = BaseConfig(16);
+  cfg.default_steps = 8;
+  cfg.data_path = path;
+  cfg.val_frac = 0.25f;
+  cfg.split_seed = 3;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(cfg).Compile(model));
+  EXPECT_TRUE(c.corpus_from_sds);
+  EXPECT_TRUE(c.corpus_sds.empty());  // nothing to write: the file as given
+  EXPECT_EQ(HeaderOf(c).corpus_hash, ContentHash64(sds.data(), sds.size()));
+  {
+    std::ifstream f(path, std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_TRUE(after == std::string(reinterpret_cast<const char*>(sds.data()),
+                                     sds.size()));
+  }
+  // Seed 3 holds out records 3 and 4 (D and A); their twins, 7 and 0,
+  // train.
+  const std::vector<uint64_t> held = HeldOutIndices(8, 3, 0.25f);
+  ASSERT_EQ(held.size(), 2u);
+  EXPECT_EQ(held[0], 3u);
+  EXPECT_EQ(held[1], 4u);
+  EXPECT_EQ(c.corpus_held_out_twins, 2u);
+  EXPECT_STR_CONTAINS(c.screens.frontend.Json(0), "\"validation_twins\": 2");
+  EXPECT_STR_CONTAINS(RenderCompileScreens(c.screens, false), "held-out twins");
+  // No duplicate-window row for a given SDS: nothing is dropped from it.
+  EXPECT_TRUE(std::string(RenderCompileScreens(c.screens, true))
+                  .find("duplicate windows") == std::string::npos);
 }
 
 TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {

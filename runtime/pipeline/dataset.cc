@@ -679,6 +679,54 @@ std::expected<Dataset, std::string> Dataset::SplitHeldOut(
   return val;
 }
 
+uint64_t Dataset::HeldOutTwins(const std::vector<uint64_t>& held) const {
+  // A record's bytes, in one string: ids then mask (token corpora), or
+  // features then labels — compared as bytes, so a feature row's floats are
+  // equal exactly when their bits are.
+  const uint64_t lbytes = input_kind_ == 1 ? 0 : label_bytes_per_sample();
+  auto bytes_of = [&](uint64_t r) {
+    std::string out;
+    auto add = [&](const auto& store, uint64_t stride) {
+      if (stride == 0 || store.empty()) return;
+      const auto* p = reinterpret_cast<const char*>(store.data() + r * stride);
+      out.append(p, stride * sizeof(store[0]));
+    };
+    if (input_kind_ == 1) {
+      add(tokens_, input_dim_ + 1);
+      add(mask_, input_dim_);
+    } else {
+      add(inputs_, input_dim_);
+      add(labels_, lbytes);
+    }
+    return out;
+  };
+  std::vector<uint8_t> is_held(static_cast<size_t>(num_samples_), 0);
+  for (const uint64_t r : held)
+    if (r < num_samples_) is_held[static_cast<size_t>(r)] = 1;
+  std::unordered_map<uint64_t, std::vector<uint64_t>> training;
+  for (uint64_t r = 0; r < num_samples_; ++r) {
+    if (is_held[static_cast<size_t>(r)]) continue;
+    const std::string b = bytes_of(r);
+    training[seeml::update::ContentHash64(
+                 reinterpret_cast<const uint8_t*>(b.data()), b.size())]
+        .push_back(r);
+  }
+  uint64_t twins = 0;
+  for (uint64_t r = 0; r < num_samples_; ++r) {
+    if (!is_held[static_cast<size_t>(r)]) continue;
+    const std::string b = bytes_of(r);
+    auto it = training.find(seeml::update::ContentHash64(
+        reinterpret_cast<const uint8_t*>(b.data()), b.size()));
+    if (it == training.end()) continue;
+    for (const uint64_t t : it->second)
+      if (bytes_of(t) == b) {
+        ++twins;
+        break;
+      }
+  }
+  return twins;
+}
+
 std::optional<double> Dataset::LabelEntropyNats() const {
   if (label_kind_ != 1) return std::nullopt;
   // Every class label the corpus serves, in record order. Token record r

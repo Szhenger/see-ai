@@ -52,13 +52,22 @@ struct PlanLabels {
 /// under MSE, none under distillation alone.
 PlanLabels LabelsOf(LossKind loss, uint64_t width);
 
+/// The compiled split (S3 #149) the driver asked for: `val_frac` 0 for none.
+struct SplitRequest {
+  float val_frac = 0.0f;
+  uint64_t seed = 0;
+};
+
 /// `rows_per_step` is the compiled batch times the accumulation (rows:
 /// tokens for a token model), and `steps` the default step budget, for the
 /// epochs the plan covers. `labels` is what the plan stages (LabelsOf).
+/// With a `split` in (0, 1) over at least two records, the held-out
+/// records are drawn here, where the records are in hand, and the facts
+/// carry them and the held-out twins (#222); the driver refuses the rest.
 std::expected<CorpusIngress, std::string> IngestCorpus(
     const std::string& path, const SmfModel& model,
     const sema::Topology& topology, PlanLabels labels, uint64_t rows_per_step,
-    uint64_t steps);
+    uint64_t steps, SplitRequest split);
 
 }  // namespace seeml::update::tokenization
 

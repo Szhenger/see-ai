@@ -583,6 +583,34 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
   EXPECT_EQ(lab[4 + 2], tokens[2 * 5 + 3]);
 }
 
+TEST(DatasetSplit, HeldOutTwinsAreByteIdenticalRecordsOnTheTrainingSide) {
+  // #222: a held-out record counts when a record left in training equals
+  // it byte for byte — ids and mask, or features and labels.
+  // Records: 0 = A, 1 = B, 2 = A, 3 = C, 4 = B with another mask.
+  const std::vector<int32_t> a = {1, 2, 3}, b = {4, 5, 6}, c = {7, 8, 9};
+  std::vector<int32_t> tokens;
+  for (const auto* r : {&a, &b, &a, &c, &b})
+    tokens.insert(tokens.end(), r->begin(), r->end());
+  ASSERT_OK_AND_ASSIGN(Dataset plain, Dataset::FromTokens(tokens, 5, 2));
+  EXPECT_EQ(plain.HeldOutTwins({0}), 1u);     // A, and A at 2 trains
+  EXPECT_EQ(plain.HeldOutTwins({0, 2}), 0u);  // both A held: no twin left
+  EXPECT_EQ(plain.HeldOutTwins({3}), 0u);     // C is alone
+  EXPECT_EQ(plain.HeldOutTwins({1, 2}), 2u);  // B (4 trains), A (0 trains)
+  std::vector<uint8_t> mask = {1, 1, 1, 1, 1, 1, 1, 1, 0, 1};
+  ASSERT_OK_AND_ASSIGN(Dataset masked, Dataset::FromTokens(tokens, 5, 2, mask));
+  EXPECT_EQ(masked.HeldOutTwins({1}), 0u);  // B's twin differs in its mask
+  EXPECT_EQ(masked.HeldOutTwins({0}), 1u);
+  // Feature rows: equal features with another label are not twins.
+  std::vector<float> x = {0.5f, 1.0f, 0.5f, 1.0f, 0.5f, 1.0f};
+  std::vector<uint8_t> labels(3 * sizeof(int32_t), 0);
+  labels[2 * sizeof(int32_t)] = 1;  // row 2's class is 1, rows 0 and 1: 0
+  ASSERT_OK_AND_ASSIGN(Dataset rows,
+                       Dataset::FromMemory(x, labels, 3, 2, 1, 0));
+  EXPECT_EQ(rows.HeldOutTwins({0}), 1u);
+  EXPECT_EQ(rows.HeldOutTwins({2}), 0u);
+  EXPECT_EQ(rows.HeldOutTwins({0, 1}), 0u);
+}
+
 TEST(DatasetSplit, RejectsDegenerateRequests) {
   ASSERT_OK_AND_ASSIGN(Dataset data, MarkerDataset());
   EXPECT_ERROR_CONTAINS(data.SplitValidation(0.0), "fraction");

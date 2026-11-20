@@ -404,12 +404,14 @@ Status Compilation::IngestData() {
         tokenization::LabelsOf(
             config_.loss, static_cast<uint64_t>(topology->output.dims.at(1))),
         static_cast<uint64_t>(batch) * config_.grad_accum_steps,
-        config_.default_steps);
+        config_.default_steps,
+        tokenization::SplitRequest{config_.val_frac, config_.split_seed});
     if (!c) return std::unexpected(c.error());
     corpus = std::move(*c);
-    // The compiled split (S3 #149): the held-out records drawn here, by
-    // the function the device recomputes; the plan carries the seed, the
-    // fraction and the indices' hash.
+    // The compiled split (S3 #149): the held-out records drawn by the
+    // ingress, by the function the device recomputes, with the held-out
+    // twins counted there (#222); the plan carries the seed, the fraction
+    // and the indices' hash.
     if (config_.val_frac != 0.0f) {
       if (!(config_.val_frac > 0.0f && config_.val_frac < 1.0f))
         return generating::Error(generating::kDriver,
@@ -417,18 +419,13 @@ Status Compilation::IngestData() {
       if (corpus->facts.records < 2)
         return generating::Error(generating::kDriver,
                                  "a held-out split needs at least two records");
-      const std::vector<uint64_t> held = HeldOutIndices(
-          corpus->facts.records, config_.split_seed, config_.val_frac);
-      corpus->facts.val_records = held.size();
-      corpus->facts.split_seed = config_.split_seed;
-      corpus->facts.val_split_hash = SplitHash(held);
-      corpus->facts.split = true;
       // The epoch arithmetic is over the records the plan trains on: the
       // held-out ones are scored, not stepped through. Both rows scale
       // with the record count (batches per epoch with it, epochs covered
       // against it).
       const double train_share =
-          static_cast<double>(corpus->facts.records - held.size()) /
+          static_cast<double>(corpus->facts.records -
+                              corpus->facts.val_records) /
           static_cast<double>(corpus->facts.records);
       corpus->facts.batches_per_epoch *= train_share;
       corpus->facts.epochs_covered /= train_share;
@@ -1519,6 +1516,7 @@ Status Compilation::ReportSummary() {
     result.corpus_sds = std::move(corpus->sds);
     result.corpus_manifest = std::move(corpus->manifest_json);
     result.corpus_from_sds = corpus->from_sds;
+    result.corpus_held_out_twins = corpus->facts.held_out_twins;
   }
   if (config_.adapter_only)
     seeml::diag::Note(generating::kDriver,
