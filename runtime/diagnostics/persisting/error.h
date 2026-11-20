@@ -22,15 +22,14 @@ inline constexpr std::string_view kDurableIo = "DurableIO";
 inline constexpr std::string_view kCheckpoint = "Checkpoint";
 
 /// Persistence failure in `unit`: "<unit>: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view unit,
-                                                        std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view unit, std::string_view message) {
   return Fail(unit, message);
 }
 
 /// I/O-shaped failure: "<unit>: <what> '<path>'".
-[[nodiscard]] inline std::unexpected<std::string> FileError(std::string_view unit,
-                                                            std::string_view what,
-                                                            std::string_view path) {
+[[nodiscard]] inline std::unexpected<std::string> FileError(
+    std::string_view unit, std::string_view what, std::string_view path) {
   std::string m;
   m.reserve(what.size() + path.size() + 3);
   m.append(what).append(" '").append(path).append("'");

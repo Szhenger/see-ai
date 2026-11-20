@@ -29,8 +29,8 @@ struct IngressorFacts {
   uint64_t weight_tensors = 0;
   uint64_t weight_bytes = 0;
   bool token_input = false;
-  uint64_t input_width = 0;  // features per row (a feature model)
-  uint64_t seq_len = 0;      // tokens per sequence (a token model)
+  uint64_t input_width = 0;   // features per row (a feature model)
+  uint64_t seq_len = 0;       // tokens per sequence (a token model)
   uint64_t content_hash = 0;  // the file's identity; 0 = built in memory
   // Every constant tensor's value range, from the ingress sweep.
   std::vector<WeightRange> ranges;
@@ -38,8 +38,8 @@ struct IngressorFacts {
 
 struct TopologyFacts {
   // What the verification walk learned about the graph.
-  uint64_t vocabulary = 0;  // rows of the embedding table; 0 = none
-  uint64_t activations = 0;  // forward values computation emits
+  uint64_t vocabulary = 0;        // rows of the embedding table; 0 = none
+  uint64_t activations = 0;       // forward values computation emits
   uint64_t activation_bytes = 0;  // their f32 bytes at the compiled batch
   uint64_t embedding_ops = 0;
   uint64_t attention_ops = 0;
@@ -87,13 +87,13 @@ struct CorpusFacts {
   uint64_t multi_document_windows = 0;
   bool eos_known = false;
   // Every corpus.
-  uint64_t records = 0;        // samples (windows of S + 1 ids, or rows)
-  uint64_t record_width = 0;   // ids per record (S + 1), or features
-  uint64_t tokens = 0;         // ids the records hold (token corpora)
-  uint64_t target_tokens = 0;  // positions the loss counts (all, unmasked)
-  uint64_t total_tokens = 0;   // positions per record × records (S each)
-  uint64_t distinct_ids = 0;   // distinct token ids (token corpora)
-  uint64_t vocabulary = 0;     // the model's, for the ratio
+  uint64_t records = 0;            // samples (windows of S + 1 ids, or rows)
+  uint64_t record_width = 0;       // ids per record (S + 1), or features
+  uint64_t tokens = 0;             // ids the records hold (token corpora)
+  uint64_t target_tokens = 0;      // positions the loss counts (all, unmasked)
+  uint64_t total_tokens = 0;       // positions per record × records (S each)
+  uint64_t distinct_ids = 0;       // distinct token ids (token corpora)
+  uint64_t vocabulary = 0;         // the model's, for the ratio
   double batches_per_epoch = 0.0;  // records ÷ sequences (rows) per step
   double epochs_covered = 0.0;     // the step budget × that ÷ records
   std::optional<double> label_entropy_nats;  // the unigram loss floor

@@ -48,18 +48,23 @@ enum class Kind : uint8_t { kUInt, kFloat, kEnum, kBool, kList };
 
 inline constexpr const char* KindName(Kind k) {
   switch (k) {
-    case Kind::kUInt: return "uint";
-    case Kind::kFloat: return "float";
-    case Kind::kEnum: return "enum";
-    case Kind::kBool: return "bool";
-    case Kind::kList: return "list";
+    case Kind::kUInt:
+      return "uint";
+    case Kind::kFloat:
+      return "float";
+    case Kind::kEnum:
+      return "enum";
+    case Kind::kBool:
+      return "bool";
+    case Kind::kList:
+      return "list";
   }
   return "";
 }
 
 struct Field {
-  const char* name;     // the recipe file's key
-  const char* flag;     // the command line's flag
+  const char* name;  // the recipe file's key
+  const char* flag;  // the command line's flag
   Kind kind;
   // kUInt: [umin, umax]. kFloat: fmin .. fmax, each end open or closed.
   uint64_t umin = 0, umax = 0;
@@ -93,7 +98,8 @@ inline constexpr Field kFields[] = {
     {"lora_rank", "--lora-rank", Kind::kUInt, 1, kLoraRankMax, 0, 0, false,
      false, "", "adapter rank r"},
     {"lora_alpha", "--lora-alpha", Kind::kFloat, 0, 0, 0.0, 1e6, true, false,
-     "", "adapter scale numerator: the update is (alpha / r) A B, or (alpha / "
+     "",
+     "adapter scale numerator: the update is (alpha / r) A B, or (alpha / "
      "sqrt(r)) A B under lora_scaling alpha_over_sqrt_r"},
     {"lora_scaling", "--lora-scaling", Kind::kEnum, 0, 0, 0, 0, false, false,
      "alpha_over_r|alpha_over_sqrt_r",
@@ -108,8 +114,8 @@ inline constexpr Field kFields[] = {
      "peak learning rate"},
     {"weight_decay", "--weight-decay", Kind::kFloat, 0, 0, 0.0, 10.0, false,
      false, "", "decoupled weight decay"},
-    {"clip_norm", "--clip-norm", Kind::kFloat, 0, 0, 0.0, 1e6, false, false,
-     "", "per-tensor gradient-norm clip; 0 = off"},
+    {"clip_norm", "--clip-norm", Kind::kFloat, 0, 0, 0.0, 1e6, false, false, "",
+     "per-tensor gradient-norm clip; 0 = off"},
     {"clip_mode", "--clip-mode", Kind::kEnum, 0, 0, 0, 0, false, false,
      "per_tensor|global",
      "what the clip measures: each tensor's own norm, or one over them all"},
@@ -136,8 +142,8 @@ inline constexpr Field kFields[] = {
      "rematerialization of cheap forward values in the backward"},
     {"adapter_only", "--adapter-only", Kind::kBool, 0, 0, 0, 0, false, false,
      "", "frozen weights read from the source model; the plan carries none"},
-    {"validation_scores", "--validation-scores", Kind::kEnum, 0, 0, 0, 0,
-     false, false, "shipped|plan",
+    {"validation_scores", "--validation-scores", Kind::kEnum, 0, 0, 0, 0, false,
+     false, "shipped|plan",
      "which weights a narrow-base plan's eval program reads"},
     {"val_frac", "--val-frac", Kind::kFloat, 0, 0, 0.0, 1.0, true, true, "",
      "fraction of the corpus held out, compiled into the plan (needs data)"},
@@ -168,7 +174,7 @@ using Values = std::map<std::string, std::string>;
 /// Decimal digits only: no sign, no whitespace, no overflow. strtoull alone
 /// skips leading spaces and negates a "-1" into 2^64 - 1, which is how
 /// `--steps " -1"` reached the plan (review F56 / F63).
-inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
+[[nodiscard]] inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
   if (s.empty()) return false;
   uint64_t v = 0;
   for (const char c : s) {
@@ -187,7 +193,7 @@ inline bool ParseU64Strict(std::string_view s, uint64_t* out) {
 /// because strtod also takes a hex float ("0x1p-3"), skips every isspace()
 /// prefix ("\r1", "\v1"), and stops at an embedded NUL as if the text ended
 /// there.
-inline bool ParseF64Strict(std::string_view s, double* out) {
+[[nodiscard]] inline bool ParseF64Strict(std::string_view s, double* out) {
   if (s.empty() || s.front() == '+') return false;
   for (const char c : s)
     if (!((c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' ||
@@ -221,9 +227,12 @@ inline std::string BoundText(const Field& f) {
     case Kind::kFloat:
       return std::string("a finite number in ") + (f.min_open ? "(" : "[") +
              Number(f.fmin) + ", " + Number(f.fmax) + (f.max_open ? ")" : "]");
-    case Kind::kEnum: return std::string("one of ") + f.choices;
-    case Kind::kBool: return "true or false";
-    case Kind::kList: return "a comma-separated list of names";
+    case Kind::kEnum:
+      return std::string("one of ") + f.choices;
+    case Kind::kBool:
+      return "true or false";
+    case Kind::kList:
+      return "a comma-separated list of names";
   }
   return "";
 }
@@ -233,13 +242,13 @@ inline std::string Named(const Field& f) {
   return std::string(f.flag) + " (recipe field " + f.name + ")";
 }
 
-inline std::unexpected<std::string> Refuse(const Field& f,
-                                           std::string_view value) {
+[[nodiscard]] inline std::unexpected<std::string> Refuse(
+    const Field& f, std::string_view value) {
   return std::unexpected(Named(f) + " must be " + BoundText(f) + ", got '" +
                          std::string(value) + "'");
 }
 
-inline bool InChoices(const Field& f, std::string_view v) {
+[[nodiscard]] inline bool InChoices(const Field& f, std::string_view v) {
   std::string_view rest = f.choices;
   while (!rest.empty()) {
     const size_t bar = rest.find('|');
@@ -254,9 +263,8 @@ inline bool InChoices(const Field& f, std::string_view v) {
 /// One value held to its field's kind and bound. `u` / `d` receive the
 /// parsed number for the numeric kinds; a float field's `d` is the f32 the
 /// config stores, widened, so narrowing it back is exact.
-inline std::expected<void, std::string> CheckValue(const Field& f,
-                                                   std::string_view v,
-                                                   uint64_t* u, double* d) {
+[[nodiscard]] inline std::expected<void, std::string> CheckValue(
+    const Field& f, std::string_view v, uint64_t* u, double* d) {
   switch (f.kind) {
     case Kind::kUInt:
       if (!ParseU64Strict(v, u) || *u < f.umin || *u > f.umax)
@@ -320,35 +328,42 @@ struct Inputs {
 /// values are applied to a copy that replaces it only when every rule
 /// holds, so a refused recipe never leaves half of itself behind (the
 /// target filters cleared, say, which reads as "adapt every weight").
-inline std::expected<void, std::string> Apply(const Values& values,
-                                              const Inputs& inputs,
-                                              UpdateConfig* config) {
+[[nodiscard]] inline std::expected<void, std::string> Apply(
+    const Values& values, const Inputs& inputs, UpdateConfig* config) {
   UpdateConfig c = *config;
   for (const auto& [name, text] : values) {
     const Field* f = FindField(name);
-    if (!f)
-      return std::unexpected("unknown recipe field '" + name + "'");
+    if (!f) return std::unexpected("unknown recipe field '" + name + "'");
     uint64_t u = 0;
     double d = 0.0;
     if (auto ok = CheckValue(*f, text, &u, &d); !ok) return ok;
     const std::string_view n = name, v = text;
     const bool on = v == "true";
-    if (n == "data_batch") c.batch = static_cast<int64_t>(u);
-    else if (n == "steps") c.default_steps = u;
-    else if (n == "grad_accum") c.grad_accum_steps = static_cast<uint32_t>(u);
+    if (n == "data_batch")
+      c.batch = static_cast<int64_t>(u);
+    else if (n == "steps")
+      c.default_steps = u;
+    else if (n == "grad_accum")
+      c.grad_accum_steps = static_cast<uint32_t>(u);
     else if (n == "loss")
       c.loss = v == "xent"  ? LossKind::kSoftmaxXEnt
                : v == "mse" ? LossKind::kMse
                : v == "kl"  ? LossKind::kKLDistill
                             : LossKind::kXEntPlusKL;
-    else if (n == "distill_weight") c.distill_weight = static_cast<float>(d);
-    else if (n == "temperature") c.temperature = static_cast<float>(d);
-    else if (n == "lora_rank") c.lora.rank = static_cast<int64_t>(u);
-    else if (n == "lora_alpha") c.lora.alpha = static_cast<float>(d);
+    else if (n == "distill_weight")
+      c.distill_weight = static_cast<float>(d);
+    else if (n == "temperature")
+      c.temperature = static_cast<float>(d);
+    else if (n == "lora_rank")
+      c.lora.rank = static_cast<int64_t>(u);
+    else if (n == "lora_alpha")
+      c.lora.alpha = static_cast<float>(d);
     else if (n == "lora_scaling")
-      c.lora.scaling = v == "alpha_over_sqrt_r" ? LoraScaling::kAlphaOverSqrtRank
-                                                : LoraScaling::kAlphaOverRank;
-    else if (n == "lora_seed") c.lora.seed = u;
+      c.lora.scaling = v == "alpha_over_sqrt_r"
+                           ? LoraScaling::kAlphaOverSqrtRank
+                           : LoraScaling::kAlphaOverRank;
+    else if (n == "lora_seed")
+      c.lora.seed = u;
     else if (n == "targets") {
       c.lora.target_filters.clear();
       std::string_view rest = v;
@@ -363,23 +378,33 @@ inline std::expected<void, std::string> Apply(const Values& values,
       // filter list means "adapt every weight" — the opposite of what a
       // user restricting the adapters asked for.
       if (c.lora.target_filters.empty())
-        return std::unexpected(
-            Named(*f) + " must name at least one weight, got '" + text +
-            "'; omit it to adapt every eligible weight");
+        return std::unexpected(Named(*f) +
+                               " must name at least one weight, got '" + text +
+                               "'; omit it to adapt every eligible weight");
     } else if (n == "optimizer")
-      c.optimizer.kind = v == "adamw" ? OptimizerKind::kAdamW : OptimizerKind::kSgd;
-    else if (n == "lr") c.optimizer.lr = static_cast<float>(d);
-    else if (n == "weight_decay") c.optimizer.weight_decay = static_cast<float>(d);
-    else if (n == "clip_norm") c.optimizer.clip_norm = static_cast<float>(d);
-    else if (n == "clip_mode") c.optimizer.clip_global = v == "global";
+      c.optimizer.kind =
+          v == "adamw" ? OptimizerKind::kAdamW : OptimizerKind::kSgd;
+    else if (n == "lr")
+      c.optimizer.lr = static_cast<float>(d);
+    else if (n == "weight_decay")
+      c.optimizer.weight_decay = static_cast<float>(d);
+    else if (n == "clip_norm")
+      c.optimizer.clip_norm = static_cast<float>(d);
+    else if (n == "clip_mode")
+      c.optimizer.clip_global = v == "global";
     else if (n == "lr_schedule")
-      c.optimizer.lr_schedule = v == "cosine" ? LrSchedule::kCosineWithWarmup
-                                              : LrSchedule::kConstant;
-    else if (n == "warmup") c.optimizer.warmup_steps = u;
-    else if (n == "min_lr_factor") c.optimizer.min_lr_factor = static_cast<float>(d);
-    else if (n == "allow_zero_lr") c.optimizer.allow_zero_lr = on;
-    else if (n == "quantize_base") c.quantize_base = on;
-    else if (n == "bf16_base") c.bf16_base = on;
+      c.optimizer.lr_schedule =
+          v == "cosine" ? LrSchedule::kCosineWithWarmup : LrSchedule::kConstant;
+    else if (n == "warmup")
+      c.optimizer.warmup_steps = u;
+    else if (n == "min_lr_factor")
+      c.optimizer.min_lr_factor = static_cast<float>(d);
+    else if (n == "allow_zero_lr")
+      c.optimizer.allow_zero_lr = on;
+    else if (n == "quantize_base")
+      c.quantize_base = on;
+    else if (n == "bf16_base")
+      c.bf16_base = on;
     else if (n == "precision")
       c.precision = v == "f32" ? Precision::kF32 : Precision::kCertifiedBf16;
     else if (n == "attention")
@@ -392,16 +417,22 @@ inline std::expected<void, std::string> Apply(const Values& values,
       c.remat = v == "auto" ? RematKind::kAuto
                 : v == "on" ? RematKind::kOn
                             : RematKind::kOff;
-    else if (n == "adapter_only") c.adapter_only = on;
-    else if (n == "validation_scores") c.eval_on_plan = v == "plan";
-    else if (n == "val_frac") c.val_frac = static_cast<float>(d);
-    else if (n == "split_seed") c.split_seed = u;
+    else if (n == "adapter_only")
+      c.adapter_only = on;
+    else if (n == "validation_scores")
+      c.eval_on_plan = v == "plan";
+    else if (n == "val_frac")
+      c.val_frac = static_cast<float>(d);
+    else if (n == "split_seed")
+      c.split_seed = u;
     else if (n == "segment_mask")
       c.segment_mask = v == "auto" ? SegmentMaskKind::kAuto
                        : v == "on" ? SegmentMaskKind::kOn
                                    : SegmentMaskKind::kOff;
-    else if (n == "masked_loss") c.masked_loss = on;
-    else if (n == "memory_budget_mib") c.memory_budget_bytes = u << 20;
+    else if (n == "masked_loss")
+      c.masked_loss = on;
+    else if (n == "memory_budget_mib")
+      c.memory_budget_bytes = u << 20;
     else
       // A field in the table with no branch above would be validated and
       // then dropped — the silent ignore the recipe exists to forbid.
@@ -412,13 +443,15 @@ inline std::expected<void, std::string> Apply(const Values& values,
   // --- Cross-field rules: a field that cannot apply is never silently
   // ignored. `set` is "the recipe named it", whatever value it named.
   auto set = [&](const char* name) { return values.contains(name); };
-  auto field = [](const char* name) -> const Field& { return *FindField(name); };
-  auto needs = [&](const char* name, const std::string& what)
-      -> std::unexpected<std::string> {
+  auto field = [](const char* name) -> const Field& {
+    return *FindField(name);
+  };
+  auto needs = [&](const char* name,
+                   const std::string& what) -> std::unexpected<std::string> {
     return std::unexpected(Named(field(name)) + " " + what);
   };
-  const bool distills = c.loss == LossKind::kKLDistill ||
-                        c.loss == LossKind::kXEntPlusKL;
+  const bool distills =
+      c.loss == LossKind::kKLDistill || c.loss == LossKind::kXEntPlusKL;
   // Review N15: the teacher and its two knobs were silently ignored unless
   // the loss used them.
   if (!distills) {
@@ -430,8 +463,9 @@ inline std::expected<void, std::string> Apply(const Values& values,
           " it would be silently ignored");
     for (const char* knob : {"distill_weight", "temperature"})
       if (set(knob))
-        return needs(knob, "applies to a distillation loss only (loss kl or "
-                           "xent+kl)");
+        return needs(knob,
+                     "applies to a distillation loss only (loss kl or "
+                     "xent+kl)");
   }
   if (c.loss != LossKind::kXEntPlusKL && set("distill_weight"))
     return needs("distill_weight",
@@ -457,10 +491,12 @@ inline std::expected<void, std::string> Apply(const Values& values,
         "--quantize-base and --bf16-base (recipe fields quantize_base, "
         "bf16_base) are mutually exclusive: one storage precision per weight");
   if (set("attention_cache_budget_mib") && c.attention != AttentionKind::kAuto)
-    return needs("attention_cache_budget_mib", "applies to attention auto only");
+    return needs("attention_cache_budget_mib",
+                 "applies to attention auto only");
   if (set("val_frac") && !inputs.data)
-    return needs("val_frac", "compiles the validation split from the corpus: "
-                             "pass --data too");
+    return needs("val_frac",
+                 "compiles the validation split from the corpus: "
+                 "pass --data too");
   if (set("split_seed") && !set("val_frac"))
     return needs("split_seed", "needs val_frac: it seeds the compiled split");
   *config = std::move(c);
@@ -469,10 +505,11 @@ inline std::expected<void, std::string> Apply(const Values& values,
 
 /// The bounds a config built in code (the library path, no recipe) must
 /// still hold: the ones whose violation emitted an invalid plan.
-inline std::optional<std::string> ConfigViolation(const UpdateConfig& c) {
+[[nodiscard]] inline std::optional<std::string> ConfigViolation(
+    const UpdateConfig& c) {
   if (c.lora.rank < 1 || static_cast<uint64_t>(c.lora.rank) > kLoraRankMax)
-    return "lora rank " + std::to_string(c.lora.rank) +
-           " is outside [1, " + std::to_string(kLoraRankMax) + "]";
+    return "lora rank " + std::to_string(c.lora.rank) + " is outside [1, " +
+           std::to_string(kLoraRankMax) + "]";
   for (const std::string& t : c.lora.target_filters)
     if (t.empty()) return std::string("an adapter target filter is empty");
   return std::nullopt;
@@ -528,14 +565,15 @@ inline std::string ResolvedText(const UpdateConfig& c) {
                            : "alpha_over_r"},
       {"lora_seed", std::to_string(c.lora.seed)},
       {"targets", targets},
-      {"optimizer", c.optimizer.kind == OptimizerKind::kAdamW ? "adamw" : "sgd"},
+      {"optimizer",
+       c.optimizer.kind == OptimizerKind::kAdamW ? "adamw" : "sgd"},
       {"lr", bits(c.optimizer.lr)},
       {"weight_decay", bits(c.optimizer.weight_decay)},
       {"clip_norm", bits(c.optimizer.clip_norm)},
       {"clip_mode", c.optimizer.clip_global ? "global" : "per_tensor"},
-      {"lr_schedule",
-       c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup ? "cosine"
-                                                                : "const"},
+      {"lr_schedule", c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup
+                          ? "cosine"
+                          : "const"},
       {"warmup", c.optimizer.warmup_steps == kWarmupAuto
                      ? std::string("auto")
                      : std::to_string(c.optimizer.warmup_steps)},

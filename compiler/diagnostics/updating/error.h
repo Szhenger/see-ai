@@ -31,8 +31,8 @@ inline constexpr std::string_view kAttentionTiling = "AttentionTiling";
 inline constexpr std::string_view kRematerializer = "Rematerializer";
 
 /// Analytic failure in `unit`: "<unit>: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view unit,
-                                                        std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view unit, std::string_view message) {
   return Fail(unit, message);
 }
 

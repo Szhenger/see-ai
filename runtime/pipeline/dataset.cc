@@ -40,9 +40,12 @@ uint64_t Dataset::label_bytes_per_sample() const {
   // payload is input_dim (= seq) i32s — the shifted token view.
   if (input_kind_ == 1) return input_dim_ * sizeof(int32_t);
   switch (label_kind_) {
-    case 1: return sizeof(int32_t);
-    case 2: return label_dim_ * sizeof(float);
-    default: return 0;
+    case 1:
+      return sizeof(int32_t);
+    case 2:
+      return label_dim_ * sizeof(float);
+    default:
+      return 0;
   }
 }
 
@@ -176,7 +179,8 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
       return diag::feeding::Error("truncated header");
     if (reserved0 != 0 || reserved1 != 0)
       return diag::feeding::Error("reserved SDS header words are not zero");
-    if (flags & ~kSdsFlagsMask) return diag::feeding::Error("unknown SDS flags");
+    if (flags & ~kSdsFlagsMask)
+      return diag::feeding::Error("unknown SDS flags");
   }
 
   Dataset d;
@@ -288,8 +292,7 @@ std::expected<Dataset, std::string> Dataset::LoadFromFile(
   // large the corpus is.
   const uint64_t record = input_bytes + lbytes;
   constexpr uint64_t kChunkBudget = 256 * 1024;
-  const uint64_t per_chunk =
-      record >= kChunkBudget ? 1 : kChunkBudget / record;
+  const uint64_t per_chunk = record >= kChunkBudget ? 1 : kChunkBudget / record;
   std::vector<uint8_t> chunk(per_chunk * record);
   for (uint64_t i = 0; i < num_samples;) {
     const uint64_t n = std::min(per_chunk, num_samples - i);
@@ -312,9 +315,9 @@ std::expected<void, std::string> Dataset::ValidateClassLabels(
   // For a token corpus every token is both an embedding index and (via
   // the shifted view) a class label, so the whole stream is bounded — the
   // caller passes the narrowest of the vocab and softmax widths.
-  const int32_t* ids =
-      input_kind_ == 1 ? tokens_.data()
-                       : reinterpret_cast<const int32_t*>(labels_.data());
+  const int32_t* ids = input_kind_ == 1
+                           ? tokens_.data()
+                           : reinterpret_cast<const int32_t*>(labels_.data());
   const uint64_t count = input_kind_ == 1 ? tokens_.size() : num_samples_;
 
   // One scan ever: the extent of the ids answers every later question.
@@ -329,9 +332,8 @@ std::expected<void, std::string> Dataset::ValidateClassLabels(
     proven_max_label_ = hi;
     labels_scanned_ = true;
   }
-  if (count == 0 ||
-      (proven_min_label_ >= 0 &&
-       static_cast<uint64_t>(proven_max_label_) < num_classes))
+  if (count == 0 || (proven_min_label_ >= 0 &&
+                     static_cast<uint64_t>(proven_max_label_) < num_classes))
     return {};
 
   // Refused: find the first offender for the diagnostic (the error path
@@ -363,8 +365,7 @@ std::expected<void, std::string> Dataset::SaveToFile(
                                        tokenizer_hash_, masked(),
                                        tokens_.data(), mask_.data());
     f.close();
-    if (f.fail())
-      return diag::feeding::Error("short write to '" + path + "'");
+    if (f.fail()) return diag::feeding::Error("short write to '" + path + "'");
     return {};
   }
   // Feature rows: the lowest version that carries the content — v1 byte
@@ -555,13 +556,12 @@ void Dataset::Reshuffle() {
 std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
   if (!(fraction > 0.0) || fraction >= 1.0)
     return diag::feeding::Error("validation fraction must be in (0, 1)");
-  if (num_samples_ < 2)
-    return diag::feeding::Error("too few samples to split");
+  if (num_samples_ < 2) return diag::feeding::Error("too few samples to split");
   if (!order_.empty())
     return diag::feeding::Error("split before enabling shuffle");
 
-  uint64_t val_n = static_cast<uint64_t>(
-      static_cast<double>(num_samples_) * fraction);
+  uint64_t val_n =
+      static_cast<uint64_t>(static_cast<double>(num_samples_) * fraction);
   if (val_n == 0) val_n = 1;
   if (val_n >= num_samples_) val_n = num_samples_ - 1;
   const uint64_t train_n = num_samples_ - val_n;
@@ -596,8 +596,9 @@ std::expected<Dataset, std::string> Dataset::SplitValidation(double fraction) {
     labels_scanned_ = false;  // the extent was the whole corpus's
     return val;
   }
-  val.inputs_.assign(inputs_.begin() + static_cast<ptrdiff_t>(train_n * input_dim_),
-                     inputs_.end());
+  val.inputs_.assign(
+      inputs_.begin() + static_cast<ptrdiff_t>(train_n * input_dim_),
+      inputs_.end());
   val.labels_.assign(labels_.begin() + static_cast<ptrdiff_t>(train_n * lbytes),
                      labels_.end());
 
@@ -620,8 +621,9 @@ std::expected<Dataset, std::string> Dataset::SplitHeldOut(
     if (held[i] >= num_samples_)
       return diag::feeding::Error("held-out index past the corpus");
     if (i > 0 && held[i] <= held[i - 1])
-      return diag::feeding::Error("held-out indices are not sorted and "
-                                  "distinct");
+      return diag::feeding::Error(
+          "held-out indices are not sorted and "
+          "distinct");
   }
   const uint64_t val_n = held.size(), train_n = num_samples_ - val_n;
   const uint64_t lbytes = label_bytes_per_sample();
@@ -657,7 +659,8 @@ std::expected<Dataset, std::string> Dataset::SplitHeldOut(
         continue;
       }
       if (kept != r)  // a forward move: the slot lies before the record
-        std::copy(src, end, mine.begin() + static_cast<ptrdiff_t>(kept * stride));
+        std::copy(src, end,
+                  mine.begin() + static_cast<ptrdiff_t>(kept * stride));
       ++kept;
     }
     mine.resize(kept * stride);
@@ -692,8 +695,7 @@ std::optional<double> Dataset::LabelEntropyNats() const {
     } else {
       for (uint64_t i = 0; i < num_samples_; ++i) {
         int32_t label;
-        std::memcpy(&label, labels_.data() + i * sizeof(label),
-                    sizeof(label));
+        std::memcpy(&label, labels_.data() + i * sizeof(label), sizeof(label));
         visit(label);
       }
     }
@@ -712,8 +714,7 @@ std::optional<double> Dataset::LabelEntropyNats() const {
   // Summed over the sorted counts: one order on every host, so the same
   // bits wherever the screen is printed.
   std::vector<uint64_t> sorted;
-  const auto span =
-      static_cast<uint64_t>(static_cast<int64_t>(hi) - lo) + 1;
+  const auto span = static_cast<uint64_t>(static_cast<int64_t>(hi) - lo) + 1;
   if (span <= (uint64_t{1} << 20)) {
     std::vector<uint64_t> counts(span, 0);
     each_label([&](int32_t v) {

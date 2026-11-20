@@ -14,6 +14,27 @@
 
 namespace seeml::update {
 
+// An operand word that carries two 32-bit fields (B<<32|S, H<<32|d,
+// rows<<32|cols, V<<32|D, or two f32 bit patterns) is taken apart and put
+// together here and nowhere else (S8 #154). The halves are returned as the
+// 64-bit values the validator's overflow-checked products and the kernels'
+// loop bounds take; the *32 forms are the same halves in the width a GPU
+// argument block stores. PackWords does not mask: a caller whose halves
+// might not fit proves that first (the lowering's range check).
+// Spelled High/Low, not Hi/Lo: Apple's Carbon headers, which Accelerate
+// pulls into the CPU backend, define HiWord and LoWord as 16-bit macros.
+inline constexpr uint64_t HighWord(uint64_t word) { return word >> 32; }
+inline constexpr uint64_t LowWord(uint64_t word) { return word & 0xFFFFFFFFu; }
+inline constexpr uint32_t HighWord32(uint64_t word) {
+  return static_cast<uint32_t>(word >> 32);
+}
+inline constexpr uint32_t LowWord32(uint64_t word) {
+  return static_cast<uint32_t>(word & 0xFFFFFFFFu);
+}
+inline constexpr uint64_t PackWords(uint64_t hi, uint64_t lo) {
+  return (hi << 32) | lo;
+}
+
 // A tensor reference is a 64-bit word: bit 63 selects the address space
 // (0 = mutable arena, 1 = read-only rodata), bits 0..61 are a byte offset.
 // Bit 62 (plan v17, E12 #95) selects a third, read-only space: the SOURCE
@@ -33,7 +54,9 @@ inline constexpr uint64_t MakeRodataRef(uint64_t offset) {
 inline constexpr uint64_t MakeSourceRef(uint64_t offset) {
   return offset | kSourceBit;
 }
-inline constexpr bool IsRodataRef(uint64_t ref) { return (ref & kRodataBit) != 0; }
+inline constexpr bool IsRodataRef(uint64_t ref) {
+  return (ref & kRodataBit) != 0;
+}
 inline constexpr bool IsSourceRef(uint64_t ref) {
   return (ref & (kRodataBit | kSourceBit)) == kSourceBit;
 }
@@ -41,6 +64,8 @@ inline constexpr uint64_t RefOffset(uint64_t ref) {
   return ref & ~(kRodataBit | kSourceBit);
 }
 
+// The ISA table: an opcode to a line, its operands in the trailing comment.
+// clang-format off
 enum class OpCode : uint16_t {
   kNop = 0,
   // GEMM family. C[M,N]; refs in in[0..2], dims in out[0..2] = M, N, K.
@@ -230,6 +255,7 @@ enum class OpCode : uint16_t {
   // holds -0.
   kAttnFwdTiledSeg = 57,  // in: q, k, v, o; out[0]=stats, out[1]=PackAttnGeometry, out[2]=starts ref
 };
+// clang-format on
 
 inline constexpr uint64_t kAttnStatsWidth = 4;
 /// The stats row's fields: the score max, 1 / the softmax denominator, the
@@ -309,7 +335,7 @@ inline constexpr uint8_t FusedStageArg(uint8_t stage) {
 // — its in[3] already carries the dequant scale, so a bias has nowhere to
 // ride. Every other opcode requires flags == 0.
 inline constexpr uint16_t kFlagEpilogueBias = 1u << 0;  // in[3] = bias ref [N]
-inline constexpr uint16_t kFlagEpilogueActShift = 1;    // bits 1..2: EpilogueAct
+inline constexpr uint16_t kFlagEpilogueActShift = 1;  // bits 1..2: EpilogueAct
 inline constexpr uint16_t kFlagEpilogueActMask = 3u << kFlagEpilogueActShift;
 inline constexpr uint16_t kEpilogueFlagsMask =
     kFlagEpilogueBias | kFlagEpilogueActMask;
@@ -324,7 +350,8 @@ inline constexpr uint16_t kEpilogueFlagsMask =
 // the two-instruction form computed, so the fold changes memory traffic and
 // never bits. It excludes the bias / activation epilogue (kGemmNN's in[3]
 // holds one ref), and the narrow-weight GEMMs do not take it.
-inline constexpr uint16_t kFlagGemmAddend = 1u << 3;  // in[3] = addend ref [M,N]
+// in[3] = addend ref [M,N]
+inline constexpr uint16_t kFlagGemmAddend = 1u << 3;
 // --- Per-column int8 scales (plan v17, E12 #95). ------------------------------
 // kGemmNNQ8 / kGemmNTQ8 only: in[3] is a rodata ref to one f32 scale per
 // OUTPUT COLUMN of the quantized weight W [K, M] (float[M]) instead of the
@@ -405,7 +432,12 @@ inline float GemmAlphaOf(uint32_t imm) {
   return imm == 0 ? 1.0f : std::bit_cast<float>(imm);
 }
 
-enum class EpilogueAct : uint16_t { kNone = 0, kRelu = 1, kGelu = 2, kSilu = 3 };
+enum class EpilogueAct : uint16_t {
+  kNone = 0,
+  kRelu = 1,
+  kGelu = 2,
+  kSilu = 3
+};
 
 inline constexpr EpilogueAct EpilogueActOf(uint16_t flags) {
   return static_cast<EpilogueAct>((flags & kFlagEpilogueActMask) >>

@@ -35,7 +35,7 @@ struct Cursor {
            (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r'))
       ++i;
   }
-  bool Eat(char c) {
+  [[nodiscard]] bool Eat(char c) {
     Skip();
     if (i < s.size() && s[i] == c) {
       ++i;
@@ -48,7 +48,7 @@ struct Cursor {
   bool bad_escape = false;
   /// A JSON string with the escapes a name or a path needs; \u is refused
   /// (no recipe value needs one, and half-decoding one would be worse).
-  bool String(std::string* out) {
+  [[nodiscard]] bool String(std::string* out) {
     Skip();
     if (i >= s.size() || s[i] != '"') return false;
     ++i;
@@ -57,9 +57,12 @@ struct Cursor {
       if (c == '\\') {
         if (i >= s.size()) return false;
         const char e = s[i++];
-        if (e == '"' || e == '\\' || e == '/') c = e;
-        else if (e == 'n') c = '\n';
-        else if (e == 't') c = '\t';
+        if (e == '"' || e == '\\' || e == '/')
+          c = e;
+        else if (e == 'n')
+          c = '\n';
+        else if (e == 't')
+          c = '\t';
         else {
           bad_escape = true;
           return false;
@@ -89,7 +92,7 @@ struct Cursor {
 /// here, eight to a reader with octal), ".5" and "1." — spellings every
 /// JSON parser refuses, so a file holding one is a recipe to this reader
 /// alone.
-inline bool IsJsonNumber(std::string_view t) {
+[[nodiscard]] inline bool IsJsonNumber(std::string_view t) {
   size_t i = 0;
   auto digits = [&] {
     const size_t from = i;
@@ -97,8 +100,10 @@ inline bool IsJsonNumber(std::string_view t) {
     return i > from;
   };
   if (i < t.size() && t[i] == '-') ++i;
-  if (i < t.size() && t[i] == '0') ++i;
-  else if (!digits()) return false;
+  if (i < t.size() && t[i] == '0')
+    ++i;
+  else if (!digits())
+    return false;
   if (i < t.size() && t[i] == '.') {
     ++i;
     if (!digits()) return false;
@@ -117,7 +122,7 @@ inline bool IsJsonNumber(std::string_view t) {
 /// must be its field's: a number for uint / float fields, a string for enum
 /// fields, true / false for bool fields, an array of strings for list
 /// fields.
-inline std::expected<Values, std::string> ParseRecipeFile(
+[[nodiscard]] inline std::expected<Values, std::string> ParseRecipeFile(
     std::string_view text) {
   file_detail::Cursor c{text};
   auto bad = [](const std::string& what) {
@@ -135,9 +140,8 @@ inline std::expected<Values, std::string> ParseRecipeFile(
     while (true) {
       std::string key;
       if (!c.String(&key))
-        return c.bad_escape
-                   ? bad(std::string("a field name uses ") + kEscapes)
-                   : bad("expected a field name in quotes");
+        return c.bad_escape ? bad(std::string("a field name uses ") + kEscapes)
+                            : bad("expected a field name in quotes");
       const Field* f = FindField(key);
       if (!f) return bad("unknown field '" + key + "'");
       if (values.contains(key)) return bad("field '" + key + "' appears twice");
@@ -162,9 +166,10 @@ inline std::expected<Values, std::string> ParseRecipeFile(
           // to; its bound is Apply's ("nan" and "Infinity" are not JSON
           // either, and are refused here by the same rule).
           if (!file_detail::IsJsonNumber(value))
-            return bad("field '" + key + "' takes a JSON number (no leading "
-                       "'+', '.' or zero, digits after a '.'), got '" + value +
-                       "'");
+            return bad("field '" + key +
+                       "' takes a JSON number (no leading "
+                       "'+', '.' or zero, digits after a '.'), got '" +
+                       value + "'");
           break;
         case Kind::kBool:
           value = std::string(c.Token());

@@ -61,10 +61,10 @@ namespace seeml::update_rt {
 struct DurableWriteStats;  // runtime/storage/durable_io.h
 
 struct TrainOptions {
-  std::string checkpoint_path;   // empty = no checkpointing
-  uint64_t checkpoint_every = 0; // steps between checkpoints (0 = off)
-  uint64_t log_every = 100;      // steps between loss log lines (0 = quiet)
-  bool resume = false;           // load checkpoint_path before training
+  std::string checkpoint_path;    // empty = no checkpointing
+  uint64_t checkpoint_every = 0;  // steps between checkpoints (0 = off)
+  uint64_t log_every = 100;       // steps between loss log lines (0 = quiet)
+  bool resume = false;            // load checkpoint_path before training
 
   // The LR schedule's horizon, in optimizer steps (E8, #91). 0 = derive it
   // from the run, which is what every ordinary caller wants:
@@ -150,16 +150,16 @@ struct TrainReport {
   uint64_t best_step = 0;
   float val_last_loss = 0.0f;
   float val_last_accuracy = 0.0f;
-  uint64_t evaluations = 0;        // periodic evaluations run (not the two
-                                   // bracketing ones)
+  uint64_t evaluations = 0;  // periodic evaluations run (not the two
+                             // bracketing ones)
   // Wall seconds of the optimizer steps themselves (S0 #146): staging each
   // batch, the train program G times, the step program — evaluations and
   // checkpoint saves excluded. The runtime screen's measured step is this
   // over `steps`.
   double step_seconds = 0.0;
-  double eval_seconds = 0.0;       // wall seconds inside every evaluation of
-                                   // the run, bracketing ones included (F9
-                                   // #140: the gate's share of the update)
+  double eval_seconds = 0.0;  // wall seconds inside every evaluation of
+                              // the run, bracketing ones included (F9
+                              // #140: the gate's share of the update)
   // The storage role (CR4 #145): the periodic checkpoints the run saved,
   // and what they cost on disk in total — the bytes written and the fsyncs
   // that succeeded (each file's and its directory's).
@@ -370,8 +370,8 @@ class UpdateEngine {
   /// Validates the candidate plan and commits engine state only if every
   /// contract passes: a rejected re-Load leaves the previous plan loaded
   /// and fully usable.
-  [[nodiscard]] std::expected<void, std::string> Initialize(
-      const uint8_t* plan, size_t plan_size);
+  [[nodiscard]] std::expected<void, std::string> Initialize(const uint8_t* plan,
+                                                            size_t plan_size);
   /// The training loop itself; Train wraps it with the diagnostics contract.
   [[nodiscard]] std::expected<TrainReport, std::string> TrainImpl(
       Dataset& data, uint64_t steps, const TrainOptions& options);
@@ -400,7 +400,7 @@ class UpdateEngine {
   // Unconditional members keep the class layout build-independent.
   // Every step-timing site (SEEML_STEP_TIMING) is the profiler's (#202).
   StepProfiler profiler_{};
-  std::vector<uint8_t> owned_plan_;       // LoadFromFile: a heap copy
+  std::vector<uint8_t> owned_plan_;  // LoadFromFile: a heap copy
   // An mmap'd file region owned by the engine (the platform seam's,
   // source/platform/file_map.h): unmapped on Release, on destruction, or
   // when a move-assignment supersedes it.
@@ -420,9 +420,9 @@ class UpdateEngine {
   uint64_t grad_accum_ = 1;
   std::vector<seeml::update::EmitEntry> emit_table_;
 
-  uint8_t* arena_ = nullptr;              // single aligned allocation
-  size_t arena_bytes_ = 0;                // its rounded-up length
-  const uint8_t* rodata_ = nullptr;       // points into the plan blob
+  uint8_t* arena_ = nullptr;         // single aligned allocation
+  size_t arena_bytes_ = 0;           // its rounded-up length
+  const uint8_t* rodata_ = nullptr;  // points into the plan blob
   // The executor behind the seam (backend.h); constructed as the CPU
   // reference, replaced by SelectBackend. Declared after the address
   // spaces it binds; the destructor still releases it explicitly first.
@@ -438,8 +438,8 @@ class UpdateEngine {
   uint64_t source_required_ = 0;
   bool train_reads_source_ = false;
   bool merge_reads_source_ = false;
-  uint64_t step_ = 0;                     // 1-indexed AdamW timestep
-  uint64_t horizon_ = 0;                  // run LR horizon; 0 = plan default
+  uint64_t step_ = 0;     // 1-indexed AdamW timestep
+  uint64_t horizon_ = 0;  // run LR horizon; 0 = plan default
 
   // The run's identity and the best state (E9, #92), carried into every
   // checkpoint (SEKP v5) and restored from one. `binding_` is set from the
@@ -454,8 +454,8 @@ class UpdateEngine {
   } binding_;
   GateState gate_;  // the source model's score, the best state, patience
   double eval_seconds_ = 0.0;  // accumulated by EvaluateMetrics
-  uint64_t num_classes_ = 0;              // softmax width, 0 = no class loss
-  uint64_t vocab_bound_ = 0;              // narrowest embedding table, 0 = none
+  uint64_t num_classes_ = 0;   // softmax width, 0 = no class loss
+  uint64_t vocab_bound_ = 0;   // narrowest embedding table, 0 = none
   bool merged_ = false;
 
   // Where the eval program materializes its softmax probabilities — the

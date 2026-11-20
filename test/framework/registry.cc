@@ -65,10 +65,9 @@ void PrintIndented(const std::string& message) {
   size_t start = 0;
   while (start <= message.size()) {
     const size_t end = message.find('\n', start);
-    const std::string_view line(message.data() + start,
-                                (end == std::string::npos ? message.size()
-                                                          : end) -
-                                    start);
+    const std::string_view line(
+        message.data() + start,
+        (end == std::string::npos ? message.size() : end) - start);
     std::printf("    %.*s\n", static_cast<int>(line.size()), line.data());
     if (end == std::string::npos) break;
     start = end + 1;

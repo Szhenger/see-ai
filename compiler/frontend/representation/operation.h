@@ -58,16 +58,18 @@ class Operation {
     const AttributeValue* getAttribute(std::string_view key) const;
     /// Every attribute, in key order — for a pass that re-emits an op as it
     /// stands (rematerialization copies the whole set, whatever the mnemonic).
-    const std::map<std::string, AttributeValue, std::less<>>& attributes() const {
+    const std::map<std::string, AttributeValue, std::less<>>& attributes()
+        const {
         return attributes_;
     }
-    bool hasAttribute(std::string_view key) const { return getAttribute(key) != nullptr; }
+    bool hasAttribute(std::string_view key) const {
+        return getAttribute(key) != nullptr;
+    }
 
     template <typename T>
     std::optional<T> getAttrAs(std::string_view key) const {
         if (auto* av = getAttribute(key))
-            if (auto* v = std::get_if<T>(av))
-                return *v;
+            if (auto* v = std::get_if<T>(av)) return *v;
         return std::nullopt;
     }
 
@@ -85,6 +87,6 @@ class Operation {
     friend class Block;
 };
 
-} // namespace seeml::sir
+}  // namespace seeml::sir
 
-#endif // SEEML_COMPILER_FRONTEND_REPRESENTATION_OPERATION_H_
+#endif  // SEEML_COMPILER_FRONTEND_REPRESENTATION_OPERATION_H_

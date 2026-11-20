@@ -26,11 +26,11 @@
 namespace seeml::update::tokenization {
 
 struct CorpusIngress {
-  std::vector<uint8_t> sds;     // the canonical corpus tokenized here from
-                                // raw text; empty for a given SDS, which is
-                                // the corpus as is (nothing to write)
-  bool from_sds = false;        // `--data` named an SDS
-  std::string manifest_json;    // raw text only
+  std::vector<uint8_t> sds;   // the canonical corpus tokenized here from
+                              // raw text; empty for a given SDS, which is
+                              // the corpus as is (nothing to write)
+  bool from_sds = false;      // `--data` named an SDS
+  std::string manifest_json;  // raw text only
   // The corpus's side of the feeder contract (source/contract/
   // plan_contract.h): what the device will hold the plan's header to, so
   // the driver can run the device's own rule on the header it emits —
@@ -43,8 +43,8 @@ struct CorpusIngress {
 /// What the plan will stage for the loss, decided by the driver's loss
 /// choice before the corpus is held to it.
 struct PlanLabels {
-  uint32_t kind = 0;    // 0 none, 1 class index (i32), 2 dense f32[width]
-  uint64_t width = 0;   // the output width (the classes, or the dense width)
+  uint32_t kind = 0;   // 0 none, 1 class index (i32), 2 dense f32[width]
+  uint64_t width = 0;  // the output width (the classes, or the dense width)
 };
 
 /// The labels `loss` stages over an output `width` wide: class ids under

@@ -35,10 +35,9 @@ using ResolveFn = std::function<std::expected<uint64_t, std::string>(
 /// its per-output-column scale vector: when present the q8 GEMM carries
 /// kFlagQ8ColScale and that ref in in[3] instead of the per-tensor scale.
 [[nodiscard]] std::expected<std::vector<UpdateInstruction>, std::string>
-LowerOps(const std::vector<seeml::sir::Operation*>& ops,
-         const ResolveFn& resolve,
-         const std::unordered_map<const seeml::sir::Value*, float>&
-             quant_scales,
+LowerOps(
+    const std::vector<seeml::sir::Operation*>& ops, const ResolveFn& resolve,
+    const std::unordered_map<const seeml::sir::Value*, float>& quant_scales,
     const std::unordered_set<const seeml::sir::Value*>& bf16_weights = {},
     const std::unordered_map<const seeml::sir::Value*, uint64_t>&
         quant_column_scales = {});

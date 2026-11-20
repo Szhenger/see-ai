@@ -117,17 +117,28 @@ inline const char* OpCodeName(uint16_t opcode) {
       return "gemm.nt.bf16";
     case OpCode::kRopeTable:
       return "rope.table";
-    case OpCode::kAttnFwdTiled: return "attn.fwd.tiled";
-    case OpCode::kAttnDQTiled: return "attn.dq.tiled";
-    case OpCode::kAttnDKTiled: return "attn.dk.tiled";
-    case OpCode::kAttnDVTiled: return "attn.dv.tiled";
-    case OpCode::kSoftmaxXEntMaskedFwd: return "softmax_xent_masked.fwd";
-    case OpCode::kSoftmaxXEntMaskedBwd: return "softmax_xent_masked.bwd";
-    case OpCode::kSqNormAccum: return "sqnorm.accum";
-    case OpCode::kClipGlobal: return "clip.global";
-    case OpCode::kSegmentStarts: return "segment.starts";
-    case OpCode::kAttnFwdSeg: return "attn.fwd.seg";
-    case OpCode::kAttnFwdTiledSeg: return "attn.fwd.tiled.seg";
+    case OpCode::kAttnFwdTiled:
+      return "attn.fwd.tiled";
+    case OpCode::kAttnDQTiled:
+      return "attn.dq.tiled";
+    case OpCode::kAttnDKTiled:
+      return "attn.dk.tiled";
+    case OpCode::kAttnDVTiled:
+      return "attn.dv.tiled";
+    case OpCode::kSoftmaxXEntMaskedFwd:
+      return "softmax_xent_masked.fwd";
+    case OpCode::kSoftmaxXEntMaskedBwd:
+      return "softmax_xent_masked.bwd";
+    case OpCode::kSqNormAccum:
+      return "sqnorm.accum";
+    case OpCode::kClipGlobal:
+      return "clip.global";
+    case OpCode::kSegmentStarts:
+      return "segment.starts";
+    case OpCode::kAttnFwdSeg:
+      return "attn.fwd.seg";
+    case OpCode::kAttnFwdTiledSeg:
+      return "attn.fwd.tiled.seg";
     case OpCode::kFusedMap:
       return "fused.map";
   }

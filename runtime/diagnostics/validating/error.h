@@ -21,7 +21,8 @@ namespace seeml::update_rt::diag::validating {
 inline constexpr std::string_view kPlanValidator = "PlanValidator";
 
 /// Verification failure: "PlanValidator: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view message) {
   return Fail(kPlanValidator, message);
 }
 

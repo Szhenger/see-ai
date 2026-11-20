@@ -58,17 +58,17 @@ inline constexpr uint32_t kCkptHasBest = 1u << 3;  // best_* fields are live
 // the bit existed reads as unbound.
 inline constexpr uint32_t kCkptHasBinding = 1u << 4;
 struct CkptHeaderV5Tail {
-  uint64_t shuffle_origin = 0;   // Dataset::shuffle_origin(); 0 = unshuffled
-  uint64_t train_samples = 0;    // the training set's size after the split
-  uint64_t val_samples = 0;      // the validation set's size; 0 = no split
-  uint64_t best_step = 0;        // step of the best payload (0 = the start)
+  uint64_t shuffle_origin = 0;  // Dataset::shuffle_origin(); 0 = unshuffled
+  uint64_t train_samples = 0;   // the training set's size after the split
+  uint64_t val_samples = 0;     // the validation set's size; 0 = no split
+  uint64_t best_step = 0;       // step of the best payload (0 = the start)
   uint64_t best_payload_hash = 0;
   uint32_t flags = 0;
   uint32_t val_initial_loss_bits = 0;
   uint32_t val_initial_accuracy_bits = 0;
   uint32_t best_loss_bits = 0;
   uint32_t best_accuracy_bits = 0;
-  uint32_t stale_evals = 0;      // evaluations since the best, for patience
+  uint32_t stale_evals = 0;  // evaluations since the best, for patience
 };
 #pragma pack(pop)
 

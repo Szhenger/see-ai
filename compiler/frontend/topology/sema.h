@@ -50,10 +50,10 @@ namespace seeml::update::sema {
 /// learned on the way.
 struct Topology {
   std::unordered_map<std::string, seeml::sir::Shape> shapes;
-  seeml::sir::Shape output;        // the declared output's shape
-  bool token_input = false;        // rank-1 dynamic input: i32 token ids
-  int64_t input_width = 0;         // features per row (0 for a token input)
-  uint64_t vocabulary = 0;         // rows of the embedding table (0 = none)
+  seeml::sir::Shape output;  // the declared output's shape
+  bool token_input = false;  // rank-1 dynamic input: i32 token ids
+  int64_t input_width = 0;   // features per row (0 for a token input)
+  uint64_t vocabulary = 0;   // rows of the embedding table (0 = none)
   uint64_t embedding_ops = 0;
   uint64_t attention_ops = 0;
   // Activations computation will emit, with their f32 bytes at this batch

@@ -50,15 +50,16 @@ std::expected<std::map<std::string, Field>, std::string> Parse(
       if (!kind) return std::unexpected("unknown key '" + key + "'");
       if (out.contains(key))
         return std::unexpected("key '" + key + "' appears twice");
-      if (!c.Eat(':')) return std::unexpected("expected ':' after '" + key + "'");
+      if (!c.Eat(':'))
+        return std::unexpected("expected ':' after '" + key + "'");
       Field f{*kind, {}};
       if (*kind == Field::kString) {
         if (!c.String(&f.text))
           return std::unexpected("key '" + key + "' takes a string");
       } else {
         c.Skip();
-        if (c.i < c.s.size() && (c.s[c.i] == '"' || c.s[c.i] == '{' ||
-                                 c.s[c.i] == '['))
+        if (c.i < c.s.size() &&
+            (c.s[c.i] == '"' || c.s[c.i] == '{' || c.s[c.i] == '['))
           return std::unexpected("key '" + key + "' takes a bare value");
         f.text = std::string(c.Token());
         const bool is_bool = f.text == "true" || f.text == "false";
@@ -71,8 +72,8 @@ std::expected<std::map<std::string, Field>, std::string> Parse(
         // "010", ".5" and "1.", which no JSON parser does.
         if (*kind == Field::kNumber &&
             !recipe::file_detail::IsJsonNumber(f.text))
-          return std::unexpected("key '" + key + "' takes a JSON number, got '" +
-                                 f.text + "'");
+          return std::unexpected("key '" + key +
+                                 "' takes a JSON number, got '" + f.text + "'");
       }
       out.emplace(std::move(key), std::move(f));
       if (c.Eat(',')) continue;
@@ -81,7 +82,8 @@ std::expected<std::map<std::string, Field>, std::string> Parse(
     }
   }
   c.Skip();
-  if (c.i != c.s.size()) return std::unexpected("content after the closing '}'");
+  if (c.i != c.s.size())
+    return std::unexpected("content after the closing '}'");
   for (const auto& k : kKeys)
     if (!out.contains(std::string(k.key)))
       return std::unexpected("key '" + std::string(k.key) + "' is missing");
@@ -93,9 +95,12 @@ bool ParseHex16(const std::string& s, uint64_t* out) {
   uint64_t v = 0;
   for (const char ch : s) {
     uint64_t d = 0;
-    if (ch >= '0' && ch <= '9') d = static_cast<uint64_t>(ch - '0');
-    else if (ch >= 'a' && ch <= 'f') d = static_cast<uint64_t>(ch - 'a' + 10);
-    else return false;
+    if (ch >= '0' && ch <= '9')
+      d = static_cast<uint64_t>(ch - '0');
+    else if (ch >= 'a' && ch <= 'f')
+      d = static_cast<uint64_t>(ch - 'a' + 10);
+    else
+      return false;
     v = (v << 4) | d;
   }
   *out = v;
@@ -147,8 +152,8 @@ std::expected<ExportReport, std::string> ReadExportReport(
     return bad("its tokenizer_hash is not the model's tokenizer section's");
   ExportReport r;
   r.present = true;
-  r.report_hash = ContentHash64(
-      reinterpret_cast<const uint8_t*>(text.data()), text.size());
+  r.report_hash =
+      ContentHash64(reinterpret_cast<const uint8_t*>(text.data()), text.size());
   r.tokenizer_parity = p["tokenizer_parity_checked"].text == "true";
   r.logits_parity = p["logits_parity_checked"].text == "true";
   double delta = 0.0;

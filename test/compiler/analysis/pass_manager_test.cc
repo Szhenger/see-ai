@@ -63,9 +63,8 @@ TEST(PassManager, NamesThePassThatViolatesInvariants) {
   fill->addResult("x", sir::DataType::F32, sir::Shape{2});
 
   PassManager pm;
-  pm.Add("fine", [](sir::Block&) -> std::expected<void, std::string> {
-    return {};
-  });
+  pm.Add("fine",
+         [](sir::Block&) -> std::expected<void, std::string> { return {}; });
   // Corrupts the block by duplicating an existing value id — the invariant
   // gate must attribute the violation to THIS pass, not fail later.
   pm.Add("corruptor", [](sir::Block& b) -> std::expected<void, std::string> {
@@ -112,8 +111,7 @@ TEST(DeadCodeElimination, CompactsALargeInterleavedGraphInOneSweep) {
     d2->addOperand(v1);
     d2->addResult("d2." + id, sir::DataType::F32, sir::Shape{4});
   }
-  ASSERT_OK_AND_ASSIGN(size_t removed,
-                       DeadCodeElimination().Run(block, roots));
+  ASSERT_OK_AND_ASSIGN(size_t removed, DeadCodeElimination().Run(block, roots));
   EXPECT_EQ(removed, 3 * groups);
   ASSERT_EQ(block.numOps(), groups);
   size_t i = 0;
@@ -128,9 +126,8 @@ TEST(PassManager, RecordsEveryCompletedPassWithItsWallTime) {
   sir::Block block;
   block.addArgument(sir::DataType::F32, sir::Shape{2});
   PassManager pm;
-  pm.Add("first", [](sir::Block&) -> std::expected<void, std::string> {
-    return {};
-  });
+  pm.Add("first",
+         [](sir::Block&) -> std::expected<void, std::string> { return {}; });
   pm.Add("second", [](sir::Block& b) -> std::expected<void, std::string> {
     b.appendOp("sc_mem.param")
         ->addResult("p", sir::DataType::F32, sir::Shape{2});
@@ -162,8 +159,7 @@ TEST(DeadCodeElimination, SweepsDeadChainsKeepsRootsUsesAndEffects) {
   // remove b first and then the now-useless a in the same run.
   sir::Operation* a = block.appendOp("sc_high.gelu");
   a->addOperand(x);
-  sir::Value* av =
-      a->addResult("dead.a", sir::DataType::F32, sir::Shape{2, 4});
+  sir::Value* av = a->addResult("dead.a", sir::DataType::F32, sir::Shape{2, 4});
   sir::Operation* b = block.appendOp("sc_high.silu");
   b->addOperand(av);
   b->addResult("dead.b", sir::DataType::F32, sir::Shape{2, 4});
@@ -178,8 +174,7 @@ TEST(DeadCodeElimination, SweepsDeadChainsKeepsRootsUsesAndEffects) {
   mem->addResult("orphan.param", sir::DataType::F32, sir::Shape{4});
 
   std::unordered_set<const sir::Value*> roots{rooted};
-  ASSERT_OK_AND_ASSIGN(size_t removed,
-                       DeadCodeElimination().Run(block, roots));
+  ASSERT_OK_AND_ASSIGN(size_t removed, DeadCodeElimination().Run(block, roots));
   EXPECT_EQ(removed, 2u);
   EXPECT_EQ(CountOps(block, "sc_high.gelu"), 0u);
   EXPECT_EQ(CountOps(block, "sc_high.silu"), 0u);

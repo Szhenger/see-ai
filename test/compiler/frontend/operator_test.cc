@@ -46,8 +46,8 @@ TEST(OpBuilder, Conv2dInfersSpatialGeometry) {
 
 TEST(OpBuilder, Conv2dPropagatesDynamicBatch) {
   sir::Block block;
-  sir::Value* x = block.addArgument(
-      DataType::F32, Shape{sir::Shape::kDynamic, 3, 8, 8});
+  sir::Value* x =
+      block.addArgument(DataType::F32, Shape{sir::Shape::kDynamic, 3, 8, 8});
   sir::Value* w = block.addArgument(DataType::F32, Shape{4, 3, 3, 3});
 
   auto conv = sir::OpBuilder::conv2d(x, w, /*bias=*/nullptr, {1, 1});

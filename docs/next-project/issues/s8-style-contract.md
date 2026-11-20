@@ -33,6 +33,11 @@ doc-drift items are folded in here. Design: [`docs/next-project/seeai.md`](https
    violations today).
 2. `HiWord`/`LoWord` helpers beside `MakeArenaRef` in
    `source/plan/instruction.h`; delete the ~47 copies.
+   Superseded 2026-11-18 in the names only, the clause as first written:
+   *`HiWord`/`LoWord`.* The helpers landed as `HighWord` / `LowWord`
+   (with `PackWords`): Carbon's `ToolUtils.h`, which Accelerate pulls into
+   every translation unit that includes it, defines `HiWord` and `LoWord`
+   as macros.
 3. Decompose the four functions (S6 takes `CompileImpl`; this issue takes
    the other three).
 4. `source/` and `tool/` to the tree's idiom: `[[nodiscard]]`, `std::span`

@@ -30,18 +30,17 @@ using seeml::testing::ScopedTempDir;
 TEST(DurableIo, RoundTripsSingleAndGatherWrites) {
   ScopedTempDir dir;
   const std::vector<uint8_t> payload{1, 2, 3, 4, 5};
-  ASSERT_OK(WriteFileDurable(dir.File("one.bin"), payload.data(),
-                             payload.size()));
+  ASSERT_OK(
+      WriteFileDurable(dir.File("one.bin"), payload.data(), payload.size()));
   ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> back,
                        ReadFileBytes(dir.File("one.bin")));
   EXPECT_TRUE(back == payload);
 
   // Gather form: header + payload written as one durable concatenation.
   const std::vector<uint8_t> head{9, 9};
-  ASSERT_OK(WriteFileDurable(
-      dir.File("two.bin"),
-      {ByteSpan{head.data(), head.size()},
-       ByteSpan{payload.data(), payload.size()}}));
+  ASSERT_OK(WriteFileDurable(dir.File("two.bin"),
+                             {ByteSpan{head.data(), head.size()},
+                              ByteSpan{payload.data(), payload.size()}}));
   ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> both,
                        ReadFileBytes(dir.File("two.bin")));
   const std::vector<uint8_t> want{9, 9, 1, 2, 3, 4, 5};
@@ -52,10 +51,10 @@ TEST(DurableIo, ReplacesExistingFilesAtomically) {
   ScopedTempDir dir;
   const std::vector<uint8_t> old_bytes(128, 0xAA);
   const std::vector<uint8_t> new_bytes{7};
-  ASSERT_OK(WriteFileDurable(dir.File("f.bin"), old_bytes.data(),
-                             old_bytes.size()));
-  ASSERT_OK(WriteFileDurable(dir.File("f.bin"), new_bytes.data(),
-                             new_bytes.size()));
+  ASSERT_OK(
+      WriteFileDurable(dir.File("f.bin"), old_bytes.data(), old_bytes.size()));
+  ASSERT_OK(
+      WriteFileDurable(dir.File("f.bin"), new_bytes.data(), new_bytes.size()));
   ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> back,
                        ReadFileBytes(dir.File("f.bin")));
   EXPECT_TRUE(back == new_bytes);  // fully replaced, not appended or torn
@@ -116,8 +115,10 @@ TEST(DurableIo, ConcurrentWritersToOnePathYieldOneCompleteFile) {
     // discarded, a file left by an earlier round satisfied the content check
     // even when every later write failed).
     std::expected<void, std::string> ra, rb;
-    std::thread ta([&] { ra = WriteFileDurable(path, {{a.data(), a.size()}}); });
-    std::thread tb([&] { rb = WriteFileDurable(path, {{b.data(), b.size()}}); });
+    std::thread ta(
+        [&] { ra = WriteFileDurable(path, {{a.data(), a.size()}}); });
+    std::thread tb(
+        [&] { rb = WriteFileDurable(path, {{b.data(), b.size()}}); });
     ta.join();
     tb.join();
     ASSERT_OK(ra);
@@ -175,7 +176,10 @@ TEST(DurableIo, DurableFileEditPatchesACopyAndDiscardsOnAbort) {
   }
   ASSERT_OK_AND_ASSIGN(auto committed, ReadFileBytes(dst));
   std::vector<uint8_t> expect = bytes;
-  expect[16] = 0xAA; expect[17] = 0xBB; expect[18] = 0xCC; expect[19] = 0xDD;
+  expect[16] = 0xAA;
+  expect[17] = 0xBB;
+  expect[18] = 0xCC;
+  expect[19] = 0xDD;
   EXPECT_TRUE(committed == expect);
   // The source is untouched.
   ASSERT_OK_AND_ASSIGN(auto src_bytes, ReadFileBytes(src));
@@ -190,8 +194,8 @@ TEST(Checkpoint, RoundTripsTheSegmentAndStep) {
 
   std::vector<uint8_t> restored(kBytes, 0xFF);
   ASSERT_OK_AND_ASSIGN(uint64_t step,
-                       LoadCheckpointFile(dir.File("c.ckpt"), kPlanHash,
-                                          kBytes, restored.data()));
+                       LoadCheckpointFile(dir.File("c.ckpt"), kPlanHash, kBytes,
+                                          restored.data()));
   EXPECT_EQ(step, 7u);
   EXPECT_TRUE(restored == seg);
 }
@@ -199,13 +203,12 @@ TEST(Checkpoint, RoundTripsTheSegmentAndStep) {
 TEST(Checkpoint, RejectsForeignPlansWithoutTouchingTheArena) {
   ScopedTempDir dir;
   const std::vector<uint8_t> seg = Segment();
-  ASSERT_OK(SaveCheckpointFile(dir.File("c.ckpt"), kPlanHash, 3, seg.data(),
-                               kBytes));
+  ASSERT_OK(
+      SaveCheckpointFile(dir.File("c.ckpt"), kPlanHash, 3, seg.data(), kBytes));
 
   std::vector<uint8_t> dst(kBytes, 0xFF);
   const auto r =
-      LoadCheckpointFile(dir.File("c.ckpt"), kPlanHash + 1, kBytes,
-                         dst.data());
+      LoadCheckpointFile(dir.File("c.ckpt"), kPlanHash + 1, kBytes, dst.data());
   ASSERT_FALSE(r.has_value());
   EXPECT_TRUE(WellFormedDiagnostic(r.error()));
   for (uint8_t b : dst) EXPECT_EQ(b, 0xFF);  // dst untouched on failure
@@ -218,8 +221,8 @@ TEST(Checkpoint, RejectsForeignPlansWithoutTouchingTheArena) {
 TEST(Checkpoint, RejectsBitFlippedAndTruncatedFiles) {
   ScopedTempDir dir;
   const std::vector<uint8_t> seg = Segment();
-  ASSERT_OK(SaveCheckpointFile(dir.File("c.ckpt"), kPlanHash, 3, seg.data(),
-                               kBytes));
+  ASSERT_OK(
+      SaveCheckpointFile(dir.File("c.ckpt"), kPlanHash, 3, seg.data(), kBytes));
   ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> raw,
                        ReadFileBytes(dir.File("c.ckpt")));
 
@@ -233,8 +236,8 @@ TEST(Checkpoint, RejectsBitFlippedAndTruncatedFiles) {
     f.write(reinterpret_cast<const char*>(flipped.data()),
             static_cast<std::streamsize>(flipped.size()));
   }
-  EXPECT_ERROR(LoadCheckpointFile(dir.File("flipped.ckpt"), kPlanHash,
-                                  kBytes, dst.data()));
+  EXPECT_ERROR(LoadCheckpointFile(dir.File("flipped.ckpt"), kPlanHash, kBytes,
+                                  dst.data()));
 
   // Cut the payload short.
   {
@@ -322,8 +325,8 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
   std::fill(dst.begin(), dst.end(), 0xFF);
   EXPECT_ERROR(LoadCheckpointRecord(dir.File("bad-best.ckpt"), kPlanHash,
                                     kBytes, dst.data()));
-  EXPECT_TRUE(std::all_of(dst.begin(), dst.end(),
-                          [](uint8_t b) { return b == 0xFF; }));
+  EXPECT_TRUE(
+      std::all_of(dst.begin(), dst.end(), [](uint8_t b) { return b == 0xFF; }));
 
   // Without a best payload the file is header + one segment, and the
   // v3/v4-shaped call reads it (step and horizon) as before.
@@ -354,8 +357,8 @@ TEST(DurableIo, AWriteReportsWhatItCostOnDisk) {
   ASSERT_OK(WriteFileDurable(dir.File("x.bin"),
                              std::span<const ByteSpan>(parts), &stats));
   EXPECT_EQ(stats.bytes, uint64_t{1003});
-  EXPECT_EQ(stats.bytes,
-            static_cast<uint64_t>(std::filesystem::file_size(dir.File("x.bin"))));
+  EXPECT_EQ(stats.bytes, static_cast<uint64_t>(
+                             std::filesystem::file_size(dir.File("x.bin"))));
   EXPECT_GE(stats.fsyncs, uint64_t{1});
   EXPECT_LE(stats.fsyncs, uint64_t{2});
   // A checkpoint's cost is the file it wrote, header and payload.
@@ -363,8 +366,8 @@ TEST(DurableIo, AWriteReportsWhatItCostOnDisk) {
   CheckpointRecord record;
   record.step = 5;
   DurableWriteStats saved;
-  ASSERT_OK(SaveCheckpointRecord(dir.File("c.ckpt"), 77, record,
-                                 segment.data(), segment.size(), &saved));
+  ASSERT_OK(SaveCheckpointRecord(dir.File("c.ckpt"), 77, record, segment.data(),
+                                 segment.size(), &saved));
   EXPECT_EQ(saved.bytes, static_cast<uint64_t>(
                              std::filesystem::file_size(dir.File("c.ckpt"))));
   EXPECT_GT(saved.bytes, uint64_t{segment.size()});
@@ -419,17 +422,16 @@ TEST(DurableIo, AWriteThatFailsMidwayLeavesNoSidecarAndTheOldFile) {
   const std::vector<uint8_t> old = {1, 2, 3, 4};
   ASSERT_OK(WriteFileDurable(path, old.data(), old.size()));
   const std::vector<uint8_t> next(64 << 10, 0xCD);
-  const int status = seeml::testing::RunUnderFileSizeLimit(
-      16 << 10, PastTheLimit::kFail, [&] {
-        auto r = WriteFileDurable(path, next.data(), next.size());
-        if (r) return 1;
-        if (r.error().find("short write") == std::string::npos) return 2;
-        auto bytes = ReadFileBytes(path);
-        if (!bytes || *bytes != old) return 3;
-        if (SizesOf(dir.path(), "") != std::vector<uint64_t>{old.size()})
-          return 4;
-        return 0;
-      });
+  const int status =
+      seeml::testing::RunUnderFileSizeLimit(16 << 10, PastTheLimit::kFail, [&] {
+    auto r = WriteFileDurable(path, next.data(), next.size());
+    if (r) return 1;
+    if (r.error().find("short write") == std::string::npos) return 2;
+    auto bytes = ReadFileBytes(path);
+    if (!bytes || *bytes != old) return 3;
+    if (SizesOf(dir.path(), "") != std::vector<uint64_t>{old.size()}) return 4;
+    return 0;
+  });
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 0);
 }
@@ -449,17 +451,16 @@ TEST(Checkpoint, AWriterKilledMidSaveLeavesTheLastCheckpointWhole) {
   const std::vector<uint8_t> last(4096, 1);
   ASSERT_OK(SaveCheckpointFile(path, hash, 3, last.data(), last.size()));
   const std::vector<uint8_t> next(1 << 20, 2);
-  const int status = seeml::testing::RunUnderFileSizeLimit(
-      64 << 10, PastTheLimit::kKill, [&] {
-        (void)SaveCheckpointFile(path, hash, 9, next.data(), next.size());
-        return 0;  // reached only if the writer survived
-      });
+  const int status =
+      seeml::testing::RunUnderFileSizeLimit(64 << 10, PastTheLimit::kKill, [&] {
+    (void)SaveCheckpointFile(path, hash, 9, next.data(), next.size());
+    return 0;  // reached only if the writer survived
+  });
   ASSERT_TRUE(WIFSIGNALED(status));
   EXPECT_EQ(WTERMSIG(status), SIGXFSZ);
   std::vector<uint8_t> back(last.size());
-  ASSERT_OK_AND_ASSIGN(uint64_t step, LoadCheckpointFile(path, hash,
-                                                         last.size(),
-                                                         back.data()));
+  ASSERT_OK_AND_ASSIGN(
+      uint64_t step, LoadCheckpointFile(path, hash, last.size(), back.data()));
   EXPECT_EQ(step, uint64_t{3});
   EXPECT_TRUE(back == last);
   const std::vector<uint64_t> sidecars = SizesOf(dir.path(), "run.ckpt.tmp.");
@@ -467,9 +468,8 @@ TEST(Checkpoint, AWriterKilledMidSaveLeavesTheLastCheckpointWhole) {
   EXPECT_LE(sidecars[0], uint64_t{64 << 10});
   ASSERT_OK(SaveCheckpointFile(path, hash, 9, next.data(), next.size()));
   std::vector<uint8_t> now(next.size());
-  ASSERT_OK_AND_ASSIGN(uint64_t step2, LoadCheckpointFile(path, hash,
-                                                          next.size(),
-                                                          now.data()));
+  ASSERT_OK_AND_ASSIGN(uint64_t step2,
+                       LoadCheckpointFile(path, hash, next.size(), now.data()));
   EXPECT_EQ(step2, uint64_t{9});
   EXPECT_TRUE(now == next);
 }
@@ -482,8 +482,8 @@ TEST(Checkpoint, TheBindingTravelsOnlyWhenSaidTo) {
   // ways, through the load and the peek.
   ScopedTempDir dir;
   const std::vector<uint8_t> seg = Segment();
-  ASSERT_OK(SaveCheckpointFile(dir.File("plain.ckpt"), kPlanHash, 3,
-                               seg.data(), kBytes, 10));
+  ASSERT_OK(SaveCheckpointFile(dir.File("plain.ckpt"), kPlanHash, 3, seg.data(),
+                               kBytes, 10));
   std::vector<uint8_t> dst(kBytes, 0);
   ASSERT_OK_AND_ASSIGN(CheckpointRecord plain,
                        LoadCheckpointRecord(dir.File("plain.ckpt"), kPlanHash,

@@ -26,13 +26,14 @@ inline constexpr std::string_view kIngressor = "Ingressor";
 inline constexpr std::string_view kCorpus = "Corpus";
 
 /// Container-level failure: "SMF: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view message) {
   return Fail(kContainer, message);
 }
 
 /// File-shaped failure: "SMF: <what> '<path>'".
-[[nodiscard]] inline std::unexpected<std::string> FileError(std::string_view what,
-                                                            std::string_view path) {
+[[nodiscard]] inline std::unexpected<std::string> FileError(
+    std::string_view what, std::string_view path) {
   std::string m;
   m.reserve(what.size() + path.size() + 3);
   m.append(what).append(" '").append(path).append("'");
@@ -40,8 +41,8 @@ inline constexpr std::string_view kCorpus = "Corpus";
 }
 
 /// Tensor-shaped failure: "SMF: tensor '<name>' <what>".
-[[nodiscard]] inline std::unexpected<std::string> TensorError(std::string_view name,
-                                                              std::string_view what) {
+[[nodiscard]] inline std::unexpected<std::string> TensorError(
+    std::string_view name, std::string_view what) {
   std::string m;
   m.reserve(name.size() + what.size() + 10);
   m.append("tensor '").append(name).append("' ").append(what);
@@ -49,12 +50,14 @@ inline constexpr std::string_view kCorpus = "Corpus";
 }
 
 /// Feasibility failure from the ingress gate: "Ingressor: <message>".
-[[nodiscard]] inline std::unexpected<std::string> IngressError(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> IngressError(
+    std::string_view message) {
   return Fail(kIngressor, message);
 }
 
 /// A corpus the data path refuses: "Corpus: <message>".
-[[nodiscard]] inline std::unexpected<std::string> CorpusError(std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> CorpusError(
+    std::string_view message) {
   return Fail(kCorpus, message);
 }
 

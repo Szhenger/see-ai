@@ -35,8 +35,8 @@ constexpr size_t kM = 33, kN = 29, kK = 21;
 
 std::unique_ptr<MetalGemmRunner> MakeRunner() {
   const GpuTiling tiling;  // 16 x 16 x 16
-  auto runner = MetalGemmRunner::Create(MetalGemmSource(tiling),
-                                        tiling.tile_m, tiling.tile_n);
+  auto runner = MetalGemmRunner::Create(MetalGemmSource(tiling), tiling.tile_m,
+                                        tiling.tile_n);
   if (!runner) {
     ADD_FAILURE("Metal runner creation failed: " + runner.error());
     return nullptr;
@@ -44,7 +44,8 @@ std::unique_ptr<MetalGemmRunner> MakeRunner() {
   return std::move(*runner);
 }
 
-void ExpectClose(const std::vector<float>& got, const std::vector<float>& want) {
+void ExpectClose(const std::vector<float>& got,
+                 const std::vector<float>& want) {
   ASSERT_EQ(got.size(), want.size());
   for (size_t i = 0; i < got.size(); ++i) {
     const float tol =
@@ -64,22 +65,21 @@ TEST(MetalGemm, EmittedKernelsMatchCpuReference) {
 
   std::vector<float> want(kM * kN), got(kM * kN, -7.0f);
   k::GemmNN(a.data(), b.data(), want.data(), kM, kN, kK);
-  ASSERT_OK(runner->Run(Kind::kNN, a.data(), b.data(), got.data(), kM, kN,
-                        kK));
+  ASSERT_OK(runner->Run(Kind::kNN, a.data(), b.data(), got.data(), kM, kN, kK));
   ExpectClose(got, want);
 
   // NT: B is [N, K] row-major.
   const std::vector<float> bt = RandnVector(kN * kK, 203);
   k::GemmNT(a.data(), bt.data(), want.data(), kM, kN, kK);
-  ASSERT_OK(runner->Run(Kind::kNT, a.data(), bt.data(), got.data(), kM, kN,
-                        kK));
+  ASSERT_OK(
+      runner->Run(Kind::kNT, a.data(), bt.data(), got.data(), kM, kN, kK));
   ExpectClose(got, want);
 
   // TN: A is [K, M] row-major.
   const std::vector<float> at = RandnVector(kK * kM, 204);
   k::GemmTN(at.data(), b.data(), want.data(), kM, kN, kK);
-  ASSERT_OK(runner->Run(Kind::kTN, at.data(), b.data(), got.data(), kM, kN,
-                        kK));
+  ASSERT_OK(
+      runner->Run(Kind::kTN, at.data(), b.data(), got.data(), kM, kN, kK));
   ExpectClose(got, want);
 
   // Accumulate: C += alpha * A@B over a nonzero C.
@@ -100,10 +100,10 @@ TEST(MetalGemm, DispatchIsReproducibleRunToRun) {
   const std::vector<float> a = RandnVector(kM * kK, 206);
   const std::vector<float> b = RandnVector(kK * kN, 207);
   std::vector<float> first(kM * kN), again(kM * kN);
-  ASSERT_OK(runner->Run(Kind::kNN, a.data(), b.data(), first.data(), kM, kN,
-                        kK));
-  ASSERT_OK(runner->Run(Kind::kNN, a.data(), b.data(), again.data(), kM, kN,
-                        kK));
+  ASSERT_OK(
+      runner->Run(Kind::kNN, a.data(), b.data(), first.data(), kM, kN, kK));
+  ASSERT_OK(
+      runner->Run(Kind::kNN, a.data(), b.data(), again.data(), kM, kN, kK));
   // Per-backend determinism: same device, same grid, same K order — the
   // bits must not wobble between dispatches.
   for (size_t i = 0; i < first.size(); ++i) EXPECT_EQ(first[i], again[i]);

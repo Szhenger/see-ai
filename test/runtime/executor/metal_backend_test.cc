@@ -59,7 +59,8 @@ std::expected<Run, std::string> TrainOn(BackendKind kind,
                                         const std::vector<uint8_t>& plan,
                                         DataMaker make, uint64_t steps) {
   UpdateEngine engine;
-  if (auto r = engine.SelectBackend(kind); !r) return std::unexpected(r.error());
+  if (auto r = engine.SelectBackend(kind); !r)
+    return std::unexpected(r.error());
   if (auto r = engine.LoadFromMemory(plan.data(), plan.size()); !r)
     return std::unexpected(r.error());
   auto data = make(17);
@@ -89,7 +90,8 @@ void ExpectClose(const char* what, const std::vector<float>& got,
   double worst_err = 0.0;
   for (size_t i = 0; i < got.size(); ++i) {
     const double err = std::fabs(static_cast<double>(got[i]) - want[i]);
-    const double tol = abs_floor + rel * std::fabs(static_cast<double>(want[i]));
+    const double tol =
+        abs_floor + rel * std::fabs(static_cast<double>(want[i]));
     // !(err <= tol): a NaN fails the comparison it could never pass, and
     // is recorded as the worst (CR1 #142 F29 — `err > tol` was false for
     // a NaN, so a NaN output matched anything).
@@ -256,8 +258,8 @@ TEST(MetalBackend, ZeroCopyResidencyWhenThePlanIsPageAligned) {
   // A page-aligned copy of the blob (what the .incbin stub produces) lets
   // the backend wrap rodata zero-copy; the heap vector forces the copy.
   ASSERT_EQ(compiled->plan.size() % kSeeuRodataAlignment, 0u);
-  void* aligned = std::aligned_alloc(kSeeuRodataAlignment,
-                                     compiled->plan.size());
+  void* aligned =
+      std::aligned_alloc(kSeeuRodataAlignment, compiled->plan.size());
   ASSERT_TRUE(aligned != nullptr);
   std::memcpy(aligned, compiled->plan.data(), compiled->plan.size());
   {
@@ -273,8 +275,8 @@ TEST(MetalBackend, ZeroCopyResidencyWhenThePlanIsPageAligned) {
                 compiled->plan.size());
     UpdateEngine engine;
     ASSERT_OK(engine.SelectBackend(BackendKind::kMetal));
-    ASSERT_OK(engine.LoadFromMemory(shifted.data() + 64,
-                                    compiled->plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(shifted.data() + 64, compiled->plan.size()));
     EXPECT_STR_CONTAINS(engine.backend_device(), "copied");
   }
   std::free(aligned);
@@ -288,7 +290,8 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
   // @3072, d @4096, e @5120 (the table's 32 values), seed @6144 (16.0).
   // Rodata: a [4][8] table (bound; nothing reads it).
   constexpr size_t kArenaBytes = 16384;
-  uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, kArenaBytes));
+  uint8_t* arena =
+      static_cast<uint8_t*>(std::aligned_alloc(16384, kArenaBytes));
   ASSERT_TRUE(arena != nullptr);
   std::memset(arena, 0, kArenaBytes);
   std::vector<float> table(32);
@@ -296,34 +299,43 @@ TEST(MetalBackend, CpuInstructionsWaitForThePendingGpuWorkTheyTouch) {
   std::memcpy(arena + 5120, table.data(), 32 * sizeof(float));
   const float seed = 16.0f;
   std::memcpy(arena + 6144, &seed, sizeof(seed));
-  ASSERT_OK((*metal)->Bind(arena, kArenaBytes,
-                           reinterpret_cast<const uint8_t*>(table.data()),
-                           table.size() * sizeof(float),
-                           table.size() * sizeof(float)));
+  ASSERT_OK((*metal)->Bind(
+      arena, kArenaBytes, reinterpret_cast<const uint8_t*>(table.data()),
+      table.size() * sizeof(float), table.size() * sizeof(float)));
   auto f32 = [](float v) { return uint64_t{std::bit_cast<uint32_t>(v)}; };
   UpdateInstruction fill;  // GPU: a = 2.0
   fill.opcode = static_cast<uint16_t>(OpCode::kFill);
-  fill.in[0] = MakeArenaRef(0); fill.in[1] = f32(2.0f); fill.out[0] = 32;
+  fill.in[0] = MakeArenaRef(0);
+  fill.in[1] = f32(2.0f);
+  fill.out[0] = 32;
   UpdateInstruction scale;  // GPU: c = 3 * a  (reads a)
   scale.opcode = static_cast<uint16_t>(OpCode::kScale);
-  scale.in[0] = MakeArenaRef(0); scale.in[1] = MakeArenaRef(512);
-  scale.in[2] = f32(3.0f); scale.out[0] = 32;
+  scale.in[0] = MakeArenaRef(0);
+  scale.in[1] = MakeArenaRef(512);
+  scale.in[2] = f32(3.0f);
+  scale.out[0] = 32;
   // CPU-resident (the MSE family stays on the CPU; the gather moved to
   // the GPU with F8): a = 2 * seed * (e - b) / 32 = e (WRITES a: must
   // wait for the scale that reads it).
   UpdateInstruction grad;
   grad.opcode = static_cast<uint16_t>(OpCode::kMseBwd);
-  grad.in[0] = MakeArenaRef(5120); grad.in[1] = MakeArenaRef(2048);
-  grad.in[2] = MakeArenaRef(6144); grad.in[3] = MakeArenaRef(0);
+  grad.in[0] = MakeArenaRef(5120);
+  grad.in[1] = MakeArenaRef(2048);
+  grad.in[2] = MakeArenaRef(6144);
+  grad.in[3] = MakeArenaRef(0);
   grad.out[0] = 32;
   UpdateInstruction mse;  // CPU: loss = mean((a - b)^2) (reads a)
   mse.opcode = static_cast<uint16_t>(OpCode::kMseFwd);
-  mse.in[0] = MakeArenaRef(0); mse.in[1] = MakeArenaRef(2048);
-  mse.in[2] = MakeArenaRef(3072); mse.out[0] = 32;
+  mse.in[0] = MakeArenaRef(0);
+  mse.in[1] = MakeArenaRef(2048);
+  mse.in[2] = MakeArenaRef(3072);
+  mse.out[0] = 32;
   UpdateInstruction half;  // GPU: d = 0.5 * c
   half.opcode = static_cast<uint16_t>(OpCode::kScale);
-  half.in[0] = MakeArenaRef(512); half.in[1] = MakeArenaRef(4096);
-  half.in[2] = f32(0.5f); half.out[0] = 32;
+  half.in[0] = MakeArenaRef(512);
+  half.in[1] = MakeArenaRef(4096);
+  half.in[2] = f32(0.5f);
+  half.out[0] = 32;
   StepParams params;
   for (const UpdateInstruction* ins : {&fill, &scale, &grad, &mse, &half})
     ASSERT_OK((*metal)->Execute(*ins, params));
@@ -367,11 +379,14 @@ std::expected<Twin, std::string> RunTwin(
     const std::vector<float>& arena_init, const std::vector<uint8_t>& rodata) {
   Twin twin;
   for (int which = 0; which < 2; ++which) {
-    auto backend = which == 0 ? std::expected<std::unique_ptr<ExecutorBackend>,
-                                              std::string>(CreateCpuBackend())
-                              : CreateMetalBackend();
+    auto backend =
+        which == 0
+            ? std::expected<std::unique_ptr<ExecutorBackend>, std::string>(
+                  CreateCpuBackend())
+            : CreateMetalBackend();
     if (!backend) return std::unexpected(backend.error());
-    const size_t bytes = (arena_init.size() * sizeof(float) + 16383) & ~size_t{16383};
+    const size_t bytes =
+        (arena_init.size() * sizeof(float) + 16383) & ~size_t{16383};
     uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
     if (!arena) return std::unexpected("aligned_alloc failed");
     std::memset(arena, 0, bytes);
@@ -430,7 +445,8 @@ TEST(MetalBackend, RopeTableAndEmbeddingGatherRunOnTheGpu) {
   std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
   for (size_t i = 0; i < size_t{B} * S * H * d; ++i) arena[i] = unit(rng);
   const int32_t tokens[T] = {4, 0, 2, 2, 1, 3};
-  for (size_t t = 0; t < T; ++t) arena[3072 + t] = std::bit_cast<float>(tokens[t]);
+  for (size_t t = 0; t < T; ++t)
+    arena[3072 + t] = std::bit_cast<float>(tokens[t]);
   std::vector<uint8_t> rodata(size_t{V} * d * 4);
   std::vector<float> rows(size_t{V} * d);
   for (size_t i = 0; i < rows.size(); ++i) {
@@ -444,7 +460,8 @@ TEST(MetalBackend, RopeTableAndEmbeddingGatherRunOnTheGpu) {
   table.out[1] = F32Bits(base);
   UpdateInstruction via;
   via.opcode = static_cast<uint16_t>(OpCode::kRopeFwd);
-  via.in[0] = MakeArenaRef(0); via.in[1] = MakeArenaRef(1024 * 4);
+  via.in[0] = MakeArenaRef(0);
+  via.in[1] = MakeArenaRef(1024 * 4);
   via.in[2] = MakeArenaRef(512 * 4);
   via.out[0] = (uint64_t{B} << 32) | S;
   via.out[1] = (uint64_t{H} << 32) | d;
@@ -454,15 +471,18 @@ TEST(MetalBackend, RopeTableAndEmbeddingGatherRunOnTheGpu) {
   direct.in[2] = kNullRef;
   UpdateInstruction embed;
   embed.opcode = static_cast<uint16_t>(OpCode::kEmbedFwd);
-  embed.in[0] = MakeArenaRef(3072 * 4); embed.in[1] = MakeRodataRef(0);
+  embed.in[0] = MakeArenaRef(3072 * 4);
+  embed.in[1] = MakeRodataRef(0);
   embed.in[2] = MakeArenaRef(3584 * 4);
-  embed.out[0] = T; embed.out[1] = (uint64_t{V} << 32) | d;
+  embed.out[0] = T;
+  embed.out[1] = (uint64_t{V} << 32) | d;
   auto twin = RunTwin({table, via, direct, embed}, arena, rodata);
   ASSERT_OK(twin);
   EXPECT_EQ(std::memcmp(&twin->gpu[1024], &twin->gpu[2048], 384 * 4), 0);
   ExpectRangeClose("rope table", *twin, 512, 128, 1e-5, 1e-5);
   ExpectRangeClose("rope through the table", *twin, 1024, 384, 1e-5, 1e-5);
-  EXPECT_EQ(std::memcmp(&twin->gpu[3584], &twin->cpu[3584], size_t{T} * d * 4), 0);
+  EXPECT_EQ(std::memcmp(&twin->gpu[3584], &twin->cpu[3584], size_t{T} * d * 4),
+            0);
   for (size_t t = 0; t < T; ++t)
     for (size_t j = 0; j < d; ++j)
       EXPECT_EQ(twin->gpu[3584 + t * d + j],
@@ -477,9 +497,11 @@ TEST(MetalBackend, TiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
   // CPU accumulates its dots and sums in double, serially), and bitwise
   // against themselves. Ragged S (> 32, not a multiple of 32), a head
   // width above 64 (two column blocks), and one of 16.
-  struct Shape { uint32_t B, S, H, d; };
-  for (const Shape sh : {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48},
-                         Shape{1, 70, 2, 96}}) {
+  struct Shape {
+    uint32_t B, S, H, d;
+  };
+  for (const Shape sh :
+       {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48}, Shape{1, 70, 2, 96}}) {
     const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
     const size_t rows = size_t{sh.B} * sh.H * sh.S;
     // Arena (floats): q, k, v, dO, o, stats [rows, 4], dq, dk, dv.
@@ -493,7 +515,9 @@ TEST(MetalBackend, TiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
     auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
     UpdateInstruction fwd;
     fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdTiled);
-    fwd.in[0] = ref(q_at); fwd.in[1] = ref(k_at); fwd.in[2] = ref(v_at);
+    fwd.in[0] = ref(q_at);
+    fwd.in[1] = ref(k_at);
+    fwd.in[2] = ref(v_at);
     fwd.in[3] = ref(o_at);
     fwd.out[0] = ref(st_at);
     fwd.out[1] = (uint64_t{sh.B} << 32) | sh.S;
@@ -501,7 +525,9 @@ TEST(MetalBackend, TiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
     auto bwd = [&](OpCode op, size_t result) {
       UpdateInstruction ins;
       ins.opcode = static_cast<uint16_t>(op);
-      ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+      ins.in[0] = ref(q_at);
+      ins.in[1] = ref(k_at);
+      ins.in[2] = ref(v_at);
       ins.in[3] = ref(do_at);
       ins.out[0] = ref(st_at);
       ins.out[1] = ref(result);
@@ -519,7 +545,8 @@ TEST(MetalBackend, TiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
                             "x" + std::to_string(sh.H) + "x" +
                             std::to_string(sh.d);
     ExpectRangeClose((tag + " o").c_str(), *twin, o_at, n, 1e-4, 1e-5);
-    ExpectRangeClose((tag + " stats").c_str(), *twin, st_at, rows * 4, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " stats").c_str(), *twin, st_at, rows * 4, 1e-4,
+                     1e-5);
     ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
     ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
     ExpectRangeClose((tag + " dv").c_str(), *twin, dv_at, n, 1e-4, 1e-5);
@@ -540,10 +567,12 @@ TEST(MetalBackend, RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
   // under one 32-row block and across several (40, 130, 300), the d = 64 a
   // SmolLM head has, d = 16 and 48 (zero-padded columns), and d = 96, which
   // keeps the exact per-row form and counts nothing.
-  struct Shape { uint32_t B, S, H, d; };
-  for (const Shape sh : {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48},
-                         Shape{1, 300, 2, 64}, Shape{2, 33, 1, 64},
-                         Shape{1, 70, 2, 96}}) {
+  struct Shape {
+    uint32_t B, S, H, d;
+  };
+  for (const Shape sh :
+       {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48}, Shape{1, 300, 2, 64},
+        Shape{2, 33, 1, 64}, Shape{1, 70, 2, 96}}) {
     const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
     const size_t rows = size_t{sh.B} * sh.H * sh.S;
     const size_t q_at = 0, k_at = n, v_at = 2 * n, do_at = 3 * n, o_at = 4 * n;
@@ -558,7 +587,9 @@ TEST(MetalBackend, RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
       UpdateInstruction fwd;
       fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdTiled);
       fwd.flags = flags;
-      fwd.in[0] = ref(q_at); fwd.in[1] = ref(k_at); fwd.in[2] = ref(v_at);
+      fwd.in[0] = ref(q_at);
+      fwd.in[1] = ref(k_at);
+      fwd.in[2] = ref(v_at);
       fwd.in[3] = ref(o_at);
       fwd.out[0] = ref(st_at);
       fwd.out[1] = (uint64_t{sh.B} << 32) | sh.S;
@@ -571,7 +602,9 @@ TEST(MetalBackend, RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
         UpdateInstruction ins;
         ins.opcode = static_cast<uint16_t>(op);
         ins.flags = flags;
-        ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+        ins.in[0] = ref(q_at);
+        ins.in[1] = ref(k_at);
+        ins.in[2] = ref(v_at);
         ins.in[3] = ref(do_at);
         ins.out[0] = ref(st_at);
         ins.out[1] = ref(result);
@@ -591,7 +624,8 @@ TEST(MetalBackend, RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
                             "x" + std::to_string(sh.H) + "x" +
                             std::to_string(sh.d) + " relaxed";
     ExpectRangeClose((tag + " o").c_str(), *twin, o_at, n, 1e-4, 1e-5);
-    ExpectRangeClose((tag + " stats").c_str(), *twin, st_at, rows * 4, 1e-4, 1e-5);
+    ExpectRangeClose((tag + " stats").c_str(), *twin, st_at, rows * 4, 1e-4,
+                     1e-5);
     ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
     ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
     ExpectRangeClose((tag + " dv").c_str(), *twin, dv_at, n, 1e-4, 1e-5);
@@ -599,9 +633,9 @@ TEST(MetalBackend, RelaxedTiledAttentionMatchesCpuAndIsBitwiseRunToRun) {
                           (total - o_at) * sizeof(float)),
               0);
     // The CPU takes no permission: its bytes are the exact program's.
-    EXPECT_EQ(std::memcmp(twin->cpu.data(), exact->cpu.data(),
-                          total * sizeof(float)),
-              0);
+    EXPECT_EQ(
+        std::memcmp(twin->cpu.data(), exact->cpu.data(), total * sizeof(float)),
+        0);
     EXPECT_EQ(twin->cpu_relaxed, 0u);
     EXPECT_EQ(exact->gpu_relaxed, 0u);
     EXPECT_EQ(twin->gpu_relaxed, sh.d <= 64 ? 4u : 0u);
@@ -656,7 +690,8 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
       {OpCode::kGemmTN, kF32, true, false, false, 0, "tn"},
       // The GEMM addend (v14): C = D + A@B, D at the "bias" slot's offset
       // widened to M*N floats below.
-      {OpCode::kGemmNN, kF32, false, false, false, kFlagGemmAddend, "nn+addend"},
+      {OpCode::kGemmNN, kF32, false, false, false, kFlagGemmAddend,
+       "nn+addend"},
       {OpCode::kGemmNT, kF32, false, true, false, kFlagGemmAddend, "nt+addend"},
       {OpCode::kGemmTN, kF32, true, false, false, kFlagGemmAddend, "tn+addend"},
       // The GEMM alpha (v19): the f32 forms' imm word, on its own and
@@ -688,9 +723,11 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
       // Twice per case: operands at 16-byte-aligned offsets (the vector
       // load path) and at 4-byte offsets (the scalar path).
       for (uint32_t skew : {0u, 4u}) {
-        const size_t a_elems = size_t{sh.m} * sh.k, b_elems = size_t{sh.k} * sh.n;
+        const size_t a_elems = size_t{sh.m} * sh.k,
+                     b_elems = size_t{sh.k} * sh.n;
         const size_t c_elems = size_t{sh.m} * sh.n;
-        const uint64_t a_off = skew, c_off = 64 * ((a_off + a_elems * 4 + 63) / 64);
+        const uint64_t a_off = skew,
+                       c_off = 64 * ((a_off + a_elems * 4 + 63) / 64);
         const uint64_t bias_off = 64 * ((c_off + c_elems * 4 + 63) / 64);
         // Room for the bias (N floats) or the addend (M*N floats) there.
         const size_t arena_floats = (bias_off + c_elems * 4 + 64) / 4;
@@ -712,9 +749,15 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
         for (size_t i = 0; i < b_elems; ++i) {
           const float x = unit(rng);
           uint8_t* dst = rodata.data() + skew + i * elem;
-          if (v.kind == kF32) std::memcpy(dst, &x, 4);
-          else if (v.kind == kQ8) dst[0] = static_cast<uint8_t>(static_cast<int8_t>(x * 100.0f));
-          else { const uint16_t b = static_cast<uint16_t>(std::bit_cast<uint32_t>(x) >> 16); std::memcpy(dst, &b, 2); }
+          if (v.kind == kF32)
+            std::memcpy(dst, &x, 4);
+          else if (v.kind == kQ8)
+            dst[0] = static_cast<uint8_t>(static_cast<int8_t>(x * 100.0f));
+          else {
+            const uint16_t b =
+                static_cast<uint16_t>(std::bit_cast<uint32_t>(x) >> 16);
+            std::memcpy(dst, &b, 2);
+          }
         }
         UpdateInstruction ins;
         ins.opcode = static_cast<uint16_t>(v.op);
@@ -725,16 +768,21 @@ TEST(MetalBackend, GemmShapesMatchCpuOnEveryKernelPath) {
         ins.in[2] = MakeArenaRef(c_off);
         if (v.flags & (kFlagEpilogueBias | kFlagGemmAddend))
           ins.in[3] = MakeArenaRef(bias_off);
-        else if (cols) ins.in[3] = MakeRodataRef(scale_off);
-        else if (v.kind == kQ8) ins.in[3] = F32Bits(0.01f);
-        else if (v.acc) ins.in[3] = F32Bits(0.5f);
-        ins.out[0] = sh.m; ins.out[1] = sh.n; ins.out[2] = sh.k;
+        else if (cols)
+          ins.in[3] = MakeRodataRef(scale_off);
+        else if (v.kind == kQ8)
+          ins.in[3] = F32Bits(0.01f);
+        else if (v.acc)
+          ins.in[3] = F32Bits(0.5f);
+        ins.out[0] = sh.m;
+        ins.out[1] = sh.n;
+        ins.out[2] = sh.k;
         auto twin = RunTwin({ins}, arena, rodata);
         ASSERT_OK(twin);
-        const std::string what = std::string(v.name) + " " + sh.path + " " +
-                                 std::to_string(sh.m) + "x" + std::to_string(sh.n) +
-                                 "x" + std::to_string(sh.k) +
-                                 (skew ? " (scalar path)" : " (vector path)");
+        const std::string what =
+            std::string(v.name) + " " + sh.path + " " + std::to_string(sh.m) +
+            "x" + std::to_string(sh.n) + "x" + std::to_string(sh.k) +
+            (skew ? " (scalar path)" : " (vector path)");
         // f32 sums of up to 4100 unit products in different orders.
         ExpectRangeClose(what.c_str(), *twin, c_off / 4, c_elems, 2e-4, 2e-4);
       }
@@ -761,8 +809,11 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
   struct Shape {
     uint32_t m, n, k;
   };
-  const Shape shapes[] = {{64, 64, 64}, {129, 65, 33}, {200, 300, 4100},
-                          {512, 8, 576}, {33, 17, 20}};
+  const Shape shapes[] = {{64, 64, 64},
+                          {129, 65, 33},
+                          {200, 300, 4100},
+                          {512, 8, 576},
+                          {33, 17, 20}};
   enum Kind { kF32, kQ8, kBF16 };
   struct Variant {
     OpCode op;
@@ -779,8 +830,8 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
                              (static_cast<uint16_t>(EpilogueAct::kSilu)
                               << kFlagEpilogueActShift)),
        "nn.rx+bias+silu"},
-      {OpCode::kGemmNN, kF32, false, static_cast<uint16_t>(rx | kFlagGemmAddend),
-       "nn.rx+addend"},
+      {OpCode::kGemmNN, kF32, false,
+       static_cast<uint16_t>(rx | kFlagGemmAddend), "nn.rx+addend"},
       {OpCode::kGemmNT, kF32, true, rx, "nt.rx"},
       {OpCode::kGemmNT, kF32, true, static_cast<uint16_t>(rx | kFlagGemmAddend),
        "nt.rx+addend"},
@@ -791,8 +842,8 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
                               << kFlagEpilogueActShift)),
        "nn.q8.rx.cols+gelu"},
       {OpCode::kGemmNTQ8, kQ8, true, rx, "nt.q8.rx"},
-      {OpCode::kGemmNTQ8, kQ8, true, static_cast<uint16_t>(rx | kFlagQ8ColScale),
-       "nt.q8.rx.cols"},
+      {OpCode::kGemmNTQ8, kQ8, true,
+       static_cast<uint16_t>(rx | kFlagQ8ColScale), "nt.q8.rx.cols"},
       {OpCode::kGemmNNBF16, kBF16, false,
        static_cast<uint16_t>(rx | kFlagEpilogueBias), "nn.bf16.rx+bias"},
       {OpCode::kGemmNTBF16, kBF16, true, rx, "nt.bf16.rx"},
@@ -809,12 +860,15 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
       const size_t arena_floats = (bias_off + c_elems * 4 + 64) / 4;
       std::vector<float> arena(arena_floats, 0.0f);
       for (size_t i = 0; i < a_elems; ++i) arena[a_off / 4 + i] = unit(rng);
-      for (size_t i = 0; i < c_elems; ++i) arena[bias_off / 4 + i] = 0.5f * unit(rng);
+      for (size_t i = 0; i < c_elems; ++i)
+        arena[bias_off / 4 + i] = 0.5f * unit(rng);
       // B in rodata: f32 [K, N] (or [N, K]), int8 levels, or bf16 bits;
       // the int8 forms' per-column scales follow at a 64-byte boundary.
       const size_t scales = v.bt ? sh.k : sh.n;
       std::vector<uint8_t> rodata;
-      const size_t b_bytes = b_elems * (v.kind == kF32 ? 4 : v.kind == kBF16 ? 2 : 1);
+      const size_t b_bytes = b_elems * (v.kind == kF32    ? 4
+                                        : v.kind == kBF16 ? 2
+                                                          : 1);
       const uint64_t scale_off = 64 * ((b_bytes + 63) / 64);
       rodata.resize(scale_off + scales * 4, 0);
       for (size_t i = 0; i < b_elems; ++i) {
@@ -822,10 +876,12 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
         if (v.kind == kF32) {
           std::memcpy(&rodata[i * 4], &x, 4);
         } else if (v.kind == kBF16) {
-          const uint16_t h = static_cast<uint16_t>(std::bit_cast<uint32_t>(x) >> 16);
+          const uint16_t h =
+              static_cast<uint16_t>(std::bit_cast<uint32_t>(x) >> 16);
           std::memcpy(&rodata[i * 2], &h, 2);
         } else {
-          rodata[i] = static_cast<uint8_t>(static_cast<int8_t>(std::lround(x * 100.0f)));
+          rodata[i] = static_cast<uint8_t>(
+              static_cast<int8_t>(std::lround(x * 100.0f)));
         }
       }
       for (size_t i = 0; i < scales; ++i) {
@@ -843,18 +899,22 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
                       ? MakeArenaRef(bias_off)
                   : v.kind == kQ8 ? F32Bits(0.02f)
                                   : kNullRef;
-      ins.out[0] = sh.m; ins.out[1] = sh.n; ins.out[2] = sh.k;
+      ins.out[0] = sh.m;
+      ins.out[1] = sh.n;
+      ins.out[2] = sh.k;
       auto twin = RunTwin({ins}, arena, rodata);
       ASSERT_OK(twin);
       auto again = RunTwin({ins}, arena, rodata);
       ASSERT_OK(again);
-      const std::string what = std::string(v.name) + " " + std::to_string(sh.m) +
-                               "x" + std::to_string(sh.n) + "x" +
-                               std::to_string(sh.k);
+      const std::string what =
+          std::string(v.name) + " " + std::to_string(sh.m) + "x" +
+          std::to_string(sh.n) + "x" + std::to_string(sh.k);
       // One bf16 rounding of each activation: 2^-9 relative per term, so
       // sqrt(K)-ish of that on a dot of unit products, well inside 1%.
-      const double abs_floor = 4.0 * std::ldexp(1.0, -9) * std::sqrt(double(sh.k));
-      ExpectRangeClose(what.c_str(), *twin, c_off / 4, c_elems, 1e-2, abs_floor);
+      const double abs_floor =
+          4.0 * std::ldexp(1.0, -9) * std::sqrt(double(sh.k));
+      ExpectRangeClose(what.c_str(), *twin, c_off / 4, c_elems, 1e-2,
+                       abs_floor);
       for (size_t i = 0; i < c_elems; ++i)
         EXPECT_EQ(std::bit_cast<uint32_t>(twin->gpu[c_off / 4 + i]),
                   std::bit_cast<uint32_t>(again->gpu[c_off / 4 + i]));
@@ -881,35 +941,59 @@ TEST(MetalBackend, AttentionMatchesCpuAtModelShape) {
   const size_t act = size_t{B} * S * D, pm = size_t{B} * H * S * S;
   // Slots (floats): q, k, v, o, dout, dv, dq, dk (act each); probs, dp, ds.
   size_t off = 0;
-  auto slot = [&](size_t n) { const size_t o = off; off += (n + 15) & ~size_t{15}; return o; };
+  auto slot = [&](size_t n) {
+    const size_t o = off;
+    off += (n + 15) & ~size_t{15};
+    return o;
+  };
   const size_t q = slot(act), k = slot(act), v = slot(act), o = slot(act);
   const size_t dout = slot(act), dv = slot(act), dq = slot(act), dk = slot(act);
   const size_t probs = slot(pm), dp = slot(pm), ds = slot(pm);
   std::vector<float> arena(off);
   std::mt19937_64 rng(31);
   std::normal_distribution<float> normal(0.0f, 1.0f);
-  for (size_t i = 0; i < 5 * ((act + 15) & ~size_t{15}); ++i) arena[i] = normal(rng);
+  for (size_t i = 0; i < 5 * ((act + 15) & ~size_t{15}); ++i)
+    arena[i] = normal(rng);
   auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
   const uint64_t bs = (uint64_t{B} << 32) | S, hd = (uint64_t{H} << 32) | d;
   UpdateInstruction fwd, adp, adv, sbwd, adq, adk;
   fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwd);
-  fwd.in[0] = ref(q); fwd.in[1] = ref(k); fwd.in[2] = ref(v); fwd.in[3] = ref(o);
-  fwd.out[0] = ref(probs); fwd.out[1] = bs; fwd.out[2] = hd;
+  fwd.in[0] = ref(q);
+  fwd.in[1] = ref(k);
+  fwd.in[2] = ref(v);
+  fwd.in[3] = ref(o);
+  fwd.out[0] = ref(probs);
+  fwd.out[1] = bs;
+  fwd.out[2] = hd;
   adp.opcode = static_cast<uint16_t>(OpCode::kAttnDP);
-  adp.in[0] = ref(dout); adp.in[1] = ref(v); adp.in[2] = ref(dp);
-  adp.out[0] = bs; adp.out[1] = hd;
+  adp.in[0] = ref(dout);
+  adp.in[1] = ref(v);
+  adp.in[2] = ref(dp);
+  adp.out[0] = bs;
+  adp.out[1] = hd;
   adv.opcode = static_cast<uint16_t>(OpCode::kAttnDV);
-  adv.in[0] = ref(probs); adv.in[1] = ref(dout); adv.in[2] = ref(dv);
-  adv.out[0] = bs; adv.out[1] = hd;
+  adv.in[0] = ref(probs);
+  adv.in[1] = ref(dout);
+  adv.in[2] = ref(dv);
+  adv.out[0] = bs;
+  adv.out[1] = hd;
   sbwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxRowsBwd);
-  sbwd.in[0] = ref(probs); sbwd.in[1] = ref(dp); sbwd.in[2] = ref(ds);
+  sbwd.in[0] = ref(probs);
+  sbwd.in[1] = ref(dp);
+  sbwd.in[2] = ref(ds);
   sbwd.out[0] = (uint64_t{B * H * S} << 32) | S;
   adq.opcode = static_cast<uint16_t>(OpCode::kAttnDQ);
-  adq.in[0] = ref(ds); adq.in[1] = ref(k); adq.in[2] = ref(dq);
-  adq.out[0] = bs; adq.out[1] = hd;
+  adq.in[0] = ref(ds);
+  adq.in[1] = ref(k);
+  adq.in[2] = ref(dq);
+  adq.out[0] = bs;
+  adq.out[1] = hd;
   adk.opcode = static_cast<uint16_t>(OpCode::kAttnDK);
-  adk.in[0] = ref(ds); adk.in[1] = ref(q); adk.in[2] = ref(dk);
-  adk.out[0] = bs; adk.out[1] = hd;
+  adk.in[0] = ref(ds);
+  adk.in[1] = ref(q);
+  adk.in[2] = ref(dk);
+  adk.out[0] = bs;
+  adk.out[1] = hd;
   auto twin = RunTwin({fwd, adp, adv, sbwd, adq, adk}, arena, {});
   ASSERT_OK(twin);
   ExpectRangeClose("attention O", *twin, o, act, 1e-4, 1e-5);
@@ -923,14 +1007,18 @@ TEST(MetalBackend, AttentionMatchesCpuAtModelShape) {
   // the causal prefix only, and pin the GPU's masked entries finite.
   for (size_t r = 0; r < size_t{B} * H * S; ++r) {
     const size_t i = r % S;
-    std::vector<float> g(twin->gpu.begin() + dp + r * S, twin->gpu.begin() + dp + r * S + i + 1);
-    std::vector<float> c(twin->cpu.begin() + dp + r * S, twin->cpu.begin() + dp + r * S + i + 1);
+    std::vector<float> g(twin->gpu.begin() + dp + r * S,
+                         twin->gpu.begin() + dp + r * S + i + 1);
+    std::vector<float> c(twin->cpu.begin() + dp + r * S,
+                         twin->cpu.begin() + dp + r * S + i + 1);
     ExpectClose("attention dP row", g, c, 1e-4, 1e-5);
-    for (size_t j = i + 1; j < S; ++j) EXPECT_TRUE(std::isfinite(twin->gpu[dp + r * S + j]));
+    for (size_t j = i + 1; j < S; ++j)
+      EXPECT_TRUE(std::isfinite(twin->gpu[dp + r * S + j]));
   }
   // The causal mask itself: P above the diagonal is exactly zero.
   for (size_t r = 0; r < size_t{B} * H * S; ++r)
-    for (size_t j = r % S + 1; j < S; ++j) EXPECT_EQ(twin->gpu[probs + r * S + j], 0.0f);
+    for (size_t j = r % S + 1; j < S; ++j)
+      EXPECT_EQ(twin->gpu[probs + r * S + j], 0.0f);
 }
 
 TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
@@ -938,14 +1026,20 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
   // The loss pair on the GPU (F8 #139): the LM-head width, a ragged width
   // and a wider batch; probabilities and the loss at the backend tolerance,
   // the gradient bitwise (its two operations are the CPU's, in order).
-  struct Shape { uint32_t n, c; };
+  struct Shape {
+    uint32_t n, c;
+  };
   // N = 300 exceeds the 257-float scratch the backend starts with: the
   // forward ends its encoder, grows the scratch and reopens, mid-Execute.
-  for (const Shape s : {Shape{4, 49152}, Shape{5, 301}, Shape{64, 1000},
-                        Shape{300, 64}}) {
+  for (const Shape s :
+       {Shape{4, 49152}, Shape{5, 301}, Shape{64, 1000}, Shape{300, 64}}) {
     const size_t nc = size_t{s.n} * s.c;
     size_t off = 0;
-    auto slot = [&](size_t n) { const size_t o = off; off += (n + 15) & ~size_t{15}; return o; };
+    auto slot = [&](size_t n) {
+      const size_t o = off;
+      off += (n + 15) & ~size_t{15};
+      return o;
+    };
     const size_t logits = slot(nc), probs = slot(nc), dlogits = slot(nc);
     const size_t labels = slot(s.n), seed = slot(1), loss = slot(1);
     std::vector<float> arena(off, 0.0f);
@@ -953,16 +1047,25 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
     std::normal_distribution<float> normal(0.0f, 3.0f);
     for (size_t i = 0; i < nc; ++i) arena[logits + i] = normal(rng);
     for (uint32_t n = 0; n < s.n; ++n)
-      arena[labels + n] = std::bit_cast<float>(static_cast<int32_t>((n * 7919u + 13u) % s.c));
+      arena[labels + n] =
+          std::bit_cast<float>(static_cast<int32_t>((n * 7919u + 13u) % s.c));
     arena[seed] = 0.5f;
     auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
     UpdateInstruction fwd, bwd;
     fwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntFwd);
-    fwd.in[0] = ref(logits); fwd.in[1] = ref(labels); fwd.in[2] = ref(loss); fwd.in[3] = ref(probs);
-    fwd.out[0] = s.n; fwd.out[1] = s.c;
+    fwd.in[0] = ref(logits);
+    fwd.in[1] = ref(labels);
+    fwd.in[2] = ref(loss);
+    fwd.in[3] = ref(probs);
+    fwd.out[0] = s.n;
+    fwd.out[1] = s.c;
     bwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntBwd);
-    bwd.in[0] = ref(probs); bwd.in[1] = ref(labels); bwd.in[2] = ref(seed); bwd.in[3] = ref(dlogits);
-    bwd.out[0] = s.n; bwd.out[1] = s.c;
+    bwd.in[0] = ref(probs);
+    bwd.in[1] = ref(labels);
+    bwd.in[2] = ref(seed);
+    bwd.in[3] = ref(dlogits);
+    bwd.out[0] = s.n;
+    bwd.out[1] = s.c;
     auto twin = RunTwin({fwd, bwd}, arena, {});
     ASSERT_OK(twin);
     // The loss holds the backend-agreement bound; the probabilities and
@@ -976,7 +1079,8 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
     EXPECT_TRUE(std::isfinite(twin->gpu[loss]));
     // Same probabilities in, bit-identical gradient out.
     std::vector<float> again(arena);
-    std::memcpy(again.data() + probs, twin->cpu.data() + probs, nc * sizeof(float));
+    std::memcpy(again.data() + probs, twin->cpu.data() + probs,
+                nc * sizeof(float));
     auto grad = RunTwin({bwd}, again, {});
     ASSERT_OK(grad);
     size_t mismatched = 0;
@@ -992,7 +1096,11 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
   for (const Shape s : {Shape{6, 301}, Shape{64, 1000}, Shape{3, 17}}) {
     const size_t nc = size_t{s.n} * s.c;
     size_t off = 0;
-    auto slot = [&](size_t n) { const size_t o = off; off += (n + 15) & ~size_t{15}; return o; };
+    auto slot = [&](size_t n) {
+      const size_t o = off;
+      off += (n + 15) & ~size_t{15};
+      return o;
+    };
     const size_t logits = slot(nc), probs = slot(nc), dlogits = slot(nc);
     const size_t labels = slot(s.n), seed = slot(1), loss = slot(1);
     std::vector<float> arena(off, 0.0f);
@@ -1008,11 +1116,19 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
     auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
     UpdateInstruction fwd, bwd;
     fwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntMaskedFwd);
-    fwd.in[0] = ref(logits); fwd.in[1] = ref(labels); fwd.in[2] = ref(loss); fwd.in[3] = ref(probs);
-    fwd.out[0] = s.n; fwd.out[1] = s.c;
+    fwd.in[0] = ref(logits);
+    fwd.in[1] = ref(labels);
+    fwd.in[2] = ref(loss);
+    fwd.in[3] = ref(probs);
+    fwd.out[0] = s.n;
+    fwd.out[1] = s.c;
     bwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntMaskedBwd);
-    bwd.in[0] = ref(probs); bwd.in[1] = ref(labels); bwd.in[2] = ref(seed); bwd.in[3] = ref(dlogits);
-    bwd.out[0] = s.n; bwd.out[1] = s.c;
+    bwd.in[0] = ref(probs);
+    bwd.in[1] = ref(labels);
+    bwd.in[2] = ref(seed);
+    bwd.in[3] = ref(dlogits);
+    bwd.out[0] = s.n;
+    bwd.out[1] = s.c;
     auto twin = RunTwin({fwd, bwd}, arena, {});
     ASSERT_OK(twin);
     ExpectRangeClose("masked xent probs", *twin, probs, nc, 1e-4, 1e-9);
@@ -1037,14 +1153,19 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
   {
     const uint32_t n = 3, c = 17;
     std::vector<float> arena(2 * n * c + 2 * 16 + n, 0.1f);
-    const size_t logits = 0, probs = n * c, labels = 2 * n * c, loss = labels + 16, seed = loss + 16;
-    for (uint32_t i = 0; i < n; ++i) arena[labels + i] = std::bit_cast<float>(int32_t{1});
+    const size_t logits = 0, probs = n * c, labels = 2 * n * c,
+                 loss = labels + 16, seed = loss + 16;
+    for (uint32_t i = 0; i < n; ++i)
+      arena[labels + i] = std::bit_cast<float>(int32_t{1});
     arena[logits + c + 2] = std::numeric_limits<float>::quiet_NaN();
     UpdateInstruction fwd;
     fwd.opcode = static_cast<uint16_t>(OpCode::kSoftmaxXEntFwd);
-    fwd.in[0] = MakeArenaRef(logits * 4); fwd.in[1] = MakeArenaRef(labels * 4);
-    fwd.in[2] = MakeArenaRef(loss * 4); fwd.in[3] = MakeArenaRef(probs * 4);
-    fwd.out[0] = n; fwd.out[1] = c;
+    fwd.in[0] = MakeArenaRef(logits * 4);
+    fwd.in[1] = MakeArenaRef(labels * 4);
+    fwd.in[2] = MakeArenaRef(loss * 4);
+    fwd.in[3] = MakeArenaRef(probs * 4);
+    fwd.out[0] = n;
+    fwd.out[1] = c;
     (void)seed;
     auto twin = RunTwin({fwd}, arena, {});
     ASSERT_OK(twin);
@@ -1062,12 +1183,13 @@ TEST(MetalBackend, ActivationsStayFiniteAtLargeMagnitude) {
   auto metal = CreateMetalBackend();
   ASSERT_OK(metal);
   constexpr size_t kArenaBytes = 16384, kN = 801;
-  uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, kArenaBytes));
+  uint8_t* arena =
+      static_cast<uint8_t*>(std::aligned_alloc(16384, kArenaBytes));
   ASSERT_TRUE(arena != nullptr);
   std::memset(arena, 0, kArenaBytes);
-  float* x = reinterpret_cast<float*>(arena);          // [0, 3204)
-  float* dy = reinterpret_cast<float*>(arena + 3264);  // up to 6468
-  float* out = reinterpret_cast<float*>(arena + 6528); // up to 9732
+  float* x = reinterpret_cast<float*>(arena);           // [0, 3204)
+  float* dy = reinterpret_cast<float*>(arena + 3264);   // up to 6468
+  float* out = reinterpret_cast<float*>(arena + 6528);  // up to 9732
   for (size_t i = 0; i < kN; ++i) {
     x[i] = -40.0f + 0.1f * static_cast<float>(i);
     dy[i] = 0.5f + 0.001f * static_cast<float>(i);
@@ -1201,8 +1323,8 @@ TEST(MetalBackend, MergeDeltasMatchCpuAtTolerance) {
   for (BackendKind kind : {BackendKind::kCpu, BackendKind::kMetal}) {
     UpdateEngine engine;
     ASSERT_OK(engine.SelectBackend(kind));
-    ASSERT_OK(engine.LoadFromMemory(compiled->plan.data(),
-                                    compiled->plan.size()));
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
     auto data = ClassData(17);
     ASSERT_OK(data);
     TrainOptions options;
@@ -1217,7 +1339,6 @@ TEST(MetalBackend, MergeDeltasMatchCpuAtTolerance) {
   }
   ExpectClose("merge deltas", deltas[1], deltas[0], 5e-3, 1e-6);
 }
-
 
 // --- F7 #138 step 4: the low-rank epilogue, fused at dispatch -----------------
 // At a LoRA site the plan carries the base product into C and then the
@@ -1244,7 +1365,8 @@ std::expected<FoldRun, std::string> RunMetalFold(
   auto backend = CreateMetalBackend();
   unsetenv("SEEML_METAL_UNFUSED_LOWRANK");
   if (!backend) return std::unexpected(backend.error());
-  const size_t bytes = (arena_init.size() * sizeof(float) + 16383) & ~size_t{16383};
+  const size_t bytes =
+      (arena_init.size() * sizeof(float) + 16383) & ~size_t{16383};
   uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
   if (!arena) return std::unexpected("aligned_alloc failed");
   std::memset(arena, 0, bytes);
@@ -1369,7 +1491,10 @@ void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
       {"C overwritten after", {base, proj, lora, add(Z, Z, C)}, 1, true, 0},
       // Part of C overwritten after the pair: the rest may be read; stored.
       {"C half-written after",
-       {base, proj, lora, add_n(Z, Z, C, M * N / 2)}, 1, true, 0},
+       {base, proj, lora, add_n(Z, Z, C, M * N / 2)},
+       1,
+       true,
+       0},
       // C accumulated into after the pair — a read-modify-write the
       // validator describes as one covering write: stored.
       {"C accumulated after", {base, proj, lora, accumulate(C, Z)}, 1, true, 0},
@@ -1384,15 +1509,15 @@ void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
       {"X written between", {base, proj, add(Z, Z, X), lora}, 0, true, 0},
   };
   for (const Case& cs : cases) {
-    auto fused = RunMetalFold(cs.program, arena, rodata, /*unfused=*/false,
-                              cs.split);
-    auto apart = RunMetalFold(cs.program, arena, rodata, /*unfused=*/true,
-                              cs.split);
+    auto fused =
+        RunMetalFold(cs.program, arena, rodata, /*unfused=*/false, cs.split);
+    auto apart =
+        RunMetalFold(cs.program, arena, rodata, /*unfused=*/true, cs.split);
     ASSERT_OK(fused);
     ASSERT_OK(apart);
     std::printf("  [ %-22s ] fused dispatches %llu (expected %llu), C %s\n",
-                cs.name, (unsigned long long)fused->fused,
-                (unsigned long long)cs.fused,
+                cs.name, static_cast<unsigned long long>(fused->fused),
+                static_cast<unsigned long long>(cs.fused),
                 cs.c_stored ? "stored" : "not stored");
     EXPECT_EQ(fused->fused, cs.fused);
     EXPECT_EQ(apart->fused, 0u);
@@ -1412,8 +1537,8 @@ void CheckLowRankFoldAt(uint32_t M, uint32_t N, uint32_t K) {
     EXPECT_EQ(first_diff, total);
     if (first_diff != total)
       std::printf("    first difference at float %llu: %.9g vs %.9g\n",
-                  (unsigned long long)first_diff, fused->arena[first_diff],
-                  apart->arena[first_diff]);
+                  static_cast<unsigned long long>(first_diff),
+                  fused->arena[first_diff], apart->arena[first_diff]);
     if (!cs.c_stored) EXPECT_TRUE(c_zero);
     // And against the CPU reference at the GEMM twin's tolerance.
     auto twin = RunTwin(cs.program, arena, rodata);
@@ -1486,7 +1611,8 @@ TEST(MetalBackend, ANonFiniteGradientNormIsRefusedAlikeOnBothBackends) {
   const Case cases[] = {
       {"sgd + fused clip", {sgd_clip}, "gradient norm is not finite"},
       {"adamw + fused clip", {adamw_clip}, "gradient norm is not finite"},
-      {"clip_norm, then a plain sgd", {clip, sgd},
+      {"clip_norm, then a plain sgd",
+       {clip, sgd},
        "gradient norm is not finite"},
       // Both name the threshold: the CPU in the executor's words, Metal in
       // the validator's — it re-validates every instruction at dispatch,
@@ -1499,9 +1625,10 @@ TEST(MetalBackend, ANonFiniteGradientNormIsRefusedAlikeOnBothBackends) {
   for (const Case& c : cases) {
     for (int which = 0; which < 2; ++which) {
       auto backend =
-          which == 0 ? std::expected<std::unique_ptr<ExecutorBackend>,
-                                     std::string>(CreateCpuBackend())
-                     : CreateMetalBackend();
+          which == 0
+              ? std::expected<std::unique_ptr<ExecutorBackend>, std::string>(
+                    CreateCpuBackend())
+              : CreateMetalBackend();
       ASSERT_OK(backend);
       const std::vector<float> init = arena_with(g_inf);
       const size_t bytes = 16384;
@@ -1555,8 +1682,8 @@ TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
   if (Skip()) return;
   const uint32_t B = 2, S = 8, H = 2, d = 4, D = H * d;
   // Arena (floats): tokens 0..15, starts 16..31, q 32.., k, v, o, P.
-  const uint64_t tok = 0, st = 16, q = 32, kk = q + B * S * D, v = kk + B * S * D,
-                 o = v + B * S * D, p = o + B * S * D;
+  const uint64_t tok = 0, st = 16, q = 32, kk = q + B * S * D,
+                 v = kk + B * S * D, o = v + B * S * D, p = o + B * S * D;
   std::vector<float> arena(p + B * H * S * S, 0.0f);
   const int32_t ids[] = {1, 2, 9, 3, 4, 9, 5, 6, 7, 8, 1, 2, 3, 4, 5, 9};
   std::memcpy(arena.data() + tok, ids, sizeof(ids));
@@ -1583,7 +1710,8 @@ TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
   for (uint64_t i = st; i < st + B * S; ++i)
     EXPECT_EQ(std::bit_cast<uint32_t>(twin->cpu[i]),
               std::bit_cast<uint32_t>(twin->gpu[i]));
-  EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[st + 4]), 3);  // after the EOS at 2
+  // after the EOS at 2
+  EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[st + 4]), 3);
   ExpectRangeClose("the masked output", *twin, o, B * S * D, 1e-5, 1e-5);
   ExpectRangeClose("the masked probabilities", *twin, p, B * H * S * S, 1e-5,
                    1e-5);
@@ -1591,8 +1719,9 @@ TEST(MetalBackend, TheSegmentMaskIsAppliedAlike) {
   // [0, i] alike — the same probabilities, no write outside the P cache.
   {
     std::vector<float> bad = arena;
-    const int32_t garbage[] = {-5, 104, -2147483647 - 1, 2147483647, 3, 0, 9, 1,
-                               0, 0, 0, 0, 0, 0, 0, 0};
+    const int32_t garbage[] = {
+        -5, 104, -2147483647 - 1, 2147483647, 3, 0, 9, 1, 0, 0, 0, 0, 0, 0,
+        0,  0};
     std::memcpy(bad.data() + st, garbage, sizeof(garbage));
     auto clamped = RunTwin({fwd}, bad, std::vector<uint8_t>(64, 0));
     ASSERT_OK(clamped);
@@ -1619,9 +1748,11 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
   // 128-row block edge. A second run perturbs the first document's rows
   // and the later documents' results on the GPU do not move by a bit.
   if (Skip()) return;
-  struct Shape { uint32_t B, S, H, d; };
-  for (const Shape sh : {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48},
-                         Shape{1, 70, 2, 96}})
+  struct Shape {
+    uint32_t B, S, H, d;
+  };
+  for (const Shape sh :
+       {Shape{2, 40, 2, 16}, Shape{1, 130, 3, 48}, Shape{1, 70, 2, 96}})
     for (const uint16_t flags : {uint16_t{0}, seeml::update::kFlagRelaxed}) {
       const size_t n = size_t{sh.B} * sh.S * sh.H * sh.d;
       const size_t rows = size_t{sh.B} * sh.H * sh.S;
@@ -1654,7 +1785,9 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
       UpdateInstruction fwd;
       fwd.opcode = static_cast<uint16_t>(OpCode::kAttnFwdTiledSeg);
       fwd.flags = flags;
-      fwd.in[0] = ref(q_at); fwd.in[1] = ref(k_at); fwd.in[2] = ref(v_at);
+      fwd.in[0] = ref(q_at);
+      fwd.in[1] = ref(k_at);
+      fwd.in[2] = ref(v_at);
       fwd.in[3] = ref(o_at);
       fwd.out[0] = ref(st_at);
       fwd.out[1] = PackAttnGeometry(sh.B, sh.S, sh.H, sh.d);
@@ -1667,7 +1800,9 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
         UpdateInstruction ins;
         ins.opcode = static_cast<uint16_t>(op);
         ins.flags = flags;
-        ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+        ins.in[0] = ref(q_at);
+        ins.in[1] = ref(k_at);
+        ins.in[2] = ref(v_at);
         ins.in[3] = ref(do_at);
         ins.out[0] = ref(st_at);
         ins.out[1] = ref(result);
@@ -1678,9 +1813,9 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
       ASSERT_OK(twin);
       auto again = RunTwin(program, arena, {});
       ASSERT_OK(again);
-      const std::string tag =
-          std::to_string(sh.S) + "x" + std::to_string(sh.d) +
-          (flags ? " relaxed" : " exact");
+      const std::string tag = std::to_string(sh.S) + "x" +
+                              std::to_string(sh.d) +
+                              (flags ? " relaxed" : " exact");
       ExpectRangeClose((tag + " o").c_str(), *twin, o_at, n, 1e-4, 1e-5);
       ExpectRangeClose((tag + " dq").c_str(), *twin, dq_at, n, 1e-4, 1e-5);
       ExpectRangeClose((tag + " dk").c_str(), *twin, dk_at, n, 1e-4, 1e-5);
@@ -1700,8 +1835,9 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
         EXPECT_EQ(twin->cpu[st_at + r * 4 + 3], want);
         EXPECT_EQ(twin->gpu[st_at + r * 4 + 3], want);
       }
-      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 6]), 6);    // start == i
-      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 32]), 32);  // a block edge
+      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 6]), 6);  // start == i
+      // a block edge
+      EXPECT_EQ(std::bit_cast<int32_t>(twin->cpu[ss_at + 32]), 32);
       // Perturb window 0's rows before position 32 — every document but the
       // last ones: what rows 32.. produce and receive is unmoved on the GPU.
       std::vector<float> other = arena;
@@ -1751,7 +1887,9 @@ TEST(MetalBackend, TheTiledSegmentMaskIsAppliedAlike) {
         UpdateInstruction ins;
         ins.opcode = static_cast<uint16_t>(op);
         ins.flags = flags;
-        ins.in[0] = ref(q_at); ins.in[1] = ref(k_at); ins.in[2] = ref(v_at);
+        ins.in[0] = ref(q_at);
+        ins.in[1] = ref(k_at);
+        ins.in[2] = ref(v_at);
         ins.in[3] = ref(do_at);
         ins.out[0] = ref(st_at);
         ins.out[1] = ref(result);
@@ -1777,8 +1915,8 @@ TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
   const std::vector<uint8_t> no_rodata(64, 0);
   UpdateInstruction acc_a, acc_b, clip_a, clip_b;
   acc_a.opcode = acc_b.opcode = static_cast<uint16_t>(OpCode::kSqNormAccum);
-  acc_a.in[0] = MakeArenaRef(0);   // a: floats 0..3
-  acc_b.in[0] = MakeArenaRef(64);  // b: floats 16..19
+  acc_a.in[0] = MakeArenaRef(0);                  // a: floats 0..3
+  acc_b.in[0] = MakeArenaRef(64);                 // b: floats 16..19
   acc_a.in[1] = acc_b.in[1] = MakeArenaRef(128);  // the sum: float 32
   acc_a.out[0] = acc_b.out[0] = 4;
   clip_a.opcode = clip_b.opcode = static_cast<uint16_t>(OpCode::kClipGlobal);
@@ -1788,7 +1926,8 @@ TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
   clip_a.in[2] = clip_b.in[2] = F32Bits(1.0f);
   clip_a.out[0] = clip_b.out[0] = 4;
   std::vector<float> arena(64, 0.0f);
-  const float a0[] = {3.0f, -4.0f, 12.0f, 0.0f}, b0[] = {0.0f, 0.0f, 0.0f, 5.0f};
+  const float a0[] = {3.0f, -4.0f, 12.0f, 0.0f},
+              b0[] = {0.0f, 0.0f, 0.0f, 5.0f};
   std::copy(std::begin(a0), std::end(a0), arena.begin());
   std::copy(std::begin(b0), std::end(b0), arena.begin() + 16);
   auto twin = RunTwin({acc_a, acc_b, clip_a, clip_b}, arena, no_rodata);
@@ -1805,9 +1944,10 @@ TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
   arena[1] = INFINITY;
   for (int which = 0; which < 2; ++which) {
     auto backend =
-        which == 0 ? std::expected<std::unique_ptr<ExecutorBackend>,
-                                   std::string>(CreateCpuBackend())
-                   : CreateMetalBackend();
+        which == 0
+            ? std::expected<std::unique_ptr<ExecutorBackend>, std::string>(
+                  CreateCpuBackend())
+            : CreateMetalBackend();
     ASSERT_OK(backend);
     const size_t bytes = 16384;
     uint8_t* mem = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
@@ -1824,7 +1964,8 @@ TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
         break;
       }
     if (auto r = (*backend)->Flush(); !r && error.empty()) error = r.error();
-    const std::string what = std::string("global clip on ") + (*backend)->name();
+    const std::string what =
+        std::string("global clip on ") + (*backend)->name();
     if (error.find("gradient norm is not finite") == std::string::npos)
       ADD_FAILURE(what + ": expected the non-finite-norm refusal, got '" +
                   error + "'");
@@ -1860,8 +2001,8 @@ TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
     auto selected = engine.SelectBackend(BackendKind::kMetal);
     unsetenv("SEEML_METAL_UNFUSED_LOWRANK");
     if (!selected) return std::unexpected(selected.error());
-    if (auto r = engine.LoadFromMemory(compiled->plan.data(),
-                                       compiled->plan.size());
+    if (auto r =
+            engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size());
         !r)
       return std::unexpected(r.error());
     auto data = WideClassData(17);
@@ -1876,7 +2017,8 @@ TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
     f.run.curve = report->loss_curve;
     const size_t floats = engine.header().persistent_size / sizeof(float);
     f.run.persistent.resize(floats);
-    std::memcpy(f.run.persistent.data(), engine.arena(), floats * sizeof(float));
+    std::memcpy(f.run.persistent.data(), engine.arena(),
+                floats * sizeof(float));
     auto eval = engine.Evaluate(*data);
     if (!eval) return std::unexpected(eval.error());
     f.run.eval_loss = *eval;
@@ -1887,8 +2029,10 @@ TEST(MetalBackend, TheLowRankFoldChangesNoTrainingBits) {
   auto apart = train(true);
   ASSERT_OK(fused);
   ASSERT_OK(apart);
-  std::printf("  [ low-rank fold ] %llu fused dispatches over 20 steps and an "
-              "evaluation\n", (unsigned long long)fused->fused);
+  std::printf(
+      "  [ low-rank fold ] %llu fused dispatches over 20 steps and an "
+      "evaluation\n",
+      static_cast<unsigned long long>(fused->fused));
   EXPECT_TRUE(fused->fused >= 40u);  // two pairs per training forward
   EXPECT_EQ(apart->fused, 0u);
   ASSERT_EQ(fused->run.curve.size(), 20u);

@@ -36,9 +36,9 @@ struct Pass {
 
 class PassManager {
  public:
-  void Add(std::string name,
-           std::function<std::expected<void, std::string>(seeml::sir::Block&)>
-               run) {
+  void Add(
+      std::string name,
+      std::function<std::expected<void, std::string>(seeml::sir::Block&)> run) {
     passes_.push_back({std::move(name), std::move(run)});
   }
 

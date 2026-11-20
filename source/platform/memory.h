@@ -44,7 +44,6 @@ inline uint64_t DetectHostMemoryBytes() {
 #endif
 }
 
-
 /// The process's peak resident set size in bytes, or 0 where the platform
 /// does not say. getrusage's ru_maxrss is in bytes on macOS and in
 /// kilobytes on Linux — the one unit trap here.
@@ -52,7 +51,7 @@ inline uint64_t PeakRssBytes() {
 #if defined(_WIN32)
   return 0;
 #else
-  struct rusage ru {};
+  struct rusage ru{};
   if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
 #if defined(__APPLE__)
   return static_cast<uint64_t>(ru.ru_maxrss);
@@ -61,7 +60,6 @@ inline uint64_t PeakRssBytes() {
 #endif
 #endif
 }
-
 
 }  // namespace seeml::update
 

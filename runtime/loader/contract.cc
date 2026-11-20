@@ -22,9 +22,9 @@ namespace {
 /// modules. A message that cannot be attributed to one of these escaped
 /// the partition.
 constexpr std::string_view kRegisteredUnits[] = {
-    diag::feeding::kDataset,       diag::feeding::kBatchPipeline,
+    diag::feeding::kDataset,          diag::feeding::kBatchPipeline,
     diag::validating::kPlanValidator, diag::executing::kEngine,
-    diag::persisting::kDurableIo,  diag::persisting::kCheckpoint,
+    diag::persisting::kDurableIo,     diag::persisting::kCheckpoint,
 };
 
 }  // namespace
@@ -82,11 +82,10 @@ std::expected<void, std::string> VerifyExecutorContract(
       // there, F6 #134). Reads only: the validator refuses a source ref as
       // a destination in any program.
       const bool allow_source =
-          program == &eval ||
-          header.version >= up::kSeeuSourceWeightsVersion;
-      const auto extents = DescribeInstruction(
-          ins, header.arena_size, header.rodata_size, header.version,
-          allow_source);
+          program == &eval || header.version >= up::kSeeuSourceWeightsVersion;
+      const auto extents =
+          DescribeInstruction(ins, header.arena_size, header.rodata_size,
+                              header.version, allow_source);
       if (!extents) return std::unexpected(extents.error());
       // The staged input and label slots are the feeder's (CR2 #143 N03):
       // the provenance proofs below hold only while no program writes
@@ -127,7 +126,8 @@ std::expected<void, std::string> VerifyExecutorContract(
           (program == &eval || program == &merge))
         return diag::executing::Error(
             "a relaxed instruction outside the train / step programs "
-            "(opcode " + std::to_string(ins.opcode) + ")");
+            "(opcode " +
+            std::to_string(ins.opcode) + ")");
       // Label provenance for the class-indexed kernels. The softmax pair
       // indexes probability rows with raw i32 labels
       // (probs[n*C + labels[n]]) — the one place a validated instruction
@@ -207,9 +207,9 @@ std::expected<void, std::string> VerifyExecutorContract(
       }
       if (op == up::OpCode::kSegmentStarts) {
         const uint64_t positions =
-            (ins.out[0] >> 32) * (ins.out[0] & 0xFFFFFFFFu);
-        starts_live.push_back({ins.in[1], up::RefOffset(ins.in[1]),
-                               positions * sizeof(int32_t)});
+            up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]);
+        starts_live.push_back(
+            {ins.in[1], up::RefOffset(ins.in[1]), positions * sizeof(int32_t)});
       }
       if ((op == up::OpCode::kGemmNNQ8 || op == up::OpCode::kGemmNTQ8) &&
           (ins.flags & up::kFlagQ8ColScale)) {
@@ -239,8 +239,7 @@ std::expected<void, std::string> VerifyExecutorContract(
   for (const up::EmitEntry& e : emit_table) {
     if (!RangeOk(e.arena_offset, e.byte_size, header.arena_size))
       return diag::executing::Error("emit entry outside the arena");
-    if (e.arena_offset % sizeof(float) != 0 ||
-        e.byte_size % sizeof(float) != 0)
+    if (e.arena_offset % sizeof(float) != 0 || e.byte_size % sizeof(float) != 0)
       return diag::executing::Error("emit entry misaligned");
   }
   return {};
@@ -251,11 +250,11 @@ std::expected<void, std::string> VerifyFeederContract(
     uint64_t vocab_bound) {
   // The geometry half is the shared, pure rule (source/contract/); the
   // value half reads the records.
-  const up::CorpusShape shape{data.input_kind(), data.input_dim(),
-                              data.label_kind(),
-                              data.label_bytes_per_sample(),
-                              data.tokenizer_hash(), data.masked(),
-                              data.content_hash(), data.split_hash()};
+  const up::CorpusShape shape{
+      data.input_kind(),     data.input_dim(),
+      data.label_kind(),     data.label_bytes_per_sample(),
+      data.tokenizer_hash(), data.masked(),
+      data.content_hash(),   data.split_hash()};
   if (auto why = up::CorpusGeometryViolation(header, shape))
     return diag::executing::Error(*why);
   if (header.input_kind == 1) {

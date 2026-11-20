@@ -29,10 +29,11 @@
 
 namespace {
 
-int Usage() {
-  std::fprintf(stderr,
-               "usage: seeml-tokenize model.smf --info\n"
-               "       seeml-tokenize model.smf text.txt [--pieces | --lines]\n");
+[[nodiscard]] int Usage() {
+  std::fprintf(
+      stderr,
+      "usage: seeml-tokenize model.smf --info\n"
+      "       seeml-tokenize model.smf text.txt [--pieces | --lines]\n");
   return 2;
 }
 
@@ -91,7 +92,9 @@ int main(int argc, char** argv) {
     std::printf("chat template   %s\n",
                 in.chat_template.empty()
                     ? "none"
-                    : (std::to_string(in.chat_template.size()) + " bytes (stored, not interpreted)").c_str());
+                    : (std::to_string(in.chat_template.size()) +
+                       " bytes (stored, not interpreted)")
+                          .c_str());
     std::printf("section bytes   %zu\n", model->tokenizer.size());
     std::printf("tokenizer hash  %016llx\n",
                 static_cast<unsigned long long>(model->TokenizerHash()));
@@ -99,7 +102,8 @@ int main(int argc, char** argv) {
   }
   std::ifstream f(text_path, std::ios::binary);
   if (!f) {
-    std::fprintf(stderr, "seeml-tokenize: cannot open '%s'\n", text_path.c_str());
+    std::fprintf(stderr, "seeml-tokenize: cannot open '%s'\n",
+                 text_path.c_str());
     return 1;
   }
   const std::string text((std::istreambuf_iterator<char>(f)),

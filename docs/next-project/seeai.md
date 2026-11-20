@@ -157,8 +157,9 @@ is `host/update_main.cc`, `loader/` decodes the plan and allocates the arena,
 screen. The dispatcher keeps the train loop. Shared infrastructure outside:
 `source/parallel` (the deterministic pool), `source/plan`, `source/identity`,
 and the `source/platform/` seam (file mapping, memory queries, durable replace;
-POSIX). Still open: cancellation and an affinity policy in host, the device
-raw-text feeder in pipeline, energy per token in profiler.
+POSIX). Still open: an affinity policy in host. (Cancellation and the device
+raw-text feeder, both in host, and energy per token in profiler shipped with
+#202.)
 
 ## §7 Python's five roles
 

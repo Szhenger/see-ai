@@ -67,9 +67,8 @@ class JsonReader {
   }
 
   void SkipSpace() {
-    while (pos_ < text_.size() &&
-           (text_[pos_] == ' ' || text_[pos_] == '\t' || text_[pos_] == '\n' ||
-            text_[pos_] == '\r'))
+    while (pos_ < text_.size() && (text_[pos_] == ' ' || text_[pos_] == '\t' ||
+                                   text_[pos_] == '\n' || text_[pos_] == '\r'))
       ++pos_;
   }
 
@@ -188,24 +187,44 @@ class JsonReader {
       if (pos_ >= text_.size()) return Error("unterminated escape");
       const char e = text_[pos_++];
       switch (e) {
-        case '"': out += '"'; break;
-        case '\\': out += '\\'; break;
-        case '/': out += '/'; break;
-        case 'b': out += '\b'; break;
-        case 'f': out += '\f'; break;
-        case 'n': out += '\n'; break;
-        case 'r': out += '\r'; break;
-        case 't': out += '\t'; break;
+        case '"':
+          out += '"';
+          break;
+        case '\\':
+          out += '\\';
+          break;
+        case '/':
+          out += '/';
+          break;
+        case 'b':
+          out += '\b';
+          break;
+        case 'f':
+          out += '\f';
+          break;
+        case 'n':
+          out += '\n';
+          break;
+        case 'r':
+          out += '\r';
+          break;
+        case 't':
+          out += '\t';
+          break;
         case 'u': {
           if (pos_ + 4 > text_.size()) return Error("short \\u escape");
           uint32_t cp = 0;
           for (int i = 0; i < 4; ++i) {
             const char h = text_[pos_++];
             cp <<= 4;
-            if (h >= '0' && h <= '9') cp |= static_cast<uint32_t>(h - '0');
-            else if (h >= 'a' && h <= 'f') cp |= static_cast<uint32_t>(h - 'a' + 10);
-            else if (h >= 'A' && h <= 'F') cp |= static_cast<uint32_t>(h - 'A' + 10);
-            else return Error("bad hex digit in \\u escape");
+            if (h >= '0' && h <= '9')
+              cp |= static_cast<uint32_t>(h - '0');
+            else if (h >= 'a' && h <= 'f')
+              cp |= static_cast<uint32_t>(h - 'a' + 10);
+            else if (h >= 'A' && h <= 'F')
+              cp |= static_cast<uint32_t>(h - 'A' + 10);
+            else
+              return Error("bad hex digit in \\u escape");
           }
           if (cp >= 0xD800 && cp <= 0xDFFF)
             return Error("surrogate \\u escapes are not supported");
@@ -304,7 +323,8 @@ std::expected<KernelPolicyTable, std::string> ParseKernelPolicyTable(
   if (doc->kind != JsonValue::Kind::kObject)
     return PolicyError("table must be a JSON object");
   const JsonValue* schema = doc->Member("schema");
-  if (!schema || schema->kind != JsonValue::Kind::kNumber || schema->number != 1.0)
+  if (!schema || schema->kind != JsonValue::Kind::kNumber ||
+      schema->number != 1.0)
     return PolicyError("table \"schema\" must be 1");
   const JsonValue* hosts = doc->Member("hosts");
   if (!hosts || hosts->kind != JsonValue::Kind::kObject)
@@ -321,9 +341,11 @@ std::expected<KernelPolicyTable, std::string> ParseKernelPolicyTable(
     if (cpu->kind != JsonValue::Kind::kObject)
       return PolicyError("host \"" + key + "\": \"cpu\" must be an object");
     KernelPolicyEntry e;
-    auto k = AsU32(cpu->Member("gemm_tile_k"), "host \"" + key + "\": gemm_tile_k");
+    auto k =
+        AsU32(cpu->Member("gemm_tile_k"), "host \"" + key + "\": gemm_tile_k");
     if (!k) return PolicyError(k.error());
-    auto n = AsU32(cpu->Member("gemm_tile_n"), "host \"" + key + "\": gemm_tile_n");
+    auto n =
+        AsU32(cpu->Member("gemm_tile_n"), "host \"" + key + "\": gemm_tile_n");
     if (!n) return PolicyError(n.error());
     e.gemm_tile_k = *k;
     e.gemm_tile_n = *n;
@@ -341,8 +363,7 @@ std::expected<KernelPolicyTable, std::string> LoadKernelPolicyTable(
   std::ostringstream buf;
   buf << in.rdbuf();
   auto table = ParseKernelPolicyTable(buf.str());
-  if (!table)
-    return std::unexpected(table.error() + " ['" + path + "']");
+  if (!table) return std::unexpected(table.error() + " ['" + path + "']");
   return table;
 }
 
@@ -366,18 +387,20 @@ std::expected<KernelPolicyEntry, std::string> ParseGemmTilesFlag(
       !whole(text.substr(comma + 1), &e.gemm_tile_n))
     return PolicyError("--gemm-tiles expects K,N as two whole numbers, got '" +
                        std::string(text) + "'");
-  if (auto ok = CheckEntry(e, "--gemm-tiles"); !ok) return PolicyError(ok.error());
+  if (auto ok = CheckEntry(e, "--gemm-tiles"); !ok)
+    return PolicyError(ok.error());
   return e;
 }
 
 std::expected<KernelPolicyChoice, std::string> ResolveKernelPolicy(
     const KernelPolicyRequest& request) {
   KernelPolicyChoice choice;
-  choice.host_key = request.target_host ? *request.target_host
-                                        : HostKey(DetectHostArch());
+  choice.host_key =
+      request.target_host ? *request.target_host : HostKey(DetectHostArch());
   if (request.target_host && !request.table_path)
-    return PolicyError("--target-host names a table entry; pass the table "
-                       "with --kernel-policy");
+    return PolicyError(
+        "--target-host names a table entry; pass the table "
+        "with --kernel-policy");
   if (request.explicit_tiles) {
     if (auto ok = CheckEntry(*request.explicit_tiles, "--gemm-tiles"); !ok)
       return PolicyError(ok.error());

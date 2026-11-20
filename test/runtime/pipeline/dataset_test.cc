@@ -67,8 +67,8 @@ TEST(Dataset, FromMemoryValidatesBufferSizes) {
   EXPECT_OK(TinyClassDataset());
 
   // Zero samples.
-  EXPECT_ERROR_CONTAINS(
-      Dataset::FromMemory({}, {}, 0, 2, 0, 0), "zero samples");
+  EXPECT_ERROR_CONTAINS(Dataset::FromMemory({}, {}, 0, 2, 0, 0),
+                        "zero samples");
   // Input buffer too small for num_samples * input_dim.
   EXPECT_ERROR_CONTAINS(
       Dataset::FromMemory({1, 2, 3}, ClassLabels({0, 1}), 2, 2, 1, 0),
@@ -98,16 +98,14 @@ TEST(Dataset, FillBatchIsSequentialWithWraparound) {
   std::vector<float> inputs(2 * 2);
   std::vector<int32_t> labels(2);
 
-  data.FillBatch(2, inputs.data(),
-                 reinterpret_cast<uint8_t*>(labels.data()));
+  data.FillBatch(2, inputs.data(), reinterpret_cast<uint8_t*>(labels.data()));
   EXPECT_NEAR(inputs[0], 0.0f, 0.0);
   EXPECT_NEAR(inputs[2], 10.0f, 0.0);
   EXPECT_EQ(labels[0], 0);
   EXPECT_EQ(labels[1], 1);
 
   // Second batch wraps: samples 2, then 0 again.
-  data.FillBatch(2, inputs.data(),
-                 reinterpret_cast<uint8_t*>(labels.data()));
+  data.FillBatch(2, inputs.data(), reinterpret_cast<uint8_t*>(labels.data()));
   EXPECT_NEAR(inputs[0], 20.0f, 0.0);
   EXPECT_NEAR(inputs[2], 0.0f, 0.0);
   EXPECT_EQ(labels[0], 2);
@@ -115,8 +113,8 @@ TEST(Dataset, FillBatchIsSequentialWithWraparound) {
 }
 
 TEST(Dataset, FillBatchToleratesNullLabelSlot) {
-  ASSERT_OK_AND_ASSIGN(
-      Dataset data, Dataset::FromMemory({1, 2, 3}, {}, 3, 1, 0, 0));
+  ASSERT_OK_AND_ASSIGN(Dataset data,
+                       Dataset::FromMemory({1, 2, 3}, {}, 3, 1, 0, 0));
   std::vector<float> inputs(2);
   data.FillBatch(2, inputs.data(), nullptr);  // kind 0: no labels to copy
   EXPECT_NEAR(inputs[0], 1.0f, 0.0);
@@ -190,9 +188,8 @@ TEST(Dataset, FileRoundTripClassLabels) {
 TEST(Dataset, FileRoundTripDenseLabels) {
   ScopedTempDir dir;
   ASSERT_OK_AND_ASSIGN(
-      Dataset data,
-      Dataset::FromMemory({1, 2}, AsBytes({0.5f, 1.5f, 2.5f, 3.5f}), 2, 1, 2,
-                          2));
+      Dataset data, Dataset::FromMemory(
+                        {1, 2}, AsBytes({0.5f, 1.5f, 2.5f, 3.5f}), 2, 1, 2, 2));
   const std::string path = dir.File("dense.sds");
   ASSERT_OK(data.SaveToFile(path));
 
@@ -240,8 +237,7 @@ TEST(Dataset, LoadRejectsMalformedFiles) {
   // reject before allocating.
   WriteBytes(path,
              SdsHeader(seeml::update_rt::kSdsMagic, 1, 1'000'000, 16, 0, 0));
-  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path),
-                        "exceeds file size");
+  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path), "exceeds file size");
 }
 
 // =============================================================================
@@ -303,8 +299,8 @@ TEST(DatasetShuffle, IsSeededDeterministicAndCoversEachEpoch) {
 TEST(DatasetTokens, DerivedLabelsAreTheShiftedView) {
   // Two records of seq 3 over ids 0..7: inputs are tokens[0..3), labels
   // are tokens[1..4) — derived at serving time, never stored.
-  ASSERT_OK_AND_ASSIGN(
-      Dataset d, Dataset::FromTokens({0, 1, 2, 3, 4, 5, 6, 7}, 2, 3));
+  ASSERT_OK_AND_ASSIGN(Dataset d,
+                       Dataset::FromTokens({0, 1, 2, 3, 4, 5, 6, 7}, 2, 3));
   EXPECT_EQ(d.input_kind(), 1u);
   EXPECT_EQ(d.label_kind(), 1u);
   std::vector<int32_t> in(6), lab(6);
@@ -342,8 +338,7 @@ TEST(DatasetTokens, RoundTripsSplitsAndShufflesWholeRecords) {
   loaded.FillBatch(24, reinterpret_cast<float*>(in.data()),
                    reinterpret_cast<uint8_t*>(lab.data()));
   for (int r = 0; r < 6; ++r)
-    for (int i = 0; i < 3; ++i)
-      EXPECT_EQ(lab[r * 4 + i], in[r * 4 + i + 1]);
+    for (int i = 0; i < 3; ++i) EXPECT_EQ(lab[r * 4 + i], in[r * 4 + i + 1]);
 }
 
 TEST(DatasetTokens, LoadRecordsTheFileHashAndTheTargetPositions) {
@@ -383,8 +378,8 @@ TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {
   std::vector<uint8_t> mask(16, 1);
   for (int r = 0; r < 4; ++r)
     for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;
-  ASSERT_OK_AND_ASSIGN(Dataset d, Dataset::FromTokens(tokens, 4, 4, mask,
-                                                      0x1234ABCDu));
+  ASSERT_OK_AND_ASSIGN(Dataset d,
+                       Dataset::FromTokens(tokens, 4, 4, mask, 0x1234ABCDu));
   EXPECT_TRUE(d.masked());
   EXPECT_EQ(d.tokenizer_hash(), 0x1234ABCDu);
   ScopedTempDir dir;
@@ -398,8 +393,8 @@ TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {
                    reinterpret_cast<uint8_t*>(lab.data()));
   for (int r = 0; r < 4; ++r)
     for (int j = 0; j < 4; ++j)
-      EXPECT_EQ(lab[r * 4 + j],
-                j < r ? seeml::update_rt::kSdsIgnoreLabel : tokens[r * 5 + j + 1]);
+      EXPECT_EQ(lab[r * 4 + j], j < r ? seeml::update_rt::kSdsIgnoreLabel
+                                      : tokens[r * 5 + j + 1]);
   // 4 + 3 + 2 + 1 = 10 target positions, all distinct ids: ln 10 nats.
   ASSERT_TRUE(loaded.LabelEntropyNats().has_value());
   EXPECT_NEAR(*loaded.LabelEntropyNats(), std::log(10.0), 1e-9);
@@ -413,7 +408,8 @@ TEST(DatasetTokens, V3CarriesTheTokenizerHashAndTheLossMask) {
   std::vector<int32_t> vin(8), vlab(8);
   val.FillBatch(8, reinterpret_cast<float*>(vin.data()),
                 reinterpret_cast<uint8_t*>(vlab.data()));
-  EXPECT_EQ(vlab[0], seeml::update_rt::kSdsIgnoreLabel);  // record 2's first two positions
+  // record 2's first two positions
+  EXPECT_EQ(vlab[0], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(vlab[1], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(vlab[2], tokens[2 * 5 + 3]);
   // A plain token corpus saved without a hash or a mask stays v2.
@@ -430,14 +426,14 @@ TEST(DatasetTokens, TheMaskRulesAndTheExactFillAreRefused) {
   std::vector<int32_t> tokens(2 * 5, 3);
   std::vector<uint8_t> two(8, 1);
   two[1] = 2;
-  EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, two),
-                        "not 0 or 1");
+  EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, two), "not 0 or 1");
   std::vector<uint8_t> none(8, 1);
   for (int j = 0; j < 4; ++j) none[4 + j] = 0;
   EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, none),
                         "record 1 carries no target position");
-  EXPECT_ERROR_CONTAINS(Dataset::FromTokens(tokens, 2, 4, std::vector<uint8_t>(7, 1)),
-                        "mask buffer size mismatch");
+  EXPECT_ERROR_CONTAINS(
+      Dataset::FromTokens(tokens, 2, 4, std::vector<uint8_t>(7, 1)),
+      "mask buffer size mismatch");
   // F19: trailing bytes after the sample section are refused, not read
   // around; a v3 header with an unknown flag, or a reserved word set, too.
   ASSERT_OK_AND_ASSIGN(Dataset d, Dataset::FromTokens(tokens, 2, 4));
@@ -467,7 +463,8 @@ TEST(DatasetTokens, TheMaskRulesAndTheExactFillAreRefused) {
     f.seekp(52);  // the v3 reserved word
     f.write(reinterpret_cast<const char*>(&reserved), 4);
   }
-  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path), "reserved SDS header words");
+  EXPECT_ERROR_CONTAINS(Dataset::LoadFromFile(path),
+                        "reserved SDS header words");
 }
 
 TEST(DatasetShuffle, RestoreReplaysAcrossMultipleEpochs) {
@@ -550,15 +547,17 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
     for (int32_t j = 0; j <= 4; ++j) tokens.push_back(r * 5 + j);
   std::vector<uint8_t> mask(16, 1);
   for (int r = 0; r < 4; ++r)
-    for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;  // record r masks its first r
-  ASSERT_OK_AND_ASSIGN(Dataset masked, Dataset::FromTokens(tokens, 4, 4, mask, 9));
+    // record r masks its first r
+    for (int j = 0; j < r; ++j) mask[r * 4 + j] = 0;
+  ASSERT_OK_AND_ASSIGN(Dataset masked,
+                       Dataset::FromTokens(tokens, 4, 4, mask, 9));
   ASSERT_OK_AND_ASSIGN(Dataset held_out, masked.SplitHeldOut({0, 2}, 0x55));
   EXPECT_EQ(masked.num_samples(), 2u);
   EXPECT_EQ(held_out.num_samples(), 2u);
   EXPECT_TRUE(masked.masked());
   EXPECT_TRUE(held_out.masked());
-  EXPECT_EQ(masked.target_positions(), 3u + 1u);     // records 1 (3) and 3 (1)
-  EXPECT_EQ(held_out.target_positions(), 4u + 2u);   // records 0 (4) and 2 (2)
+  EXPECT_EQ(masked.target_positions(), 3u + 1u);    // records 1 (3) and 3 (1)
+  EXPECT_EQ(held_out.target_positions(), 4u + 2u);  // records 0 (4) and 2 (2)
   std::vector<int32_t> in(8), lab(8);
   masked.FillBatch(8, reinterpret_cast<float*>(in.data()),
                    reinterpret_cast<uint8_t*>(lab.data()));
@@ -566,9 +565,11 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
     EXPECT_EQ(in[j], tokens[1 * 5 + j]);
     EXPECT_EQ(in[4 + j], tokens[3 * 5 + j]);
   }
-  EXPECT_EQ(lab[0], seeml::update_rt::kSdsIgnoreLabel);  // record 1 masks position 0
+  // record 1 masks position 0
+  EXPECT_EQ(lab[0], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(lab[1], tokens[1 * 5 + 2]);
-  EXPECT_EQ(lab[4 + 2], seeml::update_rt::kSdsIgnoreLabel);  // record 3 masks 0..2
+  // record 3 masks 0..2
+  EXPECT_EQ(lab[4 + 2], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(lab[4 + 3], tokens[3 * 5 + 4]);
   held_out.FillBatch(8, reinterpret_cast<float*>(in.data()),
                      reinterpret_cast<uint8_t*>(lab.data()));
@@ -577,7 +578,8 @@ TEST(DatasetSplit, HoldsOutTheNamedRecords) {
     EXPECT_EQ(in[4 + j], tokens[2 * 5 + j]);
   }
   EXPECT_EQ(lab[0], tokens[0 * 5 + 1]);
-  EXPECT_EQ(lab[4 + 1], seeml::update_rt::kSdsIgnoreLabel);  // record 2 masks 0..1
+  // record 2 masks 0..1
+  EXPECT_EQ(lab[4 + 1], seeml::update_rt::kSdsIgnoreLabel);
   EXPECT_EQ(lab[4 + 2], tokens[2 * 5 + 3]);
 }
 
@@ -596,20 +598,21 @@ TEST(Dataset, TheLabelEntropyIsAnInputBlindPredictorsLoss) {
   // S0 #146: the runtime screen's "input-blind loss" — the entropy, in nats,
   // of the labels the corpus serves; nothing without class labels.
   ASSERT_OK_AND_ASSIGN(
-      Dataset two, Dataset::FromMemory({0, 0, 0, 0}, ClassLabels({0, 0, 1, 1}),
-                                       4, 1, 1, 0));
+      Dataset two,
+      Dataset::FromMemory({0, 0, 0, 0}, ClassLabels({0, 0, 1, 1}), 4, 1, 1, 0));
   const std::optional<double> h_two = two.LabelEntropyNats();
   ASSERT_TRUE(h_two.has_value());
   EXPECT_NEAR(*h_two, std::log(2.0), 1e-12);
   ASSERT_OK_AND_ASSIGN(
-      Dataset one, Dataset::FromMemory({0, 0}, ClassLabels({3, 3}), 2, 1, 1, 0));
+      Dataset one,
+      Dataset::FromMemory({0, 0}, ClassLabels({3, 3}), 2, 1, 1, 0));
   const double h_one = one.LabelEntropyNats().value_or(-1.0);
   EXPECT_EQ(h_one, 0.0);
   // A label range too wide for the dense table counts the same way.
   ASSERT_OK_AND_ASSIGN(
-      Dataset wide, Dataset::FromMemory({0, 0, 0, 0},
-                                        ClassLabels({-7, 1 << 30, -7, 1 << 30}),
-                                        4, 1, 1, 0));
+      Dataset wide,
+      Dataset::FromMemory({0, 0, 0, 0}, ClassLabels({-7, 1 << 30, -7, 1 << 30}),
+                          4, 1, 1, 0));
   EXPECT_NEAR(wide.LabelEntropyNats().value_or(-1.0), std::log(2.0), 1e-12);
   // A token corpus's labels are each record's next tokens: positions 1..seq
   // of every (seq + 1)-id record. Here the first ids (7, 7) are inputs only,

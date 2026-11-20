@@ -89,7 +89,8 @@ std::expected<void, std::string> SaveCheckpointRecord(
       ByteSpan{reinterpret_cast<const uint8_t*>(&v4), sizeof(v4)},
       ByteSpan{reinterpret_cast<const uint8_t*>(&v5), sizeof(v5)},
       ByteSpan{persistent, persistent_size}};
-  if (best) parts.push_back(ByteSpan{record.best_payload.data(), persistent_size});
+  if (best)
+    parts.push_back(ByteSpan{record.best_payload.data(), persistent_size});
   return WriteFileDurable(path, std::span<const ByteSpan>(parts), stats);
 }
 
@@ -101,10 +102,12 @@ std::expected<CheckpointRecord, std::string> LoadCheckpointRecord(
   CkptHeader h;
   CkptHeaderV4Tail v4;
   CkptHeaderV5Tail v5;
-  if (auto r = ReadHeaders(f, path, &h, &v4, &v5); !r) return std::unexpected(r.error());
+  if (auto r = ReadHeaders(f, path, &h, &v4, &v5); !r)
+    return std::unexpected(r.error());
   // Binding: a checkpoint carries adapter and optimizer state laid out by
   // one specific plan. Resuming it under any other plan is silent corruption.
-  if (h.plan_hash != plan_hash) return Bad("checkpoint belongs to a different plan");
+  if (h.plan_hash != plan_hash)
+    return Bad("checkpoint belongs to a different plan");
   if (h.persistent_size != persistent_size)
     return Bad("checkpoint incompatible with plan");
   std::vector<uint8_t> payload(h.persistent_size);
@@ -155,7 +158,8 @@ std::expected<CheckpointRecord, std::string> PeekCheckpointRecord(
   CkptHeader h;
   CkptHeaderV4Tail v4;
   CkptHeaderV5Tail v5;
-  if (auto r = ReadHeaders(f, path, &h, &v4, &v5); !r) return std::unexpected(r.error());
+  if (auto r = ReadHeaders(f, path, &h, &v4, &v5); !r)
+    return std::unexpected(r.error());
   CheckpointRecord record;
   record.step = h.step;
   record.horizon_steps = v4.horizon_steps;
@@ -169,10 +173,12 @@ std::expected<CheckpointRecord, std::string> PeekCheckpointRecord(
   return record;
 }
 
-std::expected<void, std::string> SaveCheckpointFile(
-    const std::string& path, uint64_t plan_hash, uint64_t step,
-    const uint8_t* persistent, uint64_t persistent_size,
-    uint64_t horizon_steps) {
+std::expected<void, std::string> SaveCheckpointFile(const std::string& path,
+                                                    uint64_t plan_hash,
+                                                    uint64_t step,
+                                                    const uint8_t* persistent,
+                                                    uint64_t persistent_size,
+                                                    uint64_t horizon_steps) {
   CheckpointRecord record;
   record.step = step;
   record.horizon_steps = horizon_steps;

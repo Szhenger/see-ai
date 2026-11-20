@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")/.."
 CXX="${CXX:-c++}"
-FLAGS="-std=c++23 -O2 -Wall -Wextra -Werror -pthread -I. -DSEEML_SOURCE_DIR='\"$(pwd)\"'"
+FLAGS="-std=c++23 -O2 -Wall -Wextra -Wold-style-cast -Werror -pthread -I. -DSEEML_SOURCE_DIR='\"$(pwd)\"'"
 # Every switch this script reads is tested the same way (CR3 #144 F23):
 # empty, 0, off, false, no and n (any case) are OFF, mirroring CMake's own
 # falsy spellings; anything else is ON.

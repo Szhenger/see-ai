@@ -18,8 +18,8 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
                        std::optional<double> label_entropy,
                        const EnergyReading* energy) {
   const uint64_t planned = engine.header().arena_size + engine.plan_size();
-  const seeml::update::PlanWork work = seeml::update::MeasurePlanWork(
-      {engine.plan_data(), engine.plan_size()});
+  const seeml::update::PlanWork work =
+      seeml::update::MeasurePlanWork({engine.plan_data(), engine.plan_size()});
   const double flops = static_cast<double>(work.FlopsPerStep());
   // The identity manifest (S4 #150): the four inputs' hashes, as the plan
   // carries them — the model's was verified against the file at commit
@@ -27,7 +27,8 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
   {
     auto hex = [](uint64_t v) {
       char buf[24];
-      std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)v);
+      std::snprintf(buf, sizeof(buf), "%016llx",
+                    static_cast<unsigned long long>(v));
       return std::string(buf);
     };
     const seeml::update::PlanHeader& h = engine.header();
@@ -48,8 +49,8 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
   runtime_screen.Set("backend", std::string(engine.backend_name()));
   runtime_screen.Set("steps", report.steps);
   if (report.steps > 0 && report.step_seconds > 0.0) {
-    const double step_ms = report.step_seconds * 1e3 /
-                           static_cast<double>(report.steps);
+    const double step_ms =
+        report.step_seconds * 1e3 / static_cast<double>(report.steps);
     runtime_screen.Set("measured_step_ms", step_ms);
     const double achieved = flops / (step_ms * 1e6);  // GFLOP/s
     runtime_screen.Set("achieved_gflops", achieved);
@@ -60,7 +61,7 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
     runtime_screen.Set("peak_rss_bytes", rss);
     if (planned != 0)
       runtime_screen.Set("rss_over_planned", static_cast<double>(rss) /
-                                                   static_cast<double>(planned));
+                                                 static_cast<double>(planned));
   }
   // The storage role (CR4 #145): what a checkpoint cost on disk.
   if (report.checkpoints > 0) {
@@ -96,19 +97,17 @@ void FillRuntimeScreen(seeml::update::Screen& runtime_screen,
                        static_cast<double>(report.val_final_accuracy));
   runtime_screen.Set("verdict", std::string(verdict));
   if (energy)
-    FillEnergyRows(runtime_screen,
-                   engine.backend_kind() == BackendKind::kMetal,
+    FillEnergyRows(runtime_screen, engine.backend_kind() == BackendKind::kMetal,
                    TokensTrained(engine.header(), report.steps), *energy);
   // The pool width this run used (#202 item 1): a throughput knob, never a
   // numerics one, recorded so a measured step is read at its width.
-  runtime_screen.Set("threads",
-                     static_cast<uint64_t>(seeml::update::ParallelThreadCount()));
+  runtime_screen.Set(
+      "threads", static_cast<uint64_t>(seeml::update::ParallelThreadCount()));
 }
 
 uint64_t TokensTrained(const seeml::update::PlanHeader& header,
                        uint64_t steps) {
-  return steps * header.batch *
-         std::max<uint64_t>(1, header.grad_accum_steps);
+  return steps * header.batch * std::max<uint64_t>(1, header.grad_accum_steps);
 }
 
 void FillEnergyRows(seeml::update::Screen& runtime_screen, bool gpu_backend,
@@ -131,8 +130,9 @@ void FillEnergyRows(seeml::update::Screen& runtime_screen, bool gpu_backend,
   const bool no_meter = !energy.metered && !energy.available;
   std::string why;
   if (!gpu_backend && !no_meter)
-    why = "a cpu run has no per-run energy (the CPU counter reaches an "
-          "unprivileged reader in bursts, or not at all, on macOS 26)";
+    why =
+        "a cpu run has no per-run energy (the CPU counter reaches an "
+        "unprivileged reader in bursts, or not at all, on macOS 26)";
   else if (!energy.available)
     why = energy.reason.empty() ? "the meter gave no reading" : energy.reason;
   else

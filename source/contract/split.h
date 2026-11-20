@@ -50,8 +50,8 @@ inline constexpr uint64_t kSplitDomain = 0x53504C49545F3031ULL;  // "SPLIT_01"
 /// exactly this function.
 inline uint64_t HeldOutCount(uint64_t n, float frac) {
   if (n < 2) return 0;
-  uint64_t k = static_cast<uint64_t>(static_cast<double>(n) *
-                                     static_cast<double>(frac));
+  uint64_t k =
+      static_cast<uint64_t>(static_cast<double>(n) * static_cast<double>(frac));
   if (k == 0) k = 1;
   if (k >= n) k = n - 1;
   return k;
@@ -87,7 +87,9 @@ inline uint64_t SplitHash(const std::vector<uint64_t>& held) {
                        held.size() * sizeof(uint64_t));
 }
 
-inline uint32_t ValFracBits(float frac) { return std::bit_cast<uint32_t>(frac); }
+inline uint32_t ValFracBits(float frac) {
+  return std::bit_cast<uint32_t>(frac);
+}
 
 inline float ValFracOf(uint32_t bits) { return std::bit_cast<float>(bits); }
 

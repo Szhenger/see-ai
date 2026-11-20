@@ -68,8 +68,8 @@ inline double* DotScratch(size_t n) {
 
 // dots[j] = a . rows(j) for j in [0, n), rows(j) = base + j * stride, in
 // blocks of 8 then single rows; each dot is the one-row loop's value.
-inline void DotRun(const float* a, const float* base, size_t stride,
-                   size_t n, size_t d, double* dots) {
+inline void DotRun(const float* a, const float* base, size_t stride, size_t n,
+                   size_t d, double* dots) {
   size_t j = 0;
   for (; j + 8 <= n; j += 8) {
     const float* rows[8];
@@ -145,8 +145,8 @@ void RopeFwd(const float* x, float* y, size_t B, size_t S, size_t H, size_t d,
   Rotate<false>(x, y, B, S, H, d, base, table);
 }
 
-void RopeBwd(const float* dy, float* dx, size_t B, size_t S, size_t H,
-             size_t d, float base, const float* table) {
+void RopeBwd(const float* dy, float* dx, size_t B, size_t S, size_t H, size_t d,
+             float base, const float* table) {
   // The forward is an orthogonal per-pair rotation; its VJP is the rotation
   // by the negated angle (the transpose).
   Rotate<true>(dy, dx, B, S, H, d, base, table);
@@ -283,10 +283,10 @@ void AttnDV(const float* probs, const float* dout, float* dv, size_t B,
   });
 }
 
-void SoftmaxRowsBwd(const float* probs, const float* dp, float* ds,
-                    size_t rows, size_t cols) {
-  up::ParallelFor(rows, RowGrain(cols, kGrainMath), [&](size_t r0, size_t r1,
-                                                        size_t) {
+void SoftmaxRowsBwd(const float* probs, const float* dp, float* ds, size_t rows,
+                    size_t cols) {
+  up::ParallelFor(rows, RowGrain(cols, kGrainMath),
+                  [&](size_t r0, size_t r1, size_t) {
     for (size_t r = r0; r < r1; ++r) {
       const float* pr = probs + r * cols;
       const float* dpr = dp + r * cols;
@@ -341,7 +341,6 @@ void AttnDK(const float* ds, const float* q, float* dk, size_t B, size_t S,
     }
   });
 }
-
 
 // =============================================================================
 // The tiled family (plan v15, E11 / #94): the same attention with no S x S
@@ -452,8 +451,7 @@ void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
   const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(d));
   const size_t grain = RowGrain(S * (d + 4), kGrainMath);
   ChunkScratch scratch(B * H * S, grain, S);
-  up::ParallelFor(B * H * S, grain,
-                  [&](size_t u0, size_t u1, size_t chunk) {
+  up::ParallelFor(B * H * S, grain, [&](size_t u0, size_t u1, size_t chunk) {
     float* prow = scratch.at(chunk);
     for (size_t u = u0; u < u1; ++u) {
       const auto [b, h, i] = UnitOf(u, H, S);
@@ -493,8 +491,8 @@ void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
 }
 
 void AttnDQTiled(const float* q, const float* k, const float* v,
-                 const float* dout, float* stats, float* dq, size_t B,
-                 size_t S, size_t H, size_t d) {
+                 const float* dout, float* stats, float* dq, size_t B, size_t S,
+                 size_t H, size_t d) {
   const size_t D = H * d;
   const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(d));
   // Per query row: p and dP recomputed, delta = rowsum(dP * P) in double
@@ -502,8 +500,7 @@ void AttnDQTiled(const float* q, const float* k, const float* v,
   // AttnDQ's order. delta is stored for the dK pass.
   const size_t grain = RowGrain(S * 3 * d, kGrainMath);
   ChunkScratch scratch(B * H * S, grain, 2 * S);
-  up::ParallelFor(B * H * S, grain,
-                  [&](size_t u0, size_t u1, size_t chunk) {
+  up::ParallelFor(B * H * S, grain, [&](size_t u0, size_t u1, size_t chunk) {
     float* prow = scratch.at(chunk);
     float* dprow = prow + S;
     for (size_t u = u0; u < u1; ++u) {

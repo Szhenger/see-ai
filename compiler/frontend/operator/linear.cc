@@ -6,8 +6,8 @@
 
 namespace seeml::sir {
 
-std::unique_ptr<Operation> OpBuilder::gemm(
-    Value* A, Value* B, Value* bias, bool trans_a, bool trans_b) {
+std::unique_ptr<Operation> OpBuilder::gemm(Value* A, Value* B, Value* bias,
+                                           bool trans_a, bool trans_b) {
     assert(A && "gemm: null A");
     assert(B && "gemm: null B");
     assert(A->shape().rank() == 2 && B->shape().rank() == 2 &&

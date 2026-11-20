@@ -52,7 +52,8 @@ enum class PreTokenizer : uint32_t { kGpt2 = 1, kDigitsThenGpt2 = 2 };
 
 inline constexpr uint32_t kSmtkFlagAddPrefixSpace = 1u << 0;
 inline constexpr uint32_t kSmtkFlagNfc = 1u << 1;
-inline constexpr uint32_t kSmtkFlagsKnown = kSmtkFlagAddPrefixSpace | kSmtkFlagNfc;
+inline constexpr uint32_t kSmtkFlagsKnown =
+    kSmtkFlagAddPrefixSpace | kSmtkFlagNfc;
 
 static_assert(std::endian::native == std::endian::little,
               "the tokenizer section is read by memcpy of host integers");
@@ -81,10 +82,9 @@ inline constexpr uint64_t kSmtkHeadBytes = sizeof(SmtkHead);
 /// Reads the head of a section: its size, magic and version are proven
 /// here; the kind, pre-tokenizer and flags are the encoder's to refuse by
 /// name. The error carries no unit prefix — the caller's is the one shown.
-inline std::expected<SmtkHead, std::string> ReadSmtkHead(
+[[nodiscard]] inline std::expected<SmtkHead, std::string> ReadSmtkHead(
     std::span<const uint8_t> section) {
-  if (section.size() < kSmtkHeadBytes)
-    return std::unexpected("truncated head");
+  if (section.size() < kSmtkHeadBytes) return std::unexpected("truncated head");
   SmtkHead head;
   std::memcpy(&head, section.data(), sizeof(head));
   if (head.magic != kSmtkMagic) return std::unexpected("bad magic");

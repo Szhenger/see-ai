@@ -60,8 +60,8 @@ TEST(ContentHash, EveryBytePositionMatters) {
 
   // First byte, a mid-chunk byte, the chunk boundary, and the very last
   // byte (the striped tail).
-  for (size_t pos : {size_t{0}, bytes.size() / 3, kContentHashChunk,
-                     bytes.size() - 1}) {
+  for (size_t pos :
+       {size_t{0}, bytes.size() / 3, kContentHashChunk, bytes.size() - 1}) {
     bytes[pos] ^= 0x01;
     EXPECT_NE(ContentHash64(bytes.data(), bytes.size()), base);
     bytes[pos] ^= 0x01;

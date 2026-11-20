@@ -24,7 +24,9 @@ std::vector<uint8_t> AsBytes(const std::vector<float>& v) {
 
 update::SmfBytes AsPayload(const std::vector<float>& v) {
   update::SmfBytes b(v.size() * sizeof(float));
-  std::memcpy(b.data(), v.data(), b.size());
+  // An empty vector's data() may be null, and memcpy's pointers may not be,
+  // whatever the size (UBSan says so).
+  if (!v.empty()) std::memcpy(b.data(), v.data(), b.size());
   return b;
 }
 
@@ -168,17 +170,23 @@ SmfModel MakeMlpStack(int64_t in_dim, int64_t hidden, int64_t layers,
                          .dims = {width},
                          .is_const = true,
                          .data = AsPayload(randv(width))});
-    m.ops.push_back({SmfOpKind::kMatMul, "mm" + std::to_string(idx),
-                     {prev, w}, "z" + std::to_string(idx)});
-    m.ops.push_back({SmfOpKind::kAddBias, "ab" + std::to_string(idx),
-                     {"z" + std::to_string(idx), b}, out});
+    m.ops.push_back({SmfOpKind::kMatMul,
+                     "mm" + std::to_string(idx),
+                     {prev, w},
+                     "z" + std::to_string(idx)});
+    m.ops.push_back({SmfOpKind::kAddBias,
+                     "ab" + std::to_string(idx),
+                     {"z" + std::to_string(idx), b},
+                     out});
     prev = out;
     prev_dim = width;
   };
   for (int i = 1; i <= layers; ++i) {
     linear(i, hidden, "zb" + std::to_string(i));
-    m.ops.push_back({SmfOpKind::kRelu, "relu" + std::to_string(i),
-                     {"zb" + std::to_string(i)}, "h" + std::to_string(i)});
+    m.ops.push_back({SmfOpKind::kRelu,
+                     "relu" + std::to_string(i),
+                     {"zb" + std::to_string(i)},
+                     "h" + std::to_string(i)});
     prev = "h" + std::to_string(i);
   }
   linear(static_cast<int>(layers) + 1, out_dim, "logits");
@@ -247,9 +255,8 @@ SmfModel MakeTinyDecoder(int64_t dim, int64_t heads, int64_t seq, int64_t ffn,
   return m;
 }
 
-SmfModel MakeDecoderStack(int64_t dim, int64_t heads, int64_t seq,
-                          int64_t ffn, int64_t vocab, int64_t blocks,
-                          uint64_t seed) {
+SmfModel MakeDecoderStack(int64_t dim, int64_t heads, int64_t seq, int64_t ffn,
+                          int64_t vocab, int64_t blocks, uint64_t seed) {
   std::mt19937_64 rng(seed);
   std::normal_distribution<float> dist(0.0f, 0.5f);
   auto randv = [&](size_t n) {
@@ -290,31 +297,36 @@ SmfModel MakeDecoderStack(int64_t dim, int64_t heads, int64_t seq,
     add_const(p + "wg", {dim, ffn}, randv(dim * ffn));
     add_const(p + "wu", {dim, ffn}, randv(dim * ffn));
     add_const(p + "wd", {ffn, dim}, randv(ffn * dim));
-    m.ops.push_back({SmfOpKind::kRmsNorm, p + "ln1", {prev, p + "g1"},
-                     p + "n1"});
+    m.ops.push_back(
+        {SmfOpKind::kRmsNorm, p + "ln1", {prev, p + "g1"}, p + "n1"});
     for (const char* w : {"q", "k", "v"})
-      m.ops.push_back({SmfOpKind::kMatMul, p + "mm" + w,
-                       {p + "n1", p + "w" + std::string(w)}, p + w});
+      m.ops.push_back({SmfOpKind::kMatMul,
+                       p + "mm" + w,
+                       {p + "n1", p + "w" + std::string(w)},
+                       p + w});
     m.ops.push_back({SmfOpKind::kRope, p + "ropeq", {p + "q"}, p + "qr", h});
     m.ops.push_back({SmfOpKind::kRope, p + "ropek", {p + "k"}, p + "kr", h});
-    m.ops.push_back({SmfOpKind::kAttention, p + "attn",
-                     {p + "qr", p + "kr", p + "v"}, p + "a", h});
-    m.ops.push_back({SmfOpKind::kMatMul, p + "mmo", {p + "a", p + "wo"},
-                     p + "o"});
+    m.ops.push_back({SmfOpKind::kAttention,
+                     p + "attn",
+                     {p + "qr", p + "kr", p + "v"},
+                     p + "a",
+                     h});
+    m.ops.push_back(
+        {SmfOpKind::kMatMul, p + "mmo", {p + "a", p + "wo"}, p + "o"});
     m.ops.push_back({SmfOpKind::kAdd, p + "res1", {prev, p + "o"}, p + "x1"});
-    m.ops.push_back({SmfOpKind::kRmsNorm, p + "ln2", {p + "x1", p + "g2"},
-                     p + "n2"});
-    m.ops.push_back({SmfOpKind::kMatMul, p + "mmg", {p + "n2", p + "wg"},
-                     p + "gt"});
-    m.ops.push_back({SmfOpKind::kMatMul, p + "mmu", {p + "n2", p + "wu"},
-                     p + "u"});
+    m.ops.push_back(
+        {SmfOpKind::kRmsNorm, p + "ln2", {p + "x1", p + "g2"}, p + "n2"});
+    m.ops.push_back(
+        {SmfOpKind::kMatMul, p + "mmg", {p + "n2", p + "wg"}, p + "gt"});
+    m.ops.push_back(
+        {SmfOpKind::kMatMul, p + "mmu", {p + "n2", p + "wu"}, p + "u"});
     m.ops.push_back({SmfOpKind::kSilu, p + "silu", {p + "gt"}, p + "s"});
-    m.ops.push_back({SmfOpKind::kMul, p + "swiglu", {p + "s", p + "u"},
-                     p + "mg"});
-    m.ops.push_back({SmfOpKind::kMatMul, p + "mmd", {p + "mg", p + "wd"},
-                     p + "dn"});
-    m.ops.push_back({SmfOpKind::kAdd, p + "res2", {p + "x1", p + "dn"},
-                     p + "x2"});
+    m.ops.push_back(
+        {SmfOpKind::kMul, p + "swiglu", {p + "s", p + "u"}, p + "mg"});
+    m.ops.push_back(
+        {SmfOpKind::kMatMul, p + "mmd", {p + "mg", p + "wd"}, p + "dn"});
+    m.ops.push_back(
+        {SmfOpKind::kAdd, p + "res2", {p + "x1", p + "dn"}, p + "x2"});
     prev = p + "x2";
   }
   add_const("gf", {dim}, gain(dim));

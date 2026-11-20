@@ -14,8 +14,8 @@ void GateState::Reset() {
   best_state.clear();
 }
 
-void GateState::Snapshot(const uint8_t* persistent, size_t bytes,
-                         uint64_t step, float loss, float accuracy) {
+void GateState::Snapshot(const uint8_t* persistent, size_t bytes, uint64_t step,
+                         float loss, float accuracy) {
   best_state.assign(persistent, persistent + bytes);
   has_best = true;
   best_step = step;
@@ -24,9 +24,8 @@ void GateState::Snapshot(const uint8_t* persistent, size_t bytes,
   stale_evals = 0;
 }
 
-bool GateState::Observe(const uint8_t* persistent, size_t bytes,
-                        uint64_t step, float loss, float accuracy,
-                        uint32_t patience) {
+bool GateState::Observe(const uint8_t* persistent, size_t bytes, uint64_t step,
+                        float loss, float accuracy, uint32_t patience) {
   if (loss < best_loss) {
     Snapshot(persistent, bytes, step, loss, accuracy);
     return false;

@@ -63,12 +63,11 @@ struct MapFailure {
 
 /// Maps `path` whole. `require_regular` refuses anything but a regular file
 /// at the size step; an empty file is always refused there.
-inline std::expected<FileMapping, MapFailure> MapFile(const std::string& path,
-                                                      MapAccess access,
-                                                      bool require_regular) {
+[[nodiscard]] inline std::expected<FileMapping, MapFailure> MapFile(
+    const std::string& path, MapAccess access, bool require_regular) {
   const int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) return std::unexpected(MapFailure{MapFailure::kOpen, errno});
-  struct stat st {};
+  struct stat st{};
   if (::fstat(fd, &st) != 0 || (require_regular && !S_ISREG(st.st_mode)) ||
       st.st_size <= 0) {
     const int err = errno;
@@ -76,10 +75,10 @@ inline std::expected<FileMapping, MapFailure> MapFile(const std::string& path,
     return std::unexpected(MapFailure{MapFailure::kSize, err});
   }
   const auto bytes = static_cast<size_t>(st.st_size);
-  void* map = ::mmap(nullptr, bytes,
-                     access == MapAccess::kCopyOnWrite ? PROT_READ | PROT_WRITE
-                                                       : PROT_READ,
-                     MAP_PRIVATE, fd, 0);
+  void* map = ::mmap(
+      nullptr, bytes,
+      access == MapAccess::kCopyOnWrite ? PROT_READ | PROT_WRITE : PROT_READ,
+      MAP_PRIVATE, fd, 0);
   const int err = errno;
   ::close(fd);
   if (map == MAP_FAILED)
