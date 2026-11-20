@@ -2534,7 +2534,12 @@ TEST(UpdateEngineCheckpointInput,
   ASSERT_OK_AND_ASSIGN(auto whole, straight.Train(d0, kSteps, Quiet()));
   const std::vector<uint8_t> want(
       straight.arena(), straight.arena() + straight.header().persistent_size);
-  ASSERT_TRUE(whole.ImprovedBy(0.0f));
+  // Not vacuous: the run's two windows differ, so a resume that gated on
+  // the wrong window would disagree. (Whether 30 steps inside the default
+  // warmup IMPROVE the loss is the platform's libm's to say — on Linux
+  // they did not; the property here is agreement, either way.)
+  ASSERT_NE(std::bit_cast<uint32_t>(whole.initial_avg_loss),
+            std::bit_cast<uint32_t>(whole.final_avg_loss));
   for (const uint64_t stop : {uint64_t{1}, uint64_t{4}, uint64_t{15},
                               uint64_t{27}, uint64_t{29}, kSteps}) {
     ScopedTempDir tmp;
@@ -2595,9 +2600,14 @@ TEST(UpdateEngineCheckpointInput, AStrictResumeRefusesAndLeavesTheFile) {
     ASSERT_OK(first.Train(d, 20, cut));
   }
   const std::vector<uint8_t> raw = ReadAll(good);
-  const std::vector<uint8_t> truncated(raw.begin(), raw.end() - 1);
+  // A whole checkpoint is past its header; said first, so the edits below
+  // index a non-empty file (GCC's -Warray-bounds cannot see it otherwise).
+  ASSERT_TRUE(raw.size() > kCkptHeaderBytes);
+  const size_t last = raw.size() - 1;
+  const std::vector<uint8_t> truncated(
+      raw.begin(), raw.begin() + static_cast<ptrdiff_t>(last));
   std::vector<uint8_t> payload_flip = raw;
-  payload_flip.back() ^= 0x01;
+  payload_flip[last] ^= 0x01;
   // The step's low bit: 6 -> 7, inside the horizon and past every window
   // count — a corruption only the header hash can see.
   std::vector<uint8_t> header_flip = raw;
