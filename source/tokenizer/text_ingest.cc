@@ -165,34 +165,48 @@ size_t SkipSpaces(std::string_view s, size_t i) {
   return i;
 }
 
+/// FNV-1a over a window's ids and, when `mask` is set, its `mask_n` target
+/// flags: a bucket key for the duplicate-window drop, which then compares
+/// the windows themselves, so the hash decides nothing on its own.
+uint64_t WindowHash(const int32_t* ids, uint64_t n, const uint8_t* mask,
+                    uint64_t mask_n) {
+  uint64_t h = 0xCBF29CE484222325ull;
+  auto mix = [&](uint8_t byte) {
+    h ^= byte;
+    h *= 0x100000001B3ull;
+  };
+  for (uint64_t i = 0; i < n; ++i) {
+    const auto v = static_cast<uint32_t>(ids[i]);
+    for (int k = 0; k < 4; ++k) mix(static_cast<uint8_t>(v >> (8 * k)));
+  }
+  for (uint64_t i = 0; i < mask_n; ++i) mix(mask[i]);
+  return h;
+}
+
 constexpr std::string_view kImStart = "<|im_start|>";
 constexpr std::string_view kImEnd = "<|im_end|>";
 
 }  // namespace
 
-std::string Sanitize(std::string_view text, bool count_only,
-                     SanitizeCounts* counts) {
+std::string Sanitize(std::string_view text, SanitizeCounts* counts) {
   std::string out;
-  if (!count_only) out.reserve(text.size());
+  out.reserve(text.size());
   size_t i = 0;
   while (i < text.size()) {
     uint32_t cp = 0;
     const size_t next = DecodeUtf8Strict(text, i, &cp);
     if (next == 0) {
       ++counts->invalid_utf8_bytes;
-      if (count_only) out.push_back(text[i]);
       ++i;
       continue;
     }
-    bool drop = false;
     if (IsControl(cp)) {
       ++counts->control_chars;
-      drop = true;
     } else if (IsBidiControl(cp)) {
       ++counts->bidi_controls;
-      drop = true;
+    } else {
+      out.append(text.data() + i, next - i);
     }
-    if (!drop || count_only) out.append(text.data() + i, next - i);
     i = next;
   }
   return out;
@@ -340,9 +354,11 @@ std::expected<IngestResult, std::string> Ingest(
   for (uint64_t d = 0; d < documents.size(); ++d) {
     const Document& doc = documents[d];
     SanitizeCounts counts;
-    const std::string clean = Sanitize(doc.text, options.one_document, &counts);
+    // Every input kind is sanitized (#222): a .txt was counted and kept
+    // until then, which let its controls and invalid bytes reach the ids.
+    const std::string clean = Sanitize(doc.text, &counts);
     const std::string clean_response =
-        doc.chat ? Sanitize(doc.response, false, &counts) : std::string();
+        doc.chat ? Sanitize(doc.response, &counts) : std::string();
     m.sanitized.invalid_utf8_bytes += counts.invalid_utf8_bytes;
     m.sanitized.control_chars += counts.control_chars;
     m.sanitized.bidi_controls += counts.bidi_controls;
@@ -418,6 +434,11 @@ std::expected<IngestResult, std::string> Ingest(
   // Pack: consecutive non-overlapping windows of S + 1 ids. The mask of a
   // window holds, per position j, whether the next id (j + 1) is a target;
   // under a mask, a window with no target trains nothing and is dropped.
+  // A window equal to one already kept — its ids, and its mask where the
+  // corpus is masked — is dropped too (#222): the split is drawn over the
+  // records, so a record and its twin could otherwise land on both sides.
+  // Bucketed by a hash of the window, decided by comparing the bytes; the
+  // first occurrence is kept and the kept order is the cut's.
   const uint64_t S = options.seq_len, rec = S + 1;
   const uint64_t windows = ids.size() / rec;
   m.remainder_tokens = ids.size() - windows * rec;
@@ -427,6 +448,7 @@ std::expected<IngestResult, std::string> Ingest(
   kept_ids.reserve(windows * rec);
   if (masked) kept_mask.reserve(windows * S);
   {
+    std::unordered_map<uint64_t, std::vector<uint64_t>> kept_by_hash;
     size_t b = 0;
     for (uint64_t w = 0; w < windows; ++w) {
       const uint64_t lo = w * rec, hi = lo + rec;  // [lo, hi)
@@ -444,6 +466,26 @@ std::expected<IngestResult, std::string> Ingest(
         ++m.dropped_zero_target_windows;
         continue;
       }
+      const uint64_t h =
+          WindowHash(ids.data() + lo, rec,
+                     masked ? target.data() + lo + 1 : nullptr, masked ? S : 0);
+      std::vector<uint64_t>& bucket = kept_by_hash[h];
+      bool twin = false;
+      for (const uint64_t k : bucket) {
+        twin = std::equal(ids.begin() + static_cast<ptrdiff_t>(lo),
+                          ids.begin() + static_cast<ptrdiff_t>(hi),
+                          kept_ids.begin() + static_cast<ptrdiff_t>(k * rec)) &&
+               (!masked ||
+                std::equal(target.begin() + static_cast<ptrdiff_t>(lo + 1),
+                           target.begin() + static_cast<ptrdiff_t>(hi),
+                           kept_mask.begin() + static_cast<ptrdiff_t>(k * S)));
+        if (twin) break;
+      }
+      if (twin) {
+        ++m.dropped_duplicate_windows;
+        continue;
+      }
+      bucket.push_back(m.windows);
       if (straddles) ++m.straddling_windows;
       kept_ids.insert(kept_ids.end(), ids.begin() + static_cast<ptrdiff_t>(lo),
                       ids.begin() + static_cast<ptrdiff_t>(hi));
@@ -497,6 +539,7 @@ std::string ManifestJson(const IngestManifest& m) {
   field("dropped_duplicate", m.dropped_duplicate);
   field("dropped_degenerate", m.dropped_degenerate);
   field("dropped_zero_target_windows", m.dropped_zero_target_windows);
+  field("dropped_duplicate_windows", m.dropped_duplicate_windows);
   field("invalid_utf8_bytes", m.sanitized.invalid_utf8_bytes);
   field("control_chars", m.sanitized.control_chars);
   field("bidi_controls", m.sanitized.bidi_controls);

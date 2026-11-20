@@ -18,16 +18,21 @@
 //               one per line of a .jsonl ({"text": ...})
 //   sanitize    invalid UTF-8 bytes, control characters other than tab,
 //               newline and carriage return, and the bidirectional override
-//               and isolate characters are removed; a document empty after
-//               that is dropped. In one-document mode the sanitizer only
-//               counts (the exporter's path encodes the bytes as they are,
-//               and the two must agree id for id).
+//               and isolate characters are removed — from every document,
+//               a .txt's one as a .jsonl's (#222; nothing is normalized, so
+//               clean text passes byte for byte and the exporter's path,
+//               which encodes the bytes as they are, still agrees id for
+//               id on it); a document empty after that is dropped
 //   deduplicate exact, by the sanitized bytes' hash; later twins dropped
 //   encode      the section's byte-level BPE
 //   pack        documents joined by EOS (the section's eos_id), cut into
 //               (S + 1)-id windows at stride S + 1, the remainder dropped;
 //               never padded (every position is a loss target); windows
-//               that straddle a document boundary are counted
+//               that straddle a document boundary are counted; a window
+//               byte-identical to an earlier kept one (its ids, and its
+//               mask where there is one) is dropped and counted (#222), so
+//               no two records are equal and no split of them can put a
+//               record on one side and its twin on the other
 //
 // Every drop is recorded by index and reason in the manifest; the screen
 // prints the counts. What this does not defend against, and says: well-
@@ -38,9 +43,10 @@ namespace seeml::tokenizer {
 
 struct IngestOptions {
   uint64_t seq_len = 0;       // S: records are S + 1 ids
-  bool one_document = false;  // a .txt: the file is one document, no EOS,
-                              // sanitizer counts only (bit-exact with the
-                              // exporter's --text-corpus)
+  bool one_document = false;  // a .txt: the file is one document, no EOS
+                              // and no document deduplication (on clean
+                              // text, bit-exact with the exporter's
+                              // --text-corpus)
 };
 
 /// One input document: plain text (every position a loss target), or a
@@ -72,6 +78,7 @@ struct IngestManifest {
   uint64_t documents_kept = 0;
   uint64_t chat_documents = 0;  // prompt / response pairs among them
   uint64_t dropped_zero_target_windows = 0;  // masked windows with no target
+  uint64_t dropped_duplicate_windows = 0;    // byte-identical to a kept one
   uint64_t target_tokens = 0;  // positions the loss counts (masked)
   uint64_t total_tokens = 0;   // positions in the records (windows x S)
   uint64_t dropped_empty = 0;
@@ -81,7 +88,7 @@ struct IngestManifest {
   uint64_t tokens = 0;              // ids after packing's EOS joins
   uint64_t windows = 0;             // records written
   uint64_t remainder_tokens = 0;    // ids the last partial window dropped
-  uint64_t straddling_windows = 0;  // windows holding a document boundary
+  uint64_t straddling_windows = 0;  // kept windows holding a boundary
   uint64_t distinct_ids = 0;
   std::vector<DropRecord> drops;
 };
@@ -100,10 +107,9 @@ struct IngestResult {
   uint64_t tokenizer_hash = 0;
 };
 
-/// Removes what the sanitizer removes and counts it; `one_document` mode
-/// counts without removing.
-std::string Sanitize(std::string_view text, bool count_only,
-                     SanitizeCounts* counts);
+/// Removes what the sanitizer removes and counts it. Nothing else changes:
+/// text holding none of it is returned byte for byte.
+std::string Sanitize(std::string_view text, SanitizeCounts* counts);
 
 /// Splits a .jsonl file into its documents: each line a JSON object with a
 /// "text" string, or a "prompt" and a "response" string (JSON string escapes
@@ -117,6 +123,8 @@ DocumentsFromJsonl(std::string_view jsonl);
 /// chat document under a section without the ChatML markers, and a corpus
 /// that yields no complete window. A corpus with a chat document is
 /// masked: the SDS carries the mask and windows with no target are dropped.
+/// Duplicate windows are dropped after that, the first kept: a corpus with
+/// one complete window with a target keeps at least that one.
 [[nodiscard]] std::expected<IngestResult, std::string> Ingest(
     const ByteLevelBpe& tokenizer, uint64_t tokenizer_hash,
     const std::vector<Document>& documents, const IngestOptions& options);
