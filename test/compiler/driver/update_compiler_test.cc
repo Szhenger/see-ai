@@ -1881,11 +1881,12 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
 TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
   // #218: the mask finds documents by the EOS id. On a checkpoint whose EOS
   // is the chat template's turn end, <|im_end|> (the instruct variants), a
-  // prompt/response record holds that id after the user turn, so a mask
-  // would hide every response from its own prompt. Such a plan is never
-  // masked: `auto` compiles unmasked and says why, `on` is refused by name.
-  // The guard reaches no further: plain text on the same model masks, and
-  // so does a chat corpus on a model whose EOS is its own token.
+  // chat record holds that id after every turn — a prompt/response record
+  // and plain text rendered in ChatML alike — so a mask would hide every
+  // response from its own prompt. On such a model nothing is masked:
+  // `auto` compiles unmasked and says why, `on` is refused by name. The
+  // guard reaches no further: a chat corpus on a model whose EOS is its own
+  // token is masked as before.
   seeml::testing::ScopedTempDir dir;
   auto write = [&](const std::string& name, const std::string& bytes) {
     const std::string path = dir.File(name);
@@ -1939,6 +1940,20 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
                                   "{\"text\": \"and the second one follows\"}\n"
                                   "{\"text\": \"a third document, then\"}\n"
                                   "{\"text\": \"and a fourth to finish\"}\n");
+  // The common fine-tuning format: plain {"text"} documents that are
+  // already rendered ChatML. A literal special-token string encodes to its
+  // id, so on the instruct model each document holds the EOS after every
+  // turn — and the plan is not a masked-loss plan.
+  const std::string rendered = write(
+      "rendered.jsonl",
+      "{\"text\": \"<|im_start|>user\\none?<|im_end|>\\n<|im_start|>assistant"
+      "\\nuno<|im_end|>\\n\"}\n"
+      "{\"text\": \"<|im_start|>user\\ntwo?<|im_end|>\\n<|im_start|>assistant"
+      "\\ndos<|im_end|>\\n\"}\n"
+      "{\"text\": \"<|im_start|>user\\nthree?<|im_end|>\\n<|im_start|>"
+      "assistant\\ntres<|im_end|>\\n\"}\n"
+      "{\"text\": \"<|im_start|>user\\nfour?<|im_end|>\\n<|im_start|>"
+      "assistant\\ncuatro<|im_end|>\\n\"}\n");
   auto masked_ops = [](const CompiledUpdate& c) {
     return CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg) +
            CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdTiledSeg);
@@ -1953,7 +1968,7 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
   ASSERT_OK_AND_ASSIGN(CompiledUpdate held,
                        UpdateCompiler(cfg).Compile(instruct));
   EXPECT_EQ(masked_ops(held), 0u);
-  EXPECT_STR_CONTAINS(row(held), "also ends each turn of a prompt/response");
+  EXPECT_STR_CONTAINS(row(held), "also ends each turn of a chat record");
   cfg.segment_mask = SegmentMaskKind::kOn;
   EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(instruct),
                         "would hide every response from its own prompt");
@@ -1962,14 +1977,25 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
                        UpdateCompiler(cfg).Compile(instruct));
   EXPECT_EQ(masked_ops(off), 0u);
 
-  // Plain text on the same model: documents are joined by the EOS and
-  // nothing else carries it, so the mask is right, and `auto` takes it.
+  // Pre-rendered ChatML in plain {"text"} documents on the same model: not
+  // a masked-loss plan, yet each document holds the EOS after every turn.
+  cfg.data_path = rendered;
+  cfg.segment_mask = SegmentMaskKind::kAuto;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate pre,
+                       UpdateCompiler(cfg).Compile(instruct));
+  EXPECT_EQ(masked_ops(pre), 0u);
+  EXPECT_STR_CONTAINS(row(pre), "also ends each turn");
+  cfg.segment_mask = SegmentMaskKind::kOn;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(instruct),
+                        "would hide every response from its own prompt");
+
+  // So on such a model nothing is masked, whatever the corpus: a turn end
+  // and a document end are one id, and no corpus can tell them apart.
   cfg.data_path = plain;
   cfg.segment_mask = SegmentMaskKind::kAuto;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate text,
                        UpdateCompiler(cfg).Compile(instruct));
-  EXPECT_TRUE(masked_ops(text) > 0);
-  EXPECT_STR_CONTAINS(row(text), "window(s) hold more than one document");
+  EXPECT_EQ(masked_ops(text), 0u);
 
   // A chat corpus on a model whose EOS is its own token: the turn end is
   // not an EOS, the records are whole documents, and the mask is taken.
