@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "runtime/loader/contract.h"
 #include "source/plan/metadata.h"
 #include "source/plan/update_types.h"
 
@@ -16,7 +17,9 @@
 // version window, the plan contract (the header against the blob), the
 // metadata section, the instruction streams, the executor contract (every
 // operand bounds-proven; the staged slots, the label and token bindings, the
-// segment starts), the class-width and vocabulary scans the feeder enforces,
+// segment starts), the relaxed permit (a relaxed plan is the one this binary
+// was built for, F2 #206), the class-width and vocabulary scans the feeder
+// enforces,
 // and the arena the resource contract sized. Pure: nothing here touches an
 // engine; UpdateEngine commits the result only after every rule has passed.
 // =============================================================================
@@ -53,8 +56,11 @@ struct DecodedPlan {
 };
 
 /// Every container and executor rule over `plan`'s bytes, then the decode.
+/// `permit` is which relaxed plans the caller may run (F2 #206; contract.h):
+/// by default none, so a plan carrying a kFlagRelaxed instruction is refused
+/// unless the caller names its certified seal or is a measuring instrument.
 [[nodiscard]] std::expected<DecodedPlan, std::string> DecodePlan(
-    const uint8_t* plan, size_t plan_size);
+    const uint8_t* plan, size_t plan_size, RelaxedPlanPermit permit = {});
 
 /// The one allocation of the update: the arena the header sized (bounded by
 /// the address space and the host's memory first), zeroed, the persistent

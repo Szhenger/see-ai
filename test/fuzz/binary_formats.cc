@@ -185,8 +185,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         std::memcpy(&h, plan.data(), sizeof(h));
         if (h.arena_size > kFuzzArenaCap) break;
       }
+      // The measurement permit (F2 #206): a fuzzed plan that carries
+      // relaxed instructions is executed too — the relaxed kernels are
+      // the ones to run under the sanitizer, and no certificate can exist
+      // for a mutated plan. The refusal itself is the loader tests'.
       seeml::update_rt::UpdateEngine engine;
-      if (!engine.LoadFromMemory(plan.data(), plan.size())) break;
+      if (!engine.LoadFromMemory(
+              plan.data(), plan.size(),
+              seeml::update_rt::RelaxedPlanPermit::UncertifiedForMeasurement()))
+        break;
       // An accepted plan is EXECUTED (CR3 #144 F22): one training step on a
       // corpus synthesized from the header's geometry — zero features or
       // token ids, zero labels, every id below any vocabulary — so the

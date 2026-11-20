@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <span>
 #include <string>
 
@@ -20,6 +21,7 @@
 #include "source/plan/update_types.h"
 #include "test/framework/seetest.h"
 #include "test/support/builders.h"
+#include "test/support/scoped_temp_dir.h"
 
 namespace {
 
@@ -935,6 +937,191 @@ TEST(CoverageTable, AnArenaBeyondTheHostsMemoryIsRefusedBeforeAllocation) {
   UpdateEngine engine;
   EXPECT_ERROR_CONTAINS(engine.LoadFromMemory(sealed.data(), sealed.size()),
                         "exceeds this host's memory");
+}
+
+// --- The relaxed permit (F2 #206) --------------------------------------------
+// A relaxed plan ran on a device with no certificate anywhere: the validator
+// admits kFlagRelaxed on the plan version alone, and the certificate was
+// checked only where a package is built. The binding is now in the binary —
+// the seal of the one plan the build checked a granted certificate for — and
+// every load holds a relaxed plan to it.
+
+std::vector<uint8_t> MlpPlanAt(up::Precision precision) {
+  up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 1);
+  up::UpdateConfig config = BaseConfig(kBatch);
+  config.precision = precision;
+  auto compiled = up::UpdateCompiler(config).Compile(model);
+  return compiled ? compiled->plan : std::vector<uint8_t>{};
+}
+
+uint64_t RelaxedIn(const std::vector<uint8_t>& plan) {
+  const OpenPlan open(plan);
+  uint64_t n = 0;
+  for (int p = 0; p < kPrograms; ++p)
+    for (uint64_t i = 0; i < open.Count(p); ++i) {
+      up::UpdateInstruction ins;
+      std::memcpy(&ins, plan.data() + open.Offset(p) + i * sizeof(ins),
+                  sizeof(ins));
+      n += (ins.flags & up::kFlagRelaxed) != 0;
+    }
+  return n;
+}
+
+constexpr const char* kNoCertificate =
+    "relaxed instruction(s) and this package was built with no numerics "
+    "certificate for it";
+constexpr const char* kAnotherPlan =
+    "relaxed instruction(s) and this package was built with a certificate "
+    "for another plan";
+
+TEST(RelaxedPermit, ARelaxedPlanLoadsOnlyUnderItsCertifiedSeal) {
+  const std::vector<uint8_t> relaxed = MlpPlanAt(up::Precision::kCertifiedBf16);
+  ASSERT_FALSE(relaxed.empty());
+  const uint64_t count = RelaxedIn(relaxed);
+  ASSERT_GT(count, 0u);
+  const uint64_t seal = OpenPlan(relaxed).h.plan_hash;
+  ASSERT_NE(seal, 0u);
+  const std::string counted =
+      "the plan carries " + std::to_string(count) + " relaxed instruction(s)";
+
+  // No permit — the default of every load, and of a runner built without
+  // SEEML_CERTIFIED_PLAN_HASH (CertifiedPlan(0)).
+  {
+    UpdateEngine engine;
+    const auto refused = engine.LoadFromMemory(relaxed.data(), relaxed.size());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_STR_CONTAINS(refused.error(), kNoCertificate);
+    EXPECT_STR_CONTAINS(refused.error(), counted);
+    EXPECT_TRUE(WellFormedDiagnostic(refused.error()));
+    EXPECT_ERROR_CONTAINS(
+        engine.LoadFromMemory(relaxed.data(), relaxed.size(),
+                              RelaxedPlanPermit::CertifiedPlan(0)),
+        kNoCertificate);
+  }
+  // A certificate for another plan: any other seal, one bit away included.
+  for (const uint64_t other : {seal ^ 1, seal ^ (uint64_t{1} << 63), ~seal}) {
+    UpdateEngine engine;
+    EXPECT_ERROR_CONTAINS(
+        engine.LoadFromMemory(relaxed.data(), relaxed.size(),
+                              RelaxedPlanPermit::CertifiedPlan(other)),
+        kAnotherPlan);
+  }
+  // Its own seal: the plan loads and trains.
+  {
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(relaxed.data(), relaxed.size(),
+                                    RelaxedPlanPermit::CertifiedPlan(seal)));
+    ASSERT_OK_AND_ASSIGN(Dataset data, MakeClassificationData(32, kInDim, 7));
+    ASSERT_OK(engine.Train(data, 2, QuietOptions()));
+  }
+  // The measurement permission — named, and not a certificate.
+  {
+    UpdateEngine engine;
+    ASSERT_OK(
+        engine.LoadFromMemory(relaxed.data(), relaxed.size(),
+                              RelaxedPlanPermit::UncertifiedForMeasurement()));
+  }
+  // The same plan re-sealed after an edit is another plan: the seal the
+  // binary carries no longer names it.
+  {
+    OpenPlan open(relaxed);
+    open.h.default_steps += 1;
+    const std::vector<uint8_t> edited = open.Sealed();
+    ASSERT_NE(OpenPlan(edited).h.plan_hash, seal);
+    UpdateEngine engine;
+    EXPECT_ERROR_CONTAINS(
+        engine.LoadFromMemory(edited.data(), edited.size(),
+                              RelaxedPlanPermit::CertifiedPlan(seal)),
+        kAnotherPlan);
+  }
+}
+
+TEST(RelaxedPermit, EveryLoadRouteHoldsTheRule) {
+  // Embedded (LoadFromMemory), disk mode and --plan (LoadFromFileMapped),
+  // and the tools' buffered read (LoadFromFile): one rule.
+  const std::vector<uint8_t> relaxed = MlpPlanAt(up::Precision::kCertifiedBf16);
+  ASSERT_FALSE(relaxed.empty());
+  const uint64_t seal = OpenPlan(relaxed).h.plan_hash;
+  seeml::testing::ScopedTempDir dir;
+  const std::string path = dir.File("update_plan.seeu");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(relaxed.data()),
+            static_cast<std::streamsize>(relaxed.size()));
+    ASSERT_TRUE(f.good());
+  }
+  const RelaxedPlanPermit own = RelaxedPlanPermit::CertifiedPlan(seal);
+  const RelaxedPlanPermit other = RelaxedPlanPermit::CertifiedPlan(seal + 1);
+  {
+    UpdateEngine engine;
+    EXPECT_ERROR_CONTAINS(engine.LoadFromFileMapped(path), kNoCertificate);
+    EXPECT_ERROR_CONTAINS(engine.LoadFromFileMapped(path, other), kAnotherPlan);
+    ASSERT_OK(engine.LoadFromFileMapped(path, own));
+  }
+  {
+    UpdateEngine engine;
+    EXPECT_ERROR_CONTAINS(engine.LoadFromFile(path), kNoCertificate);
+    EXPECT_ERROR_CONTAINS(engine.LoadFromFile(path, other), kAnotherPlan);
+    ASSERT_OK(engine.LoadFromFile(path, own));
+  }
+  {
+    // A refused relaxed plan leaves the plan already loaded in place: the
+    // exact package given a relaxed --plan keeps nothing of it.
+    const std::vector<uint8_t> exact = MlpPlanAt(up::Precision::kF32);
+    ASSERT_FALSE(exact.empty());
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(exact.data(), exact.size()));
+    const uint64_t loaded = engine.header().plan_hash;
+    EXPECT_ERROR_CONTAINS(engine.LoadFromFileMapped(path), kNoCertificate);
+    EXPECT_EQ(engine.header().plan_hash, loaded);
+    EXPECT_EQ(engine.plan_size(), exact.size());
+  }
+}
+
+TEST(RelaxedPermit, AnExactPlanLoadsUnderEveryPermit) {
+  const std::vector<uint8_t> exact = MlpPlanAt(up::Precision::kF32);
+  ASSERT_FALSE(exact.empty());
+  ASSERT_EQ(RelaxedIn(exact), 0u);
+  const uint64_t seal = OpenPlan(exact).h.plan_hash;
+  for (const RelaxedPlanPermit permit :
+       {RelaxedPlanPermit{}, RelaxedPlanPermit::CertifiedPlan(seal),
+        RelaxedPlanPermit::CertifiedPlan(seal ^ 1),
+        RelaxedPlanPermit::UncertifiedForMeasurement()}) {
+    UpdateEngine engine;
+    ASSERT_OK(engine.LoadFromMemory(exact.data(), exact.size(), permit));
+  }
+}
+
+TEST(RelaxedPermit, TheRuleCountsEveryProgram) {
+  // The executor contract already refuses the bit outside the train and
+  // step programs; the permit rule does not lean on it. One flagged
+  // instruction in any of the four programs needs the permit.
+  up::PlanHeader h{};
+  h.plan_hash = 0x1234;
+  up::UpdateInstruction flagged{};
+  flagged.flags = up::kFlagRelaxed;
+  const up::UpdateInstruction plain{};
+  for (int p = 0; p < kPrograms; ++p) {
+    std::vector<up::UpdateInstruction> programs[kPrograms];
+    for (auto& program : programs) program.push_back(plain);
+    programs[p].push_back(flagged);
+    auto verify = [&](RelaxedPlanPermit permit) {
+      return VerifyRelaxedPermit(h, programs[0], programs[1], programs[2],
+                                 programs[3], permit);
+    };
+    EXPECT_ERROR_CONTAINS(verify({}), "the plan carries 1 relaxed");
+    EXPECT_ERROR_CONTAINS(verify(RelaxedPlanPermit::CertifiedPlan(0x1235)),
+                          kAnotherPlan);
+    ASSERT_OK(verify(RelaxedPlanPermit::CertifiedPlan(0x1234)));
+    ASSERT_OK(verify(RelaxedPlanPermit::UncertifiedForMeasurement()));
+  }
+  // A zero seal certifies nothing, even for a plan whose seal is zero.
+  h.plan_hash = 0;
+  std::vector<up::UpdateInstruction> train{flagged};
+  EXPECT_ERROR_CONTAINS(
+      VerifyRelaxedPermit(h, train, {}, {}, {},
+                          RelaxedPlanPermit::CertifiedPlan(0)),
+      kNoCertificate);
 }
 
 }  // namespace

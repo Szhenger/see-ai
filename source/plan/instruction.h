@@ -394,8 +394,11 @@ static_assert(kKlTemperatureMin == 1e-3f && kKlTemperatureMax == 1e3f,
 // programs (the eval program scores what ships in exact arithmetic), and
 // tool/pack_update.py refuses to package such a plan unless a numerics
 // certificate (tool/certify_numerics.py) vouches for it — the certificate
-// binds to the plan's hash, so it cannot live inside the plan it certifies,
-// and the on-device validator gates the bit on the version alone. Relaxed
+// binds to the plan's hash, so it cannot live inside the plan it certifies.
+// The on-device validator gates the bit on the version alone; the LOADER
+// gates the plan (F2 #206): a plan carrying the bit loads only in the binary
+// built beside its granted certificate, which holds that plan's seal
+// (RelaxedPlanPermit, runtime/loader/contract.h). Relaxed
 // kernels stay run-to-run bitwise on a device (fixed reduction order, no
 // atomics); their bits differ from the reference's, so a relaxed plan
 // compares to the exact one at the certificate's tolerance.
