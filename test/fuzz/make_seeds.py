@@ -31,7 +31,6 @@ file takes them joined by SEPARATOR.
 import argparse
 import json
 import os
-import shutil
 import struct
 import subprocess
 import sys
