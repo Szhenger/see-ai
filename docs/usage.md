@@ -326,7 +326,9 @@ sh build/build.sh && for t in build/seeml_*_test; do "$t"; done
 # sanitizers / fuzzing:
 cmake -B build -DSEEML_SANITIZE="address;undefined"
 cmake -B build -DSEEML_SANITIZE="thread"   # proves the pool + feeder sync
-cmake -B build -DSEEML_FUZZ=ON && ./build/seeml_fuzz_formats
+cmake -B build-fuzz -DSEEML_FUZZ=ON && cmake --build build-fuzz --target seeml_fuzz_formats
+# start the fuzzer from the checked-in seeds (a copy: it writes its corpus):
+cp -r test/fuzz/seeds corpus && ./build-fuzz/seeml_fuzz_formats -timeout=25 -rss_limit_mb=2048 corpus
 ```
 
 The test tree mirrors the source tree one-to-one — a suite lives where its subject lives — and [test/README.md](../test/README.md) explains the layout and the in-tree harness. The thread sanitizer build is not decoration: it's the mechanical proof that the worker pool and the feeder handoff are race-free, and the fuzzer hammers the binary-format parsers with hostile bytes — the same parsers whose paranoia [formats.md](formats.md) describes.

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -716,9 +717,31 @@ TEST(FuzzReplay, MutatedSeedsAreRefusedOrRunNeverCrash) {
       total.plans_accepted += r.plans_accepted;
       total.plans_refused += r.plans_refused;
       total.train_steps += r.train_steps;
+      total.compiles_started += r.compiles_started;
       total.compiles_completed += r.compiles_completed;
+      total.tokenizers_loaded += r.tokenizers_loaded;
+      total.ingests += r.ingests;
+      total.recipes_parsed += r.recipes_parsed;
+      total.reports_read += r.reports_read;
     }
   }
+  // What the pass reached, for whoever reads the log.
+  std::printf(
+      "             %llu mutated inputs (pass %llu): %llu plans accepted, "
+      "%llu refused, %llu steps trained; %llu compiles started, %llu "
+      "completed; %llu tokenizer sections, %llu ingests, %llu recipes, "
+      "%llu reports\n",
+      static_cast<unsigned long long>(inputs),
+      static_cast<unsigned long long>(pass_seed),
+      static_cast<unsigned long long>(total.plans_accepted),
+      static_cast<unsigned long long>(total.plans_refused),
+      static_cast<unsigned long long>(total.train_steps),
+      static_cast<unsigned long long>(total.compiles_started),
+      static_cast<unsigned long long>(total.compiles_completed),
+      static_cast<unsigned long long>(total.tokenizers_loaded),
+      static_cast<unsigned long long>(total.ingests),
+      static_cast<unsigned long long>(total.recipes_parsed),
+      static_cast<unsigned long long>(total.reports_read));
   // The pass is neither all refusals nor all accepts: mutations reach
   // past the seal and the loaders, and the contract refuses some.
   if (per_seed >= 128) {
