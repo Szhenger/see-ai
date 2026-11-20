@@ -1878,6 +1878,109 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
   EXPECT_ERROR_CONTAINS(UpdateCompiler(on).Compile(no_eos), "names no EOS id");
 }
 
+TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
+  // #218: the mask finds documents by the EOS id. On a checkpoint whose EOS
+  // is the chat template's turn end, <|im_end|> (the instruct variants), a
+  // prompt/response record holds that id after the user turn, so a mask
+  // would hide every response from its own prompt. Such a plan is never
+  // masked: `auto` compiles unmasked and says why, `on` is refused by name.
+  // The guard reaches no further: plain text on the same model masks, and
+  // so does a chat corpus on a model whose EOS is its own token.
+  seeml::testing::ScopedTempDir dir;
+  auto write = [&](const std::string& name, const std::string& bytes) {
+    const std::string path = dir.File(name);
+    std::ofstream f(path, std::ios::binary);
+    f << bytes;
+    return path;
+  };
+  // A byte vocabulary (id = byte) and the given specials (ids 256, ...);
+  // the first special is the EOS.
+  auto section = [](const std::vector<std::string>& specials) {
+    std::vector<uint8_t> b;
+    auto u32 = [&](uint32_t v) {
+      for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    auto u16 = [&](uint16_t v) {
+      for (int i = 0; i < 2; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    for (uint32_t x : {0x4B544D53u, 1u, 1u, 2u, 0u,
+                       static_cast<uint32_t>(256 + specials.size()), 0u,
+                       static_cast<uint32_t>(specials.size()), 256u,
+                       0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+      u32(x);
+    for (int v = 0; v < 256; ++v) {
+      u16(1);
+      b.push_back(static_cast<uint8_t>(v));
+    }
+    for (const std::string& s : specials) {
+      u16(static_cast<uint16_t>(s.size()));
+      b.insert(b.end(), s.begin(), s.end());
+    }
+    for (uint32_t i = 0; i < specials.size(); ++i) u32(256 + i);
+    return b;
+  };
+  const int64_t dim = 8, heads = 2, seq = 16, ffn = 16, batch = 32;
+  auto model_with = [&](const std::vector<std::string>& specials) {
+    SmfModel m = seeml::testing::MakeTinyTokenDecoder(
+        256 + static_cast<int64_t>(specials.size()), dim, heads, seq, ffn, 47);
+    m.tokenizer = section(specials);
+    return m;
+  };
+  const std::string chat =
+      write("chat.jsonl",
+            "{\"prompt\": \"one?\", \"response\": \"uno\"}\n"
+            "{\"prompt\": \"two?\", \"response\": \"dos\"}\n"
+            "{\"prompt\": \"three?\", \"response\": \"tres\"}\n"
+            "{\"prompt\": \"four?\", \"response\": \"cuatro\"}\n"
+            "{\"prompt\": \"five?\", \"response\": \"cinco\"}\n"
+            "{\"prompt\": \"six?\", \"response\": \"seis\"}\n");
+  const std::string plain = write("plain.jsonl",
+                                  "{\"text\": \"the first document is here\"}\n"
+                                  "{\"text\": \"and the second one follows\"}\n"
+                                  "{\"text\": \"a third document, then\"}\n"
+                                  "{\"text\": \"and a fourth to finish\"}\n");
+  auto masked_ops = [](const CompiledUpdate& c) {
+    return CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdSeg) +
+           CountOpcode(TrainProgramOf(c), OpCode::kAttnFwdTiledSeg);
+  };
+  auto row = [](const CompiledUpdate& c) { return c.screens.analysis.Json(0); };
+
+  // The EOS is the turn end.
+  const SmfModel instruct = model_with({"<|im_end|>", "<|im_start|>"});
+  UpdateConfig cfg = BaseConfig(batch);
+  cfg.data_path = chat;
+  cfg.segment_mask = SegmentMaskKind::kAuto;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate held,
+                       UpdateCompiler(cfg).Compile(instruct));
+  EXPECT_EQ(masked_ops(held), 0u);
+  EXPECT_STR_CONTAINS(row(held), "also ends each turn of a prompt/response");
+  cfg.segment_mask = SegmentMaskKind::kOn;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(instruct),
+                        "would hide every response from its own prompt");
+  cfg.segment_mask = SegmentMaskKind::kOff;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate off,
+                       UpdateCompiler(cfg).Compile(instruct));
+  EXPECT_EQ(masked_ops(off), 0u);
+
+  // Plain text on the same model: documents are joined by the EOS and
+  // nothing else carries it, so the mask is right, and `auto` takes it.
+  cfg.data_path = plain;
+  cfg.segment_mask = SegmentMaskKind::kAuto;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate text,
+                       UpdateCompiler(cfg).Compile(instruct));
+  EXPECT_TRUE(masked_ops(text) > 0);
+  EXPECT_STR_CONTAINS(row(text), "window(s) hold more than one document");
+
+  // A chat corpus on a model whose EOS is its own token: the turn end is
+  // not an EOS, the records are whole documents, and the mask is taken.
+  const SmfModel base = model_with({"<eos>", "<|im_start|>", "<|im_end|>"});
+  cfg.data_path = chat;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate whole, UpdateCompiler(cfg).Compile(base));
+  EXPECT_TRUE(masked_ops(whole) > 0);
+  cfg.segment_mask = SegmentMaskKind::kOn;
+  EXPECT_OK(UpdateCompiler(cfg).Compile(base));
+}
+
 TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
   // #190: under clip_mode global the optimizer program is every
   // kSqNormAccum, then every kClipGlobal (one per adapter tensor, all on the

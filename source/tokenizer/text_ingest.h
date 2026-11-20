@@ -124,6 +124,13 @@ DocumentsFromJsonl(std::string_view jsonl);
 /// The manifest as JSON (one object; the drops as an array).
 std::string ManifestJson(const IngestManifest& m);
 
+/// Whether the section's EOS is the ChatML turn-end marker, <|im_end|> —
+/// the instruct checkpoints' `eos_token`. A prompt/response record then
+/// holds the EOS id inside itself, after the user turn, so nothing that
+/// finds documents by the EOS id (the attention segment mask) can tell a
+/// turn from a document on such a model (#218).
+[[nodiscard]] bool EosEndsChatTurns(const ByteLevelBpe& tokenizer);
+
 }  // namespace seeml::tokenizer
 
 #endif  // SEEML_SOURCE_TOKENIZER_TEXT_INGEST_H_

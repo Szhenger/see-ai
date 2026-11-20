@@ -518,4 +518,10 @@ std::string ManifestJson(const IngestManifest& m) {
   return s;
 }
 
+bool EosEndsChatTurns(const ByteLevelBpe& tokenizer) {
+  const int32_t eos = tokenizer.info().eos_id;
+  return eos >= 0 && static_cast<uint32_t>(eos) < tokenizer.info().vocab_size &&
+         tokenizer.token(static_cast<uint32_t>(eos)) == kImEnd;
+}
+
 }  // namespace seeml::tokenizer
