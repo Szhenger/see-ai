@@ -20,9 +20,8 @@
 //               newline and carriage return, and the bidirectional override
 //               and isolate characters are removed — from every document,
 //               a .txt's one as a .jsonl's (#222; nothing is normalized, so
-//               clean text passes byte for byte and the exporter's path,
-//               which encodes the bytes as they are, still agrees id for
-//               id on it); a document empty after that is dropped
+//               clean text passes byte for byte); a document empty after
+//               that is dropped
 //   deduplicate exact, by the sanitized bytes' hash; later twins dropped
 //   encode      the section's byte-level BPE
 //   pack        documents joined by EOS (the section's eos_id), cut into
@@ -34,8 +33,10 @@
 //               no two records are equal and no split of them can put a
 //               record on one side and its twin on the other
 //
-// Every drop is recorded by index and reason in the manifest; the screen
-// prints the counts. What this does not defend against, and says: well-
+// Every dropped document is recorded by index and reason in the manifest,
+// every dropped window counted; the screen prints the counts. The
+// exporter's --text-corpus path encodes a file's bytes as they are: the two
+// agree id for id on clean text in which no window repeats. What this does not defend against, and says: well-
 // formed poisoned data — the gate and a held-out set are that defense.
 // =============================================================================
 
@@ -45,8 +46,8 @@ struct IngestOptions {
   uint64_t seq_len = 0;       // S: records are S + 1 ids
   bool one_document = false;  // a .txt: the file is one document, no EOS
                               // and no document deduplication (on clean
-                              // text, bit-exact with the exporter's
-                              // --text-corpus)
+                              // text with no repeated window, bit-exact
+                              // with the exporter's --text-corpus)
 };
 
 /// One input document: plain text (every position a loss target), or a

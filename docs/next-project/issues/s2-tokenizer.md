@@ -131,8 +131,10 @@ plan identity vs main on the 14 fixtures (none takes `--data`).
 mode removed nothing and counted, so a control byte, a bidi override and
 invalid bytes reached the ids. `Sanitize` removes exactly invalid UTF-8, Cc
 but tab / newline / CR, and U+202A–202E / U+2066–2069, and normalizes
-nothing, so a clean file is unchanged byte for byte (the 2026-09-22 corpus
-is clean and has no repeated window: acceptance 1 still holds). The counts
+nothing, so clean text passes it byte for byte; a clean file's corpus
+changes only where a window repeats, which the drop below removes (the
+2026-09-22 corpus is clean and has no repeated window: acceptance 1 still
+holds, SmolLmDataPathTest run 2026-11-20). The counts
 are on the default frontend screen when nonzero, no longer under
 `--verbose` only. The pack stage drops a window byte-identical to an
 earlier kept one (`dropped_duplicate_windows`); the device runs the same

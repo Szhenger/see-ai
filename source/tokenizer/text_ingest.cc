@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -165,21 +166,21 @@ size_t SkipSpaces(std::string_view s, size_t i) {
   return i;
 }
 
-/// FNV-1a over a window's ids and, when `mask` is set, its `mask_n` target
-/// flags: a bucket key for the duplicate-window drop, which then compares
-/// the windows themselves, so the hash decides nothing on its own.
-uint64_t WindowHash(const int32_t* ids, uint64_t n, const uint8_t* mask,
-                    uint64_t mask_n) {
+/// FNV-1a over a window's ids and its target flags (empty when the corpus
+/// is unmasked): a bucket key for the duplicate-window drop, which then
+/// compares the windows themselves, so the hash decides nothing on its own.
+uint64_t WindowHash(std::span<const int32_t> ids,
+                    std::span<const uint8_t> mask) {
   uint64_t h = 0xCBF29CE484222325ull;
   auto mix = [&](uint8_t byte) {
     h ^= byte;
     h *= 0x100000001B3ull;
   };
-  for (uint64_t i = 0; i < n; ++i) {
-    const auto v = static_cast<uint32_t>(ids[i]);
+  for (const int32_t id : ids) {
+    const auto v = static_cast<uint32_t>(id);
     for (int k = 0; k < 4; ++k) mix(static_cast<uint8_t>(v >> (8 * k)));
   }
-  for (uint64_t i = 0; i < mask_n; ++i) mix(mask[i]);
+  for (const uint8_t t : mask) mix(t);
   return h;
 }
 
@@ -466,9 +467,10 @@ std::expected<IngestResult, std::string> Ingest(
         ++m.dropped_zero_target_windows;
         continue;
       }
-      const uint64_t h =
-          WindowHash(ids.data() + lo, rec,
-                     masked ? target.data() + lo + 1 : nullptr, masked ? S : 0);
+      const uint64_t h = WindowHash(
+          std::span<const int32_t>(ids).subspan(lo, rec),
+          masked ? std::span<const uint8_t>(target).subspan(lo + 1, S)
+                 : std::span<const uint8_t>());
       std::vector<uint64_t>& bucket = kept_by_hash[h];
       bool twin = false;
       for (const uint64_t k : bucket) {
