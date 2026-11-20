@@ -24,7 +24,9 @@ std::vector<uint8_t> AsBytes(const std::vector<float>& v) {
 
 update::SmfBytes AsPayload(const std::vector<float>& v) {
   update::SmfBytes b(v.size() * sizeof(float));
-  std::memcpy(b.data(), v.data(), b.size());
+  // An empty vector's data() may be null, and memcpy's pointers may not be,
+  // whatever the size (UBSan says so).
+  if (!v.empty()) std::memcpy(b.data(), v.data(), b.size());
   return b;
 }
 
