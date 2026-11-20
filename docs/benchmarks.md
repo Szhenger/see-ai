@@ -1705,6 +1705,28 @@ Five for five, by 0.020–0.037 nats, so **the defaults are now lr 2e-3, cosine,
 
 The mask costs 0.038 nats before a step is taken and 0.070 at the committed state. On this corpus that is the expected sign: neighbouring paragraphs of one document set are related text, and a position that may not read the paragraph before it predicts worse. It is the unfavourable case for the mask, and the only one measured. So **the default stays `off`**; `auto` and `on` are there to be asked for, and the analysis screen says what `auto` decided. What would change the default is the row this one is not: a corpus of unrelated documents, scored on documents alone — the model as it is used, one document in its context. That row has not been run (`docs/ledger/segment-mask-2026-11-18/`: the script, both compile screens, both runs; losses only — the host was on battery, and no time here is a measurement).
 
+**The segment mask, measured again, and the flip (2026-11-19).** The row above compared two runs under two scorings — each under its own attention — and so could not say which training is better. The fair table scores every committed model the same way, twice: a plan compiled from the committed model (f32 base, constant schedule) reports the held-out loss before its first step, under either attention, over the same held-out records. Its diagonal reproduces each run's own committed loss to the last digit. Two corpora, the #151 setting as above: the related one (this repository's docs, a paragraph a document) and an unrelated one (517 Python standard-library docstrings in a seeded shuffle, so a window's neighbours have nothing to do with each other; 377 of 460 windows hold more than one).
+
+| corpus | trained | scored packed (unmasked) | scored one document in context (masked) |
+|---|---|---|---|
+| related | unmasked | **3.6580** | 3.7617 |
+| related | masked | 3.7156 | **3.7276** |
+| unrelated | unmasked | **2.7943** | 2.8833 |
+| unrelated | masked | 2.8319 | **2.8434** |
+
+Each training wins under its own scoring: train as you test. Packed scoring rewards reading the previous document — even an unrelated one of the same genre — and a model trained to do that is the worse one when the previous document is not there. "One document in its context" is the model as it is used: a fine-tuned model answers about one document, not about whatever was packed before it. Under that scoring, at three adapter seeds:
+
+| corpus | seed | trained masked | trained unmasked | Δ |
+|---|---|---|---|---|
+| related | 42 | 3.7276 | 3.7617 | −0.034 |
+| related | 7 | 3.7202 | 3.7639 | −0.044 |
+| related | 123 | 3.7262 | 3.7649 | −0.039 |
+| unrelated | 42 | 2.8434 | 2.8833 | −0.040 |
+| unrelated | 7 | 2.8463 | 2.8731 | −0.027 |
+| unrelated | 123 | 2.8336 | 2.8747 | −0.041 |
+
+Six for six, by 0.027–0.044 nats, so **`--segment-mask auto` is now the default**: a compile given a corpus whose windows hold more than one document masks, and says so on the analysis screen; a compile given no corpus, or a model with no EOS, is the unmasked plan it always was. Three costs, stated. The number a masked run reports is the masked loss, which reads higher than an unmasked run's packed loss on the same corpus (by 0.05–0.07 here) and is not comparable to it — the first row of this section is exactly that confusion. A model that will be used on packed, multi-document context is better trained with `--segment-mask off`. And the unrelated row's seed-123 masked run committed at step 90 where every other run committed at 210; its number stands as measured, and nothing here explains it. **What these rows are not:** one model, two corpora of one size, one rank, SeeAI rows only — the torch and MLX-LM rows of the frontier harness were not run with a segment mask, which they do not have (`docs/ledger/segment-mask-2026-11-19/`: the three scripts and their logs; losses only — the host was on battery, and no time there is a measurement).
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

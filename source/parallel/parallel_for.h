@@ -66,6 +66,13 @@ constexpr size_t ParallelChunkCount(size_t n, size_t grain) {
   return (n + g - 1) / g;
 }
 
+/// The widest pool a command line may ask for: the one bound the runner's,
+/// seeml-plan-probe's and seeml-bench's --threads are all held to, each
+/// refusing a wider request as a usage error. SetParallelThreadCount itself
+/// does not clamp — a width spawns that many workers — so a caller that
+/// takes the width from an input checks it against this first.
+inline constexpr size_t kMaxParallelThreads = 4096;
+
 /// The resolved worker-pool width (>= 1). 1 means every ParallelFor runs
 /// inline on the calling thread.
 size_t ParallelThreadCount();
