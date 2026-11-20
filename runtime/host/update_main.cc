@@ -354,24 +354,65 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
   return std::move(*ds);
 }
 
-}  // namespace
+/// Seconds from `a` to now. Tier D (docs/benchmarks.md, F9 #140): where the
+/// update's wall goes. Clocks sit between phases, never inside a step.
+double SecondsSince(std::chrono::steady_clock::time_point a) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - a)
+      .count();
+}
 
-int main(int argc, char** argv) {
-  // Tier D (docs/benchmarks.md, F9 #140): where the update's wall goes.
-  // Clocks sit between phases, never inside a step.
-  const auto t_main0 = std::chrono::steady_clock::now();
-  auto since = [](std::chrono::steady_clock::time_point a) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - a)
-        .count();
-  };
+/// The lifecycle split the report carries: each phase's seconds, filled in
+/// as the run passes it (0 for a phase it has not reached).
+struct Lifecycle {
+  std::chrono::steady_clock::time_point t_main0 =
+      std::chrono::steady_clock::now();
+  double load_s = 0.0, data_s = 0.0, train_s = 0.0;
+  double merge_s = 0.0, commit_s = 0.0;
+};
+
+/// The command line, parsed and bounds-checked (ParseArgs), then held to
+/// the plan (HoldFlagsToPlan). val_frac becomes the plan's own fraction
+/// when the plan compiled its split, and peak_gflops the GPU's stated peak
+/// on a Metal run that named none.
+struct RunArgs {
+  std::string model, data, out, loss_log, report_path;
+  bool force = false, require_accuracy = false;
+  uint64_t steps = 0, seed = 0;
+  double val_frac = 0.1, min_improvement = 0.0;
+  double peak_gflops = kSeemlPeakGflops;
+  std::string eval_every_text;
+  uint64_t eval_every = 0, patience = 0;
+  seeml::update_rt::BackendKind backend_kind{};
+  bool embedded = false;  // this binary carries a plan
+  std::string plan_flag;  // --plan, as given
+  std::string plan_path;  // the file to map; empty = the embedded plan
+  std::string checkpoint_path;
+  bool resume = false;
+  uint64_t checkpoint_every = 0;
+  // The checkpoint a --resume will continue: set only for one of this plan,
+  // past step 0 (HoldFlagsToPlan drops any other).
+  std::optional<seeml::update_rt::CheckpointRecord> resumed_from;
+};
+
+/// The gate's verdict on a finished run, as the gate line, the runtime
+/// screen and the report state it.
+struct Gate {
+  bool loss_ok, accuracy_measured, acc_ok, accepted;
+  const char* verdict;
+};
+
+/// The command line: every flag parsed and bounds-checked, in the order
+/// that decides which usage error wins. The error is the exit code — 2 for
+/// a bad command line, 0 after --help.
+[[nodiscard]] std::expected<RunArgs, int> ParseArgs(int argc, char** argv) {
   // Strictness before convenience: ArgsOk first, so `--out -h` is a
   // missing-value error rather than a help hit on a swallowed slot. After
   // it passes, every argv slot is a known flag or a non-flag value, and
   // Has()/Arg() below cannot double-read a slot.
-  if (!ArgsOk(argc, argv)) return 2;
+  if (!ArgsOk(argc, argv)) return std::unexpected(2);
   if (Has(argc, argv, "--help") || Has(argc, argv, "-h")) {
     std::fputs(kUsage, stdout);
-    return 0;
+    return std::unexpected(0);
   }
 
   const std::string model = Arg(argc, argv, "--model", "");
@@ -392,7 +433,7 @@ int main(int argc, char** argv) {
       !ParseF64(Arg(argc, argv, "--min-improvement", "0"), &min_improvement) ||
       !(min_improvement >= 0.0 && min_improvement < 1.0)) {
     std::fprintf(stderr, "invalid numeric argument\n");
-    return 2;
+    return std::unexpected(2);
   }
   const bool require_accuracy = Has(argc, argv, "--require-accuracy");
   const std::string report_path = Arg(argc, argv, "--report", "");
@@ -403,7 +444,7 @@ int main(int argc, char** argv) {
       !p.empty() && (!ParseF64(p.c_str(), &peak_gflops) ||
                      !std::isfinite(peak_gflops) || !(peak_gflops > 0.0))) {
     std::fprintf(stderr, "invalid --peak-gflops\n");
-    return 2;
+    return std::unexpected(2);
   }
   // The best-state gate (E9): "auto" resolves inside the engine, against
   // the step count the run actually has (a resume knows its remainder).
@@ -413,18 +454,18 @@ int main(int argc, char** argv) {
   if ((eval_every_text != "auto" && !ParseU64(eval_every_text.c_str(), &eval_every)) ||
       !ParseU64(Arg(argc, argv, "--patience", "0"), &patience)) {
     std::fprintf(stderr, "invalid --eval-every / --patience\n");
-    return 2;
+    return std::unexpected(2);
   }
   if (patience > 0 && (eval_every == 0 || val_frac <= 0.0)) {
     std::fprintf(stderr,
                  "model_update: --patience needs periodic evaluation "
                  "(--eval-every > 0) and a validation split (--val-frac > 0)\n");
-    return 2;
+    return std::unexpected(2);
   }
 
   if (model.empty() || data.empty()) {
     std::fputs(kUsage, stderr);
-    return 2;
+    return std::unexpected(2);
   }
 
   // The pool width (#202 item 1): the flag wins over $SEEML_THREADS, which
@@ -435,7 +476,7 @@ int main(int argc, char** argv) {
     if (!ParseU64(Arg(argc, argv, "--threads", ""), &threads) || threads == 0 ||
         threads > 4096) {
       std::fprintf(stderr, "invalid --threads (an integer from 1 to 4096)\n");
-      return 2;
+      return std::unexpected(2);
     }
     seeml::update::SetParallelThreadCount(static_cast<size_t>(threads));
   }
@@ -454,7 +495,7 @@ int main(int argc, char** argv) {
                  "model_update: --backend (or $SEEML_BACKEND) must be cpu, "
                  "metal or auto, got '%s'\n",
                  backend_text.c_str());
-    return 2;
+    return std::unexpected(2);
   }
   // Where the plan is (#158): --plan names a file; otherwise the embedded
   // plan when this binary carries one, else update_plan.seeu beside the
@@ -479,88 +520,135 @@ int main(int argc, char** argv) {
   if (!ParseU64(Arg(argc, argv, "--checkpoint-every", "0"),
                 &checkpoint_every)) {
     std::fprintf(stderr, "invalid --checkpoint-every\n");
-    return 2;
+    return std::unexpected(2);
   }
   std::optional<seeml::update_rt::CheckpointRecord> resumed_from;
   if (resume && !checkpoint_path.empty())
     if (auto peek = seeml::update_rt::PeekCheckpointRecord(checkpoint_path))
       resumed_from = std::move(*peek);
-  // --require-accuracy needs something to measure: class labels (the eval
-  // program's softmax) and a validation split. The plan header is right
-  // here in the embedded bytes (or the first bytes of the file), so the
-  // usage error costs nothing — before any backend is built or the plan
-  // hashed. A flag that cannot apply is a usage error, never a silently
-  // vacuous gate. A plan file that cannot be opened fails closed here,
-  // with the package mode spelled out.
-  {
-    seeml::update::PlanHeader hdr{};
-    if (plan_path.empty()) {
-      if (kSeemlUpdatePlanSize >= sizeof(hdr))
-        std::memcpy(&hdr, kSeemlUpdatePlan, sizeof(hdr));
-    } else {
-      std::FILE* f = std::fopen(plan_path.c_str(), "rb");
-      if (!f) {
-        std::fprintf(stderr,
-                     "load: cannot open the update plan '%s' (%s)%s\n",
-                     plan_path.c_str(), std::strerror(errno),
-                     plan_flag.empty()
-                         ? "; this package carries no embedded plan — keep "
-                           "update_plan.seeu beside model_update, or pass "
-                           "--plan <file>"
-                         : "");
-        return 1;
-      }
-      const size_t got = std::fread(&hdr, 1, sizeof(hdr), f);
-      std::fclose(f);
-      if (got != sizeof(hdr)) {
-        std::fprintf(stderr,
-                     "load: '%s' is smaller than a plan header (%zu bytes)\n",
-                     plan_path.c_str(), got);
-        return 1;
-      }
-    }
-    if (require_accuracy && (hdr.label_kind != 1 || val_frac <= 0.0)) {
-      std::fprintf(stderr,
-                   "model_update: --require-accuracy needs a class-label plan "
-                   "and a validation split (--val-frac > 0)\n");
-      return 2;
-    }
-    // The flags held to the plan by the recipe's rules (S4 #150): a --steps
-    // inside the compiled warmup, a --checkpoint-every with no --checkpoint,
-    // an --eval-every with no validation split — each was silently accepted.
-    // Here with the other usage errors: the rules read the header and the
-    // command line alone, so the refusal comes before the plan is hashed,
-    // the model scanned or the corpus read. A validation split exists when
-    // the plan compiled one or --val-frac asks for one.
-    seeml::update::recipe::RunFlags flags;
-    flags.steps_given = Has(argc, argv, "--steps");
-    flags.steps = steps;
-    // The checkpoint the engine will resume is one bound to THIS plan: a
-    // stale file left by another (a recompiled package's) is refused by its
-    // load as "a different plan" and the run starts fresh.
-    flags.resume = resumed_from && resumed_from->step > 0 &&
-                   resumed_from->plan_hash == hdr.plan_hash;
-    flags.has_checkpoint_path = !checkpoint_path.empty();
-    flags.checkpoint_every_given = Has(argc, argv, "--checkpoint-every");
-    flags.checkpoint_every = checkpoint_every;
-    flags.eval_every_given = eval_every_text != "auto";
-    flags.eval_every = eval_every;
-    flags.has_validation =
-        (hdr.data_flags & seeml::update::kDataFlagSplit) != 0 || val_frac > 0.0;
-    if (auto why = seeml::update::recipe::RunFlagsViolation(hdr, flags)) {
-      std::fprintf(stderr, "model_update: %s\n", why->c_str());
-      return 2;
-    }
-    // A checkpoint the engine will not resume binds this run to nothing.
-    // The seed / split refusal below is a resume's: held against a stale
-    // file — another plan's, which the engine's load refuses before it
-    // starts fresh — it would exit 2 over "a different --seed" for a
-    // checkpoint that never constrained this run, and only when the seeds
-    // happen to differ.
-    if (!flags.resume) resumed_from.reset();
-  }
+  RunArgs args;
+  args.model = model;
+  args.data = data;
+  args.out = out;
+  args.loss_log = loss_log;
+  args.report_path = report_path;
+  args.force = force;
+  args.require_accuracy = require_accuracy;
+  args.steps = steps;
+  args.seed = seed;
+  args.val_frac = val_frac;
+  args.min_improvement = min_improvement;
+  args.peak_gflops = peak_gflops;
+  args.eval_every_text = eval_every_text;
+  args.eval_every = eval_every;
+  args.patience = patience;
+  args.backend_kind = *backend_kind;
+  args.embedded = embedded;
+  args.plan_flag = plan_flag;
+  args.plan_path = plan_path;
+  args.checkpoint_path = checkpoint_path;
+  args.resume = resume;
+  args.checkpoint_every = checkpoint_every;
+  args.resumed_from = std::move(resumed_from);
+  return args;
+}
 
-  seeml::update_rt::UpdateEngine engine;
+/// --require-accuracy needs something to measure: class labels (the eval
+/// program's softmax) and a validation split. The plan header is right
+/// here in the embedded bytes (or the first bytes of the file), so the
+/// usage error costs nothing — before any backend is built or the plan
+/// hashed. A flag that cannot apply is a usage error, never a silently
+/// vacuous gate. A plan file that cannot be opened fails closed here,
+/// with the package mode spelled out.
+[[nodiscard]] std::optional<int> HoldFlagsToPlan(int argc, char** argv,
+                                                 RunArgs& args) {
+  const std::string& plan_path = args.plan_path;
+  const std::string& plan_flag = args.plan_flag;
+  const std::string& checkpoint_path = args.checkpoint_path;
+  const std::string& eval_every_text = args.eval_every_text;
+  const bool require_accuracy = args.require_accuracy;
+  const double val_frac = args.val_frac;
+  const uint64_t steps = args.steps;
+  const uint64_t checkpoint_every = args.checkpoint_every;
+  const uint64_t eval_every = args.eval_every;
+  auto& resumed_from = args.resumed_from;
+  seeml::update::PlanHeader hdr{};
+  if (plan_path.empty()) {
+    if (kSeemlUpdatePlanSize >= sizeof(hdr))
+      std::memcpy(&hdr, kSeemlUpdatePlan, sizeof(hdr));
+  } else {
+    std::FILE* f = std::fopen(plan_path.c_str(), "rb");
+    if (!f) {
+      std::fprintf(stderr,
+                   "load: cannot open the update plan '%s' (%s)%s\n",
+                   plan_path.c_str(), std::strerror(errno),
+                   plan_flag.empty()
+                       ? "; this package carries no embedded plan — keep "
+                         "update_plan.seeu beside model_update, or pass "
+                         "--plan <file>"
+                       : "");
+      return 1;
+    }
+    const size_t got = std::fread(&hdr, 1, sizeof(hdr), f);
+    std::fclose(f);
+    if (got != sizeof(hdr)) {
+      std::fprintf(stderr,
+                   "load: '%s' is smaller than a plan header (%zu bytes)\n",
+                   plan_path.c_str(), got);
+      return 1;
+    }
+  }
+  if (require_accuracy && (hdr.label_kind != 1 || val_frac <= 0.0)) {
+    std::fprintf(stderr,
+                 "model_update: --require-accuracy needs a class-label plan "
+                 "and a validation split (--val-frac > 0)\n");
+    return 2;
+  }
+  // The flags held to the plan by the recipe's rules (S4 #150): a --steps
+  // inside the compiled warmup, a --checkpoint-every with no --checkpoint,
+  // an --eval-every with no validation split — each was silently accepted.
+  // Here with the other usage errors: the rules read the header and the
+  // command line alone, so the refusal comes before the plan is hashed,
+  // the model scanned or the corpus read. A validation split exists when
+  // the plan compiled one or --val-frac asks for one.
+  seeml::update::recipe::RunFlags flags;
+  flags.steps_given = Has(argc, argv, "--steps");
+  flags.steps = steps;
+  // The checkpoint the engine will resume is one bound to THIS plan: a
+  // stale file left by another (a recompiled package's) is refused by its
+  // load as "a different plan" and the run starts fresh.
+  flags.resume = resumed_from && resumed_from->step > 0 &&
+                 resumed_from->plan_hash == hdr.plan_hash;
+  flags.has_checkpoint_path = !checkpoint_path.empty();
+  flags.checkpoint_every_given = Has(argc, argv, "--checkpoint-every");
+  flags.checkpoint_every = checkpoint_every;
+  flags.eval_every_given = eval_every_text != "auto";
+  flags.eval_every = eval_every;
+  flags.has_validation =
+      (hdr.data_flags & seeml::update::kDataFlagSplit) != 0 || val_frac > 0.0;
+  if (auto why = seeml::update::recipe::RunFlagsViolation(hdr, flags)) {
+    std::fprintf(stderr, "model_update: %s\n", why->c_str());
+    return 2;
+  }
+  // A checkpoint the engine will not resume binds this run to nothing.
+  // The seed / split refusal below is a resume's: held against a stale
+  // file — another plan's, which the engine's load refuses before it
+  // starts fresh — it would exit 2 over "a different --seed" for a
+  // checkpoint that never constrained this run, and only when the seeds
+  // happen to differ.
+  if (!flags.resume) resumed_from.reset();
+  return std::nullopt;
+}
+
+/// The backend, the plan and the source model: select, load and validate,
+/// bind. An exit code when any of them refuses.
+[[nodiscard]] std::optional<int> LoadPlanAndModel(
+    const RunArgs& args, seeml::update_rt::UpdateEngine& engine,
+    double* load_seconds) {
+  const std::string& plan_path = args.plan_path;
+  const std::string& model = args.model;
+  const bool embedded = args.embedded;
+  const seeml::update_rt::BackendKind* backend_kind = &args.backend_kind;
   if (auto r = engine.SelectBackend(*backend_kind); !r) {
     std::fprintf(stderr, "backend: %s\n", r.error().c_str());
     return 1;
@@ -605,7 +693,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "model: %s\n", r.error().c_str());
     return 1;
   }
-  const double load_s = since(t_load0);  // plan + validation + source bind
+  *load_seconds = SecondsSince(t_load0);  // plan + validation + source bind
   if (engine.scores_shipped())
     std::fprintf(stderr,
                  "seeml-update: validation scores the shipped model (the "
@@ -616,28 +704,22 @@ int main(int argc, char** argv) {
                " (%llu persistent)\n",
                (unsigned long long)engine.header().arena_size,
                (unsigned long long)engine.header().persistent_size);
+  return std::nullopt;
+}
 
-  const auto t_data0 = std::chrono::steady_clock::now();
-  // --data: a pre-tokenized .sds, or raw text (#202 item 2) ingested here
-  // with the model's own tokenizer.
-  const std::string data_ext = DataExtension(data);
-  auto dataset = data_ext == "txt" || data_ext == "jsonl"
-                     ? LoadRawText(model, data, data_ext, engine.header())
-                     : seeml::update_rt::Dataset::LoadFromFile(data);
-  if (!dataset) {
-    std::fprintf(stderr, "data: %s\n", dataset.error().c_str());
-    return 1;
-  }
-
-  // Held-out validation split (before shuffling) drives the regression
-  // gate. A plan that compiled its split (S3 #149, v22 kDataFlagSplit)
-  // names the held-out records: the same function of (records, seed,
-  // fraction) is recomputed here and its hash must be the plan's, so the
-  // gate scores the set the compile decided; --val-frac is then not a
-  // runner decision and is refused. Otherwise --val-frac splits by
-  // position as before; 0 falls back to the training-loss trend.
-  std::optional<seeml::update_rt::Dataset> val_set;
-  const seeml::update::PlanHeader& plan_header = engine.header();
+/// Held-out validation split (before shuffling) drives the regression
+/// gate. A plan that compiled its split (S3 #149, v22 kDataFlagSplit)
+/// names the held-out records: the same function of (records, seed,
+/// fraction) is recomputed here and its hash must be the plan's, so the
+/// gate scores the set the compile decided; --val-frac is then not a
+/// runner decision and is refused. Otherwise --val-frac splits by
+/// position as before; 0 falls back to the training-loss trend.
+[[nodiscard]] std::optional<int> SplitValidation(
+    int argc, char** argv, RunArgs& args,
+    const seeml::update::PlanHeader& plan_header,
+    seeml::update_rt::Dataset* dataset,
+    std::optional<seeml::update_rt::Dataset>& val_set) {
+  double& val_frac = args.val_frac;
   if ((plan_header.data_flags & seeml::update::kDataFlagSplit) != 0) {
     if (Has(argc, argv, "--val-frac")) {
       std::fprintf(stderr,
@@ -677,23 +759,20 @@ int main(int argc, char** argv) {
     }
     val_set = std::move(*split);
   }
-  dataset->EnableShuffle(seed);
-  const double data_s = since(t_data0);
+  return std::nullopt;
+}
 
-  seeml::update_rt::TrainOptions options;
-  options.checkpoint_path = checkpoint_path;
-  options.resume = resume;
-  options.validation = val_set ? &*val_set : nullptr;
-  options.record_loss_curve = !loss_log.empty();
-  options.eval_every = eval_every;
-  options.patience = patience;
-  options.checkpoint_every = checkpoint_every;
-  // A resume is bound to the first run's shuffle seed and split (SEKP v5):
-  // a different one would train on that run's validation rows. Refused
-  // here as the usage error it is, before the engine loads anything; the
-  // engine refuses again for callers that skip this check. (resumed_from
-  // is set only for a checkpoint of this plan past step 0 — the engine's
-  // own condition for holding the binding.)
+/// A resume is bound to the first run's shuffle seed and split (SEKP v5):
+/// a different one would train on that run's validation rows. Refused
+/// here as the usage error it is, before the engine loads anything; the
+/// engine refuses again for callers that skip this check. (resumed_from
+/// is set only for a checkpoint of this plan past step 0 — the engine's
+/// own condition for holding the binding.)
+[[nodiscard]] std::optional<int> RefuseForeignResume(
+    const RunArgs& args, const seeml::update_rt::Dataset* dataset,
+    const std::optional<seeml::update_rt::Dataset>& val_set,
+    const seeml::update_rt::TrainOptions& options) {
+  const auto& resumed_from = args.resumed_from;
   if (resumed_from && resumed_from->has_binding &&
       (resumed_from->shuffle_origin != dataset->shuffle_origin() ||
        resumed_from->train_samples != dataset->num_samples() ||
@@ -708,22 +787,13 @@ int main(int argc, char** argv) {
                  (unsigned long long)resumed_from->val_samples);
     return 2;
   }
+  return std::nullopt;
+}
 
-  options.should_stop = [] {
-    return g_stop_requested.load(std::memory_order_acquire);
-  };
-  InstallStopHandlers();
-  // The energy of the training run (#202 item 3), for the runtime screen.
-  seeml::update_rt::EnergyMeter energy_meter;
-  energy_meter.Start();
-  const auto t_train0 = std::chrono::steady_clock::now();
-  auto report = engine.Train(*dataset, steps, options);
-  const double train_s = since(t_train0);
-  const seeml::update_rt::EnergyReading energy = energy_meter.Stop();
-  if (!report) {
-    std::fprintf(stderr, "train: %s\n", report.error().c_str());
-    return 1;
-  }
+/// The run's own lines: a stop, the loss pairs, the best state, accuracy.
+void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
+                    seeml::update_rt::TrainReport* report,
+                    const std::string& checkpoint_path) {
   // A stopped run (#202 item 1) ran no bracketing evaluation: its end state
   // was never scored, so the report says so (null) rather than showing a
   // number nothing measured.
@@ -766,10 +836,11 @@ int main(int argc, char** argv) {
   if (report->has_val_accuracy && !stopped)
     std::fprintf(stderr, "seeml-update: validation accuracy %.4f -> %.4f\n",
                  report->val_initial_accuracy, report->val_final_accuracy);
+}
 
-  // Every requested output is checked (CR4 #145 F66): a full disk used to
-  // leave a truncated file and exit 0. A failed output after a commit is
-  // exit 4 — the model is updated, the record is not — never a silent 0.
+/// --loss-log: the curve as CSV. False when it could not be written.
+[[nodiscard]] bool WriteLossLog(
+    const std::string& loss_log, const seeml::update_rt::TrainReport* report) {
   bool outputs_ok = true;
   if (!loss_log.empty()) {
     std::FILE* f = std::fopen(loss_log.c_str(), "w");
@@ -790,13 +861,21 @@ int main(int argc, char** argv) {
       }
     }
   }
+  return outputs_ok;
+}
 
-  // Regression gate: a failed update must leave the device untouched.
-  // With a validation split this gates on held-out loss, not training
-  // loss; --min-improvement demands a margin and --require-accuracy a
-  // second, task-level opinion (#67). The verdict names the gate that
-  // failed; the report is written last, so it records what actually
-  // happened — including whether the commit landed.
+/// Regression gate: a failed update must leave the device untouched.
+/// With a validation split this gates on held-out loss, not training
+/// loss; --min-improvement demands a margin and --require-accuracy a
+/// second, task-level opinion (#67). The verdict names the gate that
+/// failed; the report is written last, so it records what actually
+/// happened — including whether the commit landed.
+Gate WeighGate(const RunArgs& args,
+               const seeml::update_rt::UpdateEngine& engine,
+               const seeml::update_rt::TrainReport* report, bool stopped) {
+  const double min_improvement = args.min_improvement;
+  const bool require_accuracy = args.require_accuracy;
+  const bool force = args.force;
   const bool loss_ok = report->ImprovedBy(static_cast<float>(min_improvement));
   const bool accuracy_measured = report->has_val_accuracy;
   const bool acc_ok =
@@ -813,152 +892,185 @@ int main(int argc, char** argv) {
                  " -> %s [backend %s]\n",
                  min_improvement, require_accuracy ? "yes" : "no", verdict,
                  engine.backend_name());
+  return {loss_ok, accuracy_measured, acc_ok, accepted, verdict};
+}
 
-  // The runtime screen (S0 #146): the plan's own numbers — the memory the
-  // device holds, the work of a step, the step the target peak predicts;
-  // the rows the compile printed, recomputed here from the plan itself —
-  // beside what this run measured. Printed after the gate, so the verdict
-  // is in it, and carried by --report.
-  seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);
-  {
-    // On the GPU the prediction is against the GPU's stated peak, unless
-    // this run named its own.
-    if (std::string_view(engine.backend_name()).starts_with("metal") &&
-        kSeemlGpuPeakGflops > 0.0 && !Has(argc, argv, "--peak-gflops"))
-      peak_gflops = kSeemlGpuPeakGflops;
-    // The rows themselves are the profiler's (S7 #153), shared with
-    // seeml-bench: the plan's numbers beside what this run measured.
-    std::optional<double> entropy;
-    if (engine.header().label_kind == 1) entropy = dataset->LabelEntropyNats();
-    seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,
-                                        peak_gflops, verdict, entropy,
-                                        &energy);
+/// What --report states: the run as the engine, the gate, the runtime
+/// screen and the lifecycle clocks hold it when the report is written.
+struct ReportContext {
+  const RunArgs& args;
+  const seeml::update_rt::UpdateEngine& engine;
+  const seeml::update_rt::TrainReport& train;
+  const Gate& gate;
+  const seeml::update::Screen& runtime_screen;
+  const Lifecycle& life;
+};
+
+/// --report: the JSON record, written last so it says what happened —
+/// including whether the commit landed. False when it could not be written.
+[[nodiscard]] bool WriteReport(const ReportContext& context, bool committed,
+                               const char* error) {
+  const std::string& report_path = context.args.report_path;
+  const std::string& plan_path = context.args.plan_path;
+  const double min_improvement = context.args.min_improvement;
+  const bool require_accuracy = context.args.require_accuracy;
+  const bool force = context.args.force;
+  const seeml::update_rt::UpdateEngine& engine = context.engine;
+  const seeml::update_rt::TrainReport* report = &context.train;
+  const seeml::update::Screen& runtime_screen = context.runtime_screen;
+  const bool loss_ok = context.gate.loss_ok;
+  const bool accuracy_measured = context.gate.accuracy_measured;
+  const bool acc_ok = context.gate.acc_ok;
+  const bool accepted = context.gate.accepted;
+  const char* verdict = context.gate.verdict;
+  const auto t_main0 = context.life.t_main0;
+  const double load_s = context.life.load_s, data_s = context.life.data_s;
+  const double train_s = context.life.train_s;
+  const double merge_s = context.life.merge_s;
+  const double commit_s = context.life.commit_s;
+  bool outputs_ok = true;
+  if (report_path.empty()) return outputs_ok;
+  // Staged and renamed into place, every write checked: a truncated
+  // report under the real name is worse than none (CR4 #145 F66).
+  const std::string staged = report_path + ".tmp";
+  std::FILE* f = std::fopen(staged.c_str(), "w");
+  if (!f) {
+    std::fprintf(stderr, "seeml-update: cannot write --report '%s'\n",
+                 report_path.c_str());
+    outputs_ok = false;
+    return outputs_ok;
   }
-  std::fputs(runtime_screen.Text(/*verbose=*/false).c_str(), stderr);
-  double merge_s = 0.0, commit_s = 0.0;
-  auto write_report = [&](bool committed, const char* error) {
-    if (report_path.empty()) return;
-    // Staged and renamed into place, every write checked: a truncated
-    // report under the real name is worse than none (CR4 #145 F66).
-    const std::string staged = report_path + ".tmp";
-    std::FILE* f = std::fopen(staged.c_str(), "w");
-    if (!f) {
-      std::fprintf(stderr, "seeml-update: cannot write --report '%s'\n",
-                   report_path.c_str());
-      outputs_ok = false;
-      return;
+  // JSON has no NaN/inf and no raw quotes: non-finite numbers become
+  // null, strings are escaped.
+  auto num = [&](float v) {
+    if (std::isfinite(v)) std::fprintf(f, "%.8g", v);
+    else std::fputs("null", f);
+  };
+  auto str = [&](const std::string& v) {
+    std::fputc('"', f);
+    for (char c : v) {
+      if (c == '"' || c == '\\') std::fputc('\\', f);
+      if (static_cast<unsigned char>(c) < 0x20) std::fputc(' ', f);
+      else std::fputc(c, f);
     }
-    // JSON has no NaN/inf and no raw quotes: non-finite numbers become
-    // null, strings are escaped.
-    auto num = [&](float v) {
-      if (std::isfinite(v)) std::fprintf(f, "%.8g", v);
-      else std::fputs("null", f);
-    };
-    auto str = [&](const std::string& v) {
-      std::fputc('"', f);
-      for (char c : v) {
-        if (c == '"' || c == '\\') std::fputc('\\', f);
-        if (static_cast<unsigned char>(c) < 0x20) std::fputc(' ', f);
-        else std::fputc(c, f);
-      }
-      std::fputc('"', f);
-    };
-    std::fputs("{\n  \"schema\": 3,\n  \"backend\": ", f);
-    str(engine.backend_name());
-    std::fputs(",\n  \"device\": ", f);
-    str(engine.backend_device());
-    // Which kernels this row measured (review F42): the instructions the
-    // backend ran on a relaxed kernel (plan v18) — 0 on the reference
-    // build, and for an exact plan, whatever the backend could do.
-    std::fprintf(f, ",\n  \"relaxed_executions\": %llu",
-                 (unsigned long long)engine.relaxed_executions());
-    // The package mode (#158): the plan this run executed and where it
-    // came from — the binary, or a file mapped at start-up.
-    std::fputs(",\n  \"plan\": {\"source\": ", f);
-    str(plan_path.empty() ? "embedded" : "file");
-    std::fputs(", \"path\": ", f);
-    if (plan_path.empty()) std::fputs("null", f);
-    else str(plan_path);
-    std::fprintf(f, ", \"bytes\": %zu}", engine.plan_size());
-    std::fprintf(f, ",\n  \"steps\": %llu,\n  \"train_loss\": [",
-                 (unsigned long long)report->steps);
-    num(report->initial_avg_loss);
+    std::fputc('"', f);
+  };
+  std::fputs("{\n  \"schema\": 3,\n  \"backend\": ", f);
+  str(engine.backend_name());
+  std::fputs(",\n  \"device\": ", f);
+  str(engine.backend_device());
+  // Which kernels this row measured (review F42): the instructions the
+  // backend ran on a relaxed kernel (plan v18) — 0 on the reference
+  // build, and for an exact plan, whatever the backend could do.
+  std::fprintf(f, ",\n  \"relaxed_executions\": %llu",
+               (unsigned long long)engine.relaxed_executions());
+  // The package mode (#158): the plan this run executed and where it
+  // came from — the binary, or a file mapped at start-up.
+  std::fputs(",\n  \"plan\": {\"source\": ", f);
+  str(plan_path.empty() ? "embedded" : "file");
+  std::fputs(", \"path\": ", f);
+  if (plan_path.empty()) std::fputs("null", f);
+  else str(plan_path);
+  std::fprintf(f, ", \"bytes\": %zu}", engine.plan_size());
+  std::fprintf(f, ",\n  \"steps\": %llu,\n  \"train_loss\": [",
+               (unsigned long long)report->steps);
+  num(report->initial_avg_loss);
+  std::fputs(", ", f);
+  num(report->final_avg_loss);
+  std::fputs("],\n", f);
+  if (report->has_validation) {
+    std::fputs("  \"validation_loss\": [", f);
+    num(report->val_initial_loss);
     std::fputs(", ", f);
-    num(report->final_avg_loss);
+    num(report->val_final_loss);
     std::fputs("],\n", f);
-    if (report->has_validation) {
-      std::fputs("  \"validation_loss\": [", f);
-      num(report->val_initial_loss);
-      std::fputs(", ", f);
-      num(report->val_final_loss);
-      std::fputs("],\n", f);
-    }
-    // What the validation losses score (schema 3, E12): the model that
-    // ships, or — for a narrow-storage plan compiled from memory — the
-    // plan's own narrow weights, a proxy.
-    std::fprintf(f, "  \"validation_scores\": \"%s\",\n",
-                 engine.scores_shipped() ? "shipped" : "plan");
-    if (report->best_tracked) {
-      // validation_loss[1] above is the committed (best) state's; here is
-      // the run's endpoint and where the best was found.
-      std::fprintf(f,
-                   "  \"best_state\": {\"step\": %llu, \"last_loss\": ",
-                   (unsigned long long)report->best_step);
-      num(report->val_last_loss);
-      std::fprintf(f,
-                   ", \"eval_every\": %llu, \"patience\": %llu, "
-                   "\"evaluations\": %llu, \"stopped_by_patience\": %s},\n",
-                   (unsigned long long)report->eval_every,
-                   (unsigned long long)report->patience,
-                   (unsigned long long)report->evaluations,
-                   report->stopped_by_patience ? "true" : "false");
-    }
-    if (accuracy_measured) {
-      std::fputs("  \"validation_accuracy\": [", f);
-      num(report->val_initial_accuracy);
-      std::fputs(", ", f);
-      num(report->val_final_accuracy);
-      std::fputs("],\n", f);
-    }
-    // Tier D: the lifecycle split — load and validate the plan (with the
-    // source-model bind), the dataset, the training run with every
-    // evaluation inside it (the two bracketing ones plus the periodic
-    // ones), merge, commit, and the whole wall so far.
+  }
+  // What the validation losses score (schema 3, E12): the model that
+  // ships, or — for a narrow-storage plan compiled from memory — the
+  // plan's own narrow weights, a proxy.
+  std::fprintf(f, "  \"validation_scores\": \"%s\",\n",
+               engine.scores_shipped() ? "shipped" : "plan");
+  if (report->best_tracked) {
+    // validation_loss[1] above is the committed (best) state's; here is
+    // the run's endpoint and where the best was found.
     std::fprintf(f,
-                 "  \"lifecycle\": {\"load_s\": %.4f, \"data_s\": %.4f, "
-                 "\"train_s\": %.4f, \"eval_s\": %.4f, \"evaluations\": %llu, "
-                 "\"merge_s\": %.4f, \"commit_s\": %.4f, \"wall_s\": %.4f},\n",
-                 load_s, data_s, train_s, report->eval_seconds,
-                 (unsigned long long)(report->evaluations +
-                                      (report->has_validation ? 2 : 0)),
-                 merge_s, commit_s, since(t_main0));
-    // The runtime screen, by key (S0 #146; the schema seeml-abi publishes).
-    std::fprintf(f, "  \"runtime\": %s,\n", runtime_screen.Json(2).c_str());
+                 "  \"best_state\": {\"step\": %llu, \"last_loss\": ",
+                 (unsigned long long)report->best_step);
+    num(report->val_last_loss);
     std::fprintf(f,
-                 "  \"gate\": {\"min_improvement\": %.8g, "
-                 "\"require_accuracy\": %s, \"loss_ok\": %s, "
-                 "\"accuracy_measured\": %s, \"accuracy_ok\": %s, "
-                 "\"forced\": %s},\n  \"verdict\": \"%s\",\n"
-                 "  \"committed\": %s",
-                 min_improvement, require_accuracy ? "true" : "false",
-                 loss_ok ? "true" : "false",
-                 accuracy_measured ? "true" : "false",
-                 acc_ok ? "true" : "false",
-                 (!accepted && force) ? "true" : "false", verdict,
-                 committed ? "true" : "false");
-    if (error) {
-      std::fputs(",\n  \"error\": ", f);
-      str(error);
-    }
-    std::fputs("\n}\n", f);
-    const bool bad = std::ferror(f) != 0;
-    if (std::fclose(f) != 0 || bad ||
-        std::rename(staged.c_str(), report_path.c_str()) != 0) {
-      std::fprintf(stderr, "seeml-update: failed writing --report '%s'\n",
-                   report_path.c_str());
-      std::remove(staged.c_str());
-      outputs_ok = false;
-    }
+                 ", \"eval_every\": %llu, \"patience\": %llu, "
+                 "\"evaluations\": %llu, \"stopped_by_patience\": %s},\n",
+                 (unsigned long long)report->eval_every,
+                 (unsigned long long)report->patience,
+                 (unsigned long long)report->evaluations,
+                 report->stopped_by_patience ? "true" : "false");
+  }
+  if (accuracy_measured) {
+    std::fputs("  \"validation_accuracy\": [", f);
+    num(report->val_initial_accuracy);
+    std::fputs(", ", f);
+    num(report->val_final_accuracy);
+    std::fputs("],\n", f);
+  }
+  // Tier D: the lifecycle split — load and validate the plan (with the
+  // source-model bind), the dataset, the training run with every
+  // evaluation inside it (the two bracketing ones plus the periodic
+  // ones), merge, commit, and the whole wall so far.
+  std::fprintf(f,
+               "  \"lifecycle\": {\"load_s\": %.4f, \"data_s\": %.4f, "
+               "\"train_s\": %.4f, \"eval_s\": %.4f, \"evaluations\": %llu, "
+               "\"merge_s\": %.4f, \"commit_s\": %.4f, \"wall_s\": %.4f},\n",
+               load_s, data_s, train_s, report->eval_seconds,
+               (unsigned long long)(report->evaluations +
+                                    (report->has_validation ? 2 : 0)),
+               merge_s, commit_s, SecondsSince(t_main0));
+  // The runtime screen, by key (S0 #146; the schema seeml-abi publishes).
+  std::fprintf(f, "  \"runtime\": %s,\n", runtime_screen.Json(2).c_str());
+  std::fprintf(f,
+               "  \"gate\": {\"min_improvement\": %.8g, "
+               "\"require_accuracy\": %s, \"loss_ok\": %s, "
+               "\"accuracy_measured\": %s, \"accuracy_ok\": %s, "
+               "\"forced\": %s},\n  \"verdict\": \"%s\",\n"
+               "  \"committed\": %s",
+               min_improvement, require_accuracy ? "true" : "false",
+               loss_ok ? "true" : "false",
+               accuracy_measured ? "true" : "false",
+               acc_ok ? "true" : "false",
+               (!accepted && force) ? "true" : "false", verdict,
+               committed ? "true" : "false");
+  if (error) {
+    std::fputs(",\n  \"error\": ", f);
+    str(error);
+  }
+  std::fputs("\n}\n", f);
+  const bool bad = std::ferror(f) != 0;
+  if (std::fclose(f) != 0 || bad ||
+      std::rename(staged.c_str(), report_path.c_str()) != 0) {
+    std::fprintf(stderr, "seeml-update: failed writing --report '%s'\n",
+                 report_path.c_str());
+    std::remove(staged.c_str());
+    outputs_ok = false;
+  }
+  return outputs_ok;
+}
+
+/// The end of the run: a stop (5), a rejection (3), or the merge and the
+/// commit (0; 4 when a requested output was lost; 1 when either fails). The
+/// report is written on every path.
+int Conclude(const ReportContext& context,
+             seeml::update_rt::UpdateEngine& engine, Lifecycle& life,
+             bool stopped, bool outputs_ok) {
+  const std::string& model = context.args.model;
+  const std::string& out = context.args.out;
+  const bool force = context.args.force;
+  const seeml::update_rt::TrainReport* report = &context.train;
+  const bool loss_ok = context.gate.loss_ok;
+  const bool accuracy_measured = context.gate.accuracy_measured;
+  const bool accepted = context.gate.accepted;
+  double& merge_s = life.merge_s;
+  double& commit_s = life.commit_s;
+  auto write_report = [&](bool committed, const char* error) {
+    if (!WriteReport(context, committed, error)) outputs_ok = false;
   };
   // Stopped before the gate, and before --force could matter: nothing is
   // merged or committed. Exit 5 — distinct from a failure (1) and from a
@@ -992,14 +1104,14 @@ int main(int argc, char** argv) {
     write_report(false, r.error().c_str());
     return 1;
   }
-  merge_s = since(t_merge0);
+  merge_s = SecondsSince(t_merge0);
   const auto t_commit0 = std::chrono::steady_clock::now();
   if (auto r = engine.CommitToModel(model, out); !r) {
     std::fprintf(stderr, "commit: %s\n", r.error().c_str());
     write_report(false, r.error().c_str());
     return 1;
   }
-  commit_s = since(t_commit0);
+  commit_s = SecondsSince(t_commit0);
   write_report(true, nullptr);
   std::fprintf(stderr, "seeml-update: committed '%s'\n", out.c_str());
   // The committed model's report (S4 #150): it keeps the tokenizer section,
@@ -1016,4 +1128,96 @@ int main(int argc, char** argv) {
     return 4;
   }
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Lifecycle life;  // the wall clock starts here
+  auto parsed = ParseArgs(argc, argv);
+  if (!parsed) return parsed.error();
+  RunArgs& args = *parsed;
+  if (auto rc = HoldFlagsToPlan(argc, argv, args)) return *rc;
+
+  seeml::update_rt::UpdateEngine engine;
+  if (auto rc = LoadPlanAndModel(args, engine, &life.load_s)) return *rc;
+
+  const auto t_data0 = std::chrono::steady_clock::now();
+  // --data: a pre-tokenized .sds, or raw text (#202 item 2) ingested here
+  // with the model's own tokenizer.
+  const std::string data_ext = DataExtension(args.data);
+  auto dataset = data_ext == "txt" || data_ext == "jsonl"
+                     ? LoadRawText(args.model, args.data, data_ext,
+                                   engine.header())
+                     : seeml::update_rt::Dataset::LoadFromFile(args.data);
+  if (!dataset) {
+    std::fprintf(stderr, "data: %s\n", dataset.error().c_str());
+    return 1;
+  }
+  std::optional<seeml::update_rt::Dataset> val_set;
+  if (auto rc = SplitValidation(argc, argv, args, engine.header(), &*dataset,
+                                val_set))
+    return *rc;
+  dataset->EnableShuffle(args.seed);
+  life.data_s = SecondsSince(t_data0);
+
+  seeml::update_rt::TrainOptions options;
+  options.checkpoint_path = args.checkpoint_path;
+  options.resume = args.resume;
+  options.validation = val_set ? &*val_set : nullptr;
+  options.record_loss_curve = !args.loss_log.empty();
+  options.eval_every = args.eval_every;
+  options.patience = args.patience;
+  options.checkpoint_every = args.checkpoint_every;
+  if (auto rc = RefuseForeignResume(args, &*dataset, val_set, options))
+    return *rc;
+
+  options.should_stop = [] {
+    return g_stop_requested.load(std::memory_order_acquire);
+  };
+  InstallStopHandlers();
+  // The energy of the training run (#202 item 3), for the runtime screen.
+  seeml::update_rt::EnergyMeter energy_meter;
+  energy_meter.Start();
+  const auto t_train0 = std::chrono::steady_clock::now();
+  auto report = engine.Train(*dataset, args.steps, options);
+  life.train_s = SecondsSince(t_train0);
+  const seeml::update_rt::EnergyReading energy = energy_meter.Stop();
+  if (!report) {
+    std::fprintf(stderr, "train: %s\n", report.error().c_str());
+    return 1;
+  }
+  const bool stopped = report->stopped_early;
+  ReportTraining(engine, &*report, args.checkpoint_path);
+
+  // Every requested output is checked (CR4 #145 F66): a full disk used to
+  // leave a truncated file and exit 0. A failed output after a commit is
+  // exit 4 — the model is updated, the record is not — never a silent 0.
+  const bool outputs_ok = WriteLossLog(args.loss_log, &*report);
+  const Gate gate = WeighGate(args, engine, &*report, stopped);
+
+  // The runtime screen (S0 #146): the plan's own numbers — the memory the
+  // device holds, the work of a step, the step the target peak predicts;
+  // the rows the compile printed, recomputed here from the plan itself —
+  // beside what this run measured. Printed after the gate, so the verdict
+  // is in it, and carried by --report.
+  seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);
+  {
+    // On the GPU the prediction is against the GPU's stated peak, unless
+    // this run named its own.
+    if (std::string_view(engine.backend_name()).starts_with("metal") &&
+        kSeemlGpuPeakGflops > 0.0 && !Has(argc, argv, "--peak-gflops"))
+      args.peak_gflops = kSeemlGpuPeakGflops;
+    // The rows themselves are the profiler's (S7 #153), shared with
+    // seeml-bench: the plan's numbers beside what this run measured.
+    std::optional<double> entropy;
+    if (engine.header().label_kind == 1) entropy = dataset->LabelEntropyNats();
+    seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,
+                                        args.peak_gflops, gate.verdict,
+                                        entropy, &energy);
+  }
+  std::fputs(runtime_screen.Text(/*verbose=*/false).c_str(), stderr);
+  const ReportContext context{args, engine, *report, gate, runtime_screen,
+                              life};
+  return Conclude(context, engine, life, stopped, outputs_ok);
 }

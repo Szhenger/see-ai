@@ -141,6 +141,101 @@ class FileBytes {
   std::unique_ptr<uint8_t[]> heap_;
 };
 
+/// Payload placement (S1 #147, F04). The range check above proved every
+/// payload lies inside the file; here each one must also start on the
+/// documented boundary, at or after the end of the metadata just parsed
+/// (the header, the tensor table and the op list), and no two payloads
+/// may overlap. A payload inside the metadata would read structure as
+/// weights, and two tensors sharing bytes would be committed twice onto
+/// one range: the emit table patches each tensor at its own offset.
+/// `metadata_end` is where the parsed metadata stopped; `const_tensors`
+/// indexes the model's validated constant tensors.
+[[nodiscard]] std::expected<void, std::string> CheckPayloadPlacement(
+    const SmfModel& model, const std::vector<size_t>& const_tensors,
+    uint64_t tokenizer_offset, uint64_t tokenizer_size, uint64_t metadata_end,
+    const std::string& path) {
+  struct Range {
+    uint64_t offset, size;
+    std::string_view name;  // a tensor's, or the tokenizer section's
+    bool tensor;
+  };
+  std::vector<Range> ranges;
+  ranges.reserve(const_tensors.size() + 1);
+  for (size_t idx : const_tensors) {
+    const SmfTensor& t = model.tensors[idx];
+    ranges.push_back({t.data_offset, t.byte_size, t.name, true});
+  }
+  if (tokenizer_size != 0)
+    ranges.push_back({tokenizer_offset, tokenizer_size,
+                      "the tokenizer section", false});
+  std::sort(ranges.begin(), ranges.end(),
+            [](const Range& a, const Range& b) { return a.offset < b.offset; });
+  auto refuse = [&](const Range& x, const std::string& what) {
+    return x.tensor ? tokenizing::TensorError(x.name, what)
+                    : tokenizing::Error(std::string(x.name) + " " + what +
+                                        " in '" + path + "'");
+  };
+  uint64_t prev_end = 0;
+  const Range* prev = nullptr;
+  for (const Range& x : ranges) {
+    if (x.offset % kSmfPayloadAlignment != 0)
+      return refuse(x, "payload is not " +
+                           std::to_string(kSmfPayloadAlignment) +
+                           "-byte aligned");
+    if (x.offset < metadata_end)
+      return refuse(x, "payload overlaps the file's metadata");
+    if (prev && x.offset < prev_end)
+      return refuse(x, prev->tensor
+                           ? "payload overlaps tensor '" +
+                                 std::string(prev->name) + "'"
+                           : "payload overlaps the tokenizer section");
+    prev = &x;
+    prev_end = x.offset + x.size;  // in-file: cannot overflow
+  }
+  return {};
+}
+
+/// Materialize the validated constant payloads. The copy is partitioned
+/// over the payload BYTES, not the tensor list (E2, #81): a model is
+/// typically dominated by one tensor — an embedding table — and a
+/// per-tensor split copied it on a single thread while the rest idled.
+/// Payloads are sized without a zero-fill (SmfBytes), so a chunk may land
+/// anywhere inside a tensor; every byte is written exactly once, by
+/// whichever chunk owns it, and the chunk geometry never depends on the
+/// worker count.
+void CopyPayloads(SmfModel& model, const std::vector<size_t>& const_tensors,
+                  uint64_t const_bytes, const FileBytes& bytes) {
+  std::vector<uint64_t> starts;  // prefix sums over const_tensors
+  starts.reserve(const_tensors.size() + 1);
+  starts.push_back(0);
+  for (size_t idx : const_tensors) {
+    SmfTensor& t = model.tensors[idx];
+    t.data.resize(static_cast<size_t>(t.byte_size));
+    starts.push_back(starts.back() + t.byte_size);
+  }
+  auto copy_range = [&](uint64_t begin, uint64_t end) {
+    // First tensor whose span reaches past `begin`.
+    size_t i = static_cast<size_t>(
+        std::upper_bound(starts.begin(), starts.end(), begin) -
+        starts.begin() - 1);
+    for (; i < const_tensors.size() && starts[i] < end; ++i) {
+      SmfTensor& t = model.tensors[const_tensors[i]];
+      const uint64_t lo = std::max(begin, starts[i]) - starts[i];
+      const uint64_t hi = std::min(end, starts[i + 1]) - starts[i];
+      std::memcpy(t.data.data() + lo, bytes.data() + t.data_offset + lo,
+                  static_cast<size_t>(hi - lo));
+    }
+  };
+  if (const_bytes >= kParallelCopyThreshold) {
+    ParallelFor(static_cast<size_t>(const_bytes), kParallelCopyGrain,
+                [&](size_t begin, size_t end, size_t /*chunk*/) {
+                  copy_range(begin, end);
+                });
+  } else {
+    copy_range(0, const_bytes);
+  }
+}
+
 }  // namespace
 
 std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
@@ -302,95 +397,16 @@ std::expected<SmfModel, std::string> LoadSmf(const std::string& path) {
 
   if (!r.ok) return tokenizing::FileError("truncated file", path);
 
-  // Payload placement (S1 #147, F04). The range check above proved every
-  // payload lies inside the file; here each one must also start on the
-  // documented boundary, at or after the end of the metadata just parsed
-  // (the header, the tensor table and the op list), and no two payloads
-  // may overlap. A payload inside the metadata would read structure as
-  // weights, and two tensors sharing bytes would be committed twice onto
-  // one range: the emit table patches each tensor at its own offset.
-  {
-    const uint64_t metadata_end = r.pos;
-    struct Range {
-      uint64_t offset, size;
-      std::string_view name;  // a tensor's, or the tokenizer section's
-      bool tensor;
-    };
-    std::vector<Range> ranges;
-    ranges.reserve(const_tensors.size() + 1);
-    for (size_t idx : const_tensors) {
-      const SmfTensor& t = model.tensors[idx];
-      ranges.push_back({t.data_offset, t.byte_size, t.name, true});
-    }
-    if (tokenizer_size != 0)
-      ranges.push_back({tokenizer_offset, tokenizer_size,
-                        "the tokenizer section", false});
-    std::sort(ranges.begin(), ranges.end(),
-              [](const Range& a, const Range& b) { return a.offset < b.offset; });
-    auto refuse = [&](const Range& x, const std::string& what) {
-      return x.tensor ? tokenizing::TensorError(x.name, what)
-                      : tokenizing::Error(std::string(x.name) + " " + what +
-                                          " in '" + path + "'");
-    };
-    uint64_t prev_end = 0;
-    const Range* prev = nullptr;
-    for (const Range& x : ranges) {
-      if (x.offset % kSmfPayloadAlignment != 0)
-        return refuse(x, "payload is not " +
-                             std::to_string(kSmfPayloadAlignment) +
-                             "-byte aligned");
-      if (x.offset < metadata_end)
-        return refuse(x, "payload overlaps the file's metadata");
-      if (prev && x.offset < prev_end)
-        return refuse(x, prev->tensor
-                             ? "payload overlaps tensor '" +
-                                   std::string(prev->name) + "'"
-                             : "payload overlaps the tokenizer section");
-      prev = &x;
-      prev_end = x.offset + x.size;  // in-file: cannot overflow
-    }
-  }
+  if (auto placed = CheckPayloadPlacement(model, const_tensors,
+                                          tokenizer_offset, tokenizer_size,
+                                          r.pos, path);
+      !placed)
+    return std::unexpected(placed.error());
   if (tokenizer_size != 0)
     model.tokenizer.assign(bytes.data() + tokenizer_offset,
                            bytes.data() + tokenizer_offset + tokenizer_size);
 
-  // Materialize the validated constant payloads. The copy is partitioned
-  // over the payload BYTES, not the tensor list (E2, #81): a model is
-  // typically dominated by one tensor — an embedding table — and a
-  // per-tensor split copied it on a single thread while the rest idled.
-  // Payloads are sized without a zero-fill (SmfBytes), so a chunk may land
-  // anywhere inside a tensor; every byte is written exactly once, by
-  // whichever chunk owns it, and the chunk geometry never depends on the
-  // worker count.
-  std::vector<uint64_t> starts;  // prefix sums over const_tensors
-  starts.reserve(const_tensors.size() + 1);
-  starts.push_back(0);
-  for (size_t idx : const_tensors) {
-    SmfTensor& t = model.tensors[idx];
-    t.data.resize(static_cast<size_t>(t.byte_size));
-    starts.push_back(starts.back() + t.byte_size);
-  }
-  auto copy_range = [&](uint64_t begin, uint64_t end) {
-    // First tensor whose span reaches past `begin`.
-    size_t i = static_cast<size_t>(
-        std::upper_bound(starts.begin(), starts.end(), begin) -
-        starts.begin() - 1);
-    for (; i < const_tensors.size() && starts[i] < end; ++i) {
-      SmfTensor& t = model.tensors[const_tensors[i]];
-      const uint64_t lo = std::max(begin, starts[i]) - starts[i];
-      const uint64_t hi = std::min(end, starts[i + 1]) - starts[i];
-      std::memcpy(t.data.data() + lo, bytes.data() + t.data_offset + lo,
-                  static_cast<size_t>(hi - lo));
-    }
-  };
-  if (const_bytes >= kParallelCopyThreshold) {
-    ParallelFor(static_cast<size_t>(const_bytes), kParallelCopyGrain,
-                [&](size_t begin, size_t end, size_t /*chunk*/) {
-                  copy_range(begin, end);
-                });
-  } else {
-    copy_range(0, const_bytes);
-  }
+  CopyPayloads(model, const_tensors, const_bytes, bytes);
 
   model.content_hash = ContentHash64(bytes.data(), bytes.size());
   return model;

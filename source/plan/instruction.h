@@ -14,6 +14,27 @@
 
 namespace seeml::update {
 
+// An operand word that carries two 32-bit fields (B<<32|S, H<<32|d,
+// rows<<32|cols, V<<32|D, or two f32 bit patterns) is taken apart and put
+// together here and nowhere else (S8 #154). The halves are returned as the
+// 64-bit values the validator's overflow-checked products and the kernels'
+// loop bounds take; the *32 forms are the same halves in the width a GPU
+// argument block stores. PackWords does not mask: a caller whose halves
+// might not fit proves that first (the lowering's range check).
+// Spelled High/Low, not Hi/Lo: Apple's Carbon headers, which Accelerate
+// pulls into the CPU backend, define HiWord and LoWord as 16-bit macros.
+inline constexpr uint64_t HighWord(uint64_t word) { return word >> 32; }
+inline constexpr uint64_t LowWord(uint64_t word) { return word & 0xFFFFFFFFu; }
+inline constexpr uint32_t HighWord32(uint64_t word) {
+  return static_cast<uint32_t>(word >> 32);
+}
+inline constexpr uint32_t LowWord32(uint64_t word) {
+  return static_cast<uint32_t>(word & 0xFFFFFFFFu);
+}
+inline constexpr uint64_t PackWords(uint64_t hi, uint64_t lo) {
+  return (hi << 32) | lo;
+}
+
 // A tensor reference is a 64-bit word: bit 63 selects the address space
 // (0 = mutable arena, 1 = read-only rodata), bits 0..61 are a byte offset.
 // Bit 62 (plan v17, E12 #95) selects a third, read-only space: the SOURCE

@@ -514,8 +514,6 @@ class MetalBackend final : public ExecutorBackend {
 // this targets — takes the CPU path for that instruction.
 bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
   constexpr uint64_t kMax = 0xFFFFFFFFu;
-  auto hi = [](uint64_t v) { return v >> 32; };
-  auto lo = [](uint64_t v) { return v & kMax; };
   switch (op) {
     case up::OpCode::kGemmNN:
     case up::OpCode::kGemmNT:
@@ -530,11 +528,12 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
              ins.out[2] * ins.out[1] <= kMax;
     case up::OpCode::kRopeFwd:
     case up::OpCode::kRopeBwd:
-      return hi(ins.out[0]) * lo(ins.out[0]) * hi(ins.out[1]) * lo(ins.out[1]) <=
+      return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) *
+                 up::HighWord(ins.out[1]) * up::LowWord(ins.out[1]) <=
              kMax;
     case up::OpCode::kAttnFwd: {
-      const uint64_t B = hi(ins.out[1]), S = lo(ins.out[1]);
-      const uint64_t H = hi(ins.out[2]), d = lo(ins.out[2]);
+      const uint64_t B = up::HighWord(ins.out[1]), S = up::LowWord(ins.out[1]);
+      const uint64_t H = up::HighWord(ins.out[2]), d = up::LowWord(ins.out[2]);
       return B * H * S * S <= kMax && B * S * H * d <= kMax;
     }
     case up::OpCode::kAttnFwdSeg: {
@@ -542,13 +541,13 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
       return g.B * g.H * g.S * g.S <= kMax && g.B * g.S * g.H * g.d <= kMax;
     }
     case up::OpCode::kSegmentStarts:
-      return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
+      return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) <= kMax;
     case up::OpCode::kAttnDP:
     case up::OpCode::kAttnDV:
     case up::OpCode::kAttnDQ:
     case up::OpCode::kAttnDK: {
-      const uint64_t B = hi(ins.out[0]), S = lo(ins.out[0]);
-      const uint64_t H = hi(ins.out[1]), d = lo(ins.out[1]);
+      const uint64_t B = up::HighWord(ins.out[0]), S = up::LowWord(ins.out[0]);
+      const uint64_t H = up::HighWord(ins.out[1]), d = up::LowWord(ins.out[1]);
       return B * H * S * S <= kMax && B * S * H * d <= kMax;
     }
     case up::OpCode::kSoftmaxXEntFwd:
@@ -560,11 +559,11 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kSoftmaxRowsBwd:
     case up::OpCode::kLayerNormFwd:
     case up::OpCode::kRmsNormFwd:
-      return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
+      return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) <= kMax;
     case up::OpCode::kLayerNormBwd:
-      return hi(ins.out[2]) * lo(ins.out[2]) <= kMax;
+      return up::HighWord(ins.out[2]) * up::LowWord(ins.out[2]) <= kMax;
     case up::OpCode::kRmsNormBwd:
-      return hi(ins.out[1]) * lo(ins.out[1]) <= kMax;
+      return up::HighWord(ins.out[1]) * up::LowWord(ins.out[1]) <= kMax;
     case up::OpCode::kAddBias:
     case up::OpCode::kReduceRows:
       return ins.out[0] <= kMax && ins.out[1] <= kMax &&
@@ -589,11 +588,11 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kClipGlobal:
       return ins.out[0] <= kMax;
     case up::OpCode::kRopeTable:
-      return hi(ins.out[0]) * lo(ins.out[0]) <= kMax;
+      return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) <= kMax;
     // The tiled family: one simdgroup per row, no S x S matrix anywhere.
     case up::OpCode::kAttnFwdTiled: {
-      const uint64_t B = hi(ins.out[1]), S = lo(ins.out[1]);
-      const uint64_t H = hi(ins.out[2]), d = lo(ins.out[2]);
+      const uint64_t B = up::HighWord(ins.out[1]), S = up::LowWord(ins.out[1]);
+      const uint64_t H = up::HighWord(ins.out[2]), d = up::LowWord(ins.out[2]);
       return B * S * H * d <= kMax && B * H * S * 32 <= kMax;
     }
     case up::OpCode::kAttnDQTiled:
@@ -609,7 +608,8 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
              geo.B * geo.H * geo.S * 32 <= kMax;
     }
     case up::OpCode::kEmbedFwd:
-      return ins.out[0] * lo(ins.out[1]) <= kMax && hi(ins.out[1]) <= kMax;
+      return ins.out[0] * up::LowWord(ins.out[1]) <= kMax &&
+             up::HighWord(ins.out[1]) <= kMax;
     default:
       return true;
   }
@@ -1467,8 +1467,6 @@ std::expected<void, std::string> MetalBackend::Encode(
     if (up::IsSourceRef(r)) a.space |= 1u << (8 + slot);  // v17
   };
   auto u32 = [](uint64_t v) { return static_cast<uint32_t>(v); };
-  auto hi = [](uint64_t v) { return static_cast<uint32_t>(v >> 32); };
-  auto lo = [](uint64_t v) { return static_cast<uint32_t>(v & 0xFFFFFFFFu); };
   // The clip factor min(1, max/||g||) for the gradient in ref slot
   // `g_slot` of `args`, left in scratch[256] — kClipNorm's first two
   // dispatches, shared with the fused-clip steps (v12), whose `word` is
@@ -1633,7 +1631,7 @@ std::expected<void, std::string> MetalBackend::Encode(
       a.n = u32(ins.out[0]);
       a.flags = u32(ins.out[1]);
       a.f[0] = BitsToF32(ins.out[2]);
-      a.f[1] = BitsToF32(ins.out[2] >> 32);
+      a.f[1] = BitsToF32(up::HighWord(ins.out[2]));
       Dispatch(kPFusedMap, a, a.n, kElementwiseGroup);
       return {};
     case up::OpCode::kSgdStep: {
@@ -1665,26 +1663,26 @@ std::expected<void, std::string> MetalBackend::Encode(
     case up::OpCode::kLayerNormFwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
       ref(4, ins.out[1]); ref(5, ins.out[2]);
-      a.rows = hi(ins.out[0]); a.cols = lo(ins.out[0]);
+      a.rows = up::HighWord32(ins.out[0]); a.cols = up::LowWord32(ins.out[0]);
       a.f[0] = up::NormEpsOf(ins.imm);  // v16; 1e-5 by default
       Dispatch(kPLnFwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     case up::OpCode::kLayerNormBwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
       ref(4, ins.out[0]); ref(5, ins.out[1]);
-      a.rows = hi(ins.out[2]); a.cols = lo(ins.out[2]);
+      a.rows = up::HighWord32(ins.out[2]); a.cols = up::LowWord32(ins.out[2]);
       Dispatch(kPLnBwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     case up::OpCode::kRmsNormFwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
-      a.rows = hi(ins.out[0]); a.cols = lo(ins.out[0]);
+      a.rows = up::HighWord32(ins.out[0]); a.cols = up::LowWord32(ins.out[0]);
       a.f[0] = up::NormEpsOf(ins.imm);
       Dispatch(kPRmsFwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     case up::OpCode::kRmsNormBwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]); ref(3, ins.in[3]);
       ref(4, ins.out[0]);
-      a.rows = hi(ins.out[1]); a.cols = lo(ins.out[1]);
+      a.rows = up::HighWord32(ins.out[1]); a.cols = up::LowWord32(ins.out[1]);
       Dispatch(kPRmsBwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     case up::OpCode::kClipNorm: {
@@ -1725,8 +1723,8 @@ std::expected<void, std::string> MetalBackend::Encode(
     case up::OpCode::kRopeFwd:
     case up::OpCode::kRopeBwd: {
       ref(0, ins.in[0]); ref(1, ins.in[1]);
-      a.B = hi(ins.out[0]); a.S = lo(ins.out[0]);
-      a.H = hi(ins.out[1]); a.D = lo(ins.out[1]);
+      a.B = up::HighWord32(ins.out[0]); a.S = up::LowWord32(ins.out[0]);
+      a.H = up::HighWord32(ins.out[1]); a.D = up::LowWord32(ins.out[1]);
       const float base = BitsToF32(ins.out[2]);
       a.f[0] = std::pow(base, -2.0f / static_cast<float>(a.D));
       // v12: slot 2 names the angle table (built by k_rope_table with this
@@ -1750,8 +1748,8 @@ std::expected<void, std::string> MetalBackend::Encode(
         ref(5, ins.out[2]);
         a.B = u32(geo.B); a.S = u32(geo.S); a.H = u32(geo.H); a.D = u32(geo.d);
       } else {
-        a.B = hi(ins.out[1]); a.S = lo(ins.out[1]);
-        a.H = hi(ins.out[2]); a.D = lo(ins.out[2]);
+        a.B = up::HighWord32(ins.out[1]); a.S = up::LowWord32(ins.out[1]);
+        a.H = up::HighWord32(ins.out[2]); a.D = up::LowWord32(ins.out[2]);
       }
       a.f[0] = 1.0f / std::sqrt(static_cast<float>(a.D));
       a.flags = TiledRowsVectorizable(a) |
@@ -1802,7 +1800,7 @@ std::expected<void, std::string> MetalBackend::Encode(
     }
     case up::OpCode::kRopeTable: {
       ref(0, ins.in[0]);
-      a.S = hi(ins.out[0]); a.D = lo(ins.out[0]);
+      a.S = up::HighWord32(ins.out[0]); a.D = up::LowWord32(ins.out[0]);
       const float base = BitsToF32(ins.out[1]);
       a.f[0] = std::pow(base, -2.0f / static_cast<float>(a.D));
       Dispatch(kPRopeTable, a, a.S, kElementwiseGroup);
@@ -1810,7 +1808,8 @@ std::expected<void, std::string> MetalBackend::Encode(
     }
     case up::OpCode::kEmbedFwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
-      a.rows = u32(ins.out[0]); a.cols = lo(ins.out[1]); a.k = hi(ins.out[1]);
+      a.rows = u32(ins.out[0]); a.cols = up::LowWord32(ins.out[1]);
+      a.k = up::HighWord32(ins.out[1]);
       Dispatch(kPEmbedFwd, a, a.rows * a.cols, kElementwiseGroup);
       return {};
     // The attention family (docs/runtime.md): each primitive is one or
@@ -1821,7 +1820,7 @@ std::expected<void, std::string> MetalBackend::Encode(
     // S*S).
     case up::OpCode::kSegmentStarts: {  // v25, #191
       ref(0, ins.in[0]); ref(1, ins.in[1]);
-      a.B = hi(ins.out[0]); a.S = lo(ins.out[0]);
+      a.B = up::HighWord32(ins.out[0]); a.S = up::LowWord32(ins.out[0]);
       a.k = static_cast<uint32_t>(ins.out[1]);
       Dispatch(kPSegmentStarts, a, a.B, 1);
       return {};
@@ -1843,8 +1842,10 @@ std::expected<void, std::string> MetalBackend::Encode(
       return {};
     }
     case up::OpCode::kAttnFwd: {
-      const uint32_t B = hi(ins.out[1]), S = lo(ins.out[1]);
-      const uint32_t H = hi(ins.out[2]), d = lo(ins.out[2]);
+      const uint32_t B = up::HighWord32(ins.out[1]),
+                     S = up::LowWord32(ins.out[1]);
+      const uint32_t H = up::HighWord32(ins.out[2]),
+                     d = up::LowWord32(ins.out[2]);
       const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(d));
       // scores = (Q K^T) / sqrt(d) into the P cache, then a causal softmax
       // in place, then O = P V.
@@ -1859,30 +1860,38 @@ std::expected<void, std::string> MetalBackend::Encode(
       return {};
     }
     case up::OpCode::kAttnDP: {  // dP = dO V^T
-      const uint32_t B = hi(ins.out[0]), S = lo(ins.out[0]);
-      const uint32_t H = hi(ins.out[1]), d = lo(ins.out[1]);
+      const uint32_t B = up::HighWord32(ins.out[0]),
+                     S = up::LowWord32(ins.out[0]);
+      const uint32_t H = up::HighWord32(ins.out[1]),
+                     d = up::LowWord32(ins.out[1]);
       EncodeAttentionGemm(kPGemmNT, false, true, ins.in[0], ins.in[1],
                           ins.in[2], B, S, H, d, 0, 0, 1, S, S, d, 1.0f);
       return {};
     }
     case up::OpCode::kAttnDV: {  // dV = P^T dO
-      const uint32_t B = hi(ins.out[0]), S = lo(ins.out[0]);
-      const uint32_t H = hi(ins.out[1]), d = lo(ins.out[1]);
+      const uint32_t B = up::HighWord32(ins.out[0]),
+                     S = up::LowWord32(ins.out[0]);
+      const uint32_t H = up::HighWord32(ins.out[1]),
+                     d = up::LowWord32(ins.out[1]);
       EncodeAttentionGemm(kPGemmTN, true, false, ins.in[0], ins.in[1],
                           ins.in[2], B, S, H, d, 1, 0, 0, S, d, S, 1.0f);
       return {};
     }
     case up::OpCode::kAttnDQ: {  // dQ = (dS K) / sqrt(d)
-      const uint32_t B = hi(ins.out[0]), S = lo(ins.out[0]);
-      const uint32_t H = hi(ins.out[1]), d = lo(ins.out[1]);
+      const uint32_t B = up::HighWord32(ins.out[0]),
+                     S = up::LowWord32(ins.out[0]);
+      const uint32_t H = up::HighWord32(ins.out[1]),
+                     d = up::LowWord32(ins.out[1]);
       EncodeAttentionGemm(kPGemmNN, false, false, ins.in[0], ins.in[1],
                           ins.in[2], B, S, H, d, 1, 0, 0, S, d, S,
                           1.0f / std::sqrt(static_cast<float>(d)));
       return {};
     }
     case up::OpCode::kAttnDK: {  // dK = (dS^T Q) / sqrt(d)
-      const uint32_t B = hi(ins.out[0]), S = lo(ins.out[0]);
-      const uint32_t H = hi(ins.out[1]), d = lo(ins.out[1]);
+      const uint32_t B = up::HighWord32(ins.out[0]),
+                     S = up::LowWord32(ins.out[0]);
+      const uint32_t H = up::HighWord32(ins.out[1]),
+                     d = up::LowWord32(ins.out[1]);
       EncodeAttentionGemm(kPGemmTN, true, false, ins.in[0], ins.in[1],
                           ins.in[2], B, S, H, d, 1, 0, 0, S, d, S,
                           1.0f / std::sqrt(static_cast<float>(d)));
@@ -1890,7 +1899,7 @@ std::expected<void, std::string> MetalBackend::Encode(
     }
     case up::OpCode::kSoftmaxRowsBwd:
       ref(0, ins.in[0]); ref(1, ins.in[1]); ref(2, ins.in[2]);
-      a.rows = hi(ins.out[0]); a.cols = lo(ins.out[0]);
+      a.rows = up::HighWord32(ins.out[0]); a.cols = up::LowWord32(ins.out[0]);
       Dispatch(kPSoftmaxRowsBwd, a, a.rows * 32u, kElementwiseGroup);
       return {};
     // Softmax cross-entropy (F8): the row kernel leaves -log p[label] per
@@ -2052,9 +2061,9 @@ std::expected<void, std::string> MetalBackend::Execute(
     if (profile_) {
       if (auto r = Flush(); !r) return r;
       auto dim = [](uint64_t v) {
-        return v >> 32 ? std::to_string(v >> 32) + "/" +
-                             std::to_string(v & 0xFFFFFFFFu)
-                       : std::to_string(v);
+        return up::HighWord(v) ? std::to_string(up::HighWord(v)) + "/" +
+                                   std::to_string(up::LowWord(v))
+                             : std::to_string(v);
       };
       const up::UpdateInstruction& keyed =
           role >= 0 ? program_[static_cast<size_t>(role)] : ins;

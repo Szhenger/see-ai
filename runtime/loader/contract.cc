@@ -207,7 +207,7 @@ std::expected<void, std::string> VerifyExecutorContract(
       }
       if (op == up::OpCode::kSegmentStarts) {
         const uint64_t positions =
-            (ins.out[0] >> 32) * (ins.out[0] & 0xFFFFFFFFu);
+            up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]);
         starts_live.push_back({ins.in[1], up::RefOffset(ins.in[1]),
                                positions * sizeof(int32_t)});
       }
