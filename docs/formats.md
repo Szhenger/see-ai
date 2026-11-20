@@ -180,12 +180,12 @@ Frozen weights selected by `--quantize-base` are stored in rodata as symmetric i
 
 **The emit table** (`EmitEntry[]`, 24 bytes each: `smf_data_offset`, `byte_size`, `arena_offset`) is the bridge back to the model file: it maps each adapter's **delta** (`Δ = (α/r)·A@B`, materialized by the merge program at `arena_offset`) to the f32 byte range of its weight inside the source `.smf`. Commit applies `W′ = W + Δ` onto the file's pristine weights — which is why a quantized plan never bakes quantization error into the committed model: the int8 copy trains, but the original floats get patched.
 
-## Checkpoint (`SEKP`, v5)
+## Checkpoint (`SEKP`, v6)
 
 Training state you can power-cycle through:
 
 ```
-u32 magic "SEKP"; u32 version = 5      (v3 and v4 files are still read)
+u32 magic "SEKP"; u32 version = 6      (v3-v5 files are refused, by version)
 u64 plan_hash        must match the plan's PlanHeader::plan_hash
 u64 step             1-indexed AdamW timestep at save
 u64 persistent_size  payload length
@@ -198,17 +198,41 @@ v5 tail (64 bytes):
   u64 best_step            the step of the best evaluated state
   u64 best_payload_hash    ContentHash64 of the best payload, when present
   u32 flags                1 val_initial present, 2 accuracy present,
-                           4 best payload follows, 8 best_* are live
+                           4 best payload follows, 8 best_* are live,
+                           16 the run binding is live, 32 the windows are live
   u32 val_initial_loss     f32 bits: the SOURCE model's validation loss
   u32 val_initial_accuracy f32 bits
   u32 best_loss            f32 bits
   u32 best_accuracy        f32 bits
   u32 stale_evals          evaluations since the best (patience)
+v6 tail (128 bytes):
+  u64 corpus_hash          ContentHash64 of the corpus the run trained on
+  u64 split_hash           the compiled validation split's hash (0 = none)
+  u64 window_count         training losses the windows have seen
+  u64 first_window_sum     f64 bits: the first window's running sum
+  u32 backend              1 cpu, 2 metal (0 = saved outside any run)
+  u32 window               the window length, 1..20 (0 = none)
+  u32 last_losses[20]      f32 bits: the last window, a ring by index % window
+  u64 header_hash          ContentHash64 of the 240 header bytes, this word 0
 payload              the arena's persistent segment (adapters + moments)
-best payload         v5, flag 4: the best evaluated segment, same length
+best payload         flag 4: the best evaluated segment, same length
 ```
 
-The payload is a raw byte-copy of the arena's persistent segment — possible only because the compiler put everything resumable (LoRA parameters *and* AdamW moments) contiguously at arena offset 0. Three fields guard the restore, each against a different failure: `plan_hash` against the wrong plan (offsets into someone else's arena layout would be garbage), `persistent_size` against a layout drift, `payload_hash` against bit rot. A foreign or bit-flipped checkpoint is rejected before any byte reaches the arena. Saving `step` matters more than it looks: AdamW's bias correction depends on t, so resuming at the wrong step would silently distort the next updates. The **horizon** (v4) is the same kind of fact for the schedule: the step count the interrupted run was annealing over. A resume with no step count trains exactly the remainder to it, so the resumed run's learning rates — and its bits — are the uninterrupted run's; a v3 file has none and resumes on the plan's compiled budget, as it always did. The **v5 tail** makes a resume honest in two more ways. The run binding — which shuffle stream, and how many samples on each side of the train/validation split — lets a resume *refuse* a different `--seed` or `--val-frac`: those would silently move the boundary and train on the first run's validation rows. The stored `val_initial_*` is the source model's score, measured once by the first run, so the gate keeps comparing the whole update against it instead of scoring the resumed adapter as its own "before". And the **best payload** is the state the update will commit — the best evaluated one, not the last — which must survive an interruption exactly as the last one does; it is written only while it differs from the main payload (a checkpoint taken at a new best holds it once).
+The payload is a raw byte-copy of the arena's persistent segment — possible only because the compiler put everything resumable (LoRA parameters *and* AdamW moments) contiguously at arena offset 0. Three fields guard the restore, each against a different failure: `plan_hash` against the wrong plan (offsets into someone else's arena layout would be garbage), `persistent_size` against a layout drift, `payload_hash` against bit rot. A foreign or bit-flipped checkpoint is rejected before any byte reaches the arena. Saving `step` matters more than it looks: AdamW's bias correction depends on t, so resuming at the wrong step would silently distort the next updates. The **horizon** (v4) is the same kind of fact for the schedule: the step count the interrupted run was annealing over. A resume with no step count trains exactly the remainder to it, so the resumed run's learning rates — and its bits — are the uninterrupted run's. The **v5 tail** makes a resume honest in two more ways. The run binding — which shuffle stream, and how many samples on each side of the train/validation split — lets a resume *refuse* a different `--seed` or `--val-frac`: those would silently move the boundary and train on the first run's validation rows. The stored `val_initial_*` is the source model's score, so the gate keeps comparing the whole update against it instead of scoring the resumed adapter as its own "before". And the **best payload** is the state the update will commit — the best evaluated one, not the last — which must survive an interruption exactly as the last one does; it is written exactly when it differs from the main payload (a checkpoint taken at a new best holds it once, and `best_step` then equals `step`).
+
+**v6: the checkpoint is an input** (CR4 #221). A checkpoint has no key, so nothing in it can be *authenticated* against someone who can rewrite the file; what v6 does is trust nothing in it that can be checked or recomputed, and bind it to everything the run depends on. Each binding is there for one failure:
+
+- **`header_hash`** covers every header byte, and through `payload_hash` and `best_payload_hash` the payloads too. It is checked right after the magic and the version, before any other field is read: a flipped bit anywhere — the step, a loss, a flag — or a truncated header is refused. It is integrity against corruption, not authenticity: whoever can rewrite the file can rewrite the hash.
+- **Every field is bounded** before use, and a refusal names the field: `step` ≤ `horizon_steps`; flags within the known set and consistent (a best payload only with a best state, exactly when `best_step` ≠ `step`; an accuracy only with a score); every stored loss finite; `best_step` ≤ `step`; `stale_evals` ≤ `step` (and, held by the engine, ≤ the run's `--patience`); `window` 1..20 and `window_count` ≤ `step`; `backend` a known one; and the file exactly as long as the header says — a short or a long one is refused.
+- **`corpus_hash` and `split_hash`** name the corpus and the compiled split the run trained on. The run binding's record counts are not the records: a corpus B with corpus A's record count would otherwise resume A's checkpoint and report A's validation loss as its starting point. A resume over another corpus or split is refused by name.
+- **`backend`** says whose bits the stored losses are (below), so a resume on the other backend is refused by name.
+- **The train-loss windows.** Without a validation split the gate compares the mean training loss of the run's first window of steps with the mean of its last. The windows used to be one call's, so a resume gated on its own steps only — from the final checkpoint, on none. They are the run's now and ride in every checkpoint: a resume from any step, the final one included, reaches the uninterrupted run's verdict on the same bits. These numbers cannot be re-measured (the losses were the training steps'); they have the header hash's integrity and nothing more.
+
+**The gate's losses are re-measured, not read.** On a resume with a validation split the engine scores the source model on the held-out records — the plan's initial image of the persistent segment, where LoRA's B is zero so the adapted function is the source's, through the evaluation a fresh run's first measurement takes — and the result must equal `val_initial_loss` (and its accuracy) bit for bit; the best state's loss is scored from the best payload the same way. A mismatch is a refusal naming the field. The restored segment is set aside for the passes and put back byte for byte. That costs one validation pass per resume, two when a best state is carried. Bit-for-bit holds only on the backend that measured them — the Metal backend's GEMMs differ from the CPU's in the last bits — which is why a checkpoint records its backend and a resume on the other is refused by name rather than compared at a tolerance: a tolerance is a band a forged number fits in, and a run that changes backend midway is neither backend's uninterrupted run.
+
+**An older checkpoint is refused**, naming both versions: a v3-v5 file cannot carry the bindings, and a resume that silently restarted instead would overwrite it at its first periodic checkpoint. Run again without `--resume` (or remove the file) to start afresh.
+
+Saving collects the leftovers a killed writer of the same path left — `<path>.tmp.<pid>.<n>` sidecars of processes that no longer exist, a full checkpoint's size each — and nothing else: a live process's sidecar is never touched.
 
 ## Durability
 

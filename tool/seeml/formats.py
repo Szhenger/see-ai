@@ -324,8 +324,11 @@ FUSED_MAX_STAGES = 4
 # --- SEKP: the checkpoint (runtime/storage/checkpoint_format.h) ------------
 
 SEKP_MAGIC = 0x504B4553  # "SEKP"
-SEKP_VERSION = 5         # v5: the run binding, source score and best state
-SEKP_OLDEST_READABLE = 3
+SEKP_VERSION = 6         # v6: the header hash, corpus / split / backend
+SEKP_OLDEST_READABLE = 6  # binding, train-loss windows; v3-v5 are refused
+SEKP_HEADER_BYTES = 240  # CkptHeader + the v4, v5 and v6 tails
+SEKP_WINDOW_MAX = 20
+SEKP_BACKENDS = {"unstated": 0, "cpu": 1, "metal": 2}
 CKPT_HEADER = Layout("CkptHeader", [
     ("magic", "I"), ("version", "I"), ("plan_hash", "Q"), ("step", "Q"),
     ("persistent_size", "Q"), ("payload_hash", "Q")])
@@ -343,6 +346,13 @@ CKPT_HAS_BEST = 8
 # CR4 #145 F71: the run binding is live (before this bit every v5 file read
 # as bound; a v5 file written before it reads as unbound).
 CKPT_HAS_BINDING = 16
+CKPT_HAS_WINDOWS = 32  # v6: the train-loss windows are live
+# v6 (CR4 #221). header_hash is ContentHash64 over the 240 header bytes with
+# the field itself zero; first_window_sum_bits is an f64, the ring f32 bits.
+CKPT_HEADER_V6_TAIL = Layout("CkptHeaderV6Tail", [
+    ("corpus_hash", "Q"), ("split_hash", "Q"), ("window_count", "Q"),
+    ("first_window_sum_bits", "Q"), ("backend", "I"), ("window", "I"),
+    ("last_losses_bits", "20I"), ("header_hash", "Q")])
 
 # --- The probe trace (tool/probe_trace.h) -------------------------------------
 
@@ -372,7 +382,8 @@ def plan_metadata_offset(emit_table_offset: int, emit_count: int) -> int:
 STRUCTS = {
     "seeu": (PLAN_HEADER, INSTRUCTION, EMIT_ENTRY, PLAN_METADATA,
              LEDGER_ENTRY),
-    "sekp": (CKPT_HEADER, CKPT_HEADER_V4_TAIL, CKPT_HEADER_V5_TAIL),
+    "sekp": (CKPT_HEADER, CKPT_HEADER_V4_TAIL, CKPT_HEADER_V5_TAIL,
+             CKPT_HEADER_V6_TAIL),
 }
 
 
@@ -460,7 +471,14 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
                         "has_accuracy": CKPT_HAS_ACCURACY,
                         "has_best_payload": CKPT_HAS_BEST_PAYLOAD,
                         "has_best": CKPT_HAS_BEST,
-                        "has_binding": CKPT_HAS_BINDING}, sekp["flags"])
+                        "has_binding": CKPT_HAS_BINDING,
+                        "has_windows": CKPT_HAS_WINDOWS}, sekp["flags"])
+    same("sekp.header_bytes", SEKP_HEADER_BYTES, sekp["header_bytes"])
+    same("sekp.header_bytes (the layouts)", SEKP_HEADER_BYTES,
+         CKPT_HEADER.size + CKPT_HEADER_V4_TAIL.size +
+         CKPT_HEADER_V5_TAIL.size + CKPT_HEADER_V6_TAIL.size)
+    same("sekp.window_max", SEKP_WINDOW_MAX, sekp["window_max"])
+    same("sekp.backends", SEKP_BACKENDS, sekp["backends"])
     same("probe_trace.magic", PROBE_TRACE_MAGIC, abi["probe_trace"]["magic"])
     same("probe_trace.version", PROBE_TRACE_VERSION,
          abi["probe_trace"]["version"])

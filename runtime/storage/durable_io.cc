@@ -40,6 +40,35 @@ std::atomic<int> g_write_fault{0};
 
 }  // namespace
 
+uint64_t CollectDeadSidecars(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  const std::string dir = platform::ParentDirectory(path);
+  const std::string prefix =
+      (slash == std::string::npos ? path : path.substr(slash + 1)) + ".tmp.";
+  auto digits = [](const std::string& s, size_t from, size_t to) {
+    if (from >= to || to - from > 19) return false;
+    for (size_t i = from; i < to; ++i)
+      if (s[i] < '0' || s[i] > '9') return false;
+    return true;
+  };
+  const uint64_t self = platform::ProcessId();
+  uint64_t removed = 0;
+  for (const std::string& name : platform::ListDirectory(dir)) {
+    if (!name.starts_with(prefix)) continue;
+    // Exactly <pid>.<n>, both decimal: UniqueTmpPath's shape and no other.
+    const size_t pid_at = prefix.size();
+    const size_t dot = name.find('.', pid_at);
+    if (dot == std::string::npos || !digits(name, pid_at, dot) ||
+        !digits(name, dot + 1, name.size()))
+      continue;
+    const uint64_t pid = std::stoull(name.substr(pid_at, dot - pid_at));
+    if (pid == self || platform::ProcessMayBeAlive(pid)) continue;
+    platform::RemoveFile(slash == std::string::npos ? name : dir + "/" + name);
+    ++removed;
+  }
+  return removed;
+}
+
 void FailNextDurableWriteForTesting(int errno_value) {
   g_write_fault.store(errno_value, std::memory_order_relaxed);
 }

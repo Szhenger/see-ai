@@ -1,5 +1,6 @@
 #include "runtime/gating/gate.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace seeml::update_rt {
@@ -38,6 +39,32 @@ bool GateState::RestoreBest(uint8_t* persistent, uint64_t step) const {
   if (best_step == step) return false;
   std::memcpy(persistent, best_state.data(), best_state.size());
   return true;
+}
+
+void LossWindows::Start(uint64_t run_steps) {
+  *this = LossWindows{};
+  window = static_cast<uint32_t>(
+      std::max<uint64_t>(1, std::min<uint64_t>(kMax, run_steps / 5)));
+}
+
+void LossWindows::Observe(float loss) {
+  if (count < window) first_sum += loss;
+  last[count % window] = loss;
+  ++count;
+}
+
+float LossWindows::FirstMean() const {
+  const uint64_t n = std::min<uint64_t>(count, window);
+  return n ? static_cast<float>(first_sum / static_cast<double>(n)) : 0.0f;
+}
+
+float LossWindows::LastMean() const {
+  const uint64_t n = std::min<uint64_t>(count, window);
+  if (n == 0) return FirstMean();
+  double sum = 0.0;
+  for (uint64_t i = count - n; i < count; ++i)  // oldest first
+    sum += last[i % window];
+  return static_cast<float>(sum / static_cast<double>(n));
 }
 
 }  // namespace seeml::update_rt
