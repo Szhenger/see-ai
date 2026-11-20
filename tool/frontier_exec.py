@@ -2390,7 +2390,15 @@ class Probe:
         if not (path and os.path.isfile(path) and os.access(path, os.X_OK)):
             raise PlanError(f"no seeml-plan-probe at {path!r} — build the "
                             "tree (sh build/build.sh) or pass --probe")
-        self.base = [path, "--plan", plan_path, "--backend", backend]
+        # --relaxed-for-measurement (F2 #206): the probe refuses a plan
+        # with relaxed instructions as a device does — no certificate is
+        # compiled into it — unless the run says it is a measurement. This
+        # is the oracle the certificate is verified against (`diff`,
+        # `price`, `profile`), so it runs relaxed plans before a
+        # certificate exists; the flag is a measurement permission, not a
+        # certificate, and the generated runner has no such flag.
+        self.base = [path, "--plan", plan_path, "--backend", backend,
+                     "--relaxed-for-measurement"]
         if threads:
             self.base += ["--threads", str(threads)]
         self.source = source  # v17: the eval program's; v21: any program's

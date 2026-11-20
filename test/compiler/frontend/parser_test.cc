@@ -233,6 +233,44 @@ TEST(ForwardBuilder, RejectsMissingOutput) {
       "was never produced");
 }
 
+TEST(ForwardBuilder, RejectsAnOutputThatIsNotRankTwoWithAStaticWidth) {
+  // The output proof (VerifyModel's last step): loss grafting reads the
+  // output as [rows, classes], so a rank-1 output — an activation of a
+  // rank-1 constant — and an output whose width is not a positive constant
+  // are diagnostics here, not an out-of-range read later. Until 2026-11-19
+  // no test asserted either: ignoring the proof's result passed every suite.
+  auto model_over = [](std::vector<int64_t> dims, size_t floats) {
+    SmfModel model;
+    model.input_name = "x";
+    model.output_name = "y";
+    model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+    model.tensors.push_back(
+        {.name = "w",
+         .dims = std::move(dims),
+         .is_const = true,
+         .data = AsPayload(std::vector<float>(floats, 1.0f))});
+    model.tensors.back().byte_size = model.tensors.back().data.size();
+    model.ops.push_back({SmfOpKind::kRelu, "r", {"w"}, "y"});
+    return model;
+  };
+  {
+    sir::Block block;
+    GraphBuild build;
+    build.input = AddInput(block, 4);
+    EXPECT_ERROR_CONTAINS(
+        BuildForward(block, model_over({4}, 4), "", build.input, kBatch, build),
+        "must be rank-2 [batch, classes], got rank 1");
+  }
+  {
+    sir::Block block;
+    GraphBuild build;
+    build.input = AddInput(block, 4);
+    EXPECT_ERROR_CONTAINS(BuildForward(block, model_over({2, 0}, 0), "",
+                                       build.input, kBatch, build),
+                          "width must be static and positive");
+  }
+}
+
 TEST(ForwardBuilder, RejectsNonPositiveBatch) {
   SmfModel model = MakeMlp(6, 10, 3, 1);
   sir::Block block;

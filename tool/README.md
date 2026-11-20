@@ -167,7 +167,16 @@ exact) against its own tolerance (`--max-relaxed-gemm-error`, 2⁻⁷) — and
 `pack_update.py` refuses a relaxed plan that has no certificate, or one
 that never saw that site; the compiler refuses `--build` for a relaxed
 plan, and the package's own `build.sh` refuses, before its first
-compile line, without a granted certificate over its exact plan bytes;
+compile line, without a granted certificate over its exact plan bytes —
+held as the attestation `certify` writes beside a grant
+(`numerics_certificate.attest`: one line over the plan's SHA-256, the
+plan's seal and the certificate file's SHA-256, compared whole; a refusal
+has none) — and then compiles the plan's seal into the runner, which
+refuses every other relaxed plan at load (F2 #206; `seeml-plan-probe`
+holds the same rule unless run with `--relaxed-for-measurement`, which
+`frontier_exec.py` passes). A tolerance above its ceiling (site 1e-4,
+relaxed GEMM 2⁻⁷, loss 1e-2) or a free run under 2 steps is refused by
+`certify`, `verify` and `pack_update.py` alike;
 `--source model.smf` binds the model file to the programs that read it
 (a v17 plan's eval program; every program of a v21 adapter-only plan).
 The relaxed GEMMs are the first member of the relaxed opcode

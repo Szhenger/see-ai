@@ -330,8 +330,15 @@ bool LoadAndExecute(Bytes plan, Dataset* corpus,
     std::memcpy(&h, plan.data(), sizeof(h));
     if (h.arena_size > kFuzzArenaCap) return false;
   }
+  // The measurement permit (F2 #206): a plan that carries relaxed
+  // instructions — a mutated one, or the relaxed seed — is executed too.
+  // The relaxed kernels are the ones to run under the sanitizer, and no
+  // certificate can exist for a mutated plan; the refusal itself is the
+  // loader tests'.
   seeml::update_rt::UpdateEngine engine;
-  if (!Seen("load", engine.LoadFromMemory(plan.data(), plan.size()))) {
+  if (!Seen("load", engine.LoadFromMemory(plan.data(), plan.size(),
+                                          seeml::update_rt::RelaxedPlanPermit::
+                                              UncertifiedForMeasurement()))) {
     ++TheReach().plans_refused;
     return false;
   }

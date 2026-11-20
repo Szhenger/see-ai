@@ -150,8 +150,8 @@ float* UpdateEngine::WritePtr(uint64_t ref) {
 }
 
 std::expected<void, std::string> UpdateEngine::LoadFromMemory(
-    const uint8_t* plan, size_t size) {
-  if (auto r = Initialize(plan, size); !r) return r;
+    const uint8_t* plan, size_t size, RelaxedPlanPermit permit) {
+  if (auto r = Initialize(plan, size, permit); !r) return r;
   // The committed plan is borrowed; a previously file-owned or mapped plan
   // is no longer referenced by plan_/rodata_ and can be released.
   owned_plan_.clear();
@@ -161,21 +161,21 @@ std::expected<void, std::string> UpdateEngine::LoadFromMemory(
 }
 
 std::expected<void, std::string> UpdateEngine::LoadFromFile(
-    const std::string& path) {
+    const std::string& path, RelaxedPlanPermit permit) {
   auto bytes = ReadFileBytes(path);
   if (!bytes) return std::unexpected(bytes.error());
   // Initialize against the candidate buffer first: replacing owned_plan_ up
   // front would free the buffer a still-loaded previous plan's rodata_
   // points into even when the candidate is rejected. The move below keeps
   // the heap buffer (and the just-committed plan_/rodata_) stable.
-  if (auto r = Initialize(bytes->data(), bytes->size()); !r) return r;
+  if (auto r = Initialize(bytes->data(), bytes->size(), permit); !r) return r;
   owned_plan_ = std::move(*bytes);
   plan_map_.Release();
   return {};
 }
 
 std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
-    const std::string& path) {
+    const std::string& path, RelaxedPlanPermit permit) {
   // MAP_PRIVATE with PROT_WRITE: copy-on-write, so the file is never
   // modified through the mapping and a stray write costs one private page
   // instead of the package — the same protection the .incbin embedding's
@@ -201,15 +201,16 @@ std::expected<void, std::string> UpdateEngine::LoadFromFileMapped(
   // plan (borrowed, owned or mapped) exactly as it was. The candidate's
   // destructor unmaps it on the error path; the error names the contract
   // that refused the bytes, and the caller names the file.
-  if (auto r = Initialize(candidate.data, candidate.bytes); !r) return r;
+  if (auto r = Initialize(candidate.data, candidate.bytes, permit); !r)
+    return r;
   owned_plan_.clear();
   owned_plan_.shrink_to_fit();
   plan_map_ = std::move(candidate);  // releases the previous mapping
   return {};
 }
 
-std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
-                                                          size_t plan_size) {
+std::expected<void, std::string> UpdateEngine::Initialize(
+    const uint8_t* plan, size_t plan_size, RelaxedPlanPermit permit) {
   // Everything below validates into locals; engine members are only
   // assigned in the commit block at the end, after every contract has
   // passed. A failed re-Load must leave the previous plan fully usable —
@@ -218,7 +219,7 @@ std::expected<void, std::string> UpdateEngine::Initialize(const uint8_t* plan,
   // The loader (S7 #153): every container and executor rule, the decode
   // and the scans, then the one arena — all into locals; members are only
   // assigned in the commit block at the end.
-  auto decoded = DecodePlan(plan, plan_size);
+  auto decoded = DecodePlan(plan, plan_size, permit);
   if (!decoded) return std::unexpected(decoded.error());
   DecodedPlan& d = *decoded;
   const up::PlanHeader& header = d.header;

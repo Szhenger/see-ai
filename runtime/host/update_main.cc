@@ -49,6 +49,19 @@
 extern const unsigned char kSeemlUpdatePlan[];
 extern const size_t kSeemlUpdatePlanSize;
 
+// The relaxed plan this binary was built for (F2 #206): the seal
+// (PlanHeader::plan_hash) of the plan whose granted numerics certificate
+// the build checked — the package's build.sh passes
+// -DSEEML_CERTIFIED_PLAN_HASH=0x<seal>ull after its certificate gate. A
+// build that checked none (every exact package) leaves it 0: no relaxed
+// plan runs on this binary. The binding is in the binary because a
+// certificate cannot sit inside the plan it hashes; it is the 64-bit seal,
+// which holds against accident and a swapped plan file, not against
+// someone who can forge a seal collision or rebuild the binary.
+#ifndef SEEML_CERTIFIED_PLAN_HASH
+#define SEEML_CERTIFIED_PLAN_HASH 0ull
+#endif
+
 namespace {
 
 // Cooperative cancellation (#202 item 1). The handler only stores to a
@@ -676,9 +689,17 @@ struct Gate {
   // Both routes hand the engine one (pointer, size) and run the same
   // validation — magic, version gate, the seal, both contracts — so a disk
   // plan is trusted exactly as much as an embedded one, and a swapped or
-  // corrupt file is refused before anything executes.
+  // corrupt file is refused before anything executes. Both carry the one
+  // relaxed permit this binary has (F2 #206): the seal of the plan its
+  // build checked a granted numerics certificate for, or none. No flag
+  // widens it — a relaxed plan that is not that plan is refused here,
+  // embedded, beside the binary or named by --plan.
+  constexpr auto kRelaxedPermit =
+      seeml::update_rt::RelaxedPlanPermit::CertifiedPlan(
+          SEEML_CERTIFIED_PLAN_HASH);
   if (plan_path.empty()) {
-    if (auto r = engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize);
+    if (auto r = engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize,
+                                       kRelaxedPermit);
         !r) {
       std::fprintf(stderr, "load: %s\n", r.error().c_str());
       return 1;
@@ -686,7 +707,7 @@ struct Gate {
     std::fprintf(stderr, "seeml-update: plan embedded (%zu bytes)\n",
                  kSeemlUpdatePlanSize);
   } else {
-    if (auto r = engine.LoadFromFileMapped(plan_path); !r) {
+    if (auto r = engine.LoadFromFileMapped(plan_path, kRelaxedPermit); !r) {
       std::fprintf(stderr, "load: '%s': %s\n", plan_path.c_str(),
                    r.error().c_str());
       return 1;

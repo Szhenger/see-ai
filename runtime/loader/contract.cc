@@ -245,6 +245,34 @@ std::expected<void, std::string> VerifyExecutorContract(
   return {};
 }
 
+std::expected<void, std::string> VerifyRelaxedPermit(
+    const up::PlanHeader& header, std::span<const up::UpdateInstruction> train,
+    std::span<const up::UpdateInstruction> merge,
+    std::span<const up::UpdateInstruction> eval,
+    std::span<const up::UpdateInstruction> step, RelaxedPlanPermit permit) {
+  // Every program is counted, not only the two the executor contract lets
+  // carry the bit: the rule is "no relaxed instruction runs uncertified",
+  // and it does not lean on another rule's order.
+  uint64_t relaxed = 0;
+  for (const auto program : {train, merge, eval, step})
+    for (const up::UpdateInstruction& ins : program)
+      if (ins.flags & up::kFlagRelaxed) ++relaxed;
+  if (relaxed == 0 || permit.uncertified_for_measurement()) return {};
+  const uint64_t certified = permit.certified_plan_hash();
+  if (certified != 0 && certified == header.plan_hash) return {};
+  // The certificate is checked where the binary is built (the package's
+  // build.sh, tool/pack_update.py); what reaches the device is the seal of
+  // the plan it was checked for. A plan swapped beside the binary or named
+  // by --plan is another plan, whatever it was certified under elsewhere.
+  return diag::executing::Error(
+      "the plan carries " + std::to_string(relaxed) +
+      " relaxed instruction(s) and this package was built with " +
+      (certified == 0 ? "no numerics certificate for it"
+                      : "a certificate for another plan") +
+      ": certify the plan (tool/certify_numerics.py) and rebuild the package "
+      "beside the certificate, or recompile with --precision f32");
+}
+
 std::expected<void, std::string> VerifyFeederContract(
     const up::PlanHeader& header, Dataset& data, uint64_t num_classes,
     uint64_t vocab_bound) {
