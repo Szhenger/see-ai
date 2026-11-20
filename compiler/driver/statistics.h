@@ -78,6 +78,7 @@ struct CorpusFacts {
   uint64_t bidi_controls = 0;
   uint64_t remainder_tokens = 0;    // ids the last partial window dropped
   uint64_t straddling_windows = 0;  // windows holding a document boundary
+  uint64_t dropped_duplicate_windows = 0;  // byte-identical windows (#222)
   // Every token corpus, when the model's tokenizer names an EOS (#191): the
   // records in which that id falls before the last input position — the
   // windows holding more than one document, which is to say the windows a
@@ -106,6 +107,10 @@ struct CorpusFacts {
   uint64_t val_records = 0;
   uint64_t split_seed = 0;
   uint64_t val_split_hash = 0;
+  // Held-out records byte-identical to a training record (#222): zero by
+  // construction for raw text, whose duplicate windows are dropped before
+  // the split; a stated fact for a given SDS, which is never modified.
+  uint64_t held_out_twins = 0;
 };
 
 struct FrontendStats {

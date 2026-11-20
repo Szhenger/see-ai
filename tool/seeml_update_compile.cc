@@ -819,7 +819,8 @@ void PrintReportScalars(std::FILE* f, const ReportContext& context) {
                "  \"data\": {\"corpus\": %s, \"corpus_hash\": \"%016" PRIx64
                "\", \"tokenizer_hash\": \"%016" PRIx64
                "\", \"data_flags\": %u, \"val_frac\": %.9g, \"split_seed\": %" PRIu64
-               ", \"val_split_hash\": \"%016" PRIx64 "\"},\n"
+               ", \"val_split_hash\": \"%016" PRIx64
+               "\", \"held_out_twins\": %" PRIu64 "},\n"
                "  \"validation_scores\": \"%s\",\n"
                "  \"attention\": {\"family\": \"%s\", "
                "\"cached_probs_bytes\": %" PRIu64 "},\n"
@@ -871,6 +872,7 @@ void PrintReportScalars(std::FILE* f, const ReportContext& context) {
                plan_header.tokenizer_hash, plan_header.data_flags,
                static_cast<double>(ValFracOf(plan_header.val_frac_bits)),
                plan_header.split_seed, plan_header.val_split_hash,
+               compiled->corpus_held_out_twins,
                compiled->scores_shipped ? "shipped" : "plan",
                compiled->attention_tiled ? "tiled" : "cached",
                compiled->probs_cache_bytes,

@@ -62,9 +62,14 @@ inline constexpr StatRow kFrontendRows[] = {
     {"corpus_dropped", "dropped", StatKind::kText, "",
      "documents dropped: empty, exact duplicates, degenerate (raw text)",
      screens_detail::kO},
+    {"corpus_duplicate_windows", "duplicate windows", StatKind::kCount, "",
+     "records dropped as byte-identical to an earlier one, before any split "
+     "(raw text; exact only, near-duplicates are not detected)",
+     screens_detail::kO},
     {"corpus_sanitized", "sanitized", StatKind::kText, "",
-     "bytes and characters the sanitizer removed or counted (raw text)",
-     screens_detail::kO | screens_detail::kV},
+     "invalid UTF-8 bytes, control and bidi characters the sanitizer "
+     "removed (raw text; shown when any)",
+     screens_detail::kO},
     {"corpus_tokens", "corpus tokens", StatKind::kCount, "tokens",
      "ids the records hold", screens_detail::kO},
     {"corpus_remainder", "remainder", StatKind::kCount, "tokens",
@@ -92,6 +97,10 @@ inline constexpr StatRow kFrontendRows[] = {
      screens_detail::kO},
     {"validation", "validation", StatKind::kText, "",
      "the compiled held-out split: records, seed, the indices' hash",
+     screens_detail::kO},
+    {"validation_twins", "held-out twins", StatKind::kCount, "",
+     "held-out records byte-identical to a training record (exact only; "
+     "a given SDS is not modified)",
      screens_detail::kO},
     // The identity manifest (S4 #150): every input of the fine-tune, hashed.
     {"model_hash", "model hash", StatKind::kText, "",
