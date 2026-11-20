@@ -298,24 +298,43 @@ uint64_t BytesOf(const sir::Shape& shape) {
   return SatMul(n, sizeof(float));
 }
 
-}  // namespace
+/// The state of VerifyModel's shape walk: the model, and the topology so
+/// far — the shape of every name computation may read, and what the walk
+/// has counted on the way.
+struct ShapeWalk {
+  const SmfModel& model;
+  Topology topo{};
 
-float RopeBaseOf(uint32_t base_bits) {
-  return base_bits == 0 ? kSmfDefaultRopeBase : std::bit_cast<float>(base_bits);
-}
+  // Resolves an operand's shape the way computation's resolver will bind
+  // the value: the input, an earlier op output, or a constant tensor
+  // materialized as a weight. Anything else is the resolver's error,
+  // raised here with its words so the stage that owns the rule owns the
+  // diagnostic.
+  [[nodiscard]] std::expected<const sir::Shape*, std::string> Resolve(
+      std::string_view name) const {
+    if (auto it = topo.shapes.find(std::string(name)); it != topo.shapes.end())
+      return &it->second;
+    const SmfTensor* t = model.FindTensor(name);
+    if (!t)
+      return parsing::Error("'" + std::string(name) +
+                            "' is not a tensor of the model");
+    return parsing::Error("'" + std::string(name) +
+                          "' is not a constant tensor in the model");
+  }
+  void Emit(const SmfOp& op, sir::Shape shape) {
+    topo.activation_bytes = SatAdd(topo.activation_bytes, BytesOf(shape));
+    ++topo.activations;
+    topo.shapes[op.output] = std::move(shape);
+  }
 
-std::expected<Topology, std::string> VerifyModel(const SmfModel& model,
-                                                 int64_t batch) {
-  if (batch < 1)
-    return parsing::Error("batch must be at least 1, got " +
-                          std::to_string(batch));
-  // Whole-graph checks first: after this, every op introduces a fresh name,
-  // names resolve in topological order, and the model output is known to be
-  // producible — the shape walk can fail only on per-op grounds.
-  if (auto graph_ok = CheckGraph(model); !graph_ok)
-    return std::unexpected(graph_ok.error());
+  [[nodiscard]] std::expected<void, std::string> SeedShapes(int64_t batch);
+  [[nodiscard]] std::expected<void, std::string> VerifyOp(const SmfOp& op);
+  [[nodiscard]] std::expected<void, std::string> CheckOutput();
+};
 
-  Topology topo;
+/// The input proof, then the seed of the shape table: the input at this
+/// batch and every constant tensor at its declared dims.
+std::expected<void, std::string> ShapeWalk::SeedShapes(int64_t batch) {
   const SmfTensor* in_tensor = model.FindTensor(model.input_name);
   if (!in_tensor || in_tensor->dims.empty())
     return parsing::Error("model input '" + model.input_name +
@@ -339,162 +358,145 @@ std::expected<Topology, std::string> VerifyModel(const SmfModel& model,
       topo.token_input ? sir::Shape{batch} : sir::Shape{batch, in_dim};
   for (const SmfTensor& t : model.tensors)
     if (t.is_const) topo.shapes[t.name] = sir::Shape(t.dims);
+  return {};
+}
 
-  // Resolves an operand's shape the way computation's resolver will bind
-  // the value: the input, an earlier op output, or a constant tensor
-  // materialized as a weight. Anything else is the resolver's error,
-  // raised here with its words so the stage that owns the rule owns the
-  // diagnostic.
-  auto resolve = [&](std::string_view name)
-      -> std::expected<const sir::Shape*, std::string> {
-    if (auto it = topo.shapes.find(std::string(name)); it != topo.shapes.end())
-      return &it->second;
-    const SmfTensor* t = model.FindTensor(name);
-    if (!t)
-      return parsing::Error("'" + std::string(name) +
-                            "' is not a tensor of the model");
-    return parsing::Error("'" + std::string(name) +
-                          "' is not a constant tensor in the model");
-  };
-  auto emit = [&](const SmfOp& op, sir::Shape shape) {
-    topo.activation_bytes = SatAdd(topo.activation_bytes, BytesOf(shape));
-    ++topo.activations;
-    topo.shapes[op.output] = std::move(shape);
-  };
-
-  for (const SmfOp& op : model.ops) {
-    switch (op.kind) {
-      case SmfOpKind::kMatMul: {
-        if (auto ok = CheckArity("MatMul", op, 2, ""); !ok)
-          return std::unexpected(ok.error());
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        auto w = resolve(op.inputs[1]);
-        if (!w) return std::unexpected(w.error());
-        if (auto ok = CheckMatMul(op, **x, **w); !ok)
-          return std::unexpected(ok.error());
-        // Rows come from the actual LHS, not the batch: x may be a constant
-        // with its own row count, and lowering sizes the GEMM's M from it.
-        emit(op, sir::Shape{(*x)->dims.at(0), (*w)->dims.at(1)});
-        break;
-      }
-      case SmfOpKind::kAddBias: {
-        if (auto ok = CheckArity("AddBias", op, 2, ""); !ok)
-          return std::unexpected(ok.error());
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        auto b = resolve(op.inputs[1]);
-        if (!b) return std::unexpected(b.error());
-        if (auto ok = CheckAddBias(op, **x, **b); !ok)
-          return std::unexpected(ok.error());
-        emit(op, **x);
-        break;
-      }
-      case SmfOpKind::kRelu:
-      case SmfOpKind::kGelu:
-      case SmfOpKind::kSilu: {
-        if (op.inputs.size() != 1)
-          return parsing::Error("'" + op.name + "' needs 1 input");
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        emit(op, **x);
-        break;
-      }
-      case SmfOpKind::kMul:
-      case SmfOpKind::kAdd: {
-        const char* unit = op.kind == SmfOpKind::kMul ? "Mul" : "Add";
-        if (auto ok = CheckArity(unit, op, 2, ""); !ok)
-          return std::unexpected(ok.error());
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        auto y = resolve(op.inputs[1]);
-        if (!y) return std::unexpected(y.error());
-        if (auto ok = CheckSameShape(unit, op, **x, **y); !ok)
-          return std::unexpected(ok.error());
-        emit(op, **x);
-        break;
-      }
-      case SmfOpKind::kEmbedding: {
-        if (auto ok = CheckArity("Embedding", op, 2, " (tokens, table)"); !ok)
-          return std::unexpected(ok.error());
-        auto tokens = resolve(op.inputs[0]);
-        if (!tokens) return std::unexpected(tokens.error());
-        auto table = resolve(op.inputs[1]);
-        if (!table) return std::unexpected(table.error());
-        if (auto ok = CheckEmbedding(
-                op, topo.token_input && op.inputs[0] == model.input_name,
-                **tokens, **table);
-            !ok)
-          return std::unexpected(ok.error());
-        ++topo.embedding_ops;
-        topo.vocabulary = static_cast<uint64_t>((*table)->dims.at(0));
-        emit(op, sir::Shape{(*tokens)->dims.at(0), (*table)->dims.at(1)});
-        break;
-      }
-      case SmfOpKind::kRmsNorm: {
-        if (auto ok = CheckArity("RmsNorm", op, 2, " (x, gamma)"); !ok)
-          return std::unexpected(ok.error());
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        auto gamma = resolve(op.inputs[1]);
-        if (!gamma) return std::unexpected(gamma.error());
-        if (auto ok = CheckRmsNorm(op, **x, **gamma); !ok)
-          return std::unexpected(ok.error());
-        emit(op, **x);
-        break;
-      }
-      case SmfOpKind::kRope: {
-        if (auto ok = CheckArity("Rope", op, 1, ""); !ok)
-          return std::unexpected(ok.error());
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        if (auto ok = CheckRope(op, **x, op.attr0, model.seq_len, op.attr1);
-            !ok)
-          return std::unexpected(ok.error());
-        emit(op, **x);
-        break;
-      }
-      case SmfOpKind::kAttention: {
-        if (auto ok = CheckArity("Attention", op, 3, " (q, k, v)"); !ok)
-          return std::unexpected(ok.error());
-        auto q = resolve(op.inputs[0]);
-        if (!q) return std::unexpected(q.error());
-        auto k = resolve(op.inputs[1]);
-        if (!k) return std::unexpected(k.error());
-        auto v = resolve(op.inputs[2]);
-        if (!v) return std::unexpected(v.error());
-        if (auto ok =
-                CheckAttention(op, **q, **k, **v, op.attr0, model.seq_len);
-            !ok)
-          return std::unexpected(ok.error());
-        ++topo.attention_ops;
-        emit(op, **q);
-        break;
-      }
-      case SmfOpKind::kLayerNorm: {
-        if (auto ok = CheckArity("LayerNorm", op, 3, " (x, gamma, beta)"); !ok)
-          return std::unexpected(ok.error());
-        auto x = resolve(op.inputs[0]);
-        if (!x) return std::unexpected(x.error());
-        auto gamma = resolve(op.inputs[1]);
-        if (!gamma) return std::unexpected(gamma.error());
-        auto beta = resolve(op.inputs[2]);
-        if (!beta) return std::unexpected(beta.error());
-        if (auto ok = CheckLayerNorm(op, **x, **gamma, **beta); !ok)
-          return std::unexpected(ok.error());
-        emit(op, **x);
-        break;
-      }
-      default:
-        // The reader bounds kinds per file version, so this is unreachable
-        // from a loaded file; an in-memory model with a kind this stage
-        // does not know must still get a diagnostic naming the op.
-        return parsing::OpError(
-            "Op", op.name,
-            "unsupported op kind " + std::to_string(static_cast<int>(op.kind)));
+/// One op's shape rule, by kind: its arity, its operands resolved in
+/// order, the rule over their shapes, then the output's shape emitted.
+std::expected<void, std::string> ShapeWalk::VerifyOp(const SmfOp& op) {
+  switch (op.kind) {
+    case SmfOpKind::kMatMul: {
+      if (auto ok = CheckArity("MatMul", op, 2, ""); !ok)
+        return std::unexpected(ok.error());
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      auto w = Resolve(op.inputs[1]);
+      if (!w) return std::unexpected(w.error());
+      if (auto ok = CheckMatMul(op, **x, **w); !ok)
+        return std::unexpected(ok.error());
+      // Rows come from the actual LHS, not the batch: x may be a constant
+      // with its own row count, and lowering sizes the GEMM's M from it.
+      Emit(op, sir::Shape{(*x)->dims.at(0), (*w)->dims.at(1)});
+      break;
     }
+    case SmfOpKind::kAddBias: {
+      if (auto ok = CheckArity("AddBias", op, 2, ""); !ok)
+        return std::unexpected(ok.error());
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      auto b = Resolve(op.inputs[1]);
+      if (!b) return std::unexpected(b.error());
+      if (auto ok = CheckAddBias(op, **x, **b); !ok)
+        return std::unexpected(ok.error());
+      Emit(op, **x);
+      break;
+    }
+    case SmfOpKind::kRelu:
+    case SmfOpKind::kGelu:
+    case SmfOpKind::kSilu: {
+      if (op.inputs.size() != 1)
+        return parsing::Error("'" + op.name + "' needs 1 input");
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      Emit(op, **x);
+      break;
+    }
+    case SmfOpKind::kMul:
+    case SmfOpKind::kAdd: {
+      const char* unit = op.kind == SmfOpKind::kMul ? "Mul" : "Add";
+      if (auto ok = CheckArity(unit, op, 2, ""); !ok)
+        return std::unexpected(ok.error());
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      auto y = Resolve(op.inputs[1]);
+      if (!y) return std::unexpected(y.error());
+      if (auto ok = CheckSameShape(unit, op, **x, **y); !ok)
+        return std::unexpected(ok.error());
+      Emit(op, **x);
+      break;
+    }
+    case SmfOpKind::kEmbedding: {
+      if (auto ok = CheckArity("Embedding", op, 2, " (tokens, table)"); !ok)
+        return std::unexpected(ok.error());
+      auto tokens = Resolve(op.inputs[0]);
+      if (!tokens) return std::unexpected(tokens.error());
+      auto table = Resolve(op.inputs[1]);
+      if (!table) return std::unexpected(table.error());
+      if (auto ok = CheckEmbedding(
+              op, topo.token_input && op.inputs[0] == model.input_name,
+              **tokens, **table);
+          !ok)
+        return std::unexpected(ok.error());
+      ++topo.embedding_ops;
+      topo.vocabulary = static_cast<uint64_t>((*table)->dims.at(0));
+      Emit(op, sir::Shape{(*tokens)->dims.at(0), (*table)->dims.at(1)});
+      break;
+    }
+    case SmfOpKind::kRmsNorm: {
+      if (auto ok = CheckArity("RmsNorm", op, 2, " (x, gamma)"); !ok)
+        return std::unexpected(ok.error());
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      auto gamma = Resolve(op.inputs[1]);
+      if (!gamma) return std::unexpected(gamma.error());
+      if (auto ok = CheckRmsNorm(op, **x, **gamma); !ok)
+        return std::unexpected(ok.error());
+      Emit(op, **x);
+      break;
+    }
+    case SmfOpKind::kRope: {
+      if (auto ok = CheckArity("Rope", op, 1, ""); !ok)
+        return std::unexpected(ok.error());
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      if (auto ok = CheckRope(op, **x, op.attr0, model.seq_len, op.attr1); !ok)
+        return std::unexpected(ok.error());
+      Emit(op, **x);
+      break;
+    }
+    case SmfOpKind::kAttention: {
+      if (auto ok = CheckArity("Attention", op, 3, " (q, k, v)"); !ok)
+        return std::unexpected(ok.error());
+      auto q = Resolve(op.inputs[0]);
+      if (!q) return std::unexpected(q.error());
+      auto k = Resolve(op.inputs[1]);
+      if (!k) return std::unexpected(k.error());
+      auto v = Resolve(op.inputs[2]);
+      if (!v) return std::unexpected(v.error());
+      if (auto ok = CheckAttention(op, **q, **k, **v, op.attr0, model.seq_len);
+          !ok)
+        return std::unexpected(ok.error());
+      ++topo.attention_ops;
+      Emit(op, **q);
+      break;
+    }
+    case SmfOpKind::kLayerNorm: {
+      if (auto ok = CheckArity("LayerNorm", op, 3, " (x, gamma, beta)"); !ok)
+        return std::unexpected(ok.error());
+      auto x = Resolve(op.inputs[0]);
+      if (!x) return std::unexpected(x.error());
+      auto gamma = Resolve(op.inputs[1]);
+      if (!gamma) return std::unexpected(gamma.error());
+      auto beta = Resolve(op.inputs[2]);
+      if (!beta) return std::unexpected(beta.error());
+      if (auto ok = CheckLayerNorm(op, **x, **gamma, **beta); !ok)
+        return std::unexpected(ok.error());
+      Emit(op, **x);
+      break;
+    }
+    default:
+      // The reader bounds kinds per file version, so this is unreachable
+      // from a loaded file; an in-memory model with a kind this stage
+      // does not know must still get a diagnostic naming the op.
+      return parsing::OpError(
+          "Op", op.name,
+          "unsupported op kind " + std::to_string(static_cast<int>(op.kind)));
   }
+  return {};
+}
 
+/// The output proof: the declared output is rank-2 with a static width.
+std::expected<void, std::string> ShapeWalk::CheckOutput() {
   // CheckGraph proved the output is an op's output, so it has a shape.
   // Loss grafting consumes [rows, classes] logits and reads dims[1]: a
   // rank-1 output (reachable via an activation of a rank-1 constant) is a
@@ -507,7 +509,32 @@ std::expected<Topology, std::string> VerifyModel(const SmfModel& model,
   if (topo.output.dims.at(1) <= 0)
     return parsing::Error("model output '" + model.output_name +
                           "' width must be static and positive");
-  return topo;
+  return {};
+}
+
+}  // namespace
+
+float RopeBaseOf(uint32_t base_bits) {
+  return base_bits == 0 ? kSmfDefaultRopeBase : std::bit_cast<float>(base_bits);
+}
+
+std::expected<Topology, std::string> VerifyModel(const SmfModel& model,
+                                                 int64_t batch) {
+  if (batch < 1)
+    return parsing::Error("batch must be at least 1, got " +
+                          std::to_string(batch));
+  // Whole-graph checks first: after this, every op introduces a fresh name,
+  // names resolve in topological order, and the model output is known to be
+  // producible — the shape walk can fail only on per-op grounds.
+  if (auto graph_ok = CheckGraph(model); !graph_ok)
+    return std::unexpected(graph_ok.error());
+
+  ShapeWalk walk{.model = model};
+  if (auto ok = walk.SeedShapes(batch); !ok) return std::unexpected(ok.error());
+  for (const SmfOp& op : model.ops)
+    if (auto ok = walk.VerifyOp(op); !ok) return std::unexpected(ok.error());
+  if (auto ok = walk.CheckOutput(); !ok) return std::unexpected(ok.error());
+  return std::move(walk.topo);
 }
 
 std::unordered_set<std::string_view> AdaptedWeights(
