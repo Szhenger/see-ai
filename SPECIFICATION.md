@@ -318,7 +318,7 @@ raise the oldest-readable floor; newer-than-reader is always rejected):
 | SMF (model container) | `"SMF1"` | v7 (readers accept v1–v7; writers emit the lowest version the model needs; v7 carries the tokenizer section) | `source/language/model_format.*`, `compiler/frontend/ingressor/model_{reader,writer}.cc`, Python writer in `tool/export_model.py` |
 | SDS (dataset) | `"SDS1"` | v1 (feature rows) / v2 (token records) / v3 (tokenizer hash, loss mask) | `runtime/pipeline/dataset.{h,cc}`, Python writer |
 | SEEU (update plan) | `"SEEU"` | v26, oldest-readable v4 | written by `compiler/backend/*` + driver; read/validated by `runtime/verifier` + `runtime/dispatcher`; disassembled by `seeml-seeu-dump` |
-| SEKP (checkpoint) | `"SEKP"` | v5, oldest-readable v3 | `runtime/storage/checkpoint_format.h`, `runtime/storage/checkpoint.cc` |
+| SEKP (checkpoint) | `"SEKP"` | v6, oldest-readable v6 | `runtime/storage/checkpoint_format.h`, `runtime/storage/checkpoint.cc` |
 
 The Python plane restates these layouts exactly once, in
 `tool/seeml/formats.py`, and that restatement is held to the headers by
@@ -400,7 +400,7 @@ test of the compiler-emitted GEMM source.
   host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
   with its reason, apart from the passes, never a failure. Exit codes:
   0 no test failed / 1 fail / 2 usage or empty selection. 34 suite executables mirror the source tree
-  one-to-one (and one replays the fuzz seeds), 607 tests in all, and 246 more in the Python plane's
+  one-to-one (and one replays the fuzz seeds), 619 tests in all, and 248 more in the Python plane's
   `test/tool/` (counted on macOS, 2026-11-20; the live counts are the suite
   list of `build/build.sh`, each suite's `--list`, and what `unittest
   discover` reports).

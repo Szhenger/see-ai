@@ -181,6 +181,15 @@ constexpr const char* kUsage =
     "  embedded plan reads update_plan.seeu beside this executable; --plan\n"
     "  names another file (and overrides an embedded plan). Either way the\n"
     "  plan is validated in full — version, seal, source-model hash.\n"
+    "  --checkpoint FILE --resume: continue the run FILE holds. Strict: no\n"
+    "  file there starts a fresh run; a file that is there and cannot be\n"
+    "  resumed (corrupt, truncated, an older format, another plan's, corpus's,\n"
+    "  split's, seed's or backend's, or one whose stored losses this run does\n"
+    "  not re-measure to the bit) is refused, exit 1, and left untouched.\n"
+    "  Without --steps the resume trains the remainder of the interrupted\n"
+    "  run on its schedule (its bits are the uninterrupted run's); with\n"
+    "  --steps N it trains N MORE steps from the checkpoint's step, the\n"
+    "  schedule stretched to end at step + N.\n"
     "  --eval-every N: with a validation split, evaluate every N steps and\n"
     "  commit the BEST evaluated state, not the last (default: steps/10,\n"
     "  at least 1; 0 evaluates only before and after and commits the last).\n"
@@ -419,8 +428,12 @@ struct RunArgs {
   bool resume = false;
   uint64_t checkpoint_every = 0;
   // The checkpoint a --resume will continue: set only for one of this plan,
-  // past step 0 (HoldFlagsToPlan drops any other).
+  // past step 0 (HoldFlagsToPlan refuses any other).
   std::optional<seeml::update_rt::CheckpointRecord> resumed_from;
+  // Why the file at --checkpoint cannot be resumed, when one is there and
+  // its header does not verify (CR4 #221): refused, exit 1, never a fresh
+  // run over it.
+  std::string resume_refusal;
 };
 
 /// The gate's verdict on a finished run, as the gate line, the runtime
@@ -539,12 +552,13 @@ struct Gate {
       : embedded         ? std::string()
                          : ExecutableDir(argv[0]) + "/" + kPlanFileName;
   // The checkpoint flags, read here so the usage rules below can hold them
-  // to the plan before anything loads. A resume is a checkpoint that is
-  // there to resume: with --resume and no readable checkpoint — or one
-  // bound to another plan, which the engine's load refuses — the engine
-  // starts a fresh run ("no checkpoint resumed"), and the fresh run's rules
-  // apply to it. Peeked once; the seed / split refusal below reads the same
-  // record.
+  // to the plan before anything loads. --resume is strict (CR4 #221): with
+  // no file at --checkpoint there is nothing to resume and the run starts
+  // fresh, under the fresh run's rules; a file that IS there must be a
+  // checkpoint this run can resume, or the run is refused (exit 1) and the
+  // file left as it is. Peeked once — the header verified in full: version,
+  // integrity hash, field bounds, length; the seed / split refusal below
+  // reads the same record.
   const std::string checkpoint_path = Arg(argc, argv, "--checkpoint", "");
   const bool resume = Has(argc, argv, "--resume");
   uint64_t checkpoint_every = 0;
@@ -554,9 +568,14 @@ struct Gate {
     return std::unexpected(2);
   }
   std::optional<seeml::update_rt::CheckpointRecord> resumed_from;
-  if (resume && !checkpoint_path.empty())
+  std::string resume_refusal;
+  if (resume && !checkpoint_path.empty() &&
+      seeml::update_rt::CheckpointExists(checkpoint_path)) {
     if (auto peek = seeml::update_rt::PeekCheckpointRecord(checkpoint_path))
       resumed_from = std::move(*peek);
+    else
+      resume_refusal = peek.error();
+  }
   RunArgs args;
   args.model = model;
   args.data = data;
@@ -581,6 +600,7 @@ struct Gate {
   args.resume = resume;
   args.checkpoint_every = checkpoint_every;
   args.resumed_from = std::move(resumed_from);
+  args.resume_refusal = std::move(resume_refusal);
   return args;
 }
 
@@ -644,11 +664,38 @@ struct Gate {
   seeml::update::recipe::RunFlags flags;
   flags.steps_given = Has(argc, argv, "--steps");
   flags.steps = steps;
-  // The checkpoint the engine will resume is one bound to THIS plan: a
-  // stale file left by another (a recompiled package's) is refused by its
-  // load as "a different plan" and the run starts fresh.
-  flags.resume = resumed_from && resumed_from->step > 0 &&
-                 resumed_from->plan_hash == hdr.plan_hash;
+  // A checkpoint that is there and cannot be resumed is refused here, before
+  // the usage rules that depend on whether this run is a resume (CR4 #221):
+  // a header that does not verify, another plan's (a recompiled package's
+  // stale file), or a step-0 file no run writes. Exit 1 — the input is
+  // refused, not the command line — and the file is left as it is.
+  if (args.resume && !args.resume_refusal.empty()) {
+    std::fprintf(stderr,
+                 "model_update: --resume refused: %s; the checkpoint is "
+                 "left as it is\n",
+                 args.resume_refusal.c_str());
+    return 1;
+  }
+  if (resumed_from && resumed_from->plan_hash != hdr.plan_hash) {
+    std::fprintf(stderr,
+                 "model_update: --resume refused: '%s' belongs to a "
+                 "different plan (plan hash %016llx; this package's is "
+                 "%016llx); the checkpoint is left as it is — remove it, or "
+                 "run without --resume and another --checkpoint, to start "
+                 "afresh\n",
+                 checkpoint_path.c_str(),
+                 static_cast<unsigned long long>(resumed_from->plan_hash),
+                 static_cast<unsigned long long>(hdr.plan_hash));
+    return 1;
+  }
+  if (resumed_from && resumed_from->step == 0) {
+    std::fprintf(stderr,
+                 "model_update: --resume refused: '%s' holds step 0, which "
+                 "no run writes; the checkpoint is left as it is\n",
+                 checkpoint_path.c_str());
+    return 1;
+  }
+  flags.resume = resumed_from.has_value();
   flags.has_checkpoint_path = !checkpoint_path.empty();
   flags.checkpoint_every_given = Has(argc, argv, "--checkpoint-every");
   flags.checkpoint_every = checkpoint_every;
@@ -660,13 +707,6 @@ struct Gate {
     std::fprintf(stderr, "model_update: %s\n", why->c_str());
     return 2;
   }
-  // A checkpoint the engine will not resume binds this run to nothing.
-  // The seed / split refusal below is a resume's: held against a stale
-  // file — another plan's, which the engine's load refuses before it
-  // starts fresh — it would exit 2 over "a different --seed" for a
-  // checkpoint that never constrained this run, and only when the seeds
-  // happen to differ.
-  if (!flags.resume) resumed_from.reset();
   return std::nullopt;
 }
 
@@ -805,10 +845,11 @@ struct Gate {
 
 /// A resume is bound to the first run's shuffle seed and split (SEKP v5):
 /// a different one would train on that run's validation rows. Refused
-/// here as the usage error it is, before the engine loads anything; the
-/// engine refuses again for callers that skip this check. (resumed_from
-/// is set only for a checkpoint of this plan past step 0 — the engine's
-/// own condition for holding the binding.)
+/// here, before the engine loads anything, with the flags to change; the
+/// engine refuses again for callers that skip this check. Exit 1, as every
+/// refused checkpoint is (CR4 #221): the refusal needs the corpus and the
+/// checkpoint read, which a usage error (2) never does. (resumed_from is
+/// set only for a checkpoint of this plan past step 0.)
 [[nodiscard]] std::optional<int> RefuseForeignResume(
     const RunArgs& args, const seeml::update_rt::Dataset* dataset,
     const std::optional<seeml::update_rt::Dataset>& val_set,
@@ -826,7 +867,7 @@ struct Gate {
                  options.checkpoint_path.c_str(),
                  static_cast<unsigned long long>(resumed_from->train_samples),
                  static_cast<unsigned long long>(resumed_from->val_samples));
-    return 2;
+    return 1;
   }
   return std::nullopt;
 }
@@ -850,12 +891,20 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
                  checkpoint_path.empty()
                      ? "; no --checkpoint, so nothing resumable was kept"
                      : "");
-    if (!checkpoint_path.empty())
+    // Only a checkpoint that was written is claimed (CR4 #221): a fresh run
+    // stopped before its first step wrote none.
+    if (!checkpoint_path.empty() && report->stop_checkpointed)
       std::fprintf(stderr,
                    "seeml-update: '%s' holds step %llu; rerun with --resume "
                    "to finish the run\n",
                    checkpoint_path.c_str(),
                    static_cast<unsigned long long>(engine.step()));
+    else if (!checkpoint_path.empty())
+      std::fprintf(stderr,
+                   "seeml-update: the run stopped before its first step, so "
+                   "no checkpoint was written to '%s'; rerun it from the "
+                   "start\n",
+                   checkpoint_path.c_str());
   }
   std::fprintf(stderr,
                "seeml-update: train loss %.6f -> %.6f over %llu steps\n",

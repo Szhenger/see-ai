@@ -601,15 +601,19 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     // plan loads; a resume is a checkpoint that is there (a bare --resume
     // starts a fresh run), and the floats are as strict as the integers.
     EXPECT_STR_CONTAINS(main_tu, "RunFlagsViolation(hdr, flags)");
-    // ... and one bound to this plan: the engine refuses another plan's
-    // checkpoint and starts fresh, so the fresh run's rule holds there too.
+    // ... and strict (CR4 #221): a checkpoint that is there and cannot be
+    // resumed — a header that does not verify, another plan's — is refused
+    // before the rules, exit 1, never a fresh run over the file
+    // (test/tool/recipe_test.py runs both through a built runner).
+    EXPECT_STR_CONTAINS(main_tu,
+                        "if (args.resume && !args.resume_refusal.empty()) {");
     EXPECT_STR_CONTAINS(
-        main_tu, "flags.resume = resumed_from && resumed_from->step > 0 &&");
-    EXPECT_STR_CONTAINS(main_tu, "resumed_from->plan_hash == hdr.plan_hash;");
-    // ... which is also the only checkpoint the seed / split refusal reads:
-    // another plan's binds this run to nothing (test/tool/recipe_test.py
-    // runs both through a built runner).
-    EXPECT_STR_CONTAINS(main_tu, "if (!flags.resume) resumed_from.reset();");
+        main_tu,
+        "if (resumed_from && resumed_from->plan_hash != hdr.plan_hash) {");
+    EXPECT_STR_CONTAINS(main_tu, "flags.resume = resumed_from.has_value();");
+    // A stop claims a checkpoint only when one was written (CR4 #221).
+    EXPECT_STR_CONTAINS(
+        main_tu, "if (!checkpoint_path.empty() && report->stop_checkpointed)");
     EXPECT_STR_CONTAINS(main_tu,
                         "seeml::update::recipe::ParseF64Strict(s, out)");
     // S7 #153: the rows are the profiler's, filled by the vendored

@@ -6,15 +6,25 @@
 // =============================================================================
 
 #include <algorithm>
+#include <bit>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "runtime/storage/checkpoint.h"
+#include "runtime/storage/checkpoint_format.h"
 #include "runtime/storage/durable_io.h"
 #include "source/identity/hash.h"
 #include "runtime/loader/contract.h"
@@ -315,7 +325,7 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
   // caught before the main payload reaches the arena.
   ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> raw,
                        ReadFileBytes(dir.File("v5.ckpt")));
-  EXPECT_EQ(raw.size(), 40u + 8 + 64 + 2 * kBytes);
+  EXPECT_EQ(raw.size(), kCkptHeaderBytes + 2 * kBytes);
   raw.back() ^= 0x01;
   {
     std::ofstream f(dir.File("bad-best.ckpt"), std::ios::binary);
@@ -329,12 +339,18 @@ TEST(Checkpoint, TheV5RecordRoundTripsWithItsBestPayload) {
       std::all_of(dst.begin(), dst.end(), [](uint8_t b) { return b == 0xFF; }));
 
   // Without a best payload the file is header + one segment, and the
-  // v3/v4-shaped call reads it (step and horizon) as before.
+  // v3/v4-shaped call reads it (step and horizon) as before. The best state
+  // is then the main payload, at its step (CR4 #221: a best at another step
+  // with no payload of its own is out of bounds, and the writer refuses it).
   record.best_payload.clear();
+  EXPECT_ERROR_CONTAINS(SaveCheckpointRecord(dir.File("lean.ckpt"), kPlanHash,
+                                             record, seg.data(), kBytes),
+                        "best_step");
+  record.best_step = record.step;
   ASSERT_OK(SaveCheckpointRecord(dir.File("lean.ckpt"), kPlanHash, record,
                                  seg.data(), kBytes));
   ASSERT_OK_AND_ASSIGN(raw, ReadFileBytes(dir.File("lean.ckpt")));
-  EXPECT_EQ(raw.size(), 40u + 8 + 64 + kBytes);
+  EXPECT_EQ(raw.size(), kCkptHeaderBytes + kBytes);
   uint64_t horizon = 0;
   ASSERT_OK_AND_ASSIGN(uint64_t step,
                        LoadCheckpointFile(dir.File("lean.ckpt"), kPlanHash,
@@ -442,8 +458,9 @@ TEST(Checkpoint, AWriterKilledMidSaveLeavesTheLastCheckpointWhole) {
   // rename never ran, so the destination is the last checkpoint, whole —
   // it loads, with its step and its bytes — and the next save goes
   // through. The dead writer's sidecar stays behind, short of the full
-  // file: the inert leftover the durable writer documents (a pid-unique
-  // name nothing reads), and the proof the writer died mid-file.
+  // file — the proof the writer died mid-file — until the next save of the
+  // same path collects it (CR4 #221: a full checkpoint's size per kill,
+  // which nothing else ever removed).
   using seeml::testing::PastTheLimit;
   ScopedTempDir dir;
   const std::string path = dir.File("run.ckpt");
@@ -472,8 +489,249 @@ TEST(Checkpoint, AWriterKilledMidSaveLeavesTheLastCheckpointWhole) {
                        LoadCheckpointFile(path, hash, next.size(), now.data()));
   EXPECT_EQ(step2, uint64_t{9});
   EXPECT_TRUE(now == next);
+  EXPECT_TRUE(SizesOf(dir.path(), "run.ckpt.tmp.").empty());
+}
+
+TEST(Checkpoint, ASaveCollectsOnlyDeadWritersSidecarsOfItsPath) {
+  // CR4 #221 item 6: the sweep takes `<path>.tmp.<pid>.<n>` of a process
+  // that no longer exists — and nothing else: not a live process's (this
+  // one's, or the parent's), not another path's, not a name of another
+  // shape.
+  ScopedTempDir dir;
+  const pid_t dead = ::fork();
+  if (dead == 0) ::_exit(0);
+  ASSERT_GT(dead, 0);
+  int status = 0;
+  ASSERT_EQ(::waitpid(dead, &status, 0), dead);  // reaped: no such process
+  const std::string d = std::to_string(dead);
+  const std::string live = std::to_string(::getppid());
+  const std::string self = std::to_string(::getpid());
+  const std::vector<std::string> collected = {"run.ckpt.tmp." + d + ".0",
+                                              "run.ckpt.tmp." + d + ".17"};
+  const std::vector<std::string> kept = {"run.ckpt.tmp." + live + ".0",
+                                         "run.ckpt.tmp." + self + ".3",
+                                         "other.ckpt.tmp." + d + ".0",
+                                         "run.ckpt.tmp." + d + ".0.bak",
+                                         "run.ckpt.tmp." + d,
+                                         "run.ckpt.tmp.x" + d + ".0",
+                                         "run.ckpt.lock"};
+  for (const auto& names : {collected, kept})
+    for (const std::string& name : names)
+      std::ofstream(dir.File(name)) << "leftover";
+  const std::vector<uint8_t> seg = Segment();
+  ASSERT_OK(SaveCheckpointFile(dir.File("run.ckpt"), kPlanHash, 3, seg.data(),
+                               kBytes));
+  for (const std::string& name : collected)
+    EXPECT_FALSE(std::filesystem::exists(dir.File(name)));
+  for (const std::string& name : kept)
+    EXPECT_TRUE(std::filesystem::exists(dir.File(name)));
 }
 #endif  // _WIN32
+
+namespace forge {
+
+constexpr size_t kV5At = sizeof(CkptHeader) + sizeof(CkptHeaderV4Tail);
+constexpr size_t kV6At = kV5At + sizeof(CkptHeaderV5Tail);
+constexpr size_t kHashAt = kV6At + offsetof(CkptHeaderV6Tail, header_hash);
+
+void Put(const std::string& path, const std::vector<uint8_t>& bytes) {
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  f.write(reinterpret_cast<const char*>(bytes.data()),
+          static_cast<std::streamsize>(bytes.size()));
+}
+
+/// One header field rewritten and the header hash recomputed: past the
+/// integrity check, so the bounds are what a load meets.
+template <class T>
+std::vector<uint8_t> Field(std::vector<uint8_t> raw, size_t at, T value) {
+  std::memcpy(raw.data() + at, &value, sizeof(value));
+  std::memset(raw.data() + kHashAt, 0, 8);
+  const uint64_t h = seeml::update::ContentHash64(raw.data(), kCkptHeaderBytes);
+  std::memcpy(raw.data() + kHashAt, &h, 8);
+  return raw;
+}
+
+}  // namespace forge
+
+TEST(Checkpoint, TheV6TailRoundTrips) {
+  ScopedTempDir dir;
+  const std::vector<uint8_t> seg = Segment();
+  CheckpointRecord record;
+  record.step = 12;
+  record.horizon_steps = 30;
+  record.has_binding = true;
+  record.corpus_hash = 0xC0FFEE;
+  record.split_hash = 0x5917;
+  record.backend = kCkptBackendMetal;
+  record.has_windows = true;
+  record.window = 6;
+  record.window_count = 12;
+  record.first_window_sum = 23.5;
+  for (uint32_t i = 0; i < kCkptWindowMax; ++i)
+    record.last_losses[i] = 0.25f * static_cast<float>(i);
+  ASSERT_OK(SaveCheckpointRecord(dir.File("v6.ckpt"), kPlanHash, record,
+                                 seg.data(), kBytes));
+  std::vector<uint8_t> dst(kBytes);
+  ASSERT_OK_AND_ASSIGN(
+      CheckpointRecord got,
+      LoadCheckpointRecord(dir.File("v6.ckpt"), kPlanHash, kBytes, dst.data()));
+  EXPECT_EQ(got.corpus_hash, 0xC0FFEEu);
+  EXPECT_EQ(got.split_hash, 0x5917u);
+  EXPECT_EQ(got.backend, kCkptBackendMetal);
+  EXPECT_TRUE(got.has_windows);
+  EXPECT_EQ(got.window, 6u);
+  EXPECT_EQ(got.window_count, 12u);
+  EXPECT_EQ(got.first_window_sum, 23.5);
+  for (uint32_t i = 0; i < kCkptWindowMax; ++i)
+    EXPECT_EQ(got.last_losses[i], 0.25f * static_cast<float>(i));
+}
+
+TEST(Checkpoint, TheHeaderHashCoversEveryHeaderByte) {
+  // CR4 #221 design 1: only the payloads were hashed, so a flipped header
+  // bit — the step, a loss, a flag — loaded as read. Every one of the 240
+  // header bytes is now under the integrity hash, checked before any field
+  // is read; a refused load leaves the arena untouched.
+  ScopedTempDir dir;
+  const std::vector<uint8_t> seg = Segment();
+  CheckpointRecord record;
+  record.step = 6;
+  record.horizon_steps = 30;
+  record.has_windows = true;
+  record.window = 6;
+  record.window_count = 6;
+  ASSERT_OK(SaveCheckpointRecord(dir.File("c.ckpt"), kPlanHash, record,
+                                 seg.data(), kBytes));
+  ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> raw,
+                       ReadFileBytes(dir.File("c.ckpt")));
+  // Past magic and version (whose own checks come first), every byte.
+  for (size_t at = 8; at < kCkptHeaderBytes; ++at) {
+    std::vector<uint8_t> flipped = raw;
+    flipped[at] ^= 0x01;
+    forge::Put(dir.File("f.ckpt"), flipped);
+    std::vector<uint8_t> dst(kBytes, 0xFF);
+    const auto r =
+        LoadCheckpointRecord(dir.File("f.ckpt"), kPlanHash, kBytes, dst.data());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), "integrity hash");
+    EXPECT_TRUE(std::all_of(dst.begin(), dst.end(),
+                            [](uint8_t b) { return b == 0xFF; }));
+    EXPECT_FALSE(PeekCheckpointRecord(dir.File("f.ckpt")).has_value());
+  }
+  // A trailing byte, and a short file, are refused by the stated length.
+  std::vector<uint8_t> longer = raw;
+  longer.push_back(0);
+  forge::Put(dir.File("long.ckpt"), longer);
+  EXPECT_ERROR_CONTAINS(PeekCheckpointRecord(dir.File("long.ckpt")),
+                        "trailing bytes");
+  forge::Put(dir.File("short.ckpt"),
+             std::vector<uint8_t>(raw.begin(), raw.end() - 1));
+  EXPECT_ERROR_CONTAINS(PeekCheckpointRecord(dir.File("short.ckpt")),
+                        "truncated checkpoint");
+  forge::Put(dir.File("cut.ckpt"),
+             std::vector<uint8_t>(raw.begin(), raw.begin() + 100));
+  EXPECT_ERROR_CONTAINS(PeekCheckpointRecord(dir.File("cut.ckpt")),
+                        "the header is cut short");
+}
+
+TEST(Checkpoint, EveryFieldIsHeldToABoundAndTheRefusalNamesIt) {
+  // CR4 #221 design 2: past the hash (the forgeries below are resealed),
+  // each field is held to the bounds the file alone sets.
+  ScopedTempDir dir;
+  const std::vector<uint8_t> seg = Segment();
+  CheckpointRecord record;
+  record.step = 6;
+  record.horizon_steps = 30;
+  record.has_val_initial = true;
+  record.val_initial_loss = 2.0f;
+  record.has_best = true;
+  record.best_step = 6;
+  record.best_loss = 1.0f;
+  record.has_windows = true;
+  record.window = 6;
+  record.window_count = 6;
+  ASSERT_OK(SaveCheckpointRecord(dir.File("c.ckpt"), kPlanHash, record,
+                                 seg.data(), kBytes));
+  ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> raw,
+                       ReadFileBytes(dir.File("c.ckpt")));
+  using forge::kV5At;
+  using forge::kV6At;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  const struct {
+    std::vector<uint8_t> bytes;
+    const char* says;
+  } cases[] = {
+      {forge::Field(raw, offsetof(CkptHeader, step), uint64_t{31}),
+       "field 'step'"},
+      {forge::Field(raw, kV5At + offsetof(CkptHeaderV5Tail, flags),
+                    uint32_t{1u << 9}),
+       "field 'flags'"},
+      {forge::Field(raw,
+                    kV5At + offsetof(CkptHeaderV5Tail, val_initial_loss_bits),
+                    std::bit_cast<uint32_t>(nan)),
+       "field 'val_initial_loss'"},
+      {forge::Field(raw, kV5At + offsetof(CkptHeaderV5Tail, best_loss_bits),
+                    std::bit_cast<uint32_t>(inf)),
+       "field 'best_loss'"},
+      {forge::Field(raw, kV5At + offsetof(CkptHeaderV5Tail, best_step),
+                    uint64_t{4}),
+       "field 'best_step'"},
+      {forge::Field(raw, kV5At + offsetof(CkptHeaderV5Tail, stale_evals),
+                    uint32_t{7}),
+       "field 'stale_evals'"},
+      {forge::Field(raw, kV6At + offsetof(CkptHeaderV6Tail, backend),
+                    uint32_t{9}),
+       "field 'backend'"},
+      {forge::Field(raw, kV6At + offsetof(CkptHeaderV6Tail, window),
+                    uint32_t{kCkptWindowMax + 1}),
+       "field 'window'"},
+      {forge::Field(raw, kV6At + offsetof(CkptHeaderV6Tail, window_count),
+                    uint64_t{7}),
+       "field 'window_count'"},
+      {forge::Field(raw, kV6At + offsetof(CkptHeaderV6Tail, last_losses_bits),
+                    std::bit_cast<uint32_t>(nan)),
+       "field 'last_losses'"},
+      {forge::Field(raw, offsetof(CkptHeader, persistent_size), ~uint64_t{0}),
+       "field 'persistent_size'"},
+  };
+  for (const auto& c : cases) {
+    forge::Put(dir.File("f.ckpt"), c.bytes);
+    std::vector<uint8_t> dst(kBytes, 0xFF);
+    const auto r =
+        LoadCheckpointRecord(dir.File("f.ckpt"), kPlanHash, kBytes, dst.data());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), c.says);
+    EXPECT_TRUE(std::all_of(dst.begin(), dst.end(),
+                            [](uint8_t b) { return b == 0xFF; }));
+  }
+}
+
+TEST(Checkpoint, AnOlderVersionIsRefusedNamingBoth) {
+  // CR4 #221: a v3-v5 file cannot carry the bindings; it is refused with
+  // both versions named — never read as an unbound checkpoint.
+  ScopedTempDir dir;
+  const std::vector<uint8_t> seg = Segment();
+  ASSERT_OK(SaveCheckpointFile(dir.File("c.ckpt"), kPlanHash, 3, seg.data(),
+                               kBytes, 10));
+  ASSERT_OK_AND_ASSIGN(std::vector<uint8_t> raw,
+                       ReadFileBytes(dir.File("c.ckpt")));
+  for (const uint32_t version : {3u, 4u, 5u, 7u}) {
+    std::vector<uint8_t> old = raw;
+    std::memcpy(old.data() + offsetof(CkptHeader, version), &version, 4);
+    if (version < kCkptVersion)
+      old.erase(old.begin() + static_cast<ptrdiff_t>(forge::kV6At),
+                old.begin() + static_cast<ptrdiff_t>(kCkptHeaderBytes));
+    forge::Put(dir.File("old.ckpt"), old);
+    const std::string says = "format v" + std::to_string(version) +
+                             "; this runtime reads v" +
+                             std::to_string(kCkptVersion);
+    EXPECT_ERROR_CONTAINS(PeekCheckpointRecord(dir.File("old.ckpt")), says);
+    std::vector<uint8_t> dst(kBytes);
+    EXPECT_ERROR_CONTAINS(LoadCheckpointRecord(dir.File("old.ckpt"), kPlanHash,
+                                               kBytes, dst.data()),
+                          says);
+  }
+}
 
 TEST(Checkpoint, TheBindingTravelsOnlyWhenSaidTo) {
   // CR4 #145 F71: has_binding was never written, and every v5 file read as
