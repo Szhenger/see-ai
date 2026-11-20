@@ -833,22 +833,6 @@ std::expected<void, std::string> InstructionProof::AttentionTiled() {
         return Fail();
       return Disjoint();
     }
-    case up::OpCode::kAttnFwdTiledSeg: {
-      // v26: kAttnFwdTiled with the geometry packed into one word and the
-      // i32 starts [B*S] read through the slot that frees — kAttnFwdSeg's
-      // layout, the stats row where the cache was.
-      const up::AttnGeometry g = up::UnpackAttnGeometry(d1);
-      uint64_t td = 0, pn = 0, st = 0, t = 0;
-      if (!attn_geometry((g.B << 32) | g.S, (g.H << 32) | g.d, &td, &pn) ||
-          !MulOk(g.B * g.S * g.H, up::kAttnStatsWidth, &st) ||
-          !MulOk(g.B, g.S, &t))
-        return fail();
-      if (!ref_ok(ins.in[0], td, false) || !ref_ok(ins.in[1], td, false) ||
-          !ref_ok(ins.in[2], td, false) || !ref_ok(ins.in[3], td, true) ||
-          !ref_ok(ins.out[0], st, true) || !ref_ok(d2, t, false))
-        return fail();
-      return disjoint();
-    }
     case up::OpCode::kAttnDQTiled:
     case up::OpCode::kAttnDKTiled:
     case up::OpCode::kAttnDVTiled: {

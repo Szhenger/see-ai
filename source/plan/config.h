@@ -229,7 +229,6 @@ struct UpdateConfig {
   // The attention segment mask (#191, plan v25): no position attends to
   // another document of its packed window (documents found by the model's
   // tokenizer EOS id). Both attention families (the tiled one since v26).
-  bool segment_mask = false;
   // kOn masks, and refuses a model whose tokenizer section names no EOS;
   // kOff (the default) never masks. kAuto (#191 design item 3) decides on
   // the corpus the compile was given: it masks when --data named one in

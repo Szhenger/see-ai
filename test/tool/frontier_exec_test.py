@@ -840,17 +840,12 @@ MATRIX = [
     # The segment mask (#191, plan v25): no attention across the EOS-joined
     # documents of a window — the starts and the masked cached forward.
     ("dec_segment", "segdec/decoder.smf", "segdec/corpus.sds", 12,
-     ["--segment-mask", "--lora-rank", "4"]),
      ["--segment-mask", "on", "--lora-rank", "4"]),
     # The mask on the tiled family (#191 step 2, plan v26): the masked tiled
     # forward, and the backward passes reading each row's start from the
     # stats row — plain, then with rematerialization (the forward re-run
     # inside the backward rewrites that row) and gradient accumulation.
     ("dec_segment_tiled", "segdec/decoder.smf", "segdec/corpus.sds", 12,
-     ["--segment-mask", "--attention", "tiled", "--lora-rank", "4"]),
-    ("dec_segment_tiled_remat_accum", "segdec/decoder.smf",
-     "segdec/corpus.sds", 12,
-     ["--segment-mask", "--attention", "tiled", "--remat", "on",
      ["--segment-mask", "on", "--attention", "tiled", "--lora-rank", "4"]),
     ("dec_segment_tiled_remat_accum", "segdec/decoder.smf",
      "segdec/corpus.sds", 12,

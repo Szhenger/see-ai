@@ -1509,7 +1509,6 @@ TEST(UpdateSystem, TheSegmentMaskTrainsTheSameBitsTiledAsCached) {
   auto run = [&](bool masked, AttentionKind kind, unsigned threads, Run* out) {
     UpdateConfig config = BaseConfig(batch);
     config.optimizer.lr = 5e-3f;
-    config.segment_mask = masked;
     config.segment_mask = masked ? SegmentMaskKind::kOn : SegmentMaskKind::kOff;
     config.attention = kind;
     seeml::update::SetParallelThreadCount(threads);
@@ -1574,7 +1573,6 @@ TEST(UpdateSystem, AMaskedWindowsSecondDocumentIgnoresItsFirst) {
     UpdateConfig config = BaseConfig(batch);
     config.emit_optimizer = false;
     config.masked_loss = true;
-    config.segment_mask = masked;
     config.segment_mask = masked ? SegmentMaskKind::kOn : SegmentMaskKind::kOff;
     config.attention = kind;
     auto compiled = UpdateCompiler(config).Compile(model);
@@ -1624,7 +1622,6 @@ TEST(UpdateSystem, SegmentMaskedGradientsMatchFiniteDifferences) {
     UpdateConfig config = BaseConfig(batch);
     config.lora.rank = 2;
     config.emit_optimizer = false;
-    config.segment_mask = true;
     config.segment_mask = SegmentMaskKind::kOn;
     config.attention = kind;
     ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
