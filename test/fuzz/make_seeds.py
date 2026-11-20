@@ -366,6 +366,32 @@ def is_plan_seed(name):
     return name.startswith("plan-")
 
 
+# --- Regression inputs ---------------------------------------------------------
+REGRESSIONS = "regressions"
+
+
+def poke_header(seed, field, value):
+    """A plan seed with one header field rewritten (the seal left stale:
+    the plan arm re-seals)."""
+    h = formats.PLAN_HEADER
+    at, size = 1 + h.offsets[field], h.sizes[field]
+    return seed[:at] + value.to_bytes(size, "little") + seed[at + size:]
+
+
+def build_regressions(seeds):
+    """{name: bytes} for seeds/regressions/: inputs that once hung or
+    crashed the harness, each derived from a seed so that a plan-version
+    bump regenerates them with everything else. Named by libFuzzer's
+    prefix for the kind of finding."""
+    return {
+        # CR3 #207: one bit of grad_accum_steps (2 -> 2^30 + 2) in an
+        # accumulating plan. The contract admits it; one optimizer step is
+        # then a billion passes of the train program, which the harness ran.
+        "slow-unit-grad-accum": poke_header(
+            seeds["plan-mlp-accum"], "grad_accum_steps", 2 + (1 << 30)),
+    }
+
+
 def build_seeds(compiler):
     """{seed name: bytes}, every seed of the corpus."""
     seeds = {}
@@ -456,13 +482,16 @@ def main(argv):
     ap.add_argument("--out", default=SEEDS, help="the seed directory")
     ap.add_argument("--check", action="store_true",
                     help="write nothing: fail when --out is not what this "
-                    "script writes (plans: the same names; every other "
-                    "seed: the same bytes)")
+                    "script writes (plans and the regression inputs "
+                    "derived from them: the same names; every other seed: "
+                    "the same bytes)")
     args = ap.parse_args(argv)
     compiler = os.path.join(args.build, "seeml-update-compile")
     if not os.path.isfile(compiler):
         raise SystemExit(f"make_seeds: no built {compiler}")
     seeds = build_seeds(compiler)
+    regressions = build_regressions(seeds)
+    reg_dir = os.path.join(args.out, REGRESSIONS)
     if args.check:
         have = {n for n in os.listdir(args.out)
                 if os.path.isfile(os.path.join(args.out, n))}
@@ -475,6 +504,12 @@ def main(argv):
             with open(os.path.join(args.out, name), "rb") as f:
                 if f.read() != seeds[name]:
                     problems.append(f"{name}: bytes differ")
+        # The regression inputs derive from plans: held to their names.
+        have_reg = set(os.listdir(reg_dir)) if os.path.isdir(reg_dir) else set()
+        problems += [f"{REGRESSIONS}/{n}: not in {args.out}"
+                     for n in sorted(set(regressions) - have_reg)]
+        problems += [f"{REGRESSIONS}/{n}: not an input this script writes"
+                     for n in sorted(have_reg - set(regressions))]
         for p in problems:
             print("make_seeds: " + p, file=sys.stderr)
         if problems:
@@ -489,8 +524,15 @@ def main(argv):
     for name, data in seeds.items():
         with open(os.path.join(args.out, name), "wb") as f:
             f.write(data)
+    os.makedirs(reg_dir, exist_ok=True)
+    for name in os.listdir(reg_dir):
+        os.remove(os.path.join(reg_dir, name))
+    for name, data in regressions.items():
+        with open(os.path.join(reg_dir, name), "wb") as f:
+            f.write(data)
     total = sum(len(d) for d in seeds.values())
-    print(f"wrote {len(seeds)} seeds, {total} bytes, to {args.out}")
+    print(f"wrote {len(seeds)} seeds, {total} bytes, and "
+          f"{len(regressions)} regression input(s) to {args.out}")
     return 0
 
 

@@ -55,8 +55,10 @@ class FuzzSeedsTest(unittest.TestCase):
             with open(os.path.join(d, "stray"), "wb") as f:
                 f.write(b"\x00")
             os.remove(os.path.join(d, "recipe"))
+            os.remove(os.path.join(d, "regressions", "slow-unit-grad-accum"))
             status, log = run("--out", d, "--check")
             self.assertEqual(status, 1)
+            self.assertIn("regressions/slow-unit-grad-accum: not in", log)
             self.assertIn("sds-class: bytes differ", log)
             self.assertIn("stray: not a seed this script writes", log)
             self.assertIn("recipe: not in", log)
@@ -67,6 +69,8 @@ class FuzzSeedsTest(unittest.TestCase):
             self.assertEqual(run("--out", d)[0], 0)
             arms, total = set(), 0
             for name in os.listdir(d):
+                if name == make_seeds.REGRESSIONS:
+                    continue
                 with open(os.path.join(d, name), "rb") as f:
                     data = f.read()
                 arms.add(data[0] % make_seeds.ARMS)
