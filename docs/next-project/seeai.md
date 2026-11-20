@@ -75,7 +75,15 @@ Frontend doctrine lines:
 - Threat model, stated on the screen: the sanitizer covers malformed bytes,
   out-of-contract records, degenerate records and exact duplicates. It does
   **not** cover well-formed poisoned data; the gate and a held-out set the
-  training source cannot influence are that defense.
+  training source cannot influence are that defense. On each input kind
+  (#222): a `.txt` and every `.jsonl` document lose invalid UTF-8, control
+  characters but tab / newline / CR, and bidi controls (counted, nothing
+  normalized: clean text passes byte for byte); a `.jsonl` also drops empty,
+  degenerate and exactly duplicated documents; every raw-text corpus drops
+  windows equal to an earlier one before the split, so no held-out record
+  has a twin in training. A given `.sds` is pinned as is: under a split the
+  screen counts its held-out records with a twin in training. Near-
+  duplicates are not detected.
 - The recipe is a declarative file with a schema; flags override fields; the
   resolved recipe is hashed into the manifest with the model, tokenizer and
   corpus hashes. The exporter stays in Python and SMF stays canonical; the

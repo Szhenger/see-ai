@@ -11,8 +11,10 @@
 //       --lines encodes every line of the file as a document of its own
 //       and prints one line of space-separated ids per input line.
 //
-// What this prints is what `seeml-update-compile --data text.txt` encodes
-// and what the device's pipeline re-runs on its own data; the exporter's
+// What this prints is the encoder that `seeml-update-compile --data
+// text.txt` and the device's pipeline run, on the bytes as given: the
+// ingest sanitizes first and drops duplicate windows after (#222), so the
+// two agree on clean text without repeated windows. The exporter's
 // parity harness (tool/export_model.py --tokenizer-parity) holds it to the
 // reference tokenizer on a golden corpus. Exit 2 on usage, 1 on refusal.
 
