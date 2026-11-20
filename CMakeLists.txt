@@ -313,6 +313,10 @@ seeml_add_test(seeml_storage_test           test/runtime/storage/storage_test.cc
 seeml_add_test(seeml_engine_test            test/runtime/dispatcher/engine_test.cc)
 seeml_add_test(seeml_update_engine_test     test/runtime/dispatcher/update_engine_test.cc)
 seeml_add_test(seeml_update_system_test     test/system/update_system_test.cc)
+# The fuzz harness's replay suite (CR3 #208): the harness itself, compiled
+# as an ordinary translation unit, run over test/fuzz/seeds/ in every build.
+seeml_add_test(seeml_fuzz_replay_test       test/fuzz/fuzz_replay_test.cc)
+target_sources(seeml_fuzz_replay_test PRIVATE test/fuzz/binary_formats.cc)
 
 if(SEEML_FUZZ)
     add_executable(seeml_fuzz_formats test/fuzz/binary_formats.cc)
