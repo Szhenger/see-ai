@@ -251,11 +251,23 @@ A **fuzzer** generates inputs by mutation, guided by coverage: it
 watches which branches each input reaches and mutates the inputs that
 reached new ones. Over time it discovers, mechanically, the malformed
 files that your hand-written rejection tests missed. SeeAI's harness
-(`test/fuzz/binary_formats.cc`) exposes four attack surfaces — the SMF
-model reader, the SEEU plan loader, the SDS dataset reader, and the
-compiler running on loader-accepted models — and the contract under
-test is absolute: *arbitrary bytes may be rejected but must never
-crash, overflow, or over-read.*
+(`test/fuzz/binary_formats.cc`) exposes nine arms — the SMF model
+reader, the SEEU plan loader (re-sealed, and as sealed) with an accepted
+plan *executed*, the SDS dataset reader, the compiler running on
+loader-accepted models (alone, and over a recipe and a corpus), the
+tokenizer section with the text ingest, the recipe file, and the
+exporter's report — and the contract under test is absolute: *arbitrary
+bytes may be rejected but must never crash, overflow, or over-read.*
+
+A fuzzer has a failure mode of its own: it can run green for months
+without getting one input past a seal or a contract, covering the
+refusal paths and nothing behind them. That happened here (#208). The
+defence is not in this job: the harness counts what its inputs reach,
+and an ordinary suite, `seeml_fuzz_replay_test`, runs the checked-in
+seed corpus (`test/fuzz/seeds/`) through the harness's entry point in
+*every* job that runs the suites — and fails, naming the seed, when a
+plan is not accepted and executed, a compile does not complete, or a
+parser is not reached.
 
 Per pull request this job runs **90 seconds** of fuzzing. Ninety seconds
 is not a security audit — it is a smoke test that catches *shallow*
