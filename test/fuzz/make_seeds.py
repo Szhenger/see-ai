@@ -329,6 +329,9 @@ PLANS = [
      ["--clip-mode", "global", "--clip-norm", "0.05"]),
     ("plan-mlp-accum", "mlp", None, 4, ["--grad-accum", "2"]),
     ("plan-mlp-int8", "mlp", None, 4, ["--quantize-base"]),
+    # 8-bit moments (#192, plan v27): kAdamW8Step with the fused clip.
+    ("plan-mlp-moments-int8", "mlp", None, 4,
+     ["--moments", "int8", "--clip-norm", "0.5", "--steps", "8"]),
     ("plan-dec-cached", "dec", None, 2 * SEQ, DEC + ["--attention", "cached"]),
     ("plan-dec-tiled", "dec", None, 2 * SEQ, DEC + ["--attention", "tiled"]),
     ("plan-dec-bf16", "dec", None, 2 * SEQ, DEC + ["--bf16-base"]),

@@ -161,6 +161,11 @@ const std::vector<SeedCase>& SeedCases() {
        kArmPlan,
        PlanRun({kEvaluated}),
        {OpCode::kAccumulate}},
+      // #192: the 8-bit moment step (plan v27), its codes and scales.
+      {"plan-mlp-moments-int8",
+       kArmPlan,
+       PlanRun({kEvaluated}),
+       {OpCode::kAdamW8Step}},
       // A narrow-storage plan's eval program reads the source model file,
       // which a plan arm does not have: no eval.
       {"plan-mlp-int8", kArmPlan, PlanRun(), {OpCode::kGemmNNQ8}},

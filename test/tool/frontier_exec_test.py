@@ -521,6 +521,41 @@ class InterpreterSelfCheck(unittest.TestCase):
             want = 1.0 - lr * (gi / (abs(gi) + eps) + wd)
             self.assertAlmostEqual(out[i], want, places=6)
 
+    def test_eight_bit_moments_code_as_the_device_does(self):
+        # #192: the oracle's quantizer, held to instruction.h's rules — the
+        # top of a block lands on the last level and back exactly, an exact
+        # half step rounds to even, a nonzero v is never coded 0, an
+        # all-zero block stores zeros and a zero scale, and a round trip of
+        # v keeps half a level (2^(1/16) - 1) of relative error.
+        f32 = np.float32
+        m = np.array([2.5, -2.5, 3.5, 127.0] + [0.0] * 252, f32)
+        v = np.array([3.0, 3.0 * 2.0 ** -40, 1e-3, 0.0] + [1.0] * 252, f32)
+        qm, qv, scales = fx.moment_quantize(np, m, v)
+        self.assertEqual(list(qm[:4]), [2, -2, 4, 127])  # d = 1: to even
+        self.assertEqual(scales[0], f32(127.0))
+        self.assertEqual(scales[1], f32(3.0))
+        self.assertEqual(qv[0], 255)
+        self.assertEqual(qv[1], 1)  # below the lowest level: kept, not 0
+        self.assertEqual(qv[3], 0)
+        m0, v0 = fx.moment_dequantize(np, qm, qv, scales)
+        self.assertEqual(v0[0], f32(3.0))
+        self.assertEqual(m0[3], f32(127.0))
+        rng = np.random.default_rng(5)
+        vv = (3.0 * 2.0 ** -rng.uniform(0, 31.5, 512)).astype(f32)
+        vv[0] = 3.0
+        _, qv, sc = fx.moment_quantize(np, np.zeros(512, f32), vv)
+        _, back = fx.moment_dequantize(np, np.zeros(512, np.int8), qv, sc)
+        self.assertLess(float(np.max(np.abs(back - vv) / vv)),
+                        2.0 ** (1 / 16) - 1 + 1e-6)
+        z_m, z_v, z_s = fx.moment_quantize(np, np.zeros(300, f32),
+                                           np.zeros(300, f32))
+        self.assertFalse(z_m.any() or z_v.any() or z_s.any())
+        # The tables are the manifest's: the C++ header's own bits.
+        abi = fx.formats.load_abi()["seeu"]["moments"]
+        self.assertEqual(abi["v_level_bits"],
+                         list(fx.formats.MOMENT_V_LEVEL_BITS))
+        self.assertEqual(abi["block"], fx.formats.MOMENT_BLOCK)
+
     def test_clip_norm(self):
         clip = [(28, 0, (0, fx.f32_bits(1.0), N, N), (2, 0, 0))]
         np.testing.assert_allclose(self.run_ops(4, clip, {0: [3.0, 4.0]})[:2],
@@ -853,6 +888,16 @@ MATRIX = [
     ("dec_segment_tiled_remat_accum", "segdec/decoder.smf",
      "segdec/corpus.sds", 12,
      ["--segment-mask", "on", "--attention", "tiled", "--remat", "on",
+      "--grad-accum", "2", "--lora-rank", "4"]),
+    # 8-bit moments (#192, plan v27): kAdamW8Step with the fused per-tensor
+    # clip, and on the decoder's step program under accumulation and the
+    # global clip. The codes are compared within one level (the oracle
+    # blends the moments in float64 and rounds to f32 only to code them),
+    # the parameters and the scales at the matrix's tolerance.
+    ("mlp_moments_int8", "mlp.smf", "class.sds", 8,
+     ["--moments", "int8", "--clip-norm", "0.5"]),
+    ("dec_moments_int8_global_accum", "decoder.smf", "decoder_corpus.sds", 12,
+     ["--moments", "int8", "--clip-mode", "global", "--clip-norm", "0.05",
       "--grad-accum", "2", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
