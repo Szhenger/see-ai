@@ -1055,7 +1055,9 @@ class CertifyPlansTest(unittest.TestCase):
                            "--precision", "certified-bf16",
                            "--attention", "tiled")
         plan = fx.Plan.load(os.path.join(pkg, cn.PLAN_FILE))
-        self.assertEqual(plan.version, fx.formats.SEEU_VERSION)
+        # A plan without 8-bit moments is written at v26 (#192).
+        self.assertEqual(plan.version,
+                         fx.formats.SEEU_INT8_MOMENTS_VERSION - 1)
         self.assertGreater(plan.relaxed_instructions, plan.relaxed_gemms)
         attention = ["attn.dk.tiled", "attn.dq.tiled", "attn.dv.tiled",
                      "attn.fwd.tiled"]

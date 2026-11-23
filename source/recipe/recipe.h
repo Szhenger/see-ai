@@ -120,6 +120,9 @@ inline constexpr Field kFields[] = {
     {"clip_mode", "--clip-mode", Kind::kEnum, 0, 0, 0, 0, false, false,
      "per_tensor|global",
      "what the clip measures: each tensor's own norm, or one over them all"},
+    {"moments", "--moments", Kind::kEnum, 0, 0, 0, 0, false, false, "f32|int8",
+     "AdamW's moment storage: f32, or block-wise 8-bit (plan v27; changes "
+     "the arithmetic, so never a default)"},
     {"lr_schedule", "--lr-schedule", Kind::kEnum, 0, 0, 0, 0, false, false,
      "cosine|const", "learning-rate schedule (cosine, the default, or const)"},
     {"warmup", "--warmup", Kind::kUInt, 0, kStepsMax, 0, 0, false, false, "",
@@ -393,6 +396,9 @@ struct Inputs {
       c.optimizer.clip_norm = static_cast<float>(d);
     else if (n == "clip_mode")
       c.optimizer.clip_global = v == "global";
+    else if (n == "moments")
+      c.optimizer.moments =
+          v == "int8" ? MomentsKind::kInt8 : MomentsKind::kF32;
     else if (n == "lr_schedule")
       c.optimizer.lr_schedule =
           v == "cosine" ? LrSchedule::kCosineWithWarmup : LrSchedule::kConstant;
@@ -476,6 +482,11 @@ struct Inputs {
     return needs("clip_mode",
                  "global measures one norm to clip at clip_norm; it needs "
                  "clip_norm > 0");
+  // #192: the 8-bit moments are AdamW's; SGD keeps none.
+  if (c.optimizer.moments == MomentsKind::kInt8 &&
+      c.optimizer.kind != OptimizerKind::kAdamW)
+    return needs("moments",
+                 "int8 stores AdamW's moments; optimizer sgd keeps none");
   const bool cosine = c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup;
   if (!cosine)
     for (const char* knob : {"warmup", "min_lr_factor", "allow_zero_lr"})
@@ -525,7 +536,11 @@ struct Inputs {
 
 /// Every field of `c` as `name=value` lines in table order, defaults
 /// included: the same text for a recipe file and for the flags that say the
-/// same thing. Floats print as their exact f32 bits.
+/// same thing. Floats print as their exact f32 bits. One exception, the
+/// fields added after the hash was first published whose default is what
+/// every earlier plan did (`moments`, #192): their line is written only
+/// when they leave that default, so every recipe that does not name them
+/// keeps the hash — and every plan the bytes — it had.
 inline std::string ResolvedText(const UpdateConfig& c) {
   auto bits = [](float v) {
     uint32_t b = 0;
@@ -577,6 +592,7 @@ inline std::string ResolvedText(const UpdateConfig& c) {
       {"weight_decay", bits(c.optimizer.weight_decay)},
       {"clip_norm", bits(c.optimizer.clip_norm)},
       {"clip_mode", c.optimizer.clip_global ? "global" : "per_tensor"},
+      {"moments", c.optimizer.moments == MomentsKind::kInt8 ? "int8" : ""},
       {"lr_schedule", c.optimizer.lr_schedule == LrSchedule::kCosineWithWarmup
                           ? "cosine"
                           : "const"},
@@ -609,6 +625,8 @@ inline std::string ResolvedText(const UpdateConfig& c) {
                 "the resolved text names every field");
   std::string text;
   for (const auto& [name, value] : lines) {
+    if (value.empty() && std::string_view(name) == "moments")
+      continue;  // at its default: the text it had before the field
     text += name;
     text += '=';
     text += value;

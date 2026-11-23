@@ -594,7 +594,10 @@ bool OpLowering::TableStepAndFill() {
     if (auto clip = op->getAttrAs<float>("clip_norm"))
       ins.out[1] = F32Bits(*clip);
   } else if (m == "sc_low.adamw_step") {
-    Set(OpCode::kAdamWStep);
+    // v27 (#192): with 8-bit moments the step carries a fifth operand, the
+    // block scales, and m / v are the int8 / uint8 codes.
+    const bool int8 = op->numOperands() == 5;
+    Set(int8 ? OpCode::kAdamW8Step : OpCode::kAdamWStep);
     ins.in[0] = Ref(op->operand(0));
     ins.in[1] = Ref(op->operand(1));
     ins.in[2] = Ref(op->operand(2));
@@ -602,6 +605,7 @@ bool OpLowering::TableStepAndFill() {
     ins.out[0] = Vol(op->operand(0));
     if (auto clip = op->getAttrAs<float>("clip_norm"))
       ins.out[1] = F32Bits(*clip);
+    if (int8) ins.out[2] = Ref(op->operand(4));
   } else if (m == "sc_low.fill") {
     Set(OpCode::kFill);
     ins.in[0] = Ref(op->result(0));

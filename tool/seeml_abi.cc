@@ -203,6 +203,22 @@ void PrintSeeu() {
   std::printf("    \"kl_temperature_bits\": {\"min\": %u, \"max\": %u},\n",
               std::bit_cast<uint32_t>(up::kKlTemperatureMin),
               std::bit_cast<uint32_t>(up::kKlTemperatureMax));
+  // 8-bit moments (plan v27, #192): the block, the floor and the codes'
+  // tables as f32 bits — what the oracle's quantizer is held to.
+  std::printf(
+      "    \"moments\": {\"version\": %u, \"block\": %llu, "
+      "\"scale_floor_bits\": %u, \"m_levels_bits\": %u, "
+      "\"v_max_level\": %u,\n      \"v_level_bits\": [",
+      up::kSeeuInt8MomentsVersion,
+      static_cast<unsigned long long>(up::kMomentBlock),
+      std::bit_cast<uint32_t>(up::kMomentScaleFloor),
+      std::bit_cast<uint32_t>(up::kMomentMLevels), up::kMomentVMaxLevel);
+  for (size_t i = 0; i < 8; ++i)
+    std::printf("%s%u", i ? ", " : "", up::kMomentVLevelBits[i]);
+  std::printf("],\n      \"v_threshold_bits\": [");
+  for (size_t i = 0; i < 8; ++i)
+    std::printf("%s%u", i ? ", " : "", up::kMomentVThresholdBits[i]);
+  std::printf("]},\n");
   Enum("fused_stages", fused, sizeof(fused) / sizeof(fused[0]), false);
   std::printf(
       "    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "
@@ -242,13 +258,14 @@ void PrintSeeu() {
       "\"version\": %u, \"ledger_max\": %u,\n"
       "      \"export_flags\": {\"report\": %u, "
       "\"tokenizer_parity\": %u, \"logits_parity\": %u},\n"
-      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u}}\n"
+      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u, "
+      "\"quantized\": %u}}\n"
       "  },\n",
       up::kDataFlagMaskedLoss, up::kDataFlagCorpusPinned, up::kDataFlagSplit,
       up::kDataFlagMetadata, up::kPlanMetadataMagic, up::kPlanMetadataFormat,
       up::kSeeuMetadataVersion, up::kLedgerMaxEntries, up::kExportReportPresent,
       up::kExportTokenizerParity, up::kExportLogitsParity, up::kLedgerExact,
-      up::kLedgerReordered);
+      up::kLedgerReordered, up::kLedgerQuantized);
 }
 
 /// "sekp": the checkpoint.

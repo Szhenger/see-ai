@@ -138,6 +138,7 @@ struct Compilation {
   Rematerialization remat;
   PlanPrograms programs;
   uint64_t relaxed_gemms = 0, relaxed_attention = 0;
+  uint64_t moment_steps = 0;  // kAdamW8Step instructions (#192, v27)
   std::unordered_set<const sir::Value*> shipped;
   PlanHeader header;
   uint32_t recorded_accum = 1;
@@ -637,6 +638,15 @@ Status Compilation::ProveFootprint() {
     acc.footprint_deltas = footprint.delta_bytes;
     acc.footprint_caches = footprint.probs_cache_bytes;
     acc.footprint_total = footprint.total_bytes();
+    if (config_.optimizer.kind == OptimizerKind::kAdamW &&
+        config_.optimizer.moments == MomentsKind::kInt8) {
+      acc.footprint_moments =
+          EstimateMomentBytes(source, config_.lora.target_filters,
+                              config_.lora.rank, MomentsKind::kInt8);
+      acc.footprint_moments_f32 =
+          EstimateMomentBytes(source, config_.lora.target_filters,
+                              config_.lora.rank, MomentsKind::kF32);
+    }
     acc.memory_budget = config_.memory_budget_bytes != 0
                             ? config_.memory_budget_bytes
                             : DetectLocalMemoryBytes();
@@ -884,10 +894,10 @@ Status Compilation::CalculusPasses() {
     // then get the folds and no step).
     if (config_.emit_optimizer || accum > 1)
       pm.Add("optimizer", [&](sir::Block& b) {
-        return OptimizerSynthesizer(config_.optimizer.kind,
-                                    config_.optimizer.clip_norm, accum,
-                                    config_.emit_optimizer, config_.fuse_clip,
-                                    config_.optimizer.clip_global)
+        return OptimizerSynthesizer(
+                   config_.optimizer.kind, config_.optimizer.clip_norm, accum,
+                   config_.emit_optimizer, config_.fuse_clip,
+                   config_.optimizer.clip_global, config_.optimizer.moments)
             .Run(b, param_grads);
       });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
@@ -1227,7 +1237,7 @@ Status Compilation::LowerTrain() {
       // (kClipNorm precedes the step only with fuse_clip off.)
       return op == OpCode::kClipNorm || op == OpCode::kSqNormAccum ||
              op == OpCode::kClipGlobal || op == OpCode::kSgdStep ||
-             op == OpCode::kAdamWStep;
+             op == OpCode::kAdamWStep || op == OpCode::kAdamW8Step;
     };
     auto split =
         std::find_if(train_instrs->begin(), train_instrs->end(), is_step);
@@ -1245,6 +1255,10 @@ Status Compilation::LowerTrain() {
   }
   programs.train = std::move(*train_instrs);
   programs.step = std::move(step_instrs);
+  for (const auto* program : {&programs.train, &programs.step})
+    for (const UpdateInstruction& ins : *program)
+      if (ins.opcode == static_cast<uint16_t>(OpCode::kAdamW8Step))
+        ++moment_steps;
   return {};
 }
 
@@ -1324,6 +1338,11 @@ Status Compilation::LowerEvalAndMerge() {
 }
 
 Status Compilation::FillHeader() {
+  // The oldest version whose vocabulary the plan uses, from v26 on (#192):
+  // a plan without 8-bit moments is the v26 plan, byte for byte, and every
+  // v26 runtime still runs it.
+  header.version =
+      moment_steps ? kSeeuInt8MomentsVersion : kSeeuPreInt8MomentsVersion;
   header.arena_size = AlignUp(binding->arena_size);
   header.persistent_size = binding->persistent_size;
   header.input_ref = binding->refs.at(build.input);
@@ -1583,6 +1602,15 @@ Status Compilation::ReportSummary() {
   facts.attention_ops = attention_decision.attention_ops;
   facts.segment_mask = segment_mask;
   facts.segment_mask_why = segment_mask_why;
+  facts.moment_steps = moment_steps;
+  facts.moment_bytes = 0;
+  if (moment_steps != 0)
+    for (const ParamInit& pi : binding->params) {
+      const std::string_view id = pi.value->id();
+      if (id.ends_with(".adam_m") || id.ends_with(".adam_v") ||
+          id.ends_with(".adam_scales"))
+        facts.moment_bytes += pi.bytes;
+    }
   FillCompileScreens(facts, config_, result);
 
   // Backend boundary: the assembled plan must be internally consistent with
@@ -1652,9 +1680,19 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
   std::vector<LedgerEntry> ledger;
   for (const PassTiming& t : timings)
     for (const Reason& r : kExactPasses)
-      if (t.name == r.pass)
+      if (t.name == r.pass) {
         ledger.push_back(
             MakeLedgerEntry(r.pass, kLedgerExact, 0, r.did ? r.why : r.idle));
+        // 8-bit moments (#192): the optimizer pass stored AdamW's state
+        // narrower — a deterministic quantization, opt-in, that every
+        // backend and the oracle compute alike. It changes arithmetic, so
+        // its own line follows the pass that emitted it.
+        if (r.pass == "optimizer" && moment_steps != 0)
+          ledger.push_back(MakeLedgerEntry(
+              "moments-int8", kLedgerQuantized,
+              static_cast<uint32_t>(moment_steps),
+              "AdamW m, v 8-bit, block 256: m linear, v log2/8"));
+      }
   // The one pass that changes arithmetic: the precision assignment puts
   // frozen-weight GEMMs and tiled attention on relaxed kernels, and the
   // reason says how many of each.

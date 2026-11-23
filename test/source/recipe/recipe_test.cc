@@ -383,12 +383,18 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
   // table's order, and a field applied moves exactly its own line — a
   // branch writing another field's member, or a line reading one, moves
   // the wrong line or none.
+  // The fields added after the hash was published (#192: moments) write
+  // their line only off their default, so every earlier recipe keeps its
+  // hash: at the default the text names every other field.
+  auto late = [](std::string_view name) { return name == "moments"; };
   const std::vector<std::string> defaults =
       Lines(recipe::ResolvedText(UpdateConfig{}));
-  ASSERT_EQ(defaults.size(), std::size(recipe::kFields));
+  std::vector<std::string> named;
+  for (const recipe::Field& f : recipe::kFields)
+    if (!late(f.name)) named.push_back(f.name);
+  ASSERT_EQ(defaults.size(), named.size());
   for (size_t i = 0; i < defaults.size(); ++i)
-    EXPECT_TRUE(
-        defaults[i].starts_with(std::string(recipe::kFields[i].name) + "="));
+    EXPECT_TRUE(defaults[i].starts_with(named[i] + "="));
 
   // A distillation loss is what admits a teacher, and needs one.
   auto inputs_of = [](const Values& v) {
@@ -435,10 +441,26 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
     ASSERT_OK(Apply(with, inputs_of(with), &base));
     ASSERT_OK(Apply(moved, inputs_of(moved), &applied));
     const std::vector<std::string> a = Lines(recipe::ResolvedText(base));
-    const std::vector<std::string> b = Lines(recipe::ResolvedText(applied));
+    std::vector<std::string> b = Lines(recipe::ResolvedText(applied));
+    if (late(name)) {
+      // A late field off its default gains its own line, at its place in
+      // the table, and moves no other.
+      ASSERT_EQ(b.size(), a.size() + 1);
+      size_t at = 0;
+      for (size_t j = 0; j < i; ++j)
+        at += late(recipe::kFields[j].name) ? 0 : 1;
+      EXPECT_EQ(b[at], name + "=" + value);
+      b.erase(b.begin() + static_cast<std::ptrdiff_t>(at));
+      EXPECT_TRUE(a == b);
+      continue;
+    }
     ASSERT_EQ(a.size(), b.size());
+    // Line j of the text is field j of the table less the late fields.
+    size_t line = 0;
+    for (size_t j = 0; j < i; ++j)
+      line += late(recipe::kFields[j].name) ? 0 : 1;
     for (size_t j = 0; j < a.size(); ++j) {
-      if ((a[j] != b[j]) != (j == i))
+      if ((a[j] != b[j]) != (j == line))
         ADD_FAILURE("applying '" + name + "' = '" + value + "': line '" + a[j] +
                     "' became '" + b[j] + "'");
     }
@@ -462,6 +484,29 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
   EXPECT_STR_CONTAINS(recipe::ResolvedText(whole), "memory_budget_mib=3\n");
   EXPECT_STR_CONTAINS(recipe::ResolvedText(ragged), "memory_budget_mib=3+1B\n");
   EXPECT_NE(recipe::RecipeHash(whole), recipe::RecipeHash(ragged));
+}
+
+TEST(Recipe, EightBitMomentsAreOptInAndAdamWsAlone) {
+  // #192: the default stays f32, and a recipe that does not name the field
+  // resolves to the text — and the hash — it had before the field existed.
+  UpdateConfig base;
+  EXPECT_TRUE(base.optimizer.moments == MomentsKind::kF32);
+  EXPECT_TRUE(recipe::ResolvedText(base).find("moments") == std::string::npos);
+  UpdateConfig f32 = base;
+  ASSERT_OK(Apply({{"moments", "f32"}}, {}, &f32));
+  EXPECT_EQ(recipe::RecipeHash(f32), recipe::RecipeHash(base));
+  UpdateConfig int8 = base;
+  ASSERT_OK(Apply({{"moments", "int8"}}, {}, &int8));
+  EXPECT_TRUE(int8.optimizer.moments == MomentsKind::kInt8);
+  EXPECT_STR_CONTAINS(recipe::ResolvedText(int8), "moments=int8\n");
+  EXPECT_NE(recipe::RecipeHash(int8), recipe::RecipeHash(base));
+  UpdateConfig sgd = base;
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"moments", "int8"}, {"optimizer", "sgd"}}, {}, &sgd),
+      "--moments (recipe field moments) int8 stores AdamW's moments");
+  EXPECT_TRUE(sgd.optimizer.moments == MomentsKind::kF32);  // untouched
+  EXPECT_ERROR_CONTAINS(Apply({{"moments", "int4"}}, {}, &sgd),
+                        "must be one of f32|int8, got 'int4'");
 }
 
 TEST(Recipe, TheRunnersFlagsAreHeldToThePlan) {

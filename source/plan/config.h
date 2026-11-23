@@ -24,6 +24,9 @@ enum class LossKind : uint8_t {
 };
 
 enum class OptimizerKind : uint8_t { kSgd = 0, kAdamW = 1 };
+// AdamW's moment storage (S5 #192): f32, or block-wise 8-bit codes (plan
+// v27, kAdamW8Step) — a change of arithmetic, so opt-in only.
+enum class MomentsKind : uint8_t { kF32 = 0, kInt8 = 1 };
 
 // Learning-rate schedule applied by the runtime on top of OptimizerSpec::lr.
 // Warmup ramps linearly from 0 over `warmup_steps`; cosine then decays to
@@ -88,6 +91,7 @@ struct OptimizerSpec {
   // scales them all by the one factor it implies.
   float clip_norm = 0.0f;
   bool clip_global = false;
+  MomentsKind moments = MomentsKind::kF32;
   LrSchedule lr_schedule = LrSchedule::kCosineWithWarmup;
   uint64_t warmup_steps = kWarmupAuto;
   // The cosine floor as a fraction of lr. 0.1 (E8, #91), not 0: a floor of

@@ -57,6 +57,11 @@ struct AccountantFacts {
   uint64_t footprint_deltas = 0;
   uint64_t footprint_caches = 0;
   uint64_t footprint_total = 0;
+  // 8-bit moments (#192): AdamW's moment state, estimated beside the bound
+  // and not in it — at the storage compiled, and as f32 would hold it.
+  // Zero (and no screen row) for a plan with f32 moments.
+  uint64_t footprint_moments = 0;
+  uint64_t footprint_moments_f32 = 0;
   uint64_t memory_budget = 0;  // configured, else the host's memory
   // Adapter-only: the frozen weights are read from the model file, so the
   // bound counts none of them.
@@ -155,6 +160,10 @@ struct CompileFacts {
   uint64_t epilogue_bytes_removed = 0;  // intermediates no longer written
   uint64_t addend_bytes_removed = 0;
   uint64_t chain_bytes_removed = 0;
+  // 8-bit moments (#192): the moment steps the plan carries and the
+  // persistent bytes of their codes and scales, as bound.
+  uint64_t moment_steps = 0;
+  uint64_t moment_bytes = 0;
   // Backend (S6 #152): the five largest values the arena holds.
   std::vector<TensorFact> largest_tensors;
 };

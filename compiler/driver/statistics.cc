@@ -200,6 +200,8 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
   fe.Set("footprint_activations", acc.footprint_activations);
   fe.Set("footprint_deltas", acc.footprint_deltas);
   fe.Set("footprint_caches", acc.footprint_caches);
+  if (acc.footprint_moments != 0)
+    fe.Set("footprint_moments", acc.footprint_moments);
   fe.Set("footprint_total", acc.footprint_total);
   fe.Set("bound_ratio", t.device_bytes ? static_cast<double>(r.estimate_bytes) /
                                              static_cast<double>(t.device_bytes)
@@ -285,8 +287,28 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   an.Set("epilogue_bytes_removed", f.epilogue_bytes_removed);
   an.Set("addend_bytes_removed", f.addend_bytes_removed);
   an.Set("chain_bytes_removed", f.chain_bytes_removed);
+  // 8-bit moments (#192): what the state is stored as, and what it saves
+  // against f32 by the accountant's estimate.
+  if (f.moment_steps != 0) {
+    const AccountantFacts& acc = f.frontend.accountant;
+    char ratio[24];
+    std::snprintf(ratio, sizeof(ratio), "%.2fx",
+                  acc.footprint_moments
+                      ? static_cast<double>(acc.footprint_moments_f32) /
+                            static_cast<double>(acc.footprint_moments)
+                      : 0.0);
+    an.Set("moments",
+           "int8, block " + std::to_string(kMomentBlock) +
+               " (m linear, v log2, 8 levels an octave): " +
+               std::to_string(f.moment_steps) + " step(s), " +
+               std::to_string(f.moment_bytes) + " B bound; estimate " +
+               std::to_string(acc.footprint_moments) + " B vs " +
+               std::to_string(acc.footprint_moments_f32) + " B as f32 (" +
+               ratio + " fewer); not exact: the ledger's quantized line");
+  }
   uint64_t reordered = 0;
-  for (const LedgerEntry& e : r.ledger) reordered += e.instructions;
+  for (const LedgerEntry& e : r.ledger)
+    if (e.arithmetic == kLedgerReordered) reordered += e.instructions;
   an.Set("reordered_instructions", reordered);
   an.Set("analysis_ms", t.analysis_ms);
   for (const PassTiming& p : r.pass_timings)
@@ -303,8 +325,9 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   for (const LedgerEntry& e : r.ledger)
     an.AddRow("ledger",
               {std::string(e.pass),
-               std::string(e.arithmetic == kLedgerExact ? "bit-identical"
-                                                        : "reordered"),
+               std::string(e.arithmetic == kLedgerExact       ? "bit-identical"
+                           : e.arithmetic == kLedgerReordered ? "reordered"
+                                                              : "quantized"),
                static_cast<uint64_t>(e.instructions), std::string(e.why)});
 }
 

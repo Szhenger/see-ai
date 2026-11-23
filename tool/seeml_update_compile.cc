@@ -152,6 +152,8 @@ void PrintUsage() {
       "  [--lora-scaling alpha_over_r|alpha_over_sqrt_r]  the adapter scale\n"
       "  [--targets substr,...] [--optimizer adamw|sgd] [--lr LR]\n"
       "  [--weight-decay WD] [--clip-norm C] [--clip-mode per_tensor|global]\n"
+      "  [--moments f32|int8]  AdamW's state: f32, or block-wise 8-bit\n"
+      "                      (opt-in: it changes the arithmetic)\n"
       "  [--lr-schedule cosine|const] [--warmup N] [--allow-zero-lr]\n"
       "  [--min-lr-factor F] [--quantize-base | --bf16-base]\n"
       "  [--precision f32|certified-bf16]\n"

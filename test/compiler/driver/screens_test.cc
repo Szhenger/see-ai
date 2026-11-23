@@ -20,6 +20,7 @@
 #include "compiler/backend/architecture/host_arch.h"
 #include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
+#include "compiler/frontend/accountant/resource_analyzer.h"
 #include "source/plan/update_types.h"
 #include "source/statistics/plan_work.h"
 #include "test/framework/seetest.h"
@@ -58,6 +59,37 @@ size_t Lines(const std::string& text) {
   size_t n = 0;
   for (const char c : text) n += c == '\n';
   return n;
+}
+
+TEST(Screens, EightBitMomentsAreStatedAndCountedNarrower) {
+  // #192: an int8-moment plan says so on the analysis screen (the codes,
+  // the bytes bound, the estimate against f32) and in the ledger table, the
+  // accountant's row gives the narrower bytes, and the reordered count
+  // stays the certificate's alone. A plan with f32 moments shows none of it.
+  const SmfModel model = MakeMlp(64, 256, 32, 2);
+  UpdateConfig f32 = BaseConfig(8);
+  UpdateConfig int8 = f32;
+  int8.optimizer.moments = MomentsKind::kInt8;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate wide, UpdateCompiler(f32).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate narrow,
+                       UpdateCompiler(int8).Compile(model));
+  EXPECT_TRUE(wide.screens.frontend.Get("footprint_moments") == nullptr);
+  EXPECT_TRUE(wide.screens.analysis.Get("moments") == nullptr);
+  const uint64_t est = U(narrow.screens.frontend, "footprint_moments");
+  EXPECT_EQ(est,
+            EstimateMomentBytes(model, {}, int8.lora.rank, MomentsKind::kInt8));
+  const uint64_t as_f32 =
+      EstimateMomentBytes(model, {}, int8.lora.rank, MomentsKind::kF32);
+  EXPECT_GT(static_cast<double>(as_f32) / static_cast<double>(est), 3.9);
+  const std::string row = T(narrow.screens.analysis, "moments");
+  EXPECT_STR_CONTAINS(row, "int8, block 256");
+  EXPECT_STR_CONTAINS(row, std::to_string(as_f32) + " B as f32");
+  EXPECT_STR_CONTAINS(row, "not exact: the ledger's quantized line");
+  EXPECT_EQ(U(narrow.screens.analysis, "reordered_instructions"), 0u);
+  EXPECT_STR_CONTAINS(RenderCompileScreens(narrow.screens, true), "quantized");
+  EXPECT_TRUE(RenderCompileScreens(wide.screens, true).find("quantized") ==
+              std::string::npos);
+  ExpectComplete(narrow.screens, "mlp, int8 moments");
 }
 
 TEST(CompileScreens, EveryScreenIsCompleteForEveryFixtureFamily) {
