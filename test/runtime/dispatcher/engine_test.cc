@@ -197,6 +197,16 @@ TEST(EngineContract, PlanContractTiesTheStepSectionToAccumulation) {
   EXPECT_OK(VerifyPlanContract(header, kPlanSize));
   header.step_instr_offset = kPlanSize - 64;
   EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize), "out of bounds");
+  // #223: the count is bounded — one step runs it in passes of the train
+  // program, and a stop waits for the step's end.
+  header.step_instr_offset = 1024;
+  header.grad_accum_steps = up::kMaxGradAccumSteps;
+  EXPECT_OK(VerifyPlanContract(header, kPlanSize));
+  header.grad_accum_steps = up::kMaxGradAccumSteps + 1;
+  EXPECT_ERROR_CONTAINS(VerifyPlanContract(header, kPlanSize),
+                        "plan grad_accum_steps 65537 exceeds the bound of "
+                        "65536");
+  header.grad_accum_steps = 4;
   // A pre-v9 plan cannot carry the fields at all.
   header.step_instr_offset = 1024;
   header.version = up::kSeeuGradAccumVersion - 1;

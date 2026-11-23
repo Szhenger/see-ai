@@ -143,11 +143,15 @@ std::string_view AsText(Bytes b) {
 //   - every other instruction, linear in the bytes it touches, which the
 //     arena and the plan bound: instructions x (arena + plan) bytes;
 //   - how often each program runs: the train program once per micro-batch
-//     — the header's grad_accum_steps, which the contract admits up to
-//     2^32 - 1 and nothing here bounded until a one-bit mutation of an
-//     accumulating plan (2 -> 2^30 + 2) ran a "single step" of a billion
-//     micro-batches (CR3 #207, test/fuzz/seeds/regressions/) — and the eval
-//     program once per batch of the corpus, per evaluation.
+//     — the header's grad_accum_steps, which nothing bounded until a
+//     one-bit mutation of an accumulating plan (2 -> 2^30 + 2) ran a
+//     "single step" of a billion micro-batches (CR3 #207,
+//     test/fuzz/seeds/regressions/) — and the eval program once per batch
+//     of the corpus, per evaluation. The load contract now bounds the
+//     count at kMaxGradAccumSteps = 2^16 (#223): a bound against days per
+//     step, not against one fuzz unit's second, so the harness keeps its
+//     own cap of 8 far below it (2^15 + 2 is contract-legal and still
+//     32,770 train passes; slow-unit-grad-accum-in-contract holds the cap).
 constexpr uint64_t kFuzzArenaCap = 64ull << 20;  // 64 MiB
 constexpr uint64_t kFuzzInstructionCap = 4096;
 constexpr uint64_t kFuzzAccumulationCap = 8;

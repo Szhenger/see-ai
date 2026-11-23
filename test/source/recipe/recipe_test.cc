@@ -79,6 +79,10 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
       {"optimizer", "adam", "must be one of adamw|sgd"},
       {"quantize_base", "yes", "must be true or false"},
       {"grad_accum", "4294967296", "--grad-accum (recipe field grad_accum)"},
+      // #223: the bound the device's header contract holds.
+      {"grad_accum", "65537",
+       "--grad-accum (recipe field grad_accum) must be an integer in "
+       "[1, 65536], got '65537'"},
       {"memory_budget_mib", "0", "--memory-budget-mib"},
       // A nonzero text that underflows f32 is not the 0 a closed bound
       // admits (clip off, no decay): strtof's ERANGE refused it.
@@ -271,6 +275,13 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
   lib.lora.target_filters = {"wq", ""};
   EXPECT_STR_CONTAINS(recipe::ConfigViolation(lib).value_or(""),
                       "target filter is empty");
+  // #223: the accumulation the device would refuse at load.
+  lib = {};
+  lib.grad_accum_steps = seeml::update::kMaxGradAccumSteps;
+  EXPECT_FALSE(recipe::ConfigViolation(lib).has_value());
+  lib.grad_accum_steps = seeml::update::kMaxGradAccumSteps + 1;
+  EXPECT_STR_CONTAINS(recipe::ConfigViolation(lib).value_or(""),
+                      "grad_accum_steps 65537 is outside [1, 65536]");
 }
 
 TEST(Recipe, TheFileIsAFlatStrictObjectAndResolvesAsTheFlagsDo) {

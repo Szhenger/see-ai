@@ -384,10 +384,18 @@ def build_regressions(seeds):
     prefix for the kind of finding."""
     return {
         # CR3 #207: one bit of grad_accum_steps (2 -> 2^30 + 2) in an
-        # accumulating plan. The contract admits it; one optimizer step is
-        # then a billion passes of the train program, which the harness ran.
+        # accumulating plan. One optimizer step was then a billion passes of
+        # the train program, which the harness ran; since #223 the load
+        # contract bounds the count (kMaxGradAccumSteps = 2^16) and refuses
+        # this plan by name.
         "slow-unit-grad-accum": poke_header(
             seeds["plan-mlp-accum"], "grad_accum_steps", 2 + (1 << 30)),
+        # #223: one bit lower (2 -> 2^15 + 2) the count is inside the
+        # contract's bound, and a step is still 32,770 train passes — too
+        # slow for one fuzz unit. The harness's own, tighter cap turns it
+        # away: accepted, and nothing run.
+        "slow-unit-grad-accum-in-contract": poke_header(
+            seeds["plan-mlp-accum"], "grad_accum_steps", 2 + (1 << 15)),
     }
 
 

@@ -568,13 +568,22 @@ TEST(FuzzReplay, EveryRegressionInputRunsToTheEnd) {
     const Reach r = Run(input);
     EXPECT_EQ(r.compiled_plans_refused, uint64_t{0});
     EXPECT_EQ(r.ingest_sds_refused, uint64_t{0});
-    // A slow unit is a plan the loader accepts and the harness's work
-    // bounds must turn away: accepted, and not one instruction run.
-    // (slow-unit-grad-accum: plan-mlp-accum with one bit of
-    // grad_accum_steps flipped, 2 -> 2^30 + 2 — a "single step" of a
-    // billion micro-batches until the harness bounded the accumulation.)
-    if (entry.path().filename().string().starts_with("slow-unit-")) {
-      EXPECT_EQ(r.plans_accepted, uint64_t{1});
+    // A slow unit must run nothing. slow-unit-grad-accum is plan-mlp-accum
+    // with one bit of grad_accum_steps flipped, 2 -> 2^30 + 2 — a "single
+    // step" of a billion micro-batches until the harness bounded the
+    // accumulation — and since #223 the load contract refuses it (the count
+    // is bounded at kMaxGradAccumSteps). Any other slow unit is a plan the
+    // loader accepts and the harness's work bounds must turn away:
+    // slow-unit-grad-accum-in-contract (2 -> 2^15 + 2) is inside the
+    // contract's bound, and the harness's tighter cap holds it.
+    const std::string name = entry.path().filename().string();
+    if (name.starts_with("slow-unit-")) {
+      if (name == "slow-unit-grad-accum") {
+        EXPECT_EQ(r.plans_accepted, uint64_t{0});
+        EXPECT_EQ(r.plans_refused, uint64_t{1});
+      } else {
+        EXPECT_EQ(r.plans_accepted, uint64_t{1});
+      }
       EXPECT_EQ(r.train_steps + r.train_refused, uint64_t{0});
       EXPECT_EQ(r.evals + r.merges, uint64_t{0});
     }

@@ -179,9 +179,10 @@ def header_violation(h, plan_size):
     prices here (CR2 #143: the review's N04 and N05 were rules this copy
     skipped). The C++ statement stays the one the device runs; this is held
     to it by test, rule by rule. The ABI manifest holds the rodata offset
-    alignment and the record sizes; the version gates (v11 GEMM tiles, v9
-    gradient accumulation) and the 4-wide unroll are literals here, as
-    every version gate of this reader is, held by the test alone."""
+    alignment, the accumulation bound (#223) and the record sizes; the
+    version gates (v11 GEMM tiles, v9 gradient accumulation) and the 4-wide
+    unroll are literals here, as every version gate of this reader is, held
+    by the test alone."""
     def mul_ok(a, b):
         return a * b < _U64
 
@@ -216,6 +217,9 @@ def header_violation(h, plan_size):
     # Gradient accumulation (v9, kSeeuGradAccumVersion).
     if (h.grad_accum_steps > 1) != (h.step_instr_count > 0):
         return "plan step program presence disagrees with grad_accum_steps"
+    if h.grad_accum_steps > formats.MAX_GRAD_ACCUM_STEPS:  # #223
+        return (f"plan grad_accum_steps {h.grad_accum_steps} exceeds the "
+                f"bound of {formats.MAX_GRAD_ACCUM_STEPS}")
     if h.version < 9 and (h.grad_accum_steps > 1 or h.step_instr_count > 0):
         return "pre-v9 plan carries gradient-accumulation fields"
     if h.batch == 0:
