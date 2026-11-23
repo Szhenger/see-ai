@@ -1684,14 +1684,15 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
         ledger.push_back(
             MakeLedgerEntry(r.pass, kLedgerExact, 0, r.did ? r.why : r.idle));
         // 8-bit moments (#192): the optimizer pass stored AdamW's state
-        // narrower — a deterministic quantization, opt-in, that every
-        // backend and the oracle compute alike. It changes arithmetic, so
+        // narrower — a quantization, opt-in, whose rule every backend and
+        // the oracle share and whose unbiased rounding is deterministic
+        // given the step and the element. It changes arithmetic, so
         // its own line follows the pass that emitted it.
         if (r.pass == "optimizer" && moment_steps != 0)
           ledger.push_back(MakeLedgerEntry(
               "moments-int8", kLedgerQuantized,
               static_cast<uint32_t>(moment_steps),
-              "AdamW m, v 8-bit, block 256: m linear, v log2/8"));
+              "AdamW m, v 8-bit, block 256: log2/8, unbiased dither"));
       }
   // The one pass that changes arithmetic: the precision assignment puts
   // frozen-weight GEMMs and tiled attention on relaxed kernels, and the

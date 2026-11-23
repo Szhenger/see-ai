@@ -299,7 +299,7 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
                       : 0.0);
     an.Set("moments",
            "int8, block " + std::to_string(kMomentBlock) +
-               " (m linear, v log2, 8 levels an octave): " +
+               " (m and v log2, 8 levels an octave, unbiased dither): " +
                std::to_string(f.moment_steps) + " step(s), " +
                std::to_string(f.moment_bytes) + " B bound; estimate " +
                std::to_string(acc.footprint_moments) + " B vs " +
