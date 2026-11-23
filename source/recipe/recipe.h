@@ -529,6 +529,14 @@ struct Inputs {
   if (c.grad_accum_steps > kMaxGradAccumSteps)
     return "grad_accum_steps " + std::to_string(c.grad_accum_steps) +
            " is outside [1, " + std::to_string(kMaxGradAccumSteps) + "]";
+  // #192: no invalid plan — the synthesizer would emit plain SGD steps —
+  // but the resolved recipe would still say moments=int8, and the plan's
+  // recipe hash would differ from the same plan's without the field. The
+  // recipe path refuses the pair; a config built in code is held to it too.
+  if (c.optimizer.moments == MomentsKind::kInt8 &&
+      c.optimizer.kind != OptimizerKind::kAdamW)
+    return std::string(
+        "moments int8 stores AdamW's moments; optimizer sgd keeps none");
   return std::nullopt;
 }
 

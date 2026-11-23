@@ -282,6 +282,13 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
   lib.grad_accum_steps = seeml::update::kMaxGradAccumSteps + 1;
   EXPECT_STR_CONTAINS(recipe::ConfigViolation(lib).value_or(""),
                       "grad_accum_steps 65537 is outside [1, 65536]");
+  // #192: the pair the recipe path refuses is refused in code too.
+  lib = {};
+  lib.optimizer.moments = seeml::update::MomentsKind::kInt8;
+  EXPECT_FALSE(recipe::ConfigViolation(lib).has_value());
+  lib.optimizer.kind = seeml::update::OptimizerKind::kSgd;
+  EXPECT_STR_CONTAINS(recipe::ConfigViolation(lib).value_or(""),
+                      "optimizer sgd keeps none");
 }
 
 TEST(Recipe, TheFileIsAFlatStrictObjectAndResolvesAsTheFlagsDo) {

@@ -266,7 +266,9 @@ enum class OpCode : uint16_t {
   // dequantized moments (the parameter moves by the unquantized m and v of
   // this step), then requantizes with round-to-nearest-even — the codes
   // and the dequantization are MomentCodeM / MomentCodeV and their inverses
-  // below, the same arithmetic on every backend and in the oracle. A
+  // below, the same coding rule on every backend and in the oracle (the
+  // coded state may still differ by one level across backends: the f32
+  // blend before the code is contracted differently). A
   // non-finite moment (or a stored scale that is not a finite
   // non-negative float) refuses the step before anything is written, as a
   // non-finite clip norm does. out[1] is the fused clip word, as on 18.

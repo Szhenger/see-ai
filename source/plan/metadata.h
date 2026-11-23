@@ -57,8 +57,11 @@ inline constexpr uint32_t kLedgerExact = 0;      // bit-identical to its input
 inline constexpr uint32_t kLedgerReordered = 1;  // reduction order may change,
                                                  // under a numerics certificate
 // v27 (S5 #192): the pass stores state in fewer bits — a deterministic,
-// documented quantization every backend and the oracle compute alike, so no
-// certificate measures it; the plan carries it because it was asked for.
+// documented quantization whose coding rule every backend and the oracle
+// share, so no certificate measures it; the plan carries it because it was
+// asked for. The rule is shared, not the bits: each backend is bitwise
+// run-to-run, but two backends contract the f32 moment blend differently
+// and their codes may sit one level apart (the Metal twin test's bound).
 // `instructions` counts the instructions that compute on the narrow state.
 inline constexpr uint32_t kLedgerQuantized = 2;
 
