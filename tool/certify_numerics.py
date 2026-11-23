@@ -197,8 +197,9 @@ SITES = {
     57: "attn.fwd.tiled.seg",
 }
 # The optimizer steps reduce only when they carry a fused clip (plan v12,
-# threshold bits in out[1]): then the gradient norm is theirs.
-FUSED_CLIP_SITES = {17: "sgd.step", 18: "adamw.step"}
+# threshold bits in out[1]): then the gradient norm is theirs. The 8-bit
+# moment step (v27, #192) carries the same fused clip over the same norm.
+FUSED_CLIP_SITES = {17: "sgd.step", 18: "adamw.step", 58: "adamw8.step"}
 SITES.update(FUSED_CLIP_SITES)
 assert all(fx.OPCODES[k] == v for k, v in SITES.items())
 
@@ -336,7 +337,7 @@ class DryMemory:
     them — one instruction's relaxed result on the reference arm's inputs."""
 
     def __init__(self, mem):
-        self.mem, self.writes = mem, []
+        self.mem, self.writes, self.np = mem, [], mem.np
 
     def read(self, ref, shape, kind="<f4"):
         return self.mem.read(ref, shape, kind)
@@ -348,6 +349,17 @@ class DryMemory:
         np = self.mem.np
         self.writes.append((ref, np.asarray(tensor, np.float64).astype(
             np.float32).reshape(-1)))
+
+    # The 8-bit moment step's host state (v27, #192). Its codes and scales
+    # are read through; what it would store of them is not captured — a
+    # relative error does not measure an integer code, and the clipped
+    # gradient the site reduces is measured through the parameter the step
+    # writes first (`write` above).
+    def read_host(self, ref, count, kind):
+        return self.mem.read_host(ref, count, kind)
+
+    def write_host(self, ref, array):
+        pass
 
 
 class RelaxedExecutor(fx.Executor):
