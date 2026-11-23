@@ -186,6 +186,7 @@ uint64_t WindowHash(std::span<const int32_t> ids,
 
 constexpr std::string_view kImStart = "<|im_start|>";
 constexpr std::string_view kImEnd = "<|im_end|>";
+constexpr std::string_view kEndOfText = "<|endoftext|>";
 
 }  // namespace
 
@@ -313,8 +314,11 @@ std::expected<IngestResult, std::string> Ingest(
   if (documents.empty()) return std::unexpected("ingest: no documents");
   if (options.one_document && documents.size() != 1)
     return std::unexpected("ingest: one-document mode takes one document");
-  const int32_t eos = tokenizer.info().eos_id;
-  if (!options.one_document && documents.size() > 1 && eos < 0)
+  // The joiner (#218): the EOS, or <|endoftext|> on a model whose EOS is
+  // the ChatML turn end — so a turn end inside a record never reads as a
+  // document end to the segment mask, which scans for this same id.
+  const int32_t separator = FindDocumentSeparator(tokenizer).id;
+  if (!options.one_document && documents.size() > 1 && separator < 0)
     return std::unexpected(
         "ingest: the tokenizer names no EOS token, which joining documents "
         "needs");
@@ -346,11 +350,11 @@ std::expected<IngestResult, std::string> Ingest(
   // Sanitize, deduplicate, encode: one pass over the documents, in order.
   // `target` marks, per id, whether predicting it is a loss target: every
   // id of a plain document, the response side of a chat document, and the
-  // EOS that joins documents when the document before it was plain.
+  // separator that joins documents when the document before it was plain.
   std::unordered_map<uint64_t, uint64_t> seen;  // hash -> first index
   std::vector<int32_t> ids;                     // the packed stream
   std::vector<uint8_t> target;
-  std::vector<uint64_t> boundaries;  // ids index of each EOS join
+  std::vector<uint64_t> boundaries;  // ids index of each join
   bool previous_plain = true;
   for (uint64_t d = 0; d < documents.size(); ++d) {
     const Document& doc = documents[d];
@@ -416,7 +420,7 @@ std::expected<IngestResult, std::string> Ingest(
       }
     }
     if (!ids.empty()) {
-      ids.push_back(eos);
+      ids.push_back(separator);
       target.push_back(previous_plain ? 1 : 0);
       boundaries.push_back(ids.size() - 1);
     }
@@ -457,8 +461,8 @@ std::expected<IngestResult, std::string> Ingest(
       for (uint64_t j = 0; j < S; ++j) targets += target[lo + j + 1];
       bool straddles = false;
       while (b < boundaries.size() && boundaries[b] < hi) {
-        // An EOS strictly inside the window (not its first id) is a
-        // boundary the window spans; an EOS as the window's first id means
+        // A join strictly inside the window (not its first id) is a
+        // boundary the window spans; a join as the window's first id means
         // the window begins a new document.
         if (boundaries[b] > lo) straddles = true;
         ++b;
@@ -563,10 +567,27 @@ std::string ManifestJson(const IngestManifest& m) {
   return s;
 }
 
-bool EosEndsChatTurns(const ByteLevelBpe& tokenizer) {
-  const int32_t eos = tokenizer.info().eos_id;
-  return eos >= 0 && static_cast<uint32_t>(eos) < tokenizer.info().vocab_size &&
-         tokenizer.token(static_cast<uint32_t>(eos)) == kImEnd;
+DocumentSeparator FindDocumentSeparator(const ByteLevelBpe& tokenizer) {
+  const TokenizerInfo& info = tokenizer.info();
+  const int32_t eos = info.eos_id;
+  if (eos < 0 || static_cast<uint32_t>(eos) >= info.vocab_size) return {};
+  if (tokenizer.token(static_cast<uint32_t>(eos)) != kImEnd)
+    return {eos, false};
+  // The EOS ends a chat turn: the document end is <|endoftext|>, when the
+  // section names it as a special token.
+  for (uint32_t id = 0; id < info.vocab_size; ++id)
+    if (tokenizer.is_special(id) && tokenizer.token(id) == kEndOfText)
+      return {static_cast<int32_t>(id), false};
+  return {eos, true};
+}
+
+DocumentSeparator FindDocumentSeparator(std::span<const uint8_t> section) {
+  if (section.empty()) return {};
+  if (auto tok = ByteLevelBpe::Load(section))
+    return FindDocumentSeparator(*tok);
+  if (auto head = ReadSmtkHead(section))
+    return {head->eos_id < 0 ? -1 : head->eos_id, false};
+  return {};
 }
 
 }  // namespace seeml::tokenizer

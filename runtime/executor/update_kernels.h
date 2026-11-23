@@ -173,7 +173,8 @@ void AttnFwd(const float* q, const float* k, const float* v, float* o,
              const int32_t* starts = nullptr);
 // Backward primitives (dispatched in this order by the compiled stream):
 // The segment mask (#191, plan v25): starts[b*S + t] = the first position of
-// t's document in window b (one past the last `eos` strictly before t).
+// t's document in window b (one past the last `eos` strictly before t;
+// the plan's id operand, the document separator: #218).
 void SegmentStarts(const int32_t* tokens, int32_t* starts, size_t B, size_t S,
                    int32_t eos);
 void AttnDP(const float* dout, const float* v, float* dp, size_t B, size_t S,

@@ -25,8 +25,10 @@ namespace {
 using namespace seeml::tokenizer;
 
 /// A byte-vocabulary section (id = byte value) with the given special
-/// tokens (ids 256, 257, ...); the first is the EOS.
-std::vector<uint8_t> ByteSection(const std::vector<std::string>& specials) {
+/// tokens (ids 256, 257, ...); the one at `eos` (the first by default) is
+/// the EOS.
+std::vector<uint8_t> ByteSection(const std::vector<std::string>& specials,
+                                 uint32_t eos = 0) {
   std::vector<uint8_t> b;
   auto u32 = [&](uint32_t v) {
     for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
@@ -42,7 +44,7 @@ std::vector<uint8_t> ByteSection(const std::vector<std::string>& specials) {
   u32(static_cast<uint32_t>(256 + specials.size()));
   u32(0);  // merges
   u32(static_cast<uint32_t>(specials.size()));
-  u32(256);  // eos: the first special
+  u32(256 + eos);
   u32(static_cast<uint32_t>(-1));
   u32(static_cast<uint32_t>(-1));
   u32(static_cast<uint32_t>(-1));
@@ -59,8 +61,9 @@ std::vector<uint8_t> ByteSection(const std::vector<std::string>& specials) {
   return b;
 }
 
-ByteLevelBpe Tokenizer(const std::vector<std::string>& specials = {"<eos>"}) {
-  const std::vector<uint8_t> section = ByteSection(specials);
+ByteLevelBpe Tokenizer(const std::vector<std::string>& specials = {"<eos>"},
+                       uint32_t eos = 0) {
+  const std::vector<uint8_t> section = ByteSection(specials, eos);
   auto t = ByteLevelBpe::Load(section);
   if (!t) ADD_FAILURE(t.error());
   return std::move(*t);
@@ -412,6 +415,51 @@ TEST(Ingest, AMaskedWindowIsADuplicateOnlyWhenItsMaskIsEqualToo) {
   ASSERT_EQ(r->mask.size(), 8u);
   const std::array<uint8_t, 8> mask = {1, 1, 1, 0, 1, 1, 1, 1};
   EXPECT_EQ(std::memcmp(r->mask.data(), mask.data(), 8), 0);
+}
+
+TEST(Ingest, DocumentsAreJoinedByTheSeparatorNotByATurnEnd) {
+  // #218: the document separator is the EOS, unless the EOS is the ChatML
+  // turn end <|im_end|> and the section names <|endoftext|>: then that
+  // token, so a turn end inside a chat record is never read as a document
+  // end. An <|im_end|> EOS with nothing else is marked as the turn end.
+  {
+    const ByteLevelBpe base =
+        Tokenizer({"<eos>", "<|im_start|>", "<|im_end|>"});
+    const DocumentSeparator sep = FindDocumentSeparator(base);
+    EXPECT_EQ(sep.id, 256);
+    EXPECT_FALSE(sep.is_turn_end);
+  }
+  const ByteLevelBpe instruct =
+      Tokenizer({"<|endoftext|>", "<|im_start|>", "<|im_end|>"}, 2);
+  EXPECT_EQ(instruct.info().eos_id, 258);
+  const DocumentSeparator sep = FindDocumentSeparator(instruct);
+  EXPECT_EQ(sep.id, 256);
+  EXPECT_FALSE(sep.is_turn_end);
+  {
+    const ByteLevelBpe guarded = Tokenizer({"<|im_end|>", "<|im_start|>"});
+    const DocumentSeparator g = FindDocumentSeparator(guarded);
+    EXPECT_EQ(g.id, 256);
+    EXPECT_TRUE(g.is_turn_end);
+  }
+  // From the section's bytes: the loaded section's answer; a head-only
+  // section (no token texts) gives its EOS; no section gives none.
+  const std::vector<uint8_t> bytes =
+      ByteSection({"<|endoftext|>", "<|im_start|>", "<|im_end|>"}, 2);
+  EXPECT_EQ(FindDocumentSeparator(std::span<const uint8_t>(bytes)).id, 256);
+  const std::vector<uint8_t> head(bytes.begin(),
+                                  bytes.begin() + kSmtkHeadBytes);
+  EXPECT_EQ(FindDocumentSeparator(std::span<const uint8_t>(head)).id, 258);
+  EXPECT_EQ(FindDocumentSeparator(std::span<const uint8_t>()).id, -1);
+
+  // The pack joins with the separator: a document keeps its <|im_end|>
+  // turn ends (pre-rendered ChatML, a literal special-token string encoding
+  // to its id), and <|endoftext|> sits only between documents.
+  IngestOptions o;
+  o.seq_len = 5;
+  ASSERT_OK_AND_ASSIGN(IngestResult r,
+                       Ingest(instruct, 0, Plain({"q<|im_end|>a", "bc"}), o));
+  EXPECT_TRUE(r.ids == (std::vector<int32_t>{'q', 258, 'a', 256, 'b', 'c'}));
+  EXPECT_EQ(r.manifest.straddling_windows, 1u);
 }
 
 }  // namespace
