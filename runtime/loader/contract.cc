@@ -211,13 +211,24 @@ std::expected<void, std::string> VerifyExecutorContract(
         starts_live.push_back(
             {ins.in[1], up::RefOffset(ins.in[1]), positions * sizeof(int32_t)});
       }
-      // The 8-bit moment step (v27, #192) is the update: it belongs to the
-      // train and step programs, as the certificate's bit does, and its
+      // An optimizer step is the update, whatever its moments are stored
+      // as: it belongs to the train and step programs, as the certificate's
+      // bit does. One stepping in the eval program would move the adapters
+      // while scoring them — the engine evaluates between steps on the word
+      // that the eval program writes transients only — and one in the merge
+      // program would move them while their deltas are materialized. No
+      // compiler has emitted either; the f32 steps are held to the rule the
+      // 8-bit step arrived with.
+      if ((op == up::OpCode::kSgdStep || op == up::OpCode::kAdamWStep) &&
+          (program == &eval || program == &merge))
+        return diag::executing::Error(
+            "an optimizer step outside the train / step programs (opcode " +
+            std::to_string(ins.opcode) + ")");
+      // The 8-bit moment step (v27, #192) is the update too, and its
       // codes and scales are optimizer state — the persistent prefix the
       // checkpoint carries and no step's transients reuse. A plan whose
       // moments sat in the transient segment would train on whatever a
-      // forward last left there; one stepping in the eval program would
-      // move the adapters while scoring them.
+      // forward last left there.
       if (op == up::OpCode::kAdamW8Step) {
         if (program == &eval || program == &merge)
           return diag::executing::Error(

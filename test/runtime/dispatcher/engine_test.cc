@@ -473,6 +473,26 @@ TEST(EngineContract, EightBitMomentsArePersistentStateOfTheTrainingPrograms) {
                         "an 8-bit moment step outside the train / step");
   EXPECT_ERROR_CONTAINS(verify({}, {step}),
                         "an 8-bit moment step outside the train / step");
+  // The f32 steps are the update as well, and are held to the same two
+  // programs: an eval or merge program that steps moves the adapters while
+  // they are scored or merged.
+  up::UpdateInstruction sgd{};
+  sgd.opcode = static_cast<uint16_t>(up::OpCode::kSgdStep);
+  sgd.in[0] = up::MakeArenaRef(0);     // p: 300 floats
+  sgd.in[1] = up::MakeArenaRef(6144);  // g: transient
+  sgd.out[0] = 300;
+  up::UpdateInstruction adamw = sgd;
+  adamw.opcode = static_cast<uint16_t>(up::OpCode::kAdamWStep);
+  adamw.in[2] = up::MakeArenaRef(1216);  // m: 300 floats
+  adamw.in[3] = up::MakeArenaRef(2432);  // v: 300 floats
+  for (const up::UpdateInstruction& f32_step : {sgd, adamw}) {
+    EXPECT_OK(verify({f32_step}));
+    EXPECT_OK(verify({}, {}, {}, {f32_step}));
+    EXPECT_ERROR_CONTAINS(verify({}, {}, {f32_step}),
+                          "an optimizer step outside the train / step");
+    EXPECT_ERROR_CONTAINS(verify({}, {f32_step}),
+                          "an optimizer step outside the train / step");
+  }
   for (int slot = 0; slot < 3; ++slot) {
     up::UpdateInstruction transient = step;
     uint64_t& ref = slot == 0   ? transient.in[2]
