@@ -103,8 +103,9 @@ struct Compilation {
   int64_t in_dim = 0;
   std::optional<tokenization::CorpusIngress> corpus;
   bool masked_loss = false;
-  bool segment_mask = false;     // the decision (DecideSegmentMask)
-  std::string segment_mask_why;  // and its reason, for the screen
+  bool segment_mask = false;       // the decision (DecideSegmentMask)
+  std::string segment_mask_why;    // and its reason, for the screen
+  int32_t segment_separator = -1;  // the id the mask scans for (#218)
   TrainingFootprint footprint;
   AttentionKind attention = AttentionKind::kAuto;
   sir::Block block;
@@ -479,35 +480,33 @@ Status Compilation::DecideSegmentMask() {
   // inputs give identical plan bytes; a compile with no corpus decides
   // nothing and stays unmasked. `auto` never refuses: where it cannot mask
   // it says why and compiles the unmasked plan.
-  int32_t eos = -1;
-  if (!source.tokenizer.empty())
-    if (auto head = tokenizer::ReadSmtkHead(source.tokenizer))
-      eos = head->eos_id;
-  // #218: the mask finds documents by the EOS id, and on a checkpoint whose
-  // EOS is the chat template's turn end (<|im_end|>, the instruct variants)
-  // a chat record holds that id inside itself, after every turn — whether
-  // it came as a prompt/response record or as plain text already rendered
-  // in ChatML (a literal special-token string encodes to its id). Masked
-  // there, every response would be hidden from its own prompt, and no
-  // corpus can tell a turn end from a document end when they are one id.
-  // So on such a model nothing is masked: `auto` says why and compiles
-  // unmasked, `on` is refused. (A section that does not load — a head-only
-  // one — names no such marker.) The stopgap: the fix is starts from the
-  // pack stage's document boundaries instead of the raw EOS.
-  bool turns_in_records = false;
-  if (eos >= 0)
-    if (auto tok = tokenizer::ByteLevelBpe::Load(source.tokenizer))
-      turns_in_records = tokenizer::EosEndsChatTurns(*tok);
+  // The mask finds documents by the document separator (#218), the id the
+  // pack stage joins them with: the EOS, or <|endoftext|> on a checkpoint
+  // whose EOS is the chat template's turn end (<|im_end|>, the instruct
+  // variants), which a chat record holds after every turn — whether it came
+  // as a prompt/response record or as plain text already rendered in
+  // ChatML (a literal special-token string encodes to its id). One case
+  // stays guarded: an <|im_end|> EOS with no <|endoftext|> in the
+  // vocabulary, where a turn end and a document end are one id and no
+  // corpus can tell them apart. Masked there, every response would be
+  // hidden from its own prompt, so nothing is masked: `auto` says why and
+  // compiles unmasked, `on` is refused. (A section that does not load — a
+  // head-only one — names no token texts, and its EOS is the separator.)
+  const tokenizer::DocumentSeparator separator =
+      tokenizer::FindDocumentSeparator(source.tokenizer);
+  const bool turns_in_records = separator.is_turn_end;
+  segment_separator = separator.id;
   switch (config_.segment_mask) {
     case SegmentMaskKind::kOn:
       if (turns_in_records)
         return generating::Error(
             generating::kDriver,
             "--segment-mask on with a model whose EOS is the chat template's "
-            "turn end (<|im_end|>): the mask finds documents by the EOS, "
-            "which a chat record holds after every turn, and would hide "
-            "every response from its own prompt (#218); compile with "
-            "--segment-mask off");
+            "turn end (<|im_end|>) and whose vocabulary has no "
+            "<|endoftext|> to separate documents by: the mask would find "
+            "documents by the turn end, which a chat record holds after "
+            "every turn, and would hide every response from its own prompt "
+            "(#218); compile with --segment-mask off");
       segment_mask = true;  // a model with no EOS is refused by the pass
       segment_mask_why = "asked for";
       break;
@@ -521,12 +520,13 @@ Status Compilation::DecideSegmentMask() {
         segment_mask_why.clear();  // nothing to decide on, nothing to say
       } else if (!topology->token_input) {
         segment_mask_why = "not a token model";
-      } else if (eos < 0) {
+      } else if (separator.id < 0) {  // only when it names no EOS
         segment_mask_why = "the model's tokenizer section names no EOS id";
       } else if (turns_in_records) {
         segment_mask_why =
             "the model's EOS (<|im_end|>) also ends each turn of a chat "
-            "record, and a turn is not a document";
+            "record, a turn is not a document, and the vocabulary has no "
+            "<|endoftext|> to separate documents by";
       } else if (corpus->facts.multi_document_windows == 0) {
         segment_mask_why =
             "no window of the corpus holds more than one "
@@ -831,12 +831,13 @@ Status Compilation::StructuralPasses() {
     if (segment_mask)
       pm.Add("segment-mask",
              [this](sir::Block& b) -> std::expected<void, std::string> {
-        auto head = tokenizer::ReadSmtkHead(source.tokenizer);
-        if (source.tokenizer.empty() || !head || head->eos_id < 0)
+        // The document separator DecideSegmentMask found (#218): the id
+        // the pack stage joined the documents with.
+        if (segment_separator < 0)
           return std::unexpected(std::string(
               "segment mask: the model's tokenizer section names no "
               "EOS id to find document boundaries by"));
-        auto masked = SegmentMasker(build.input, head->eos_id).Run(b);
+        auto masked = SegmentMasker(build.input, segment_separator).Run(b);
         if (!masked) return std::unexpected(masked.error());
         facts.segment_masked_ops = *masked;
         return {};

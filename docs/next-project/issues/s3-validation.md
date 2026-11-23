@@ -78,7 +78,8 @@ the reference does: a response opening with two or more whitespace
 characters folds the template's `\n` with all but the last of them) with
 the prompt's ids those of the pieces ending at or before the join and a
 straddling piece the response's, the response side the
-targets, the joining EOS a target only after a plain document, windows
+targets, the joining separator (the EOS, or `<|endoftext|>` on an instruct
+model, #218) a target only after a plain document, windows
 with no target dropped and counted, a masked SDS v3 out; the compile then
 carries the masked objective (`--masked-loss` compiles it for a plan fed a
 masked corpus later; the cross-entropy alone — MSE / KL are refused). The

@@ -4,7 +4,9 @@ tokenizer section. The acceptance: the committed model of a run on the raw
 text is byte-identical to the committed model of the same package run on
 the canonical SDS the compiler wrote from that text (pkg/corpus.sds) —
 also for a corpus with duplicate windows and for a dirty .txt, which both
-sides sanitize and deduplicate by the same vendored stages (#222).
+sides sanitize and deduplicate by the same vendored stages (#222), and for
+a chat corpus on an instruct-style tokenizer, whose documents both sides
+join by the same document separator (#218).
 """
 import hashlib
 import json
@@ -49,6 +51,18 @@ def records(path):
     _, ver, n, seq, _, _, _ = struct.unpack_from("<IIQQIIQ", raw, 0)
     head, width = (64 if ver >= 3 else 40), (seq + 1) * 4
     return [raw[head + i * width:head + (i + 1) * width] for i in range(n)]
+
+
+def masked_records(path):
+    """The records of a token SDS, masked or not: each as its ids."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    _, ver, n, seq, _, _, _ = struct.unpack_from("<IIQQIIQ", raw, 0)
+    flags = struct.unpack_from("<I", raw, 48)[0] if ver >= 3 else 0
+    head = 64 if ver >= 3 else 40
+    stride = (seq + 1) * 4 + (((seq + 3) & ~3) if flags & 1 else 0)
+    return [list(struct.unpack_from(f"<{seq + 1}i", raw, head + i * stride))
+            for i in range(n)]
 
 
 def sha256(path):
@@ -110,6 +124,50 @@ class RunnerRawTextTest(unittest.TestCase):
         cls.dirty = os.path.join(cls.dir, "dirty.txt")
         with open(cls.dirty, "wb") as f:
             f.write(DIRTY)
+        # An instruct-style tokenizer (#218): the EOS is the ChatML turn end
+        # <|im_end|>, and <|endoftext|> (id 0) is in the vocabulary — the
+        # document separator both sides join a .jsonl's documents by.
+        inst_dir = os.path.join(cls.dir, "inst_tok")
+        os.makedirs(inst_dir)
+        inst = tiny_tokenizer_json()
+        vocab_map = dict(inst["model"]["vocab"])
+        del vocab_map["<|eot|>"]
+        vocab_map["<|endoftext|>"] = 0
+        vocab_map["<|im_start|>"] = 259
+        vocab_map["<|im_end|>"] = 260
+        inst["model"]["vocab"] = vocab_map
+        inst["added_tokens"] = [
+            dict(inst["added_tokens"][0], id=i, content=c)
+            for i, c in ((0, "<|endoftext|>"), (259, "<|im_start|>"),
+                         (260, "<|im_end|>"))]
+        with open(os.path.join(inst_dir, "tokenizer.json"), "w") as f:
+            json.dump(inst, f)
+        with open(os.path.join(inst_dir, "tokenizer_config.json"), "w") as f:
+            json.dump({"eos_token": "<|im_end|>"}, f)
+        inst_section = ts.build_section(inst_dir)
+        inst_vocab = 261
+        cls.inst_model = os.path.join(cls.dir, "inst.smf")
+        em.export_token_decoder_smf(
+            mat(inst_vocab, dim), blocks,
+            {"lnf_g": np.ones(dim, np.float32), "w_head": mat(dim, inst_vocab)},
+            cls.inst_model, seq_len=8, num_heads=2,
+            tokenizer_section=inst_section)
+        em.write_export_report(cls.inst_model, inst_section)
+        # Prompt/response records and plain text already rendered in ChatML:
+        # each holds <|im_end|> after every turn.
+        cls.chat = os.path.join(cls.dir, "chat.jsonl")
+        with open(cls.chat, "w") as f:
+            for n, (w, v) in enumerate([("cat", "door"), ("dog", "tree"),
+                                        ("owl", "barn"), ("fox", "gate")] * 6):
+                if n % 2:
+                    f.write(json.dumps({
+                        "prompt": f"where is the {w} {n}?",
+                        "response": f"the {w} is by the {v}."}) + "\n")
+                else:
+                    f.write(json.dumps({"text": (
+                        f"<|im_start|>user\nwhere is the {w} {n}?<|im_end|>\n"
+                        f"<|im_start|>assistant\nthe {w} is by the {v}."
+                        "<|im_end|>\n")}) + "\n")
         cls.jsonl = os.path.join(cls.dir, "docs.jsonl")
         with open(cls.jsonl, "w") as f:
             for i in range(0, len(TEXT), 120):
@@ -120,29 +178,30 @@ class RunnerRawTextTest(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.dir, True)
 
-    def package(self, name, data):
+    def package(self, name, data, model=None):
         pkg = os.path.join(self.dir, name)
         r = subprocess.run(
-            [COMPILER, "--source", self.model, "--out", pkg, "--data", data,
-             "--data-batch", "16", "--steps", "30", "--build"],
+            [COMPILER, "--source", model or self.model, "--out", pkg, "--data",
+             data, "--data-batch", "16", "--steps", "30", "--build"],
             capture_output=True, text=True, env=dict(os.environ, CXX=CXX))
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         self.assertTrue(os.path.isfile(os.path.join(pkg, "corpus.sds")))
+        self.compile_stderr = r.stderr
         return pkg
 
-    def update(self, pkg, data, out):
+    def update(self, pkg, data, out, model=None):
         return subprocess.run(
-            [os.path.join(pkg, "model_update"), "--model", self.model,
+            [os.path.join(pkg, "model_update"), "--model", model or self.model,
              "--data", data, "--force", "--out", out],
             capture_output=True, text=True)
 
-    def assert_text_run_is_the_sds_run(self, name, data):
-        pkg = self.package(name, data)
+    def assert_text_run_is_the_sds_run(self, name, data, model=None):
+        pkg = self.package(name, data, model)
         by_sds = os.path.join(self.dir, name + "_sds.smf")
         by_text = os.path.join(self.dir, name + "_text.smf")
-        r = self.update(pkg, os.path.join(pkg, "corpus.sds"), by_sds)
+        r = self.update(pkg, os.path.join(pkg, "corpus.sds"), by_sds, model)
         self.assertEqual(r.returncode, 0, r.stderr[-1500:])
-        r = self.update(pkg, data, by_text)
+        r = self.update(pkg, data, by_text, model)
         self.assertEqual(r.returncode, 0, r.stderr[-1500:])
         self.assertIn("seeml-update: ingested '" + data + "'", r.stderr)
         self.assertEqual(sha256(by_text), sha256(by_sds))
@@ -247,6 +306,19 @@ class RunnerRawTextTest(unittest.TestCase):
     def test_a_jsonl_trains_as_its_canonical_sds(self):
         err = self.assert_text_run_is_the_sds_run("jsonl", self.jsonl)
         self.assertIn("1 duplicate", err)
+
+    def test_a_chat_corpus_on_an_instruct_tokenizer_trains_as_its_sds(self):
+        # #218: on a tokenizer whose EOS is the turn end <|im_end|>, both
+        # sides join documents by <|endoftext|> (id 0), the plan's segment
+        # mask scans for it — `auto` masks — and the device's run on the
+        # raw text equals its run on the compiler's corpus.
+        self.assert_text_run_is_the_sds_run("chat", self.chat,
+                                            self.inst_model)
+        self.assertRegex(self.compile_stderr, r"segment mask +on")
+        recs = masked_records(os.path.join(self.dir, "chat", "corpus.sds"))
+        ids = [i for rec in recs for i in rec]
+        self.assertIn(0, ids)    # the separator joins the documents
+        self.assertIn(260, ids)  # and the turn ends stay inside them
 
     def test_raw_text_needs_a_plan_with_a_tokenizer(self):
         # A decoder exported without a tokenizer section compiles from an
