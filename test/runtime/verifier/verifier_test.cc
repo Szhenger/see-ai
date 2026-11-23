@@ -1069,7 +1069,7 @@ TEST(PlanValidator, TheEightBitMomentStepBoundsEveryOperandFromV27) {
   clipped.out[1] = f32(1.0f);
   EXPECT_OK(ValidateInstruction(clipped, arena, kRodata, up::kSeeuVersion));
   for (const uint64_t word :
-       {f32(-1.0f), f32(INFINITY), f32(1.0f) | (1ull << 32)})
+       {f32(-1.0f), f32(INFINITY), f32(1.0f) | (uint64_t{1} << 32)})
     bad([&](I& i) { i.out[1] = word; }, "optimizer step clip threshold");
   // No flag and no imm word: neither is defined on the opcode.
   bad([](I& i) { i.flags = up::kFlagRelaxed; }, "misplaced instruction flags");
