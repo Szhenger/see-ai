@@ -1109,42 +1109,94 @@ kernel void k_adamw_clip(KSIG, device float* scratch [[buffer(3)]],
 }
 // 8-bit moments (plan v27, S5 #192): source/plan/instruction.h's codes,
 // operation for operation — the same f32 bit tables, exponent-field bit
-// operations, compares and one multiply, rint (round-to-nearest-even)
-// for m. One simdgroup a block of 256: lane l holds values l, l + 32, ...
+// operations, compares, single IEEE multiplies, subtractions and one
+// division on named floats, and the dither's 32-bit integer hash (the
+// rounding is unbiased, not to nearest: instruction.h). One simdgroup a
+// block of 256: lane l holds values l, l + 32, ...
 // p.n = count, p.m = blocks, p.flags bit 0 = the fused clip's factor is in
-// scratch[256]; p.f: lr, beta1, beta2, eps, weight_decay, inv_bc1, inv_bc2.
+// scratch[256]; p.f: lr, beta1, beta2, eps, weight_decay, inv_bc1, inv_bc2;
+// p.step, p.pad0 = MomentDitherKey of this step and tensor for m and for v.
 // Slots: 0 p, 1 g, 2 m codes (int8), 3 v codes (uint8), 4 the scales
 // (every block's m absmax, then every block's v max).
-constant uint kMomentVLevelBits[8] = {
+constant uint kMomentLevelBits[8] = {
     0x3f800000u, 0x3f6ac0c7u, 0x3f5744fdu, 0x3f45672au,
     0x3f3504f3u, 0x3f25fed7u, 0x3f1837f0u, 0x3f0b95c2u};
-constant uint kMomentVThresholdBits[8] = {
+constant uint kMomentThresholdBits[8] = {
     0x3ff5257du, 0x3fe0ccdfu, 0x3fce248cu, 0x3fbd08a4u,
     0x3fad583fu, 0x3f9ef532u, 0x3f91c3d3u, 0x3f85aac3u};
-static inline float moment_value_v(uint q, float vmax) {
-  if (q == 0u) return 0.0f;
-  const uint n = 255u - q;
-  const float octave = as_type<float>((127u - n / 8u) << 23);
-  return vmax * (as_type<float>(kMomentVLevelBits[n % 8u]) * octave);
+static inline uint moment_mix(uint x) {
+  x ^= x >> 16;
+  x *= 0x7FEB352Du;
+  x ^= x >> 15;
+  x *= 0x846CA68Bu;
+  x ^= x >> 16;
+  return x;
 }
-static inline uchar moment_code_v(float v, float vmax) {
-  if (!(v > 0.0f)) return 0;
-  const uint bits = as_type<uint>(v / vmax);
+static inline uint moment_dither(uint key, uint index) {
+  return moment_mix(key + index) >> 8;
+}
+static inline float moment_level_value(uint n, float scale) {
+  const float octave = as_type<float>((127u - n / 8u) << 23);
+  const float unit = as_type<float>(kMomentLevelBits[n % 8u]) * octave;
+  return scale * unit;
+}
+// MomentLevel: max_level + 1 stands for the zero code (to_zero only).
+static inline uint moment_level(float x, float scale, uint max_level,
+                                bool to_zero, uint dither) {
+  const uint bits = as_type<uint>(x / scale);
   const uint biased = (bits >> 23) & 0xFFu;
-  int n = 254;
+  uint n = max_level;
   if (biased != 0u) {
     const float y = as_type<float>((bits & 0x7FFFFFu) | 0x3F800000u);
     int below = 0;
     for (uint j = 0; j < 8u; ++j)
-      below += y < as_type<float>(kMomentVThresholdBits[j]) ? 1 : 0;
+      below += y < as_type<float>(kMomentThresholdBits[j]) ? 1 : 0;
     const int level = 8 * (126 - int(biased)) + below;
-    n = level < 0 ? 0 : min(level, 254);
+    n = level < 0 ? 0u : min(uint(level), max_level);
   }
-  return uchar(255 - n);
+  const float at = moment_level_value(n, scale);
+  float lo = at, hi = at;
+  uint lo_n = n, hi_n = n;
+  if (x > at) {
+    if (n == 0u) return 0u;
+    hi_n = n - 1u;
+    hi = moment_level_value(hi_n, scale);
+  } else if (x < at) {
+    if (n == max_level && !to_zero) return n;
+    lo_n = n + 1u;
+    lo = n == max_level ? 0.0f : moment_level_value(lo_n, scale);
+  } else {
+    return n;
+  }
+  if (!(x > lo)) return lo_n;
+  if (!(x < hi)) return hi_n;
+  const float above = x - lo;
+  const float width = hi - lo;
+  const float fraction = above / width;
+  const float scaled = fraction * 16777216.0f;
+  const uint threshold = uint(scaled);
+  return dither < threshold ? hi_n : lo_n;
 }
-static inline char moment_code_m(float m, float d) {
-  const float q = clamp(rint(m / d), -127.0f, 127.0f);
-  return char(int(q));
+static inline float moment_value_m(char q, float amax) {
+  if (q == 0) return 0.0f;
+  const int magnitude = q < 0 ? -int(q) : int(q);
+  const uint n = magnitude > 127 ? 0u : 127u - uint(magnitude);
+  const float value = moment_level_value(n, amax);
+  return q < 0 ? -value : value;
+}
+static inline float moment_value_v(uint q, float vmax) {
+  if (q == 0u) return 0.0f;
+  return moment_level_value(255u - q, vmax);
+}
+static inline char moment_code_m(float m, float amax, uint dither) {
+  if (m == 0.0f) return char(0);
+  const uint n = moment_level(abs(m), amax, 126u, true, dither);
+  const int q = 127 - int(n);
+  return char(m < 0.0f ? -q : q);
+}
+static inline uchar moment_code_v(float v, float vmax, uint dither) {
+  if (!(v > 0.0f)) return uchar(0);
+  return uchar(255u - moment_level(v, vmax, 254u, false, dither));
 }
 // Proves every new moment of the block finite and its stored scales finite
 // and non-negative; writes nothing but the refusal flag (2: a moment, which
@@ -1160,13 +1212,12 @@ kernel void k_adamw8_check(KSIG, device float* scratch [[buffer(3)]],
   const float ms = sc[b], vs = sc[p.m + b];
   bool ok = isfinite(ms) && isfinite(vs) && ms >= 0.0f && vs >= 0.0f;
   const float s = (p.flags & 1u) ? scratch[256] : 1.0f;
-  const float dm = ms / 127.0f;
   const float om_b1 = 1.0f - p.f[1], om_b2 = 1.0f - p.f[2];
   for (uint k = 0; k < 8u; ++k) {
     const uint i = b * 256u + lane + 32u * k;
     if (i >= p.n) break;
     const float gi = RF(1)[i] * s;
-    const float m0 = float(m8[i]) * dm;
+    const float m0 = moment_value_m(m8[i], ms);
     const float v0 = moment_value_v(v8[i], vs);
     const float mi = p.f[1] * m0 + om_b1 * gi;
     const float vi = p.f[2] * v0 + om_b2 * gi * gi;
@@ -1187,7 +1238,7 @@ kernel void k_adamw8(KSIG, device float* scratch [[buffer(3)]],
   const float wd = p.f[4], inv_bc1 = p.f[5], inv_bc2 = p.f[6];
   const float om_b1 = 1.0f - beta1, om_b2 = 1.0f - beta2;
   const float s = (p.flags & 1u) ? scratch[256] : 1.0f;
-  const float dm = sc[b] / 127.0f;
+  const float ms = sc[b];
   const float vs = sc[p.m + b];
   float mloc[8], vloc[8];
   float amax_m = 0.0f, max_v = 0.0f;
@@ -1195,7 +1246,7 @@ kernel void k_adamw8(KSIG, device float* scratch [[buffer(3)]],
     const uint i = b * 256u + lane + 32u * k;
     if (i >= p.n) break;
     const float gi = RF(1)[i] * s;
-    const float m0 = float(m8[i]) * dm;
+    const float m0 = moment_value_m(m8[i], ms);
     const float v0 = moment_value_v(v8[i], vs);
     const float mi = beta1 * m0 + om_b1 * gi;
     const float vi = beta2 * v0 + om_b2 * gi * gi;
@@ -1213,12 +1264,13 @@ kernel void k_adamw8(KSIG, device float* scratch [[buffer(3)]],
   // kMomentScaleFloor, 2^-80, as its bits.
   const float floor_v = as_type<float>(0x17800000u);
   const bool m_zero = amax_m < floor_v, v_zero = max_v < floor_v;
-  const float d = amax_m / 127.0f;
   for (uint k = 0; k < 8u; ++k) {
     const uint i = b * 256u + lane + 32u * k;
     if (i >= p.n) break;
-    m8[i] = m_zero ? char(0) : moment_code_m(mloc[k], d);
-    v8[i] = v_zero ? uchar(0) : moment_code_v(vloc[k], max_v);
+    m8[i] = m_zero ? char(0)
+                   : moment_code_m(mloc[k], amax_m, moment_dither(p.step, i));
+    v8[i] = v_zero ? uchar(0)
+                   : moment_code_v(vloc[k], max_v, moment_dither(p.pad0, i));
   }
   if (lane == 0u) {
     sc[b] = m_zero ? 0.0f : amax_m;

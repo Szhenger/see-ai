@@ -997,7 +997,12 @@ TEST(UpdateSystem, EightBitMomentsResumeBitForBitFromTheirCheckpoint) {
   // A run stopped at step 3, checkpointed and resumed cold equals the
   // uninterrupted run byte for byte — codes and scales included — with and
   // without accumulation under the global clip; and the checkpoint loads
-  // back into a fresh engine as the bytes that were saved.
+  // back into a fresh engine as the bytes that were saved. The codes are
+  // rounded with a dither hashed from the optimizer step (instruction.h):
+  // steps 4 to 6 of the resumed run draw the uninterrupted run's bits only
+  // because the step counter is the checkpoint's — a resumed engine that
+  // counted from 1 again would code other bytes (kernels_test.cc,
+  // TheEightBitDitherIsKeyedOnTheStepAndTheOperand).
   const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16;
   const int64_t batch = 16;
   SmfModel model =

@@ -134,16 +134,21 @@ SEEU_GLOBAL_CLIP_VERSION = 24  # kSqNormAccum, kClipGlobal (#190)
 SEEU_SEGMENT_MASK_VERSION = 25  # kSegmentStarts, kAttnFwdSeg (#191)
 SEEU_TILED_SEGMENT_MASK_VERSION = 26  # kAttnFwdTiledSeg (#191 step 2)
 SEEU_INT8_MOMENTS_VERSION = 27  # kAdamW8Step, the quantized ledger line (#192)
-# 8-bit moments (source/plan/instruction.h, plan v27): the block, the floor
-# and the two code tables as f32 bits, held to the manifest's.
+# 8-bit moments (source/plan/instruction.h, plan v27): the block, the floor,
+# the level tables as f32 bits (m and v share them) and the dither's integer
+# hash, held to the manifest's.
 MOMENT_BLOCK = 256
 MOMENT_SCALE_FLOOR_BITS = 0x17800000  # 2^-80
-MOMENT_M_LEVELS_BITS = 0x42FE0000  # 127.0
+MOMENT_M_MAX_LEVEL = 126
 MOMENT_V_MAX_LEVEL = 254
-MOMENT_V_LEVEL_BITS = (0x3f800000, 0x3f6ac0c7, 0x3f5744fd, 0x3f45672a,
-                       0x3f3504f3, 0x3f25fed7, 0x3f1837f0, 0x3f0b95c2)
-MOMENT_V_THRESHOLD_BITS = (0x3ff5257d, 0x3fe0ccdf, 0x3fce248c, 0x3fbd08a4,
-                           0x3fad583f, 0x3f9ef532, 0x3f91c3d3, 0x3f85aac3)
+MOMENT_LEVEL_BITS = (0x3f800000, 0x3f6ac0c7, 0x3f5744fd, 0x3f45672a,
+                     0x3f3504f3, 0x3f25fed7, 0x3f1837f0, 0x3f0b95c2)
+MOMENT_THRESHOLD_BITS = (0x3ff5257d, 0x3fe0ccdf, 0x3fce248c, 0x3fbd08a4,
+                         0x3fad583f, 0x3f9ef532, 0x3f91c3d3, 0x3f85aac3)
+MOMENT_DITHER_M = 0x9E3779B9  # the m stream's constant
+MOMENT_DITHER_V = 0x85EBCA6B  # the v stream's
+MOMENT_MIX = (0x7FEB352D, 0x846CA68B)  # MomentMix's two multipliers
+MOMENT_DITHER_BITS = 24
 SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
 # PlanHeader.data_flags (v22).
 DATA_FLAG_MASKED_LOSS = 1
@@ -468,10 +473,12 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
     same("seeu.moments",
          {"version": SEEU_INT8_MOMENTS_VERSION, "block": MOMENT_BLOCK,
           "scale_floor_bits": MOMENT_SCALE_FLOOR_BITS,
-          "m_levels_bits": MOMENT_M_LEVELS_BITS,
+          "m_max_level": MOMENT_M_MAX_LEVEL,
           "v_max_level": MOMENT_V_MAX_LEVEL,
-          "v_level_bits": list(MOMENT_V_LEVEL_BITS),
-          "v_threshold_bits": list(MOMENT_V_THRESHOLD_BITS)},
+          "level_bits": list(MOMENT_LEVEL_BITS),
+          "threshold_bits": list(MOMENT_THRESHOLD_BITS),
+          "dither": {"m": MOMENT_DITHER_M, "v": MOMENT_DITHER_V,
+                     "mix": list(MOMENT_MIX), "bits": MOMENT_DITHER_BITS}},
          seeu.get("moments"))
     same("seeu.flags", {"epilogue_bias": FLAG_EPILOGUE_BIAS,
                         "epilogue_act_shift": FLAG_EPILOGUE_ACT_SHIFT,

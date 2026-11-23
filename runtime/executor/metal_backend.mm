@@ -1745,6 +1745,10 @@ std::expected<void, std::string> MetalBackend::Encode(
       a.f[4] = params.weight_decay;
       a.f[5] = 1.0f / (1.0f - std::pow(params.beta1, step));
       a.f[6] = 1.0f / (1.0f - std::pow(params.beta2, step));
+      // The unbiased requantization's dither keys (instruction.h): the
+      // step and the m codes' operand, as the CPU kernel folds them.
+      a.step = up::MomentDitherKey(params.step, ins.in[2], up::kMomentDitherM);
+      a.pad0 = up::MomentDitherKey(params.step, ins.in[2], up::kMomentDitherV);
       // The check writes nothing but the refusal flag; the step after it
       // honors the flag, so a refused step touches nothing (the CPU's two
       // passes).

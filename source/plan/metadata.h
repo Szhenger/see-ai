@@ -56,12 +56,17 @@ inline constexpr uint32_t kExportFlagsMask =
 inline constexpr uint32_t kLedgerExact = 0;      // bit-identical to its input
 inline constexpr uint32_t kLedgerReordered = 1;  // reduction order may change,
                                                  // under a numerics certificate
-// v27 (S5 #192): the pass stores state in fewer bits — a deterministic,
-// documented quantization whose coding rule every backend and the oracle
-// share, so no certificate measures it; the plan carries it because it was
-// asked for. The rule is shared, not the bits: each backend is bitwise
-// run-to-run, but two backends contract the f32 moment blend differently
-// and their codes may sit one level apart (the Metal twin test's bound).
+// v27 (S5 #192): the pass stores state in fewer bits — a documented
+// quantization whose coding rule every backend and the oracle share, so no
+// certificate measures it; the plan carries it because it was asked for.
+// The rounding is unbiased, and deterministic given the optimizer step and
+// the element: its dither is a stateless integer hash of the two and of
+// the instruction's operand (instruction.h), no generator state, so a
+// backend is bitwise run-to-run, across worker counts and across a
+// checkpoint. The rule is shared, not the bits: two backends contract the
+// f32 moment blend differently, and where that last bit crosses a level or
+// the dither's threshold their codes sit a level apart (the Metal twin
+// tests' bound: a level from one state, two over a run).
 // `instructions` counts the instructions that compute on the narrow state.
 inline constexpr uint32_t kLedgerQuantized = 2;
 

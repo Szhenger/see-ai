@@ -140,14 +140,19 @@ bool AdamWStep(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
 // first proves every new moment finite and every stored scale a finite
 // non-negative float and writes nothing (the fused clip's "refused,
 // touching nothing"); the second runs AdamWStep's expressions on the
-// dequantized moments, moves p, and requantizes.
+// dequantized moments, moves p, and requantizes — without bias, each code
+// drawn with MomentDither of (step, the element's index in the tensor,
+// `operand`): a function of the element alone, so the bytes are the same
+// for every worker count, chunking and resumed run.
 MomentStep AdamW8Step(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
                       int8_t* SEEML_RESTRICT m8, uint8_t* SEEML_RESTRICT v8,
                       float* SEEML_RESTRICT scales, size_t n, float lr,
                       float beta1, float beta2, float eps, float weight_decay,
-                      uint64_t step, float clip_norm) {
+                      uint64_t step, uint64_t operand, float clip_norm) {
   float s = 1.0f;
   if (!ClipScale(g, n, clip_norm, &s)) return MomentStep::kNormRefused;
+  const uint32_t key_m = up::MomentDitherKey(step, operand, up::kMomentDitherM);
+  const uint32_t key_v = up::MomentDitherKey(step, operand, up::kMomentDitherV);
   const float inv_bc1 =
       1.0f / (1.0f - std::pow(beta1, static_cast<float>(step)));
   const float inv_bc2 =
@@ -168,11 +173,10 @@ MomentStep AdamW8Step(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
         finite[chunk] = false;
         break;
       }
-      const float dm = ms / up::kMomentMLevels;
       const size_t e = std::min<size_t>(n, (b + 1) * up::kMomentBlock);
       for (size_t i = b * up::kMomentBlock; i < e; ++i) {
         const float gi = g[i] * s;
-        const float m0 = static_cast<float>(m8[i]) * dm;
+        const float m0 = up::MomentValueM(m8[i], ms);
         const float v0 = up::MomentValueV(v8[i], vs);
         const float mi = beta1 * m0 + om_b1 * gi;
         const float vi = beta2 * v0 + om_b2 * gi * gi;
@@ -189,7 +193,7 @@ MomentStep AdamW8Step(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
   up::ParallelFor(blocks, grain, [&](size_t b0, size_t b1, size_t) {
     float mloc[up::kMomentBlock], vloc[up::kMomentBlock];
     for (size_t b = b0; b < b1; ++b) {
-      const float dm = m_scale[b] / up::kMomentMLevels;
+      const float ms = m_scale[b];
       const float vs = v_scale[b];
       const size_t base = b * up::kMomentBlock;
       const size_t len = std::min<size_t>(n, base + up::kMomentBlock) - base;
@@ -197,7 +201,7 @@ MomentStep AdamW8Step(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
       for (size_t j = 0; j < len; ++j) {
         const size_t i = base + j;
         const float gi = g[i] * s;
-        const float m0 = static_cast<float>(m8[i]) * dm;
+        const float m0 = up::MomentValueM(m8[i], ms);
         const float v0 = up::MomentValueV(v8[i], vs);
         const float mi = beta1 * m0 + om_b1 * gi;
         const float vi = beta2 * v0 + om_b2 * gi * gi;
@@ -214,9 +218,9 @@ MomentStep AdamW8Step(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
         for (size_t j = 0; j < len; ++j) m8[base + j] = 0;
       } else {
         m_scale[b] = amax_m;
-        const float d = amax_m / up::kMomentMLevels;
         for (size_t j = 0; j < len; ++j)
-          m8[base + j] = up::MomentCodeM(mloc[j], d);
+          m8[base + j] = up::MomentCodeM(mloc[j], amax_m,
+                                         up::MomentDither(key_m, base + j));
       }
       if (max_v < up::kMomentScaleFloor) {
         v_scale[b] = 0.0f;
@@ -224,7 +228,8 @@ MomentStep AdamW8Step(float* SEEML_RESTRICT p, const float* SEEML_RESTRICT g,
       } else {
         v_scale[b] = max_v;
         for (size_t j = 0; j < len; ++j)
-          v8[base + j] = up::MomentCodeV(vloc[j], max_v);
+          v8[base + j] = up::MomentCodeV(vloc[j], max_v,
+                                         up::MomentDither(key_v, base + j));
       }
     }
   });

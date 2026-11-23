@@ -2030,9 +2030,10 @@ TEST(MetalBackend, TheEightBitMomentStepMatchesCpuAndIsBitwiseRunToRun) {
   // for six steps that carry the state, plain and with the fused clip: the
   // GPU's parameters at tolerance of the CPU's, its codes within one level
   // and its scales within f32 rounding (one simdgroup a block runs the
-  // CPU's expressions; the two differ where a backend contracts a
-  // multiply-add the other rounds twice, and a moment on a code boundary
-  // then lands one level over), and its own bytes bit for bit run to run.
+  // CPU's expressions and draws the CPU's dither; the two differ where a
+  // backend contracts a multiply-add the other rounds twice, and a moment
+  // whose last bit crosses a level's value or the dither's threshold then
+  // lands one level over), and its own bytes bit for bit run to run.
   if (Skip()) return;
   const size_t n = 700, blocks = 3;
   // Bytes: p [0, 2800), g [4096, 6896), m codes at 8192, v codes at 9216,
@@ -2114,6 +2115,77 @@ TEST(MetalBackend, TheEightBitMomentStepMatchesCpuAndIsBitwiseRunToRun) {
         std::memcmp(bad->bytes.data() + 8192, good->bytes.data() + 8192, 4096),
         0);
   }
+}
+
+TEST(MetalBackend, TheEightBitMomentTwinsStayALevelApartOverALongRun) {
+  // #192, the unbiased rule's twin bound over a trajectory. Both backends
+  // draw the same dither (a hash of the step, the element and the operand),
+  // so from one state and one f32 moment they write one code; they part
+  // only where the GPU contracts the moment blend's multiply-add and the
+  // CPU rounds twice — a last-bit difference in the moment, which moves a
+  // code when it crosses a level's value or the dither's 24-bit threshold
+  // (about one element-step in a million). A split is a level wide and
+  // the next step's blend shrinks it (0.9 for m, 0.999 for v), but on a
+  // logarithmic code two neighbours a level apart can draw two levels
+  // apart, so the bound over a run is stated and measured, not assumed:
+  // 4000 values for 300 steps (1.2 million coded moments of each kind),
+  // every code within two levels and no more than one in a thousand
+  // differing at all.
+  if (Skip()) return;
+  const size_t n = 4000, blocks = 16;
+  UpdateInstruction step;
+  step.opcode = static_cast<uint16_t>(OpCode::kAdamW8Step);
+  step.in[0] = MakeArenaRef(0);
+  step.in[1] = MakeArenaRef(16384);
+  step.in[2] = MakeArenaRef(32768);
+  step.in[3] = MakeArenaRef(36864);
+  step.out[0] = n;
+  step.out[2] = MakeArenaRef(40960);
+  std::vector<uint8_t> init(45056, 0);
+  const std::vector<float> p0 = RandnVector(n, 81);
+  std::memcpy(init.data(), p0.data(), n * sizeof(float));
+  // A drifting gradient with a per-element scale over three decades, so
+  // the codes spread over their levels.
+  std::vector<std::vector<float>> grads;
+  for (uint64_t s = 0; s < 300; ++s) {
+    std::vector<float> g = RandnVector(n, 900 + s, 0.3f);
+    for (size_t i = 0; i < n; ++i)
+      g[i] = (g[i] + 0.05f * p0[i]) *
+             std::exp2(-10.0f * static_cast<float>(i % 97) / 97.0f);
+    grads.push_back(std::move(g));
+  }
+  auto cpu = Steps8(false, init, step, grads, 4096);
+  auto gpu = Steps8(true, init, step, grads, 4096);
+  auto again = Steps8(true, init, step, grads, 4096);
+  ASSERT_OK(cpu);
+  ASSERT_OK(gpu);
+  ASSERT_OK(again);
+  EXPECT_EQ(cpu->error, "");
+  EXPECT_EQ(gpu->error, "");
+  EXPECT_TRUE(gpu->bytes == again->bytes);  // bitwise, run to run
+  size_t apart[3] = {0, 0, 0};              // one level, two, more
+  for (size_t at : {size_t{32768}, size_t{36864}})
+    for (size_t i = 0; i < n; ++i) {
+      const int a = at == 32768 ? static_cast<int8_t>(cpu->bytes[at + i])
+                                : cpu->bytes[at + i];
+      const int b = at == 32768 ? static_cast<int8_t>(gpu->bytes[at + i])
+                                : gpu->bytes[at + i];
+      const int d = std::abs(a - b);
+      if (d != 0) ++apart[std::min(d, 3) - 1];
+    }
+  std::printf(
+      "  [ %-32s ] of %zu codes after 300 steps: %zu one level "
+      "apart, %zu two, %zu more\n",
+      "adamw8 twins", 2 * n, apart[0], apart[1], apart[2]);
+  EXPECT_EQ(apart[2], 0u);
+  EXPECT_LE(apart[0] + apart[1], 2 * n / 1000);
+  std::vector<float> pc(n), pg(n), sc(2 * blocks), sg(2 * blocks);
+  std::memcpy(pc.data(), cpu->bytes.data(), n * sizeof(float));
+  std::memcpy(pg.data(), gpu->bytes.data(), n * sizeof(float));
+  ExpectClose("long run p", pg, pc, 1e-3, 1e-4);
+  std::memcpy(sc.data(), cpu->bytes.data() + 40960, sc.size() * sizeof(float));
+  std::memcpy(sg.data(), gpu->bytes.data() + 40960, sg.size() * sizeof(float));
+  ExpectClose("long run scales", sg, sc, 1e-4, 1e-12);
 }
 
 TEST(MetalBackend, TheEightBitMomentStepRefusesTouchingNothing) {

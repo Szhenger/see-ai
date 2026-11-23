@@ -512,7 +512,7 @@ std::expected<void, std::string> CpuBackend::Execute(
                             WriteBytes(ins.in[3]), WritePtr(ins.out[2]),
                             ins.out[0], params.lr, params.beta1, params.beta2,
                             params.eps, params.weight_decay, params.step,
-                            BitsToF32(ins.out[1]))) {
+                            ins.in[2], BitsToF32(ins.out[1]))) {
         case k::MomentStep::kDone:
           break;
         case k::MomentStep::kNormRefused:

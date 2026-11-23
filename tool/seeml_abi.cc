@@ -203,22 +203,27 @@ void PrintSeeu() {
   std::printf("    \"kl_temperature_bits\": {\"min\": %u, \"max\": %u},\n",
               std::bit_cast<uint32_t>(up::kKlTemperatureMin),
               std::bit_cast<uint32_t>(up::kKlTemperatureMax));
-  // 8-bit moments (plan v27, #192): the block, the floor and the codes'
-  // tables as f32 bits — what the oracle's quantizer is held to.
+  // 8-bit moments (plan v27, #192): the block, the floor, the codes' level
+  // tables as f32 bits and the dither's hash constants — what the oracle's
+  // quantizer is held to.
   std::printf(
       "    \"moments\": {\"version\": %u, \"block\": %llu, "
-      "\"scale_floor_bits\": %u, \"m_levels_bits\": %u, "
-      "\"v_max_level\": %u,\n      \"v_level_bits\": [",
+      "\"scale_floor_bits\": %u, \"m_max_level\": %u, "
+      "\"v_max_level\": %u,\n      \"level_bits\": [",
       up::kSeeuInt8MomentsVersion,
       static_cast<unsigned long long>(up::kMomentBlock),
-      std::bit_cast<uint32_t>(up::kMomentScaleFloor),
-      std::bit_cast<uint32_t>(up::kMomentMLevels), up::kMomentVMaxLevel);
+      std::bit_cast<uint32_t>(up::kMomentScaleFloor), up::kMomentMMaxLevel,
+      up::kMomentVMaxLevel);
   for (size_t i = 0; i < 8; ++i)
-    std::printf("%s%u", i ? ", " : "", up::kMomentVLevelBits[i]);
-  std::printf("],\n      \"v_threshold_bits\": [");
+    std::printf("%s%u", i ? ", " : "", up::kMomentLevelBits[i]);
+  std::printf("],\n      \"threshold_bits\": [");
   for (size_t i = 0; i < 8; ++i)
-    std::printf("%s%u", i ? ", " : "", up::kMomentVThresholdBits[i]);
-  std::printf("]},\n");
+    std::printf("%s%u", i ? ", " : "", up::kMomentThresholdBits[i]);
+  std::printf(
+      "],\n      \"dither\": {\"m\": %u, \"v\": %u, \"mix\": [%u, %u], "
+      "\"bits\": %u}},\n",
+      up::kMomentDitherM, up::kMomentDitherV, up::kMomentMixA, up::kMomentMixB,
+      up::kMomentDitherBits);
   Enum("fused_stages", fused, sizeof(fused) / sizeof(fused[0]), false);
   std::printf(
       "    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "

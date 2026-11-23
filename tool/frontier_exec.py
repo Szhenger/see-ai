@@ -1845,18 +1845,91 @@ def _adamw(m, x, ins, step):
 
 
 # 8-bit moments (plan v27, S5 #192): source/plan/instruction.h's codes,
-# written a second time in NumPy float32 from the documented arithmetic —
-# the tables as their f32 bits, exponent-field bit operations, compares and
-# IEEE multiplies — so the codes are the device's for the same f32 moments.
-# The step's own arithmetic (the moments' blend, the parameter update) runs
-# in the backend's precision, as _adamw's does; the new moments are rounded
-# to f32 before they are coded, so a code can differ from the device's by
-# one where the device's f32 moment and this one straddle a boundary.
+# written a second time in NumPy from the documented arithmetic — the level
+# tables as their f32 bits, exponent-field bit operations, compares, IEEE
+# f32 multiplies, subtractions and one division, and the dither's 32-bit
+# integer hash — so the codes are the device's, bit for bit, for the same
+# f32 moments, step and operand. The step's own arithmetic (the moments'
+# blend, the parameter update) runs in the backend's precision, as _adamw's
+# does; the new moments are rounded to f32 before they are coded, so a code
+# can differ from the device's by one level where the device's f32 moment
+# and this one differ in their last bits.
 def moment_tables(np):
-    level = np.array(formats.MOMENT_V_LEVEL_BITS, np.uint32).view(np.float32)
-    threshold = np.array(formats.MOMENT_V_THRESHOLD_BITS,
+    level = np.array(formats.MOMENT_LEVEL_BITS, np.uint32).view(np.float32)
+    threshold = np.array(formats.MOMENT_THRESHOLD_BITS,
                          np.uint32).view(np.float32)
     return level, threshold
+
+
+def moment_mix(np, x):
+    """MomentMix over uint64 arrays holding 32-bit values."""
+    mask = np.uint64(0xFFFFFFFF)
+    a, b = (np.uint64(c) for c in formats.MOMENT_MIX)
+    x = x ^ (x >> np.uint64(16))
+    x = (x * a) & mask
+    x = x ^ (x >> np.uint64(15))
+    x = (x * b) & mask
+    return x ^ (x >> np.uint64(16))
+
+
+def moment_dither(np, step, salt, stream, count):
+    """MomentDither of elements 0 .. count-1: 24-bit integers, a function
+    of the optimizer step, the m codes' operand and the element alone."""
+    mask = 0xFFFFFFFF
+    step32 = (step ^ (step >> 32)) & mask
+    salt32 = (salt ^ (salt >> 32)) & mask
+    key = int(moment_mix(np, np.array([salt32 ^ stream], np.uint64))[0])
+    key = int(moment_mix(np, np.array([(key + step32) & mask], np.uint64))[0])
+    index = (np.arange(count, dtype=np.uint64) + np.uint64(key)) \
+        & np.uint64(mask)
+    return (moment_mix(np, index) >> np.uint64(8)).astype(np.uint32)
+
+
+def moment_level_value(np, n, scale):
+    """The f32 magnitude of level n in a block whose scale is `scale`."""
+    f32 = np.float32
+    level, _ = moment_tables(np)
+    n = np.asarray(n, np.int64)
+    octave = ((127 - n // 8) << 23).astype(np.uint32).view(f32)
+    return (scale * (level[n % 8] * octave).astype(f32)).astype(f32)
+
+
+def moment_level(np, x, scale, max_level, to_zero, dither):
+    """MomentLevel: the level of each magnitude x > 0 ([blocks, B], f32) in
+    its block's scale — one of the two levels whose decoded values bracket
+    x, the upper one when the dither is below the fraction of the way
+    there. max_level + 1 stands for the zero code (to_zero only)."""
+    f32 = np.float32
+    _, threshold = moment_tables(np)
+    scale = scale[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.nan_to_num((x / scale).astype(f32)).astype(f32)
+    bits = ratio.view(np.uint32)
+    biased = ((bits >> 23) & 0xFF).astype(np.int64)
+    y = ((bits & 0x7FFFFF) | 0x3F800000).astype(np.uint32).view(f32)
+    below = (y[..., None] < threshold).sum(-1)
+    n = np.clip(8 * (126 - biased) + below, 0, max_level)
+    n = np.where(biased == 0, max_level, n)
+    at = moment_level_value(np, n, scale)
+    above = moment_level_value(np, np.maximum(n - 1, 0), scale)
+    under = np.where(n == max_level, f32(0.0),
+                     moment_level_value(np, np.minimum(n + 1, max_level),
+                                        scale))
+    up = x > at
+    lo, hi = np.where(up, at, under), np.where(up, above, at)
+    lo_n, hi_n = np.where(up, n, n + 1), np.where(up, n - 1, n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        frac = ((x - lo).astype(f32) / (hi - lo).astype(f32)).astype(f32)
+        cut = np.nan_to_num(frac * f32(1 << formats.MOMENT_DITHER_BITS),
+                            nan=0.0, posinf=0.0, neginf=0.0)
+    cut = np.clip(cut, 0, 1 << formats.MOMENT_DITHER_BITS).astype(np.uint32)
+    out = np.where(dither < cut, hi_n, lo_n)
+    out = np.where(x <= lo, lo_n, np.where(x >= hi, hi_n, out))
+    out = np.where(x == at, n, out)
+    out = np.where(up & (n == 0), 0, out)  # at the block's scale, or above
+    if not to_zero:  # below the lowest level: the lowest level, never zero
+        out = np.where(~up & (n == max_level), max_level, out)
+    return out
 
 
 def moment_dequantize(np, mq, vq, scales):
@@ -1865,19 +1938,21 @@ def moment_dequantize(np, mq, vq, scales):
     n, blocks = mq.size, scales.size // 2
     f32 = np.float32
     blk = np.arange(n) // formats.MOMENT_BLOCK
-    dm = (scales[:blocks] / f32(127.0)).astype(f32)
-    m0 = (mq.astype(f32) * dm[blk]).astype(f32)
-    level, _ = moment_tables(np)
+    q = mq.astype(np.int64)
+    mag = moment_level_value(np, np.clip(127 - np.abs(q), 0, 126),
+                             scales[:blocks][blk])
+    m0 = np.where(q == 0, f32(0.0), np.where(q < 0, -mag, mag))
     q = vq.astype(np.int64)
-    k = 255 - q
-    octave = ((127 - k // 8) << 23).astype(np.uint32).view(f32)
-    unit = (level[k % 8] * octave).astype(f32)
-    v0 = np.where(q == 0, f32(0.0), (scales[blocks:][blk] * unit).astype(f32))
-    return m0, v0.astype(f32)
+    v0 = np.where(q == 0, f32(0.0),
+                  moment_level_value(np, np.clip(255 - q, 0, 254),
+                                     scales[blocks:][blk]))
+    return m0.astype(f32), v0.astype(f32)
 
 
-def moment_quantize(np, m1, v1):
-    """(int8 m codes, uint8 v codes, f32 scales) of f32 moments."""
+def moment_quantize(np, m1, v1, step, salt):
+    """(int8 m codes, uint8 v codes, f32 scales) of f32 moments, dithered
+    for optimizer step `step` of the tensor whose m codes are operand
+    `salt`."""
     f32, B = np.float32, formats.MOMENT_BLOCK
     n = m1.size
     blocks = (n + B - 1) // B
@@ -1888,23 +1963,18 @@ def moment_quantize(np, m1, v1):
     floor = np.array([formats.MOMENT_SCALE_FLOOR_BITS], np.uint32).view(f32)[0]
     amax, vmax = np.abs(mp).max(1), vp.max(1)
     m_zero, v_zero = amax < floor, vmax < floor
-    with np.errstate(divide="ignore", invalid="ignore"):
-        d = (amax / f32(127.0)).astype(f32)
-        qm = np.clip(np.rint((mp / d[:, None]).astype(f32)), -127, 127)
-        ratio = (vp / vmax[:, None]).astype(f32)
-    qm = np.where(m_zero[:, None], 0, qm).astype(np.int8)
-    _, threshold = moment_tables(np)
-    bits = np.nan_to_num(ratio).astype(f32).view(np.uint32)
-    biased = ((bits >> 23) & 0xFF).astype(np.int64)
-    y = ((bits & 0x7FFFFF) | 0x3F800000).astype(np.uint32).view(f32)
-    below = (y[..., None] < threshold).sum(-1)
-    lvl = np.clip(8 * (126 - biased) + below, 0, formats.MOMENT_V_MAX_LEVEL)
-    lvl = np.where(biased == 0, formats.MOMENT_V_MAX_LEVEL, lvl)
-    qv = np.where(vp > 0, 255 - lvl, 0)
-    qv = np.where(v_zero[:, None], 0, qv).astype(np.uint8)
+    dm = moment_dither(np, step, salt, formats.MOMENT_DITHER_M, blocks * B)
+    dv = moment_dither(np, step, salt, formats.MOMENT_DITHER_V, blocks * B)
+    top = formats.MOMENT_M_MAX_LEVEL
+    lvl = moment_level(np, np.abs(mp), amax, top, True, dm.reshape(blocks, B))
+    qm = np.where(mp < 0, lvl - (top + 1), (top + 1) - lvl)
+    qm = np.where((mp == 0) | m_zero[:, None], 0, qm).astype(np.int8)
+    top = formats.MOMENT_V_MAX_LEVEL
+    lvl = moment_level(np, vp, vmax, top, False, dv.reshape(blocks, B))
+    qv = np.where((vp > 0) & ~v_zero[:, None], (top + 1) - lvl, 0)
     scales = np.concatenate([np.where(m_zero, f32(0), amax),
                              np.where(v_zero, f32(0), vmax)]).astype(f32)
-    return qm.reshape(-1)[:n], qv.reshape(-1)[:n], scales
+    return (qm.reshape(-1)[:n], qv.astype(np.uint8).reshape(-1)[:n], scales)
 
 
 def _adamw8(m, x, ins, step):
@@ -1931,7 +2001,7 @@ def _adamw8(m, x, ins, step):
     m_hat, v_hat = mom / (1.0 - b1 ** t), var / (1.0 - b2 ** t)
     m.write(ins.src[0], p - step["lr"] * (
         m_hat / (x.sqrt(v_hat) + step["eps"]) + step["weight_decay"] * p))
-    qm, qv, new_scales = moment_quantize(np, m1, v1)
+    qm, qv, new_scales = moment_quantize(np, m1, v1, t, ins.src[2])
     m.write_host(ins.src[2], qm)
     m.write_host(ins.src[3], qv)
     m.write_host(ins.out[2], new_scales)
@@ -2625,9 +2695,13 @@ class Differ:
 
     def _codes(self, label, index, name, off, got, ref):
         """The 8-bit moment codes (v27): the device's bytes against the
-        oracle's, each code within one level — the oracle blends the moments
-        in the backend's precision and rounds to f32 only to code them, so a
-        moment on a boundary may land one level over (instruction.h)."""
+        oracle's, each code within one level. Both start the step from the
+        device's state and draw the same dither (the step, the element, the
+        operand), so the same f32 moment takes the same code; the oracle
+        blends the moments in the backend's precision and rounds to f32
+        only to code them, and a moment whose last bits differ takes the
+        neighbouring level when it crosses a level's value or the dither's
+        threshold (instruction.h)."""
         np = self.np
         ref = ref.view(np.uint8).view(got.dtype)
         if ref.shape != got.shape:
