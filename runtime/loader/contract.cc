@@ -211,6 +211,27 @@ std::expected<void, std::string> VerifyExecutorContract(
         starts_live.push_back(
             {ins.in[1], up::RefOffset(ins.in[1]), positions * sizeof(int32_t)});
       }
+      // The 8-bit moment step (v27, #192) is the update: it belongs to the
+      // train and step programs, as the certificate's bit does, and its
+      // codes and scales are optimizer state — the persistent prefix the
+      // checkpoint carries and no step's transients reuse. A plan whose
+      // moments sat in the transient segment would train on whatever a
+      // forward last left there; one stepping in the eval program would
+      // move the adapters while scoring them.
+      if (op == up::OpCode::kAdamW8Step) {
+        if (program == &eval || program == &merge)
+          return diag::executing::Error(
+              "an 8-bit moment step outside the train / step programs");
+        const uint64_t count = ins.out[0];
+        const uint64_t scales = up::MomentBlocks(count) * 2 * sizeof(float);
+        for (const auto& [ref, bytes] :
+             {std::pair{ins.in[2], count}, std::pair{ins.in[3], count},
+              std::pair{ins.out[2], scales}})
+          if (!RangeOk(up::RefOffset(ref), bytes, header.persistent_size))
+            return diag::executing::Error(
+                "an 8-bit moment step's codes or scales lie outside the "
+                "persistent segment");
+      }
       if ((op == up::OpCode::kGemmNNQ8 || op == up::OpCode::kGemmNTQ8) &&
           (ins.flags & up::kFlagQ8ColScale)) {
         const uint64_t count =

@@ -283,6 +283,19 @@ bool ClipGlobal(float* g, size_t n, const float* acc, float max_norm);
                              float eps, float weight_decay, uint64_t step,
                              float clip_norm = 0.0f);
 
+// 8-bit moments (plan v27, S5 #192): AdamWStep over block-wise quantized
+// state — m int8 [n], v uint8 [n] (instruction.h's codes), scales f32
+// [2 * MomentBlocks(n)] (m absmaxes, then v maxes). The parameter moves by
+// AdamWStep's expression on the dequantized moments; the new moments are
+// requantized per block. kNormRefused / kMomentRefused touch nothing: a
+// non-finite clip norm, or a new moment (or a stored scale) not finite.
+enum class MomentStep : uint8_t { kDone, kNormRefused, kMomentRefused };
+[[nodiscard]] MomentStep AdamW8Step(float* p, const float* g, int8_t* m8,
+                                    uint8_t* v8, float* scales, size_t n,
+                                    float lr, float beta1, float beta2,
+                                    float eps, float weight_decay,
+                                    uint64_t step, float clip_norm = 0.0f);
+
 // --- Gradient accumulation (plan v9): dst += src, in place -------------------
 void Accumulate(float* dst, const float* src, size_t n);
 

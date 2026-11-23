@@ -72,6 +72,13 @@ struct StepParams {
 inline constexpr const char* kNonFiniteNormRefusal =
     "gradient norm is not finite — the step was refused with the parameters "
     "and optimizer state untouched";
+/// The 8-bit moment step's verdict (v27, #192) for a new moment that is not
+/// finite — or a stored block scale that is not a finite non-negative float
+/// — which no clip measured: refused before anything is written, as above.
+/// The Metal backend raises the refusal flag to 2 for it.
+inline constexpr const char* kNonFiniteMomentRefusal =
+    "optimizer moments are not finite — the 8-bit step was refused with the "
+    "parameters and optimizer state untouched";
 /// kClipNorm's threshold is a finite positive float: the validator refuses
 /// any other, and a backend handed one anyway refuses the instruction
 /// rather than scale by it (CR1 #142 F13 / F18).

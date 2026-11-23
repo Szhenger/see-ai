@@ -56,6 +56,11 @@ inline constexpr uint32_t kExportFlagsMask =
 inline constexpr uint32_t kLedgerExact = 0;      // bit-identical to its input
 inline constexpr uint32_t kLedgerReordered = 1;  // reduction order may change,
                                                  // under a numerics certificate
+// v27 (S5 #192): the pass stores state in fewer bits — a deterministic,
+// documented quantization every backend and the oracle compute alike, so no
+// certificate measures it; the plan carries it because it was asked for.
+// `instructions` counts the instructions that compute on the narrow state.
+inline constexpr uint32_t kLedgerQuantized = 2;
 
 struct PlanMetadata {
   uint32_t magic = kPlanMetadataMagic;
@@ -149,6 +154,30 @@ inline uint64_t RelaxedInstructions(const uint8_t* plan, uint64_t offset,
   return n;
 }
 
+inline uint64_t QuantizedInstructions(const uint8_t* plan, uint64_t offset,
+                                      uint64_t count) {
+  uint64_t n = 0;
+  for (uint64_t i = 0; i < count; ++i) {
+    UpdateInstruction ins;
+    std::memcpy(&ins, plan + offset + i * sizeof(ins), sizeof(ins));
+    if (ins.opcode == static_cast<uint16_t>(OpCode::kAdamW8Step)) ++n;
+  }
+  return n;
+}
+
+/// The 8-bit moment steps across the four programs (v27).
+inline uint64_t QuantizedInstructions(const PlanHeader& header,
+                                      const uint8_t* plan) {
+  return QuantizedInstructions(plan, header.train_instr_offset,
+                               header.train_instr_count) +
+         QuantizedInstructions(plan, header.merge_instr_offset,
+                               header.merge_instr_count) +
+         QuantizedInstructions(plan, header.eval_instr_offset,
+                               header.eval_instr_count) +
+         QuantizedInstructions(plan, header.step_instr_offset,
+                               header.step_instr_count);
+}
+
 }  // namespace metadata_detail
 
 /// The metadata section held to the plan it sits in — the loader's rule.
@@ -158,7 +187,15 @@ inline uint64_t RelaxedInstructions(const uint8_t* plan, uint64_t offset,
 [[nodiscard]] inline std::optional<std::string> PlanMetadataViolation(
     const PlanHeader& header, const uint8_t* plan, uint64_t plan_size,
     DecodedMetadata* out = nullptr) {
-  if ((header.data_flags & kDataFlagMetadata) == 0) return std::nullopt;
+  if ((header.data_flags & kDataFlagMetadata) == 0) {
+    // v27: the 8-bit moments change arithmetic, so a plan carrying them
+    // carries the ledger that says so — dropping the flag drops the line.
+    if (metadata_detail::QuantizedInstructions(header, plan) != 0)
+      return std::string(
+          "the plan carries 8-bit moment steps but no metadata section to "
+          "record them");
+    return std::nullopt;
+  }
   const uint64_t off = PlanMetadataOffset(header);
   if (off > plan_size || plan_size - off < sizeof(PlanMetadata))
     return std::string("plan metadata section lies outside the plan");
@@ -200,19 +237,25 @@ inline uint64_t RelaxedInstructions(const uint8_t* plan, uint64_t offset,
   if (meta.ledger_count != 0)
     std::memcpy(ledger.data(), plan + off + sizeof(meta),
                 ledger.size() * sizeof(LedgerEntry));
-  uint64_t reordered = 0;
+  uint64_t reordered = 0, quantized = 0;
   for (const LedgerEntry& e : ledger) {
     if (!metadata_detail::Text(e.pass, sizeof(e.pass), false) ||
         !metadata_detail::Text(e.why, sizeof(e.why), true))
       return std::string("plan metadata ledger entry is not NUL-padded text");
-    if (e.arithmetic != kLedgerExact && e.arithmetic != kLedgerReordered)
+    // A quantized entry exists from v27; an older plan's ledger knows two.
+    const bool quantized_ok = header.version >= kSeeuInt8MomentsVersion;
+    if (e.arithmetic != kLedgerExact && e.arithmetic != kLedgerReordered &&
+        !(e.arithmetic == kLedgerQuantized && quantized_ok))
       return std::string(
           "plan metadata ledger entry has an unknown arithmetic");
     if (e.arithmetic == kLedgerExact && e.instructions != 0)
       return std::string("an exact ledger entry counts changed instructions");
     if (e.arithmetic == kLedgerReordered && e.instructions == 0)
       return std::string("a reordered ledger entry changes no instruction");
-    reordered += e.instructions;
+    if (e.arithmetic == kLedgerQuantized && e.instructions == 0)
+      return std::string("a quantized ledger entry changes no instruction");
+    (e.arithmetic == kLedgerQuantized ? quantized : reordered) +=
+        e.instructions;
   }
   const uint64_t relaxed =
       metadata_detail::RelaxedInstructions(plan, header.train_instr_offset,
@@ -223,6 +266,13 @@ inline uint64_t RelaxedInstructions(const uint8_t* plan, uint64_t offset,
     return "the ledger accounts for " + std::to_string(reordered) +
            " instruction(s) of reordered arithmetic, the programs carry " +
            std::to_string(relaxed);
+  // The quantized entries against the programs, both ways: the 8-bit
+  // moment steps the ledger counts are exactly the ones the programs carry.
+  const uint64_t narrow = metadata_detail::QuantizedInstructions(header, plan);
+  if (quantized != narrow)
+    return "the ledger accounts for " + std::to_string(quantized) +
+           " instruction(s) of quantized arithmetic, the programs carry " +
+           std::to_string(narrow);
   if (out) {
     out->present = true;
     out->meta = meta;

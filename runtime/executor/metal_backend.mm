@@ -128,7 +128,7 @@ enum Pipe : int {
   kPSiluFwd, kPSiluBwd, kPScale, kPFusedMap, kPFill, kPCopy, kPAccumulate, kPSgd, kPAdamW,
   kPReduceRows, kPLnFwd, kPLnBwd, kPRmsFwd, kPRmsBwd,
   kPClipPartials, kPClipFinish, kPClipApply, kPSgdClip, kPAdamWClip,
-  kPSqNormFinish, kPClipGlobalScale, kPSegmentStarts,
+  kPSqNormFinish, kPClipGlobalScale, kPSegmentStarts, kPAdamW8Check, kPAdamW8,
   kPRopeFwd, kPRopeBwd, kPAttnSoftmax, kPSoftmaxRowsBwd,
   kPXentFwd, kPXentFinish, kPXentBwd,
   kPXentMaskedFwd, kPXentMaskedFinish, kPXentMaskedCount, kPXentMaskedBwd,
@@ -169,7 +169,8 @@ const char* const kPipeNames[kPipeCount] = {
     "k_reduce_rows",
     "k_layernorm_fwd", "k_layernorm_bwd", "k_rmsnorm_fwd", "k_rmsnorm_bwd",
     "k_clip_partials", "k_clip_finish", "k_clip_apply", "k_sgd_clip",
-    "k_adamw_clip", "k_sqnorm_finish", "k_clip_global_scale", "k_segment_starts", "k_rope_fwd",
+    "k_adamw_clip", "k_sqnorm_finish", "k_clip_global_scale", "k_segment_starts",
+    "k_adamw8_check", "k_adamw8", "k_rope_fwd",
     "k_rope_bwd", "k_attn_softmax", "k_softmax_rows_bwd",
     "k_xent_fwd", "k_xent_finish", "k_xent_bwd",
     "k_xent_masked_fwd", "k_xent_masked_finish", "k_xent_masked_count",
@@ -598,6 +599,7 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kFusedMap:
     case up::OpCode::kSgdStep:
     case up::OpCode::kAdamWStep:
+    case up::OpCode::kAdamW8Step:
     case up::OpCode::kClipNorm:
     case up::OpCode::kSqNormAccum:
     case up::OpCode::kClipGlobal:
@@ -1161,6 +1163,7 @@ bool OverwritesWhatItWrites(up::OpCode op) {
     case up::OpCode::kClipGlobal:
     case up::OpCode::kSgdStep:
     case up::OpCode::kAdamWStep:
+    case up::OpCode::kAdamW8Step:
     case up::OpCode::kAttnDQTiled:
       return false;
     default:
@@ -1724,6 +1727,31 @@ std::expected<void, std::string> MetalBackend::Encode(
       Dispatch(clip ? kPAdamWClip : kPAdamW, a, a.n, kElementwiseGroup, clip);
       return {};
     }
+    case up::OpCode::kAdamW8Step: {  // v27, #192: one simdgroup a block
+      ref(0, ins.in[0]);
+      ref(1, ins.in[1]);
+      ref(2, ins.in[2]);
+      ref(3, ins.in[3]);
+      ref(4, ins.out[2]);
+      a.n = u32(ins.out[0]);
+      a.m = static_cast<uint32_t>(up::MomentBlocks(a.n));
+      // flags bit 0: the fused clip's factor is in scratch[256].
+      a.flags = EncodeClipScale(a, ins.out[1]) ? 1u : 0u;
+      const float step = static_cast<float>(params.step);
+      a.f[0] = params.lr;
+      a.f[1] = params.beta1;
+      a.f[2] = params.beta2;
+      a.f[3] = params.eps;
+      a.f[4] = params.weight_decay;
+      a.f[5] = 1.0f / (1.0f - std::pow(params.beta1, step));
+      a.f[6] = 1.0f / (1.0f - std::pow(params.beta2, step));
+      // The check writes nothing but the refusal flag; the step after it
+      // honors the flag, so a refused step touches nothing (the CPU's two
+      // passes).
+      Dispatch(kPAdamW8Check, a, a.m * 32u, kElementwiseGroup, true);
+      Dispatch(kPAdamW8, a, a.m * 32u, kElementwiseGroup, true);
+      return {};
+    }
     case up::OpCode::kReduceRows:
       ref(0, ins.in[0]);
       ref(1, ins.in[1]);
@@ -2262,8 +2290,11 @@ std::expected<void, std::string> MetalBackend::Flush() {
     if (clip_flag_) {
       float* flag = static_cast<float*>(clip_flag_.contents);
       if (*flag != 0.0f) {
+        // 2: the 8-bit moment step's check (v27) found a non-finite moment.
+        const bool moments = *flag == 2.0f;
         *flag = 0.0f;
-        return std::unexpected(kNonFiniteNormRefusal);
+        return std::unexpected(moments ? kNonFiniteMomentRefusal
+                                       : kNonFiniteNormRefusal);
       }
     }
     return {};

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 
 // =============================================================================
@@ -256,8 +257,100 @@ enum class OpCode : uint16_t {
   // +/-0 the cached kernels add, and an accumulator that starts at +0 never
   // holds -0.
   kAttnFwdTiledSeg = 57,  // in: q, k, v, o; out[0]=stats, out[1]=PackAttnGeometry, out[2]=starts ref
+  // 8-bit AdamW moments (S5 #192, plan v27; opt-in, recipe field moments
+  // int8). kAdamWStep's step over moments stored block-wise in 8 bits: m
+  // signed int8 [count], v unsigned uint8 [count], and one f32 scales
+  // vector of 2 * blocks floats — every block's m absmax, then every
+  // block's v max (kMomentBlock values a block, the last one short). Per
+  // block the step dequantizes, runs kAdamWStep's f32 expression on the
+  // dequantized moments (the parameter moves by the unquantized m and v of
+  // this step), then requantizes with round-to-nearest-even — the codes
+  // and the dequantization are MomentCodeM / MomentCodeV and their inverses
+  // below, the same arithmetic on every backend and in the oracle. A
+  // non-finite moment (or a stored scale that is not a finite
+  // non-negative float) refuses the step before anything is written, as a
+  // non-finite clip norm does. out[1] is the fused clip word, as on 18.
+  // Arithmetic the f32 opcode does not compute: the plan's ledger records
+  // it as a quantized pass, and the compiler emits it only when asked.
+  kAdamW8Step = 58,  // in: p, g, m8, v8; out[0]=count, out[1]=clip bits, out[2]=scales ref
 };
 // clang-format on
+
+// --- 8-bit moments (plan v27, S5 #192). ----------------------------------------
+// A block is kMomentBlock consecutive values of one tensor; each carries
+// two f32 scales (the m block's absmax, the v block's max). 256, as in
+// bitsandbytes' 8-bit Adam: two scales per 256 values add 8 / 256 = 0.03 B
+// to the 2 B a value the codes take (8 B in f32: 3.94x smaller), and a
+// block is eight SIMD lanes of 32 on the GPU, one simdgroup.
+inline constexpr uint64_t kMomentBlock = 256;
+/// Blocks of a tensor of `count` values (the last one may be short).
+inline constexpr uint64_t MomentBlocks(uint64_t count) {
+  return count / kMomentBlock + (count % kMomentBlock != 0 ? 1 : 0);
+}
+/// A block whose absmax (m) or max (v) is below this is stored as zeros,
+/// scale 0: it keeps every dequantized value and every product the codes
+/// below form a normal float (2^-80 / 127 for m, 2^-80 * 2^-31.75 for v),
+/// so no backend's subnormal handling enters, and sqrt(2^-80) is 1e-12 —
+/// far below the eps every AdamW denominator adds.
+inline constexpr float kMomentScaleFloor = 0x1p-80f;
+// m: signed linear, 127 levels a side of the block's absmax a:
+//   d = a / 127,  code = clamp(rint(m / d), -127, 127),  m' = code * d.
+inline constexpr float kMomentMLevels = 127.0f;
+// v: a logarithmic code, eight levels an octave below the block's max V.
+// Code 0 is exactly 0; code q in [1, 255] is level n = 255 - q,
+//   v' = V * (kMomentVLevel[n % 8] * 2^-(n / 8)),   n in [0, 254],
+// 31.75 octaves (9.6 decades) under V. A nonzero v is coded to its nearest
+// level in the log domain — the ratio x = v / V written y * 2^E, y in
+// [1, 2), is level -8 (E + 1) + #{j : y < kMomentVThreshold[j]} — clamped
+// to n = 254: a nonzero v never becomes 0, so no element ever steps by
+// m / eps for want of a v its m still carries (the failure a linear v code
+// shows; docs/ledger/moments-int8-2026-11-23/). The tables are f32 bit
+// patterns — 2^(-r/8) and 2^(1 - (j + 1/2) / 8), each rounded to nearest
+// once — so the CPU, the GPU and the oracle compare and multiply the same
+// floats; the arithmetic is exponent-field bit operations, compares and
+// one IEEE multiply, no transcendental function.
+inline constexpr uint32_t kMomentVLevelBits[8] = {
+    0x3f800000u, 0x3f6ac0c7u, 0x3f5744fdu, 0x3f45672au,
+    0x3f3504f3u, 0x3f25fed7u, 0x3f1837f0u, 0x3f0b95c2u};
+inline constexpr uint32_t kMomentVThresholdBits[8] = {
+    0x3ff5257du, 0x3fe0ccdfu, 0x3fce248cu, 0x3fbd08a4u,
+    0x3fad583fu, 0x3f9ef532u, 0x3f91c3d3u, 0x3f85aac3u};
+inline constexpr uint32_t kMomentVMaxLevel = 254;
+
+/// m's code for `m` in a block whose step is `d` = absmax / 127 (d > 0).
+inline int8_t MomentCodeM(float m, float d) {
+  float q = std::nearbyint(m / d);  // round-to-nearest-even
+  q = q > kMomentMLevels ? kMomentMLevels : q;
+  q = q < -kMomentMLevels ? -kMomentMLevels : q;
+  return static_cast<int8_t>(q);
+}
+/// v's code for `v` >= 0 in a block whose max is `vmax` (>= the floor).
+inline uint8_t MomentCodeV(float v, float vmax) {
+  if (!(v > 0.0f)) return 0;
+  const uint32_t bits = std::bit_cast<uint32_t>(v / vmax);
+  const uint32_t biased = (bits >> 23) & 0xFFu;
+  uint32_t n = kMomentVMaxLevel;
+  if (biased != 0) {  // a subnormal ratio is far below the lowest level
+    const float y = std::bit_cast<float>((bits & 0x7FFFFFu) | 0x3F800000u);
+    uint32_t below = 0;
+    for (uint32_t t : kMomentVThresholdBits)
+      below += y < std::bit_cast<float>(t) ? 1u : 0u;
+    // -8 (E + 1) with E = biased - 127 <= 0 for a ratio <= 1.
+    const int64_t level = 8 * (126 - static_cast<int64_t>(biased)) + below;
+    if (level < 0)
+      n = 0;  // a ratio above 1: no block max is below its values
+    else if (level < static_cast<int64_t>(n))
+      n = static_cast<uint32_t>(level);
+  }
+  return static_cast<uint8_t>(255u - n);
+}
+/// The dequantized v of code `q` in a block whose max is `vmax`.
+inline float MomentValueV(uint8_t q, float vmax) {
+  if (q == 0) return 0.0f;
+  const uint32_t n = 255u - q;
+  const float octave = std::bit_cast<float>((127u - n / 8) << 23);
+  return vmax * (std::bit_cast<float>(kMomentVLevelBits[n % 8]) * octave);
+}
 
 inline constexpr uint64_t kAttnStatsWidth = 4;
 /// The stats row's fields: the score max, 1 / the softmax denominator, the

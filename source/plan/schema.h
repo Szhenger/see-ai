@@ -162,10 +162,19 @@ inline constexpr uint32_t kSeeuMagic = 0x55454553;  // "SEEU" little-endian
 // the tiled backward opcodes 48-50 honor it: a v26 runtime given a plan
 // without the mask reads zeros there and computes the v25 bits. No header
 // field and no section changes.
-inline constexpr uint32_t kSeeuVersion = 26;
+// v27 (S5 #192): 8-bit AdamW moments — kAdamW8Step, refused below v27, and
+// the ledger's third arithmetic, kLedgerQuantized (source/plan/
+// metadata.h). No header field and no section changes. A plan that does
+// not carry the opcode is written at v26 (kSeeuPreInt8MomentsVersion), byte
+// for byte the plan the v26 compiler wrote: the compiler stamps the oldest
+// version whose vocabulary a plan uses, from this one on, so a v26 runtime
+// keeps running every plan that does not opt into the narrower state.
+inline constexpr uint32_t kSeeuVersion = 27;
 inline constexpr uint32_t kSeeuGlobalClipVersion = 24;
 inline constexpr uint32_t kSeeuSegmentMaskVersion = 25;
 inline constexpr uint32_t kSeeuTiledSegmentMaskVersion = 26;
+inline constexpr uint32_t kSeeuInt8MomentsVersion = 27;
+inline constexpr uint32_t kSeeuPreInt8MomentsVersion = 26;
 
 // The version that grew the header with the data contract.
 inline constexpr uint32_t kSeeuDataContractVersion = 22;

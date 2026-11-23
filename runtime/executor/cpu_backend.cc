@@ -250,6 +250,9 @@ class CpuBackend final : public ExecutorBackend {
     // physically unwritable from the instruction stream by construction.
     return reinterpret_cast<float*>(arena_ + up::RefOffset(ref));
   }
+  uint8_t* WriteBytes(uint64_t ref) {  // the 8-bit moment codes (v27)
+    return arena_ + up::RefOffset(ref);
+  }
 
   uint8_t* arena_ = nullptr;
   const uint8_t* rodata_ = nullptr;
@@ -500,6 +503,23 @@ std::expected<void, std::string> CpuBackend::Execute(
                         params.weight_decay, params.step,
                         BitsToF32(ins.out[1])))
         return std::unexpected(kNonFiniteNormRefusal);
+      break;
+    // v27 (#192): the 8-bit moment step refuses a non-finite clip norm
+    // with the fused steps' words, and a non-finite moment with its own.
+    case up::OpCode::kAdamW8Step:
+      switch (k::AdamW8Step(WritePtr(ins.in[0]), ReadPtr(ins.in[1]),
+                            reinterpret_cast<int8_t*>(WriteBytes(ins.in[2])),
+                            WriteBytes(ins.in[3]), WritePtr(ins.out[2]),
+                            ins.out[0], params.lr, params.beta1, params.beta2,
+                            params.eps, params.weight_decay, params.step,
+                            BitsToF32(ins.out[1]))) {
+        case k::MomentStep::kDone:
+          break;
+        case k::MomentStep::kNormRefused:
+          return std::unexpected(kNonFiniteNormRefusal);
+        case k::MomentStep::kMomentRefused:
+          return std::unexpected(kNonFiniteMomentRefusal);
+      }
       break;
     case up::OpCode::kFill:
       k::Fill(WritePtr(ins.in[0]), BitsToF32(ins.in[1]), ins.out[0]);

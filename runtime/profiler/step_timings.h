@@ -50,7 +50,7 @@ inline PhaseBoundaries ScanPhases(
       p.bwd_begin = i + 1;
     if ((op == up::OpCode::kClipNorm || op == up::OpCode::kSqNormAccum ||
          op == up::OpCode::kClipGlobal || op == up::OpCode::kSgdStep ||
-         op == up::OpCode::kAdamWStep) &&
+         op == up::OpCode::kAdamWStep || op == up::OpCode::kAdamW8Step) &&
         p.opt_begin == train.size())
       p.opt_begin = i;
   }

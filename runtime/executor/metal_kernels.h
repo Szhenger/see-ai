@@ -1107,6 +1107,124 @@ kernel void k_adamw_clip(KSIG, device float* scratch [[buffer(3)]],
   const float v_hat = vi * inv_bc2;
   pp[g] -= lr * (m_hat / (sqrt(v_hat) + eps) + wd * pp[g]);
 }
+// 8-bit moments (plan v27, S5 #192): source/plan/instruction.h's codes,
+// operation for operation — the same f32 bit tables, exponent-field bit
+// operations, compares and one multiply, rint (round-to-nearest-even)
+// for m. One simdgroup a block of 256: lane l holds values l, l + 32, ...
+// p.n = count, p.m = blocks, p.flags bit 0 = the fused clip's factor is in
+// scratch[256]; p.f: lr, beta1, beta2, eps, weight_decay, inv_bc1, inv_bc2.
+// Slots: 0 p, 1 g, 2 m codes (int8), 3 v codes (uint8), 4 the scales
+// (every block's m absmax, then every block's v max).
+constant uint kMomentVLevelBits[8] = {
+    0x3f800000u, 0x3f6ac0c7u, 0x3f5744fdu, 0x3f45672au,
+    0x3f3504f3u, 0x3f25fed7u, 0x3f1837f0u, 0x3f0b95c2u};
+constant uint kMomentVThresholdBits[8] = {
+    0x3ff5257du, 0x3fe0ccdfu, 0x3fce248cu, 0x3fbd08a4u,
+    0x3fad583fu, 0x3f9ef532u, 0x3f91c3d3u, 0x3f85aac3u};
+static inline float moment_value_v(uint q, float vmax) {
+  if (q == 0u) return 0.0f;
+  const uint n = 255u - q;
+  const float octave = as_type<float>((127u - n / 8u) << 23);
+  return vmax * (as_type<float>(kMomentVLevelBits[n % 8u]) * octave);
+}
+static inline uchar moment_code_v(float v, float vmax) {
+  if (!(v > 0.0f)) return 0;
+  const uint bits = as_type<uint>(v / vmax);
+  const uint biased = (bits >> 23) & 0xFFu;
+  int n = 254;
+  if (biased != 0u) {
+    const float y = as_type<float>((bits & 0x7FFFFFu) | 0x3F800000u);
+    int below = 0;
+    for (uint j = 0; j < 8u; ++j)
+      below += y < as_type<float>(kMomentVThresholdBits[j]) ? 1 : 0;
+    const int level = 8 * (126 - int(biased)) + below;
+    n = level < 0 ? 0 : min(level, 254);
+  }
+  return uchar(255 - n);
+}
+static inline char moment_code_m(float m, float d) {
+  const float q = clamp(rint(m / d), -127.0f, 127.0f);
+  return char(int(q));
+}
+// Proves every new moment of the block finite and its stored scales finite
+// and non-negative; writes nothing but the refusal flag (2: a moment, which
+// Flush reports in the CPU's words), and never over a clip's 1.
+kernel void k_adamw8_check(KSIG, device float* scratch [[buffer(3)]],
+                           device float* flag [[buffer(7)]],
+                           uint t [[thread_position_in_grid]]) {
+  const uint b = t / 32u, lane = t % 32u;
+  if (b >= p.m) return;
+  device const float* sc = RF(4);
+  device const char* m8 = (device const char*)(ar + p.off[2]);
+  device const uchar* v8 = (device const uchar*)(ar + p.off[3]);
+  const float ms = sc[b], vs = sc[p.m + b];
+  bool ok = isfinite(ms) && isfinite(vs) && ms >= 0.0f && vs >= 0.0f;
+  const float s = (p.flags & 1u) ? scratch[256] : 1.0f;
+  const float dm = ms / 127.0f;
+  const float om_b1 = 1.0f - p.f[1], om_b2 = 1.0f - p.f[2];
+  for (uint k = 0; k < 8u; ++k) {
+    const uint i = b * 256u + lane + 32u * k;
+    if (i >= p.n) break;
+    const float gi = RF(1)[i] * s;
+    const float m0 = float(m8[i]) * dm;
+    const float v0 = moment_value_v(v8[i], vs);
+    const float mi = p.f[1] * m0 + om_b1 * gi;
+    const float vi = p.f[2] * v0 + om_b2 * gi * gi;
+    ok = ok && isfinite(mi) && isfinite(vi);
+  }
+  if (!simd_all(ok) && lane == 0u && flag[0] == 0.0f) flag[0] = 2.0f;
+}
+kernel void k_adamw8(KSIG, device float* scratch [[buffer(3)]],
+                     device const float* flag [[buffer(7)]],
+                     uint t [[thread_position_in_grid]]) {
+  const uint b = t / 32u, lane = t % 32u;
+  if (b >= p.m || flag[0] != 0.0f) return;
+  device float* pp = WF(0);
+  device float* sc = WF(4);
+  device char* m8 = (device char*)(ar + p.off[2]);
+  device uchar* v8 = (device uchar*)(ar + p.off[3]);
+  const float lr = p.f[0], beta1 = p.f[1], beta2 = p.f[2], eps = p.f[3];
+  const float wd = p.f[4], inv_bc1 = p.f[5], inv_bc2 = p.f[6];
+  const float om_b1 = 1.0f - beta1, om_b2 = 1.0f - beta2;
+  const float s = (p.flags & 1u) ? scratch[256] : 1.0f;
+  const float dm = sc[b] / 127.0f;
+  const float vs = sc[p.m + b];
+  float mloc[8], vloc[8];
+  float amax_m = 0.0f, max_v = 0.0f;
+  for (uint k = 0; k < 8u; ++k) {
+    const uint i = b * 256u + lane + 32u * k;
+    if (i >= p.n) break;
+    const float gi = RF(1)[i] * s;
+    const float m0 = float(m8[i]) * dm;
+    const float v0 = moment_value_v(v8[i], vs);
+    const float mi = beta1 * m0 + om_b1 * gi;
+    const float vi = beta2 * v0 + om_b2 * gi * gi;
+    mloc[k] = mi;
+    vloc[k] = vi;
+    amax_m = max(amax_m, abs(mi));
+    max_v = max(max_v, vi);
+    const float m_hat = mi * inv_bc1;
+    const float v_hat = vi * inv_bc2;
+    pp[i] -= lr * (m_hat / (sqrt(v_hat) + eps) + wd * pp[i]);
+  }
+  // Every lane has read its codes and the block's scales above.
+  amax_m = simd_max(amax_m);
+  max_v = simd_max(max_v);
+  // kMomentScaleFloor, 2^-80, as its bits.
+  const float floor_v = as_type<float>(0x17800000u);
+  const bool m_zero = amax_m < floor_v, v_zero = max_v < floor_v;
+  const float d = amax_m / 127.0f;
+  for (uint k = 0; k < 8u; ++k) {
+    const uint i = b * 256u + lane + 32u * k;
+    if (i >= p.n) break;
+    m8[i] = m_zero ? char(0) : moment_code_m(mloc[k], d);
+    v8[i] = v_zero ? uchar(0) : moment_code_v(vloc[k], max_v);
+  }
+  if (lane == 0u) {
+    sc[b] = m_zero ? 0.0f : amax_m;
+    sc[p.m + b] = v_zero ? 0.0f : max_v;
+  }
+}
 
 // --- Row / column reductions (one thread per row or column) ----------------
 kernel void k_reduce_rows(KSIG, uint c [[thread_position_in_grid]]) {

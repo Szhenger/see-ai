@@ -1011,6 +1011,71 @@ TEST(PlanValidator, FusedMapProgramsAreProven) {
   EXPECT_ERROR(check(ro_out));
 }
 
+TEST(PlanValidator, TheEightBitMomentStepBoundsEveryOperandFromV27) {
+  // #192: kAdamW8Step's five operands — p and g f32 [n], the m and v codes
+  // one byte each [n], the scales f32 [2 * blocks] — each in bounds, in the
+  // arena, aligned to its element and apart from every other; the clip
+  // word held as kAdamWStep's; refused below v27. Each refusal below is a
+  // mutation of the accepted instruction that a hostile plan could carry.
+  const auto f32 = [](float f) { return uint64_t{std::bit_cast<uint32_t>(f)}; };
+  // n = 257: two blocks, so four scales; p [0, 1028), g [1088, 2116), m
+  // codes [2176, 2433), v codes [2496, 2753), scales [2816, 2832).
+  const uint64_t arena = 4096;
+  up::UpdateInstruction step;
+  step.opcode = static_cast<uint16_t>(up::OpCode::kAdamW8Step);
+  step.in[0] = up::MakeArenaRef(0);
+  step.in[1] = up::MakeArenaRef(1088);
+  step.in[2] = up::MakeArenaRef(2176);
+  step.in[3] = up::MakeArenaRef(2496);
+  step.out[0] = 257;
+  step.out[2] = up::MakeArenaRef(2816);
+  EXPECT_OK(ValidateInstruction(step, arena, kRodata, up::kSeeuVersion));
+  const auto extents =
+      DescribeInstruction(step, arena, kRodata, up::kSeeuVersion);
+  ASSERT_OK(extents);
+  ASSERT_EQ(extents->count, 5u);
+  EXPECT_EQ(extents->ranges[2].bytes, 257u);  // codes: one byte a value
+  EXPECT_EQ(extents->ranges[3].bytes, 257u);
+  EXPECT_EQ(extents->ranges[4].bytes, 16u);  // 2 x 2 blocks of f32
+  EXPECT_TRUE(extents->ranges[4].write);
+  const auto bad = [&](auto mutate, const char* needle,
+                       uint32_t version = up::kSeeuVersion) {
+    up::UpdateInstruction ins = step;
+    mutate(ins);
+    const auto r = ValidateInstruction(ins, arena, kRodata, version);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_STR_CONTAINS(r.error(), needle);
+  };
+  bad([](up::UpdateInstruction&) {}, "8-bit moment opcode 58 in a pre-v27",
+      up::kSeeuInt8MomentsVersion - 1);
+  using I = up::UpdateInstruction;
+  // The scales: one float short of the second block's (past the arena),
+  // misaligned, in rodata, absent.
+  bad([&](I& i) { i.out[2] = up::MakeArenaRef(arena - 12); }, "out of bounds");
+  bad([](I& i) { i.out[2] = up::MakeArenaRef(2818); }, "out of bounds");
+  bad([](I& i) { i.out[2] = up::MakeRodataRef(0); }, "out of bounds");
+  bad([](I& i) { i.out[2] = up::kNullRef; }, "out of bounds");
+  // The codes: in rodata (a write), past the arena, overlapping p or g or
+  // each other or the scales.
+  bad([](I& i) { i.in[2] = up::MakeRodataRef(0); }, "out of bounds");
+  bad([&](I& i) { i.in[3] = up::MakeArenaRef(arena - 100); }, "out of bounds");
+  bad([](I& i) { i.in[2] = up::MakeArenaRef(1000); }, "alias");
+  bad([](I& i) { i.in[3] = up::MakeArenaRef(2300); }, "alias");
+  bad([](I& i) { i.out[2] = up::MakeArenaRef(2432); }, "alias");
+  bad([](I& i) { i.in[2] = up::MakeArenaRef(1500); }, "alias");  // inside g
+  bad([](I& i) { i.out[0] = 0; }, "out of bounds");
+  // The fused clip word: kAdamWStep's rule.
+  up::UpdateInstruction clipped = step;
+  clipped.out[1] = f32(1.0f);
+  EXPECT_OK(ValidateInstruction(clipped, arena, kRodata, up::kSeeuVersion));
+  for (const uint64_t word :
+       {f32(-1.0f), f32(INFINITY), f32(1.0f) | (1ull << 32)})
+    bad([&](I& i) { i.out[1] = word; }, "optimizer step clip threshold");
+  // No flag and no imm word: neither is defined on the opcode.
+  bad([](I& i) { i.flags = up::kFlagRelaxed; }, "misplaced instruction flags");
+  bad([](I& i) { i.imm = 1; }, "imm word");
+}
+
 TEST(PlanValidator, ImmediateFloatsAreFiniteAndInRange) {
   // CR1 #142: every float an instruction carries as bits is proven finite
   // and within its range before a kernel multiplies by it.
