@@ -1,0 +1,4 @@
+f32 moments                  1.066312 (after)             v=0 & m!=0: 0
+int8, v log2 (shipped)       1.026505 (after)             v=0 & m!=0: 0
+int8, v sqrt-linear          1.059922 (after)             v=0 & m!=0: 0
+int8, v linear-linear        3.997499 (after)             v=0 & m!=0: 70157

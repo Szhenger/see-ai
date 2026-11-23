@@ -1,0 +1,8 @@
+seed 0 f32     final loss 6128147.000000  v=0 & m!=0: 0
+seed 0 linear  final loss 25024560.000000  v=0 & m!=0: 106754
+seed 0 sqrt    final loss 6114654.000000  v=0 & m!=0: 0
+seed 0 log     final loss 6072530.000000  v=0 & m!=0: 0
+seed 1 f32     final loss 279.955627  v=0 & m!=0: 0
+seed 1 linear  final loss 338710080.000000  v=0 & m!=0: 150255
+seed 1 sqrt    final loss 572.555054  v=0 & m!=0: 45
+seed 1 log     final loss 389.550201  v=0 & m!=0: 0
