@@ -1,5 +1,5 @@
 seed 7 metal moments f32 compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.720211); last state 3.837840; 9 pe
-seed 7 metal moments int8 compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.716829); last state 3.827513; 9 pe
+seed 7 metal moments int8 compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.719993); last state 3.839050; 9 pe
 seed 123 metal moments f32 compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.726177); last state 3.845109; 9 pe
-seed 123 metal moments int8 compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.722113); last state 3.831326; 9 pe
+seed 123 metal moments int8 compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.726239); last state 3.849076; 9 pe
 done

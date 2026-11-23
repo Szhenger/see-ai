@@ -30,9 +30,9 @@ runtime — planned by the compiler, measured by the device
   backend                  metal                         the executor that ran the plan
   threads                  10                            the worker-pool width the run used (--threads, $SEEML_THREADS, or the hardware's); measured, so the compile's screen leaves it unset
   steps                    300                           optimizer steps trained
-  measured step            244.124 ms                    training wall time ÷ steps, evaluations excluded
-  achieved                 1329.0 GFLOP/s                the work per step ÷ the measured step
-  peak RSS                 2,608,463,872 B (2.4 GiB)     the process's resident peak, as the OS reports it
+  measured step            229.027 ms                    training wall time ÷ steps, evaluations excluded
+  achieved                 1416.6 GFLOP/s                the work per step ÷ the measured step
+  peak RSS                 2,608,529,408 B (2.4 GiB)     the process's resident peak, as the OS reports it
   RSS ÷ planned            1.391                         the resident peak ÷ the planned memory
   train loss, start        4.6105 nats                   the mean loss over the run's first window of steps
   train loss, end          2.5709 nats                   the mean loss over the run's last window of steps
@@ -41,7 +41,7 @@ runtime — planned by the compiler, measured by the device
   input-blind loss         6.6643 nats                   the training labels' entropy: an input-blind predictor's loss
   validation accuracy      0.3490                        the held-out accuracy of the state the gate weighed
   energy meter             IOReport GPU Energy           the energy domain read (the GPU's, on a Metal run), or why none was
-  energy                   513.815 J                     that domain's energy over the training run, evaluations included
-  energy per token         0.0033451 J                   the energy ÷ the tokens trained (steps × rows per optimizer step)
+  energy                   583.984 J                     that domain's energy over the training run, evaluations included
+  energy per token         0.0038020 J                   the energy ÷ the tokens trained (steps × rows per optimizer step)
   verdict                  accepted                      the gate's decision on the update: accepted, rejected or forced; stopped when a signal ended the run before the gate; measured in a seeml-bench row, which has no gate
-seeml-update: committed '~/.claude/jobs/ddb59ea7/tmp/f192/loss/s123/metal/f32/out.smf'
+seeml-update: committed '/tmp/f192d/row/s123/metal/f32/out.smf'

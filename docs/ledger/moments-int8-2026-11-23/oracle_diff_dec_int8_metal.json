@@ -19,8 +19,8 @@
       "codes": 21120,
       "codes_off_by_one": 0,
       "extents": 360,
-      "worst_ratio": 0.006853190726219545,
-      "worst_rel": 2.406446243811147e-06
+      "worst_ratio": 0.005678069907206574,
+      "worst_rel": 2.3817797658758126e-06
     },
     "add.ew": {
       "extents": 46,
@@ -29,13 +29,13 @@
     },
     "attn.dk": {
       "extents": 12,
-      "worst_ratio": 0.0048808770130061956,
+      "worst_ratio": 0.00488104068223235,
       "worst_rel": 1.0694527193348603e-07
     },
     "attn.dp": {
       "extents": 12,
-      "worst_ratio": 0.007828803140028972,
-      "worst_rel": 9.91179493685691e-08
+      "worst_ratio": 0.009718447555595078,
+      "worst_rel": 1.1176266259790968e-07
     },
     "attn.dq": {
       "extents": 12,
@@ -49,13 +49,13 @@
     },
     "attn.fwd": {
       "extents": 28,
-      "worst_ratio": 0.011802899955522894,
-      "worst_rel": 1.1920928955078125e-07
+      "worst_ratio": 0.011472293269114678,
+      "worst_rel": 1.1527762887750715e-07
     },
     "clip.global": {
       "extents": 90,
-      "worst_ratio": 0.004863728719919849,
-      "worst_rel": 1.1531774883148525e-07
+      "worst_ratio": 0.004863759472728473,
+      "worst_rel": 1.1531394567652271e-07
     },
     "embed.fwd": {
       "extents": 7,
@@ -69,23 +69,23 @@
     },
     "gemm.acc_nn": {
       "extents": 15,
-      "worst_ratio": 0.0010616111112648798,
-      "worst_rel": 1.2052395136328257e-07
+      "worst_ratio": 0.0010555728836758138,
+      "worst_rel": 1.1317413731033287e-07
     },
     "gemm.nn": {
       "extents": 315,
-      "worst_ratio": 0.013223706898927429,
-      "worst_rel": 1.337204093449171e-07
+      "worst_ratio": 0.020482013939299482,
+      "worst_rel": 2.071934098682768e-07
     },
     "gemm.nt": {
       "extents": 234,
       "worst_ratio": 0.011922081481546956,
-      "worst_rel": 1.7533270476558674e-07
+      "worst_rel": 1.9447889962282762e-07
     },
     "gemm.tn": {
       "extents": 180,
-      "worst_ratio": 0.02041937383491902,
-      "worst_rel": 2.1921337254183715e-07
+      "worst_ratio": 0.018837570023392043,
+      "worst_rel": 2.060870276665652e-07
     },
     "mul.ew": {
       "extents": 38,
@@ -94,8 +94,8 @@
     },
     "rms_norm.bwd": {
       "extents": 24,
-      "worst_ratio": 0.008458872474796484,
-      "worst_rel": 1.0943850169060597e-07
+      "worst_ratio": 0.0069507382916292595,
+      "worst_rel": 9.908844967955588e-08
     },
     "rms_norm.fwd": {
       "extents": 70,
@@ -129,8 +129,8 @@
     },
     "softmax_rows.bwd": {
       "extents": 12,
-      "worst_ratio": 0.004293182938150117,
-      "worst_rel": 8.190709304857144e-08
+      "worst_ratio": 0.0065592333681382875,
+      "worst_rel": 1.0124557367007611e-07
     },
     "softmax_xent.bwd": {
       "extents": 6,
@@ -139,18 +139,18 @@
     },
     "softmax_xent.fwd": {
       "extents": 14,
-      "worst_ratio": 0.011187284686162743,
-      "worst_rel": 1.1213593387029999e-07
+      "worst_ratio": 0.011094316140872482,
+      "worst_rel": 1.1120188891976594e-07
     },
     "sqnorm.accum": {
       "extents": 90,
-      "worst_ratio": 0.009813730449939991,
-      "worst_rel": 1.7394774227137134e-07
+      "worst_ratio": 0.01962689076535398,
+      "worst_rel": 1.970801006448658e-07
     }
   },
-  "plan": "~/.claude/jobs/ddb59ea7/tmp/f192/oracle/dec/update_plan.seeu",
-  "plan_hash": "21ab690323e96dcc",
-  "plan_sha256": "0871de77cbad340f67dd1f62d515d7cf80def699f2af11373f28bb7ab503324e",
+  "plan": "dec_moments_int8_global_accum/update_plan.seeu (test/tool/frontier_exec_test.py's MATRIX row)",
+  "plan_hash": "46c370b523c3554a",
+  "plan_sha256": "26730b7c47cee1d9c0cb35281a162c985dd048ec84437dab94dadfbe10813289",
   "plan_version": 27,
   "relaxed_instructions": 0,
   "relaxed_modelled": false,

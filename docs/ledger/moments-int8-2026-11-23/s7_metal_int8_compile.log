@@ -1,23 +1,23 @@
 seeml-update-compile: kernel policy default (the runtime's GEMM tiles; host "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4")
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (757 ops, 0.225 ms)
-[INFO]  13:05:12 compiler/analysis/algebra/lora_grafter.cc:246 — LoraGrafter: grafted 211 adapter(s), rank=8
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (1812 ops, 1.044 ms)
-[INFO]  13:05:12 compiler/driver/update_compiler.cc:834 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (1813 ops, 0.504 ms)
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'segment-mask' ok (1814 ops, 0.479 ms)
-[INFO]  13:05:12 compiler/analysis/calculus/autodiff.cc:496 — TrainableAutodiff: built adjoints for 422 trainable parameter(s)
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (3580 ops, 2.249 ms)
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (5268 ops, 1.853 ms)
-[INFO]  13:05:12 compiler/driver/update_compiler.cc:958 — UpdateCompiler: quantized 211 frozen weight(s) to int8 rodata
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (5268 ops, 1.438 ms)
-[INFO]  13:05:12 compiler/analysis/algebra/addend_fuser.cc:117 — GemmAddendFuser: folded 419 GEMM(s) into the add reading them, orphaning them for the DCE sweep
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (5268 ops, 1.934 ms)
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (5268 ops, 1.496 ms)
-[INFO]  13:05:12 compiler/driver/update_compiler.cc:1071 — UpdateCompiler: dce removed 419 dead op(s)
-[INFO]  13:05:12 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (4849 ops, 1.942 ms)
-[INFO]  13:05:12 compiler/driver/update_compiler.cc:1153 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget
-[INFO]  13:05:13 compiler/driver/update_compiler.cc:1515 — UpdateCompiler: memory: the step-0 bound is 1600448832 B against the exact arena + plan of 1839455168 B
-[INFO]  13:05:13 compiler/driver/update_compiler.cc:1556 — UpdateCompiler: plan compiled — 2888 train + 908 eval + 422 merge instrs, arena 1558862784 B (18256704 B persistent), rodata 262048512 B
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (757 ops, 0.191 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/algebra/lora_grafter.cc:246 — LoraGrafter: grafted 211 adapter(s), rank=8[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (1812 ops, 0.998 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:834 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (1813 ops, 0.452 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'segment-mask' ok (1814 ops, 0.423 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/calculus/autodiff.cc:496 — TrainableAutodiff: built adjoints for 422 trainable parameter(s)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (3580 ops, 1.964 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (5268 ops, 1.633 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:958 — UpdateCompiler: quantized 211 frozen weight(s) to int8 rodata[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (5268 ops, 1.359 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/algebra/addend_fuser.cc:117 — GemmAddendFuser: folded 419 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (5268 ops, 1.760 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (5268 ops, 1.333 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:1071 — UpdateCompiler: dce removed 419 dead op(s)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (4849 ops, 1.739 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:1153 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  15:46:24 compiler/driver/update_compiler.cc:1515 — UpdateCompiler: memory: the step-0 bound is 1600448832 B against the exact arena + plan of 1839455168 B[0m
+[32m[INFO]  15:46:24 compiler/driver/update_compiler.cc:1556 — UpdateCompiler: plan compiled — 2888 train + 908 eval + 422 merge instrs, arena 1558862784 B (18256704 B persistent), rodata 262048512 B[0m
 frontend — the model the compiler read
   operators                483 ops                       operators in the SMF model file
   tensors                  274                           tensors the file declares, the input included
@@ -57,7 +57,7 @@ frontend — the model the compiler read
   step-0 bound             1,600,448,832 B (1.5 GiB)     the accountant's lower bound the early gate proved fits
   bound ÷ exact            0.8701                        the step-0 bound ÷ arena + plan: the accountant's honesty, ≤ 1
   memory budget            17,179,869,184 B (16.0 GiB)   the configured budget, else this host's memory
-  frontend time            109.928 ms                    ingress, topology, the accountant and the forward SIR, wall time
+  frontend time            104.157 ms                    ingress, topology, the accountant and the forward SIR, wall time
   frozen weights — each constant tensor: its payload and its value range, from the ingress sweep
     emb                          113,246,208 B (108.0 MiB) -1.953125      3.984375
     l0.ln1_g                     2,304 B (2.3 KiB) -0.398438      0.180664
@@ -350,7 +350,7 @@ analysis — what the passes did
   dead ops removed         419 ops                       ops nothing reads, swept before lowering
   attention                cached, 30 op(s)              cached probabilities, or the tiled family's stats rows
   segment mask             on, 30 op(s): 309 of 492 window(s) hold more than one document  no attention across a window's documents: the decision and its reason
-  8-bit moments            int8, block 256 (m linear, v log2, 8 levels an octave): 422 step(s), 6159168 B bound; estimate 6143280 B vs 24195072 B as f32 (3.94x fewer); not exact: the ledger's quantized line  AdamW's state stored block-wise in 8 bits (#192, opt-in): its codes, its bytes and what f32 would take
+  8-bit moments            int8, block 256 (m and v log2, 8 levels an octave, unbiased dither): 422 step(s), 6159168 B bound; estimate 6143280 B vs 24195072 B as f32 (3.94x fewer); not exact: the ledger's quantized line  AdamW's state stored block-wise in 8 bits (#192, opt-in): its codes, its bytes and what f32 would take
   rematerialization        off: auto, no memory budget   forward values the backward recomputes instead of keeping
   narrow weights           211 int8                      frozen weights stored int8 or bf16 in rodata
   adjoint ops              1,766 ops                     operations autodiff emitted for the backward
@@ -362,7 +362,7 @@ analysis — what the passes did
   addend fusion saves      770,703,360 B (735.0 MiB)     intermediate tensors the addend fusions no longer write
   chain fusion saves       0 B                           intermediate tensors the elementwise chains no longer write
   reordered arithmetic     0                             instructions whose reduction order a backend may change (the ledger)
-  analysis time            52.010 ms                     the passes' wall time
+  analysis time            44.412 ms                     the passes' wall time
   reduction-order ledger — each pass: bit-identical to its input or not, and why (plan metadata)
     attention-tiling             bit-identical  0              the cached family: no op rewritten
     lora-graft                   bit-identical  0              adds the adapter path; B is zero at step 0
@@ -370,32 +370,32 @@ analysis — what the passes did
     segment-mask                 bit-identical  0              same reductions; other documents' keys masked
     autodiff                     bit-identical  0              adds the backward; the forward is untouched
     optimizer                    bit-identical  0              adds the update; the forward is untouched
-    moments-int8                 quantized      422            AdamW m, v 8-bit, block 256: m linear, v log2/8
+    moments-int8                 quantized      422            AdamW m, v 8-bit, block 256: log2/8, unbiased dither
     fuse-gemm-epilogue           bit-identical  0              nothing fused
     fuse-gemm-addend             bit-identical  0              d + s over the complete dot product
     fuse-elementwise             bit-identical  0              nothing fused
     dce                          bit-identical  0              removes ops nothing reads
   passes — each pass and phase: the ops after it, its time
-    ingress                      0 ops          31.080 ms
-    topology                     483 ops        0.464 ms
-    data                         483 ops        66.050 ms
-    frontend                     757 ops        12.334 ms
-    attention-tiling             757 ops        0.225 ms
-    lora-graft                   1,812 ops      1.044 ms
-    rope-table                   1,813 ops      0.504 ms
-    segment-mask                 1,814 ops      0.479 ms
-    autodiff                     3,580 ops      2.249 ms
-    optimizer                    5,268 ops      1.853 ms
-    merge-and-review             5,268 ops      38.846 ms
-    fuse-gemm-epilogue           5,268 ops      1.438 ms
-    fuse-gemm-addend             5,268 ops      1.934 ms
-    fuse-elementwise             5,268 ops      1.496 ms
-    dce                          4,849 ops      1.942 ms
-    bind-arena                   4,849 ops      21.436 ms
-    lower                        4,849 ops      0.641 ms
-    persist-init                 4,849 ops      22.511 ms
-    assemble                     4,849 ops      91.873 ms
-    seal                         4,849 ops      11.213 ms
+    ingress                      0 ops          33.248 ms
+    topology                     483 ops        0.490 ms
+    data                         483 ops        61.828 ms
+    frontend                     757 ops        8.591 ms
+    attention-tiling             757 ops        0.191 ms
+    lora-graft                   1,812 ops      0.998 ms
+    rope-table                   1,813 ops      0.452 ms
+    segment-mask                 1,814 ops      0.423 ms
+    autodiff                     3,580 ops      1.964 ms
+    optimizer                    5,268 ops      1.633 ms
+    merge-and-review             5,268 ops      32.560 ms
+    fuse-gemm-epilogue           5,268 ops      1.359 ms
+    fuse-gemm-addend             5,268 ops      1.760 ms
+    fuse-elementwise             5,268 ops      1.333 ms
+    dce                          4,849 ops      1.739 ms
+    bind-arena                   4,849 ops      22.008 ms
+    lower                        4,849 ops      0.624 ms
+    persist-init                 4,849 ops      21.727 ms
+    assemble                     4,849 ops      81.788 ms
+    seal                         4,849 ops      10.050 ms
   adapters — each adapted weight [k, m], the rank, the base's storage
     l0.wq                        576            576            8              int8
     l0.wk                        576            576            8              int8
@@ -626,8 +626,8 @@ backend — the plan it emitted
   GPU cores                10                            the GPU's core count, as IOKit reports it
   GPU working set          12,713,115,648 B (11.8 GiB)   the device's recommended working set: the memory a plan may keep resident on the GPU
   kernel policy            runtime default               the CPU GEMM tiles the header carries
-  plan hash                a1810bac79f77b13              the plan's self-hash, which checkpoints bind to
-  backend time             147.674 ms                    binding, lowering, assembly and sealing, wall time
+  plan hash                c9249d6bf676074a              the plan's self-hash, which checkpoints bind to
+  backend time             136.197 ms                    binding, lowering, assembly and sealing, wall time
   largest arena tensors — the five largest values the arena holds, with their segment
     w_head.delta                 113,246,208 B (108.0 MiB) transient
     logits                       100,663,296 B (96.0 MiB) transient
@@ -654,9 +654,9 @@ backend — the plan it emitted
 runtime — planned by the compiler, measured by the device
   planned memory           1,839,455,168 B (1.7 GiB)     arena + plan: the resource contract the device checks
   work per step            324,440,948,736 FLOP          GEMM + attention work of one optimizer step
-seeml-update-compile: emitted ~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/pkg/update_plan.seeu
-seeml-update-compile: wrote ~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/pkg/corpus.sds (the canonical corpus the plan is pinned to) and ~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/pkg/corpus_manifest.json
-seeml-update-compile: no embedded TU (--no-embed); next: python3 tool/pack_update.py ~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/pkg --build
+seeml-update-compile: emitted /tmp/f192d/row/s7/metal/int8/pkg/update_plan.seeu
+seeml-update-compile: wrote /tmp/f192d/row/s7/metal/int8/pkg/corpus.sds (the canonical corpus the plan is pinned to) and /tmp/f192d/row/s7/metal/int8/pkg/corpus_manifest.json
+seeml-update-compile: no embedded TU (--no-embed); next: python3 tool/pack_update.py /tmp/f192d/row/s7/metal/int8/pkg --build
 pack_update: embedded update_plan.seeu (280592384 bytes) as update_plan_embedded.S, 16384-byte aligned
-built: ~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/pkg/model_update
-pack_update: built ~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/pkg/model_update in 17.2 s
+built: /private/tmp/f192d/row/s7/metal/int8/pkg/model_update
+pack_update: built /tmp/f192d/row/s7/metal/int8/pkg/model_update in 18.3 s

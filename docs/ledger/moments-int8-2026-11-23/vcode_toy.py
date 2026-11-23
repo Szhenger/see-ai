@@ -3,7 +3,9 @@
 Runs one --moments int8 plan with tool/frontier_exec.py's interpreter
 (numpy32) three times: with the shipped logarithmic v code, and with the
 oracle's quantizer swapped for a linear v code and a sqrt-domain linear v
-code (m stays signed linear in all three); then the f32-moment plan. Prints
+code (m stays the shipped code in all three; when vcode_toy.txt was written
+that was signed linear and round-to-nearest — see the README note in
+docs/benchmarks.md); then the f32-moment plan. Prints
 each run's final held-out loss and how many coded elements dequantize v to
 0 while m is not 0 — the elements that then step by m / eps.
 
@@ -22,8 +24,8 @@ counter = {"bad": 0}
 
 
 def variant(kind):
-    def quantize(np_, m1, v1):
-        qm, _, scales = shipped_q(np_, m1, np.zeros_like(v1))
+    def quantize(np_, m1, v1, step, salt):
+        qm, _, scales = shipped_q(np_, m1, np.zeros_like(v1), step, salt)
         n = v1.size
         blocks = (n + B - 1) // B
         vp = np.zeros(blocks * B, np.float32)

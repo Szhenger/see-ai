@@ -1,0 +1,27 @@
+3000 steps, lr 1e-3, the 255 starved elements; update error is the RMS of (8-bit update - f32 update) over the RMS of the f32 update, steps 11 on; v scatter is the RMS factor between an element's coded v and its f32 v
+starved  first     mean |p| f32 0.0192 8-bit 0.5085  mean |p8 - p32| 0.4892  update error  3.955  mean |m| f32 0.000173 8-bit 0.0315  mean v f32 4.59e-05 8-bit 0.0272  v scatter x592.79
+starved  linear    mean |p| f32 0.0192 8-bit 0.0383  mean |p8 - p32| 0.0360  update error  4.885  mean |m| f32 0.000173 8-bit 0.000648  mean v f32 4.59e-05 8-bit 4.9e-05  v scatter x2.12
+starved  nearest   mean |p| f32 0.0192 8-bit 0.0197  mean |p8 - p32| 0.0030  update error  0.401  mean |m| f32 0.000173 8-bit 0.000175  mean v f32 4.59e-05 8-bit 0.0272  v scatter x592.79
+starved  kronecker mean |p| f32 0.0192 8-bit 0.0192  mean |p8 - p32| 0.0007  update error  0.088  mean |m| f32 0.000173 8-bit 0.000174  mean v f32 4.59e-05 8-bit 3.53e-05  v scatter x1.36
+starved  shipped   mean |p| f32 0.0192 8-bit 0.0194  mean |p8 - p32| 0.0014  update error  0.215  mean |m| f32 0.000173 8-bit 0.000173  mean v f32 4.59e-05 8-bit 4.9e-05  v scatter x2.12
+fall     first     mean |p| f32 0.2033 8-bit 0.4648  mean |p8 - p32| 0.2616  update error  0.360  mean |m| f32 5.61e-45 8-bit 0.0315  mean v f32 0.000991 8-bit 0.084  v scatter x84.74
+fall     linear    mean |p| f32 0.2033 8-bit 0.2033  mean |p8 - p32| 0.0020  update error  0.022  mean |m| f32 5.61e-45 8-bit 0  mean v f32 0.000991 8-bit 0.00103  v scatter x1.88
+fall     nearest   mean |p| f32 0.2033 8-bit 0.2052  mean |p8 - p32| 0.0019  update error  0.018  mean |m| f32 5.61e-45 8-bit 1.81e-05  mean v f32 0.000991 8-bit 0.084  v scatter x84.74
+fall     kronecker mean |p| f32 0.2033 8-bit 0.2030  mean |p8 - p32| 0.0015  update error  0.029  mean |m| f32 5.61e-45 8-bit 0  mean v f32 0.000991 8-bit 0.000818  v scatter x1.25
+fall     shipped   mean |p| f32 0.2033 8-bit 0.2032  mean |p8 - p32| 0.0022  update error  0.031  mean |m| f32 5.61e-45 8-bit 0  mean v f32 0.000991 8-bit 0.00103  v scatter x1.88
+step     first     mean |p| f32 3.7764 8-bit 5.1560  mean |p8 - p32| 1.3795  update error  0.670  mean |m| f32 0.06 8-bit 0.0236  mean v f32 0.00281 8-bit 9.75e-05  v scatter x28.85
+step     linear    mean |p| f32 3.7764 8-bit 3.7919  mean |p8 - p32| 0.1051  update error  0.188  mean |m| f32 0.06 8-bit 0.0599  mean v f32 0.00281 8-bit 0.00281  v scatter x1.11
+step     nearest   mean |p| f32 3.7764 8-bit 8.1344  mean |p8 - p32| 4.3580  update error  1.560  mean |m| f32 0.06 8-bit 0.0442  mean v f32 0.00281 8-bit 9.75e-05  v scatter x28.85
+step     kronecker mean |p| f32 3.7764 8-bit 3.7670  mean |p8 - p32| 0.0273  update error  0.043  mean |m| f32 0.06 8-bit 0.0597  mean v f32 0.00281 8-bit 0.00286  v scatter x1.06
+step     shipped   mean |p| f32 3.7764 8-bit 3.7971  mean |p8 - p32| 0.0980  update error  0.080  mean |m| f32 0.06 8-bit 0.06  mean v f32 0.00281 8-bit 0.00281  v scatter x1.11
+nudge    first     mean |p| f32 3.1736 8-bit 2.4391  mean |p8 - p32| 0.7345  update error  0.239  mean |m| f32 0.013 8-bit 0.00787  mean v f32 0.000149 8-bit 9.75e-05  v scatter x1.52
+nudge    linear    mean |p| f32 3.1736 8-bit 3.1713  mean |p8 - p32| 0.0745  update error  0.288  mean |m| f32 0.013 8-bit 0.013  mean v f32 0.000149 8-bit 0.00015  v scatter x1.08
+nudge    nearest   mean |p| f32 3.1736 8-bit 3.0401  mean |p8 - p32| 0.1335  update error  0.073  mean |m| f32 0.013 8-bit 0.0101  mean v f32 0.000149 8-bit 9.75e-05  v scatter x1.52
+nudge    kronecker mean |p| f32 3.1736 8-bit 3.1781  mean |p8 - p32| 0.0199  update error  0.031  mean |m| f32 0.013 8-bit 0.013  mean v f32 0.000149 8-bit 0.000152  v scatter x1.04
+nudge    shipped   mean |p| f32 3.1736 8-bit 3.1771  mean |p8 - p32| 0.0532  update error  0.047  mean |m| f32 0.013 8-bit 0.013  mean v f32 0.000149 8-bit 0.00015  v scatter x1.08
+a block with no large neighbour, lr 0.01: |p8 - p32| summed over |p32 - p0| summed
+even     first     50 steps 0.0212  500 steps 0.0738  3000 steps 0.1151
+even     linear    50 steps 0.0271  500 steps 0.0526  3000 steps 0.0599
+even     nearest   50 steps 0.0306  500 steps 0.0734  3000 steps 0.1126
+even     kronecker 50 steps 0.0298  500 steps 0.0456  3000 steps 0.0471
+even     shipped   50 steps 0.0409  500 steps 0.0537  3000 steps 0.0607

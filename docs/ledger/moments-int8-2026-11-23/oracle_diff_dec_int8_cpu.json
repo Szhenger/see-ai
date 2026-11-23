@@ -19,8 +19,8 @@
       "codes": 21120,
       "codes_off_by_one": 0,
       "extents": 360,
-      "worst_ratio": 0.009597089093854901,
-      "worst_rel": 2.357037088341206e-06
+      "worst_ratio": 0.005678069907206574,
+      "worst_rel": 2.38363453733892e-06
     },
     "add.ew": {
       "extents": 46,
@@ -29,8 +29,8 @@
     },
     "attn.dk": {
       "extents": 12,
-      "worst_ratio": 0.0048808770130061956,
-      "worst_rel": 1.0694524905890855e-07
+      "worst_ratio": 0.008183343141861145,
+      "worst_rel": 1.4595907555651825e-07
     },
     "attn.dp": {
       "extents": 12,
@@ -44,17 +44,17 @@
     },
     "attn.dv": {
       "extents": 12,
-      "worst_ratio": 0.009949489862592132,
-      "worst_rel": 1.3575129927568536e-07
+      "worst_ratio": 0.007245328276086469,
+      "worst_rel": 1.1857771251260481e-07
     },
     "attn.fwd": {
       "extents": 28,
-      "worst_ratio": 0.009605991015293745,
-      "worst_rel": 9.657873687760557e-08
+      "worst_ratio": 0.008013880631074635,
+      "worst_rel": 8.068118804340293e-08
     },
     "clip.global": {
       "extents": 90,
-      "worst_ratio": 0.004241431036029623,
+      "worst_ratio": 0.004907925299319542,
       "worst_rel": 1.1581560534211062e-07
     },
     "embed.fwd": {
@@ -69,18 +69,18 @@
     },
     "gemm.acc_nn": {
       "extents": 15,
-      "worst_ratio": 0.0010563351352985393,
-      "worst_rel": 1.1405655836616261e-07
+      "worst_ratio": 0.0010555728836758138,
+      "worst_rel": 1.1317413731033287e-07
     },
     "gemm.nn": {
       "extents": 315,
-      "worst_ratio": 0.02024461142901764,
-      "worst_rel": 2.0417984732656097e-07
+      "worst_ratio": 0.02067186009390928,
+      "worst_rel": 2.0852661143630836e-07
     },
     "gemm.nt": {
       "extents": 234,
-      "worst_ratio": 0.013343843727491938,
-      "worst_rel": 2.0791153281114272e-07
+      "worst_ratio": 0.010105193637566363,
+      "worst_rel": 1.749273482990677e-07
     },
     "gemm.tn": {
       "extents": 180,
@@ -94,13 +94,13 @@
     },
     "rms_norm.bwd": {
       "extents": 24,
-      "worst_ratio": 0.008458872474796484,
-      "worst_rel": 1.0943850169060597e-07
+      "worst_ratio": 0.008623500797487554,
+      "worst_rel": 1.1220997088824516e-07
     },
     "rms_norm.fwd": {
       "extents": 70,
-      "worst_ratio": 0.011483256612624133,
-      "worst_rel": 1.1538832556308348e-07
+      "worst_ratio": 0.011483235514233707,
+      "worst_rel": 1.1538811253202597e-07
     },
     "rope.bwd": {
       "extents": 24,
@@ -129,8 +129,8 @@
     },
     "softmax_rows.bwd": {
       "extents": 12,
-      "worst_ratio": 0.005730219943169604,
-      "worst_rel": 8.276345179211013e-08
+      "worst_ratio": 0.006559232507667553,
+      "worst_rel": 1.0124555316874789e-07
     },
     "softmax_xent.bwd": {
       "extents": 6,
@@ -139,8 +139,8 @@
     },
     "softmax_xent.fwd": {
       "extents": 14,
-      "worst_ratio": 0.019988291578371883,
-      "worst_rel": 2.1425275762046174e-07
+      "worst_ratio": 0.02093587603288296,
+      "worst_rel": 2.2339527078913597e-07
     },
     "sqnorm.accum": {
       "extents": 90,
@@ -148,9 +148,9 @@
       "worst_rel": 0.0
     }
   },
-  "plan": "~/.claude/jobs/ddb59ea7/tmp/f192/oracle/dec/update_plan.seeu",
-  "plan_hash": "21ab690323e96dcc",
-  "plan_sha256": "0871de77cbad340f67dd1f62d515d7cf80def699f2af11373f28bb7ab503324e",
+  "plan": "dec_moments_int8_global_accum/update_plan.seeu (test/tool/frontier_exec_test.py's MATRIX row)",
+  "plan_hash": "46c370b523c3554a",
+  "plan_sha256": "26730b7c47cee1d9c0cb35281a162c985dd048ec84437dab94dadfbe10813289",
   "plan_version": 27,
   "relaxed_instructions": 0,
   "relaxed_modelled": false,

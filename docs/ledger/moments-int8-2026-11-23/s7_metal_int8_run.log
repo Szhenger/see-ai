@@ -3,22 +3,22 @@ seeml-update: backend metal (Apple M5, rodata zero-copy, relaxed GEMMs on tensor
 seeml-update: validation scores the shipped model (the f32 weights of '~/.claude/jobs/ddb59ea7/tmp/mask_row/smollm.smf' plus the update)
 seeml-update: resource contract — arena 1558862784 bytes (18256704 persistent)
 seeml-update: step 1  loss 4.636280
-seeml-update: step 30  validation loss 4.154136 (best 4.154136 at step 30)
-seeml-update: step 60  validation loss 3.982510 (best 3.982510 at step 60)
-seeml-update: step 90  validation loss 3.849863 (best 3.849863 at step 90)
-seeml-update: step 101  loss 3.825507
-seeml-update: step 120  validation loss 3.815293 (best 3.815293 at step 120)
-seeml-update: step 150  validation loss 3.764930 (best 3.764930 at step 150)
-seeml-update: step 180  validation loss 3.731050 (best 3.731050 at step 180)
-seeml-update: step 201  loss 2.913300
-seeml-update: step 210  validation loss 3.716829 (best 3.716829 at step 210)
-seeml-update: step 240  validation loss 3.830499 (best 3.716829 at step 210)
-seeml-update: step 270  validation loss 3.836462 (best 3.716829 at step 210)
-seeml-update: restored the best state (step 210, validation loss 3.716829); the last state (step 300) scored 3.827513
-seeml-update: train loss 4.614354 -> 2.571597 over 300 steps
-seeml-update: validation loss 4.803799 -> 3.716829 [backend metal]
-seeml-update: best state at step 210 (validation loss 3.716829); last state 3.827513; 9 periodic evaluation(s)
-seeml-update: validation accuracy 0.2551 -> 0.3474
+seeml-update: step 30  validation loss 4.139311 (best 4.139311 at step 30)
+seeml-update: step 60  validation loss 3.966631 (best 3.966631 at step 60)
+seeml-update: step 90  validation loss 3.838154 (best 3.838154 at step 90)
+seeml-update: step 101  loss 3.810623
+seeml-update: step 120  validation loss 3.814966 (best 3.814966 at step 120)
+seeml-update: step 150  validation loss 3.765021 (best 3.765021 at step 150)
+seeml-update: step 180  validation loss 3.728616 (best 3.728616 at step 180)
+seeml-update: step 201  loss 2.900878
+seeml-update: step 210  validation loss 3.719993 (best 3.719993 at step 210)
+seeml-update: step 240  validation loss 3.841670 (best 3.719993 at step 210)
+seeml-update: step 270  validation loss 3.846936 (best 3.719993 at step 210)
+seeml-update: restored the best state (step 210, validation loss 3.719993); the last state (step 300) scored 3.839050
+seeml-update: train loss 4.609764 -> 2.560105 over 300 steps
+seeml-update: validation loss 4.803799 -> 3.719993 [backend metal]
+seeml-update: best state at step 210 (validation loss 3.719993); last state 3.839050; 9 periodic evaluation(s)
+seeml-update: validation accuracy 0.2551 -> 0.3476
 seeml-update: gate min-improvement 0 require-accuracy no -> accepted [backend metal]
 runtime — planned by the compiler, measured by the device
   model hash               4448e52d513b5011              the source model the plan is bound to and the run verified
@@ -30,18 +30,18 @@ runtime — planned by the compiler, measured by the device
   backend                  metal                         the executor that ran the plan
   threads                  10                            the worker-pool width the run used (--threads, $SEEML_THREADS, or the hardware's); measured, so the compile's screen leaves it unset
   steps                    300                           optimizer steps trained
-  measured step            246.512 ms                    training wall time ÷ steps, evaluations excluded
-  achieved                 1316.1 GFLOP/s                the work per step ÷ the measured step
-  peak RSS                 2,571,862,016 B (2.4 GiB)     the process's resident peak, as the OS reports it
+  measured step            237.960 ms                    training wall time ÷ steps, evaluations excluded
+  achieved                 1363.4 GFLOP/s                the work per step ÷ the measured step
+  peak RSS                 2,571,993,088 B (2.4 GiB)     the process's resident peak, as the OS reports it
   RSS ÷ planned            1.398                         the resident peak ÷ the planned memory
-  train loss, start        4.6144 nats                   the mean loss over the run's first window of steps
-  train loss, end          2.5716 nats                   the mean loss over the run's last window of steps
+  train loss, start        4.6098 nats                   the mean loss over the run's first window of steps
+  train loss, end          2.5601 nats                   the mean loss over the run's last window of steps
   validation loss, start   4.8038 nats                   the held-out loss before training
-  validation loss, end     3.7168 nats                   the held-out loss of the state the gate weighed
+  validation loss, end     3.7200 nats                   the held-out loss of the state the gate weighed
   input-blind loss         6.6643 nats                   the training labels' entropy: an input-blind predictor's loss
-  validation accuracy      0.3474                        the held-out accuracy of the state the gate weighed
+  validation accuracy      0.3476                        the held-out accuracy of the state the gate weighed
   energy meter             IOReport GPU Energy           the energy domain read (the GPU's, on a Metal run), or why none was
-  energy                   519.378 J                     that domain's energy over the training run, evaluations included
-  energy per token         0.0033814 J                   the energy ÷ the tokens trained (steps × rows per optimizer step)
+  energy                   595.949 J                     that domain's energy over the training run, evaluations included
+  energy per token         0.0038799 J                   the energy ÷ the tokens trained (steps × rows per optimizer step)
   verdict                  accepted                      the gate's decision on the update: accepted, rejected or forced; stopped when a signal ended the run before the gate; measured in a seeml-bench row, which has no gate
-seeml-update: committed '~/.claude/jobs/ddb59ea7/tmp/f192/loss/s7/metal/int8/out.smf'
+seeml-update: committed '/tmp/f192d/row/s7/metal/int8/out.smf'
