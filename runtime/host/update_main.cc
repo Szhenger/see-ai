@@ -492,8 +492,9 @@ struct Gate {
   if (Has(argc, argv, "--threads")) {
     uint64_t threads = 0;
     if (!ParseU64(Arg(argc, argv, "--threads", ""), &threads) || threads == 0 ||
-        threads > 4096) {
-      std::fprintf(stderr, "invalid --threads (an integer from 1 to 4096)\n");
+        threads > seeml::update::kMaxParallelThreads) {
+      std::fprintf(stderr, "invalid --threads (an integer from 1 to %zu)\n",
+                   seeml::update::kMaxParallelThreads);
       return std::unexpected(2);
     }
     seeml::update::SetParallelThreadCount(static_cast<size_t>(threads));

@@ -1,0 +1,7 @@
+related seed 123 train unmasked compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.658953); last state 3.77
+related seed 123 train masked compile rc=0 run rc=0 :: best state at step 210 (validation loss 3.726177); last state 3.84
+related seed 123 score trained=unmasked scored=masked compile rc=0 run rc=0 :: validation loss 3.764866 -> 3.792778
+unrelated seed 123 train unmasked compile rc=0 run rc=0 :: best state at step 210 (validation loss 2.785569); last state 2.97
+unrelated seed 123 train masked compile rc=0 run rc=0 :: best state at step 90 (validation loss 2.833565); last state 3.030
+unrelated seed 123 score trained=unmasked scored=masked compile rc=0 run rc=0 :: validation loss 2.874699 -> 2.911120
+done

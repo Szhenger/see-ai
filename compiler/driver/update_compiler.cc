@@ -27,6 +27,8 @@
 #include "compiler/frontend/representation/sir.h"
 #include "compiler/analysis/update_passes.h"
 #include "source/plan/metadata.h"
+#include "source/tokenizer/byte_level_bpe.h"
+#include "source/tokenizer/text_ingest.h"
 #include "source/tokenizer/tokenizer_format.h"
 #include "source/recipe/recipe.h"
 
@@ -472,7 +474,7 @@ Status Compilation::DecideMaskedLoss() {
 }
 
 Status Compilation::DecideSegmentMask() {
-  // The attention segment mask (#191): off (the default), asked for, or —
+  // The attention segment mask (#191): off, asked for, or —
   // under `auto` — implied by a corpus in which some window holds more than
   // one document, as a corpus that carries a loss mask implies the masked
   // loss. The decision reads the compile's inputs alone (the corpus --data
@@ -484,12 +486,35 @@ Status Compilation::DecideSegmentMask() {
   if (!source.tokenizer.empty())
     if (auto head = tokenizer::ReadSmtkHead(source.tokenizer))
       eos = head->eos_id;
+  // #218: the mask finds documents by the EOS id, and on a checkpoint whose
+  // EOS is the chat template's turn end (<|im_end|>, the instruct variants)
+  // a chat record holds that id inside itself, after every turn — whether
+  // it came as a prompt/response record or as plain text already rendered
+  // in ChatML (a literal special-token string encodes to its id). Masked
+  // there, every response would be hidden from its own prompt, and no
+  // corpus can tell a turn end from a document end when they are one id.
+  // So on such a model nothing is masked: `auto` says why and compiles
+  // unmasked, `on` is refused. (A section that does not load — a head-only
+  // one — names no such marker.) The stopgap: the fix is starts from the
+  // pack stage's document boundaries instead of the raw EOS.
+  bool turns_in_records = false;
+  if (eos >= 0)
+    if (auto tok = tokenizer::ByteLevelBpe::Load(source.tokenizer))
+      turns_in_records = tokenizer::EosEndsChatTurns(*tok);
   switch (config_.segment_mask) {
     case SegmentMaskKind::kOn:
+      if (turns_in_records)
+        return generating::Error(
+            generating::kDriver,
+            "--segment-mask on with a model whose EOS is the chat template's "
+            "turn end (<|im_end|>): the mask finds documents by the EOS, "
+            "which a chat record holds after every turn, and would hide "
+            "every response from its own prompt (#218); compile with "
+            "--segment-mask off");
       segment_mask = true;  // a model with no EOS is refused by the pass
       segment_mask_why = "asked for";
       break;
-    case SegmentMaskKind::kOff:  // the default: nothing decided, no row
+    case SegmentMaskKind::kOff:  // asked for: nothing decided, no row
       segment_mask = false;
       segment_mask_why.clear();
       break;
@@ -501,6 +526,10 @@ Status Compilation::DecideSegmentMask() {
         segment_mask_why = "not a token model";
       } else if (eos < 0) {
         segment_mask_why = "the model's tokenizer section names no EOS id";
+      } else if (turns_in_records) {
+        segment_mask_why =
+            "the model's EOS (<|im_end|>) also ends each turn of a chat "
+            "record, and a turn is not a document";
       } else if (corpus->facts.multi_document_windows == 0) {
         segment_mask_why =
             "no window of the corpus holds more than one "

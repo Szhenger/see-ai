@@ -265,9 +265,11 @@ struct Options {
   opts->lr_bits = static_cast<uint32_t>(bits);
   if (step && (!ParseU64(*step, 10, &opts->step) || opts->step == 0))
     return Usage("--step wants a 1-indexed optimizer step");
-  if (threads && (!ParseU64(*threads, 10, &opts->threads) ||
-                  opts->threads == 0 || opts->threads > 4096))
-    return Usage("--threads wants an integer in [1, 4096]");
+  if (threads &&
+      (!ParseU64(*threads, 10, &opts->threads) || opts->threads == 0 ||
+       opts->threads > up::kMaxParallelThreads))
+    return Usage("--threads wants an integer in [1, " +
+                 std::to_string(up::kMaxParallelThreads) + "]");
   if (timed && (!ParseU64(*timed, 10, &opts->timed) || opts->timed == 0 ||
                 opts->timed > 1000000))
     return Usage("--time wants an execution count in [1, 1000000]");
