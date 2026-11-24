@@ -7,7 +7,13 @@ the previous ';', '{' or '}' has a parameter list and is not a type, a
 namespace, an initializer, a control statement or a lambda, and no enclosing
 brace is already a function. A function's length runs from the first line
 of its head to its closing '}'; lambdas and local blocks count toward the
-function that holds them. Standard library only.
+function that holds them. Preprocessor lines are blanked with the comments:
+an `#include <x>` or an `#if defined(X)` before a file's first brace is not
+the head of anything, and read as one it made the whole file a single
+"function" that hid every function inside it. Standard library only.
+
+test/tool/function_length_test.py holds the rest of the tree to its own
+limit with this scanner.
 """
 
 import glob
@@ -46,6 +52,17 @@ def _blank(src):
             j = n if j < 0 else j + 2
             out.append(re.sub(r"[^\n]", " ", src[i:j]))
             i = j
+        elif src[i] == "#" and not src[src.rfind("\n", 0, i) + 1:i].strip():
+            # A directive, through its backslash continuations.
+            j = i
+            while True:
+                k = src.find("\n", j)
+                k = n if k < 0 else k
+                if k == n or not src[i:k].rstrip().endswith("\\"):
+                    break
+                j = k + 1
+            out.append(re.sub(r"[^\n]", " ", src[i:k]))
+            i = k
         elif src[i] in "\"'":
             q, j = src[i], i + 1
             while j < n and src[j] != q:
@@ -98,6 +115,15 @@ class DriverShapeTest(unittest.TestCase):
         self.assertEqual([r[2].split("(")[0] for r in rows], ["int g", "int f"])
         self.assertEqual(rows[0][0], 208)  # int g's head through its '}'
         self.assertEqual(rows[1][0], 3)
+
+    def test_a_directive_before_the_first_brace_is_not_a_function_head(self):
+        body = "\n".join(f"  x += {i};" for i in range(10))
+        text = ("#include <vector>\n#if defined(__APPLE__)\n#define F(a) \\\n"
+                "  { a }\n#endif\nnamespace {\nint g(int x) {\n" + body +
+                "\n  return x;\n}\n}  // namespace\n")
+        rows = function_lengths(text)
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows],
+                         [(13, 7, "int g(int x)")])
 
     def test_no_driver_function_exceeds_the_limit(self):
         files = sorted(glob.glob(os.path.join(REPO, "compiler", "driver", "*.cc")))

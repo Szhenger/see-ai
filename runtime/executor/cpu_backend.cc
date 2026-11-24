@@ -230,6 +230,28 @@ class CpuBackend final : public ExecutorBackend {
   uint64_t relaxed_executions() const override { return relaxed_executions_; }
 
  private:
+  /// The GEMM family: f32, int8 and bf16 weights, the merge's accumulate.
+  [[nodiscard]] std::expected<void, std::string> ExecuteGemm(
+      const up::UpdateInstruction& ins);
+  /// The elementwise maps, the activations, fills, copies and the fused map.
+  [[nodiscard]] std::expected<void, std::string> ExecuteMap(
+      const up::UpdateInstruction& ins);
+  /// LayerNorm and RMSNorm, forward and backward.
+  [[nodiscard]] std::expected<void, std::string> ExecuteNorm(
+      const up::UpdateInstruction& ins);
+  /// The losses and their seeds' gradients.
+  [[nodiscard]] std::expected<void, std::string> ExecuteLoss(
+      const up::UpdateInstruction& ins);
+  /// The clips and the optimizer steps.
+  [[nodiscard]] std::expected<void, std::string> ExecuteOptimizer(
+      const up::UpdateInstruction& ins, const StepParams& params);
+  /// RoPE (the rotation and its table) and the embedding gather.
+  [[nodiscard]] std::expected<void, std::string> ExecutePosition(
+      const up::UpdateInstruction& ins);
+  /// The attention families, cached and tiled, and the segment starts.
+  [[nodiscard]] std::expected<void, std::string> ExecuteAttention(
+      const up::UpdateInstruction& ins);
+
   const float* ReadPtr(uint64_t ref) const {
     const uint64_t offset = up::RefOffset(ref);
     if (up::IsRodataRef(ref))
@@ -272,11 +294,9 @@ bool CpuBackendRelaxedIsExact() { return !SEEML_HAS_ACCELERATE; }
 
 namespace {
 
-std::expected<void, std::string> CpuBackend::Execute(
-    const up::UpdateInstruction& ins, const StepParams& params) {
+std::expected<void, std::string> CpuBackend::ExecuteGemm(
+    const up::UpdateInstruction& ins) {
   switch (static_cast<up::OpCode>(ins.opcode)) {
-    case up::OpCode::kNop:
-      break;
     case up::OpCode::kGemmNN:
 #if SEEML_HAS_ACCELERATE
       if (ins.flags & up::kFlagRelaxed) {
@@ -366,6 +386,27 @@ std::expected<void, std::string> CpuBackend::Execute(
                   policy_.gemm_tiles,
                   ColScaled(ins) ? ReadPtr(ins.in[3]) : nullptr);
       break;
+    case up::OpCode::kGemmNNBF16:
+      k::GemmNNBF16(
+          ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]), WritePtr(ins.in[2]),
+          ins.out[0], ins.out[1], ins.out[2],
+          ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3]) : nullptr,
+          up::EpilogueActOf(ins.flags), policy_.gemm_tiles);
+      break;
+    case up::OpCode::kGemmNTBF16:
+      k::GemmNTBF16(ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]),
+                    WritePtr(ins.in[2]), ins.out[0], ins.out[1], ins.out[2],
+                    policy_.gemm_tiles);
+      break;
+    default:
+      break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::ExecuteMap(
+    const up::UpdateInstruction& ins) {
+  switch (static_cast<up::OpCode>(ins.opcode)) {
     case up::OpCode::kAddEW:
       k::AddEW(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                ins.out[0]);
@@ -399,6 +440,43 @@ std::expected<void, std::string> CpuBackend::Execute(
       k::SiluBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
                  ins.out[0]);
       break;
+    case up::OpCode::kScale:
+      k::Scale(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), BitsToF32(ins.in[2]),
+               ins.out[0]);
+      break;
+    case up::OpCode::kReduceRows:
+      k::ReduceRows(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), ins.out[0],
+                    ins.out[1]);
+      break;
+    case up::OpCode::kFill:
+      k::Fill(WritePtr(ins.in[0]), BitsToF32(ins.in[1]), ins.out[0]);
+      break;
+    case up::OpCode::kCopy:
+      k::Copy(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), ins.out[0]);
+      break;
+    case up::OpCode::kAccumulate:
+      k::Accumulate(WritePtr(ins.in[0]), ReadPtr(ins.in[1]), ins.out[0]);
+      break;
+    case up::OpCode::kFusedMap: {
+      // in[1..2] are kNullRef when no stage names them; never dereferenced.
+      const float* others[3] = {
+          nullptr, ins.in[1] == up::kNullRef ? nullptr : ReadPtr(ins.in[1]),
+          ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2])};
+      const float imm[2] = {BitsToF32(ins.out[2]),
+                            BitsToF32(up::HighWord(ins.out[2]))};
+      k::FusedMap(ReadPtr(ins.in[0]), others, WritePtr(ins.in[3]), ins.out[0],
+                  ins.out[1], imm);
+      break;
+    }
+    default:
+      break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::ExecuteNorm(
+    const up::UpdateInstruction& ins) {
+  switch (static_cast<up::OpCode>(ins.opcode)) {
     case up::OpCode::kLayerNormFwd:
       k::LayerNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]),
                       ReadPtr(ins.in[2]), WritePtr(ins.in[3]),
@@ -412,37 +490,25 @@ std::expected<void, std::string> CpuBackend::Execute(
                       ReadPtr(ins.out[1]), WritePtr(ins.in[3]),
                       up::HighWord(ins.out[2]), up::LowWord(ins.out[2]));
       break;
-    case up::OpCode::kClipNorm: {
-      // CR1 #142 F09 / F13 / F18: the threshold is a finite positive float
-      // (the validator's rule, held here too), and a non-finite norm is a
-      // refusal with g untouched — the fused steps' verdict, in their words.
-      const float cap = BitsToF32(ins.in[1]);
-      if (!std::isfinite(cap) || !(cap > 0.0f))
-        return std::unexpected(kClipThresholdRefusal);
-      if (!k::ClipNorm(WritePtr(ins.in[0]), ins.out[0], cap))
-        return std::unexpected(kNonFiniteNormRefusal);
+    case up::OpCode::kRmsNormFwd:
+      k::RmsNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
+                    WritePtr(ins.in[3]), up::HighWord(ins.out[0]),
+                    up::LowWord(ins.out[0]), up::NormEpsOf(ins.imm));
       break;
-    }
-    case up::OpCode::kSqNormAccum:  // v24, #190
-      k::SqNormAccum(ReadPtr(ins.in[0]), ins.out[0], WritePtr(ins.in[1]));
+    case up::OpCode::kRmsNormBwd:
+      k::RmsNormBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), ReadPtr(ins.in[2]),
+                    ReadPtr(ins.out[0]), WritePtr(ins.in[3]),
+                    up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
-    case up::OpCode::kClipGlobal: {  // v24, #190: kClipNorm's verdicts
-      const float cap = BitsToF32(ins.in[2]);
-      if (!std::isfinite(cap) || !(cap > 0.0f))
-        return std::unexpected(kClipThresholdRefusal);
-      if (!k::ClipGlobal(WritePtr(ins.in[0]), ins.out[0], ReadPtr(ins.in[1]),
-                         cap))
-        return std::unexpected(kNonFiniteNormRefusal);
+    default:
       break;
-    }
-    case up::OpCode::kScale:
-      k::Scale(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), BitsToF32(ins.in[2]),
-               ins.out[0]);
-      break;
-    case up::OpCode::kReduceRows:
-      k::ReduceRows(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), ins.out[0],
-                    ins.out[1]);
-      break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::ExecuteLoss(
+    const up::UpdateInstruction& ins) {
+  switch (static_cast<up::OpCode>(ins.opcode)) {
     case up::OpCode::kSoftmaxXEntFwd:
       k::SoftmaxXEntFwd(ReadPtr(ins.in[0]),
                         reinterpret_cast<const int32_t*>(ReadPtr(ins.in[1])),
@@ -488,6 +554,38 @@ std::expected<void, std::string> CpuBackend::Execute(
                       up::HighWord(ins.out[0]), up::LowWord(ins.out[0]),
                       KlTemperatureOf(ins.out[1]), KlLossScaleOf(ins.out[1]));
       break;
+    default:
+      break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::ExecuteOptimizer(
+    const up::UpdateInstruction& ins, const StepParams& params) {
+  switch (static_cast<up::OpCode>(ins.opcode)) {
+    case up::OpCode::kClipNorm: {
+      // CR1 #142 F09 / F13 / F18: the threshold is a finite positive float
+      // (the validator's rule, held here too), and a non-finite norm is a
+      // refusal with g untouched — the fused steps' verdict, in their words.
+      const float cap = BitsToF32(ins.in[1]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
+      if (!k::ClipNorm(WritePtr(ins.in[0]), ins.out[0], cap))
+        return std::unexpected(kNonFiniteNormRefusal);
+      break;
+    }
+    case up::OpCode::kSqNormAccum:  // v24, #190
+      k::SqNormAccum(ReadPtr(ins.in[0]), ins.out[0], WritePtr(ins.in[1]));
+      break;
+    case up::OpCode::kClipGlobal: {  // v24, #190: kClipNorm's verdicts
+      const float cap = BitsToF32(ins.in[2]);
+      if (!std::isfinite(cap) || !(cap > 0.0f))
+        return std::unexpected(kClipThresholdRefusal);
+      if (!k::ClipGlobal(WritePtr(ins.in[0]), ins.out[0], ReadPtr(ins.in[1]),
+                         cap))
+        return std::unexpected(kNonFiniteNormRefusal);
+      break;
+    }
     // v12: out[1] is the fused clip threshold (0 = none). The one kernel
     // that can refuse: a non-finite gradient norm aborts the step with
     // the parameters and the moments untouched.
@@ -521,37 +619,15 @@ std::expected<void, std::string> CpuBackend::Execute(
           return std::unexpected(kNonFiniteMomentRefusal);
       }
       break;
-    case up::OpCode::kFill:
-      k::Fill(WritePtr(ins.in[0]), BitsToF32(ins.in[1]), ins.out[0]);
+    default:
       break;
-    case up::OpCode::kCopy:
-      k::Copy(ReadPtr(ins.in[0]), WritePtr(ins.in[1]), ins.out[0]);
-      break;
-    case up::OpCode::kAccumulate:
-      k::Accumulate(WritePtr(ins.in[0]), ReadPtr(ins.in[1]), ins.out[0]);
-      break;
-    case up::OpCode::kGemmNNBF16:
-      k::GemmNNBF16(
-          ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]), WritePtr(ins.in[2]),
-          ins.out[0], ins.out[1], ins.out[2],
-          ins.flags & up::kFlagEpilogueBias ? ReadPtr(ins.in[3]) : nullptr,
-          up::EpilogueActOf(ins.flags), policy_.gemm_tiles);
-      break;
-    case up::OpCode::kGemmNTBF16:
-      k::GemmNTBF16(ReadPtr(ins.in[0]), ReadPtrBF16(ins.in[1]),
-                    WritePtr(ins.in[2]), ins.out[0], ins.out[1], ins.out[2],
-                    policy_.gemm_tiles);
-      break;
-    case up::OpCode::kRmsNormFwd:
-      k::RmsNormFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), WritePtr(ins.in[2]),
-                    WritePtr(ins.in[3]), up::HighWord(ins.out[0]),
-                    up::LowWord(ins.out[0]), up::NormEpsOf(ins.imm));
-      break;
-    case up::OpCode::kRmsNormBwd:
-      k::RmsNormBwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), ReadPtr(ins.in[2]),
-                    ReadPtr(ins.out[0]), WritePtr(ins.in[3]),
-                    up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
-      break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::ExecutePosition(
+    const up::UpdateInstruction& ins) {
+  switch (static_cast<up::OpCode>(ins.opcode)) {
     // v12: in[2] names a kRopeTable result, or is kNullRef.
     case up::OpCode::kRopeFwd:
       k::RopeFwd(ReadPtr(ins.in[0]), WritePtr(ins.in[1]),
@@ -567,21 +643,24 @@ std::expected<void, std::string> CpuBackend::Execute(
                  BitsToF32(ins.out[2]),
                  ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2]));
       break;
-    case up::OpCode::kFusedMap: {
-      // in[1..2] are kNullRef when no stage names them; never dereferenced.
-      const float* others[3] = {
-          nullptr, ins.in[1] == up::kNullRef ? nullptr : ReadPtr(ins.in[1]),
-          ins.in[2] == up::kNullRef ? nullptr : ReadPtr(ins.in[2])};
-      const float imm[2] = {BitsToF32(ins.out[2]),
-                            BitsToF32(up::HighWord(ins.out[2]))};
-      k::FusedMap(ReadPtr(ins.in[0]), others, WritePtr(ins.in[3]), ins.out[0],
-                  ins.out[1], imm);
-      break;
-    }
     case up::OpCode::kRopeTable:
       k::RopeTable(WritePtr(ins.in[0]), up::HighWord(ins.out[0]),
                    up::LowWord(ins.out[0]), BitsToF32(ins.out[1]));
       break;
+    case up::OpCode::kEmbedFwd:
+      k::EmbedFwd(reinterpret_cast<const int32_t*>(ReadPtr(ins.in[0])),
+                  ReadPtr(ins.in[1]), WritePtr(ins.in[2]), ins.out[0],
+                  up::LowWord(ins.out[1]));
+      break;
+    default:
+      break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::ExecuteAttention(
+    const up::UpdateInstruction& ins) {
+  switch (static_cast<up::OpCode>(ins.opcode)) {
     case up::OpCode::kAttnFwd:
       k::AttnFwd(ReadPtr(ins.in[0]), ReadPtr(ins.in[1]), ReadPtr(ins.in[2]),
                  WritePtr(ins.in[3]), WritePtr(ins.out[0]),
@@ -662,11 +741,84 @@ std::expected<void, std::string> CpuBackend::Execute(
                        WritePtr(ins.out[1]), g.B, g.S, g.H, g.d);
       break;
     }
-    case up::OpCode::kEmbedFwd:
-      k::EmbedFwd(reinterpret_cast<const int32_t*>(ReadPtr(ins.in[0])),
-                  ReadPtr(ins.in[1]), WritePtr(ins.in[2]), ins.out[0],
-                  up::LowWord(ins.out[1]));
+    default:
       break;
+  }
+  return {};
+}
+
+std::expected<void, std::string> CpuBackend::Execute(
+    const up::UpdateInstruction& ins, const StepParams& params) {
+  // One function a kernel family (S8 #154): this switch names every
+  // opcode once and hands the instruction to its family's own.
+  switch (static_cast<up::OpCode>(ins.opcode)) {
+    case up::OpCode::kNop:
+      break;
+    case up::OpCode::kGemmNN:
+    case up::OpCode::kGemmNT:
+    case up::OpCode::kGemmTN:
+    case up::OpCode::kGemmAccNN:
+    case up::OpCode::kGemmNNQ8:
+    case up::OpCode::kGemmNTQ8:
+    case up::OpCode::kGemmNNBF16:
+    case up::OpCode::kGemmNTBF16:
+      return ExecuteGemm(ins);
+    case up::OpCode::kAddEW:
+    case up::OpCode::kMulEW:
+    case up::OpCode::kAddBias:
+    case up::OpCode::kReluFwd:
+    case up::OpCode::kReluBwd:
+    case up::OpCode::kGeluFwd:
+    case up::OpCode::kGeluBwd:
+    case up::OpCode::kSiluFwd:
+    case up::OpCode::kSiluBwd:
+    case up::OpCode::kScale:
+    case up::OpCode::kReduceRows:
+    case up::OpCode::kFill:
+    case up::OpCode::kCopy:
+    case up::OpCode::kAccumulate:
+    case up::OpCode::kFusedMap:
+      return ExecuteMap(ins);
+    case up::OpCode::kLayerNormFwd:
+    case up::OpCode::kLayerNormBwd:
+    case up::OpCode::kRmsNormFwd:
+    case up::OpCode::kRmsNormBwd:
+      return ExecuteNorm(ins);
+    case up::OpCode::kSoftmaxXEntFwd:
+    case up::OpCode::kSoftmaxXEntBwd:
+    case up::OpCode::kSoftmaxXEntMaskedFwd:
+    case up::OpCode::kSoftmaxXEntMaskedBwd:
+    case up::OpCode::kMseFwd:
+    case up::OpCode::kMseBwd:
+    case up::OpCode::kKLDistillFwd:
+    case up::OpCode::kKLDistillBwd:
+      return ExecuteLoss(ins);
+    case up::OpCode::kClipNorm:
+    case up::OpCode::kSqNormAccum:
+    case up::OpCode::kClipGlobal:
+    case up::OpCode::kSgdStep:
+    case up::OpCode::kAdamWStep:
+    case up::OpCode::kAdamW8Step:
+      return ExecuteOptimizer(ins, params);
+    case up::OpCode::kRopeFwd:
+    case up::OpCode::kRopeBwd:
+    case up::OpCode::kRopeTable:
+    case up::OpCode::kEmbedFwd:
+      return ExecutePosition(ins);
+    case up::OpCode::kAttnFwd:
+    case up::OpCode::kSegmentStarts:
+    case up::OpCode::kAttnFwdSeg:
+    case up::OpCode::kAttnDP:
+    case up::OpCode::kAttnDV:
+    case up::OpCode::kSoftmaxRowsBwd:
+    case up::OpCode::kAttnDQ:
+    case up::OpCode::kAttnDK:
+    case up::OpCode::kAttnFwdTiled:
+    case up::OpCode::kAttnFwdTiledSeg:
+    case up::OpCode::kAttnDQTiled:
+    case up::OpCode::kAttnDKTiled:
+    case up::OpCode::kAttnDVTiled:
+      return ExecuteAttention(ins);
   }
   return {};
 }

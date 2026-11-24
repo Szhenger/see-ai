@@ -406,6 +406,22 @@ class UpdateEngine {
   /// The training loop itself; Train wraps it with the diagnostics contract.
   [[nodiscard]] std::expected<TrainReport, std::string> TrainImpl(
       Dataset& data, uint64_t steps, const TrainOptions& options);
+  /// TrainImpl's phases, in the order it runs them (S8 #154). Whether a
+  /// checkpoint was resumed; the step count of this call, with the run's
+  /// horizon decided; the gate's baseline and the first best state; the
+  /// steps, with their periodic evaluations and checkpoints; the bracketing
+  /// evaluation and the best-state restore.
+  [[nodiscard]] std::expected<bool, std::string> ResumeIfAsked(
+      Dataset& data, const TrainOptions& options, bool explicit_steps);
+  [[nodiscard]] std::expected<uint64_t, std::string> DecideStepsAndHorizon(
+      uint64_t steps, bool explicit_steps, const TrainOptions& options);
+  [[nodiscard]] std::expected<void, std::string> OpenValidation(
+      const TrainOptions& options, bool track_best, TrainReport* report);
+  [[nodiscard]] std::expected<void, std::string> RunSteps(
+      Dataset& data, uint64_t steps, const TrainOptions& options,
+      bool track_best, bool from_checkpoint, TrainReport* report);
+  [[nodiscard]] std::expected<void, std::string> CloseValidation(
+      const TrainOptions& options, bool track_best, TrainReport* report);
   [[nodiscard]] std::expected<void, std::string> ValidateDataset(
       Dataset& data) const;
   /// Dispatches [begin, end) of `program` through the backend and flushes

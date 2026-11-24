@@ -590,28 +590,8 @@ std::expected<TrainReport, std::string> UpdateEngine::Train(
   return report;
 }
 
-std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
-    Dataset& data, uint64_t steps, const TrainOptions& options) {
-  if (!arena_) return diag::executing::Error("no plan loaded");
-  // An adapter-only plan (v21) reads its frozen weights from the source
-  // model file in the train program too: unbound, the backends would read
-  // through no mapping (the CPU) or the arena standing in for the source
-  // buffer (Metal). Refused the way Evaluate refuses, before anything runs.
-  if (train_reads_source_ && !source_.data)
-    return diag::executing::Error(
-        "this plan reads its frozen weights from the source model file in "
-        "the train program (an adapter-only plan) — bind it with "
-        "BindSourceModel before training");
-  const bool explicit_steps = steps != 0;
-  // Every evaluation of this call is clocked, a resume's re-measurements
-  // included.
-  eval_seconds_ = 0.0;
-  resume_evaluations_ = 0;
-  if (auto r = ValidateDataset(data); !r) return std::unexpected(r.error());
-  if (options.validation)
-    if (auto r = ValidateDataset(*options.validation); !r)
-      return std::unexpected(r.error());
-
+std::expected<bool, std::string> UpdateEngine::ResumeIfAsked(
+    Dataset& data, const TrainOptions& options, bool explicit_steps) {
   // --resume is strict (CR4 #221). No file at the path is "nothing to
   // resume" and a fresh run, said so. A file that IS there and cannot be
   // resumed — unreadable, corrupt, another plan's, another run's — fails the
@@ -651,7 +631,11 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       from_checkpoint = true;
     }
   }
+  return from_checkpoint;
+}
 
+std::expected<uint64_t, std::string> UpdateEngine::DecideStepsAndHorizon(
+    uint64_t steps, bool explicit_steps, const TrainOptions& options) {
   // The step count and the schedule horizon, decided AFTER the checkpoint
   // is in (E8, #91): until then a resume could not know how much of the
   // run was left, so it asked for a full default budget — all of it past
@@ -694,78 +678,69 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         " steps) does not exceed the plan's compiled warmup (" +
         std::to_string(header_.warmup_steps) +
         " steps): the run would end inside the ramp");
+  return steps;
+}
 
-  // The run binding every checkpoint of this run will carry.
-  binding_ = BindingOf(data, options.validation);
-
-  // Periodic evaluation (E9): "auto" resolves against the RUN — its
-  // horizon, already decided above — never against this call's step count,
-  // so a resumed run evaluates on the cadence the uninterrupted one did.
-  const uint64_t eval_every =
-      !options.validation ? 0
-      : options.eval_every == TrainOptions::kEvalEveryAuto
-          ? std::max<uint64_t>(1, horizon_ / 10)
-          : options.eval_every;
-  const bool track_best = options.validation && eval_every > 0;
-
-  TrainReport report;
-  report.eval_every = eval_every;
-  report.patience = track_best ? options.patience : 0;
-  report.resumed_step = from_checkpoint ? step_ : 0;
-  report.resume_evaluations = resume_evaluations_;
-  if (options.validation) {
-    report.has_validation = true;
-    if (resumed && gate_.has_val_initial) {
-      // The gate's "before" is the SOURCE model's score — not the resumed
-      // adapter's, which would be the baseline of an evaluation made here
-      // and would reject an update that merely held steady over the resumed
-      // segment. A resume from a checkpoint has just re-measured this number
-      // on the source state and found the stored bits (CR4 #221); a second
-      // Train call in one process carries the one its first call measured.
-      report.val_initial_loss = gate_.val_initial_loss;
-      report.has_val_accuracy = gate_.val_initial_has_accuracy;
-      report.val_initial_accuracy = gate_.val_initial_accuracy;
-    } else {
-      auto v = EvaluateMetrics(*options.validation);
-      if (!v) return std::unexpected(v.error());
-      report.val_initial_loss = v->loss;
-      report.has_val_accuracy = v->has_accuracy;
-      report.val_initial_accuracy = v->accuracy;
-      if (resumed)
-        std::fprintf(stderr,
-                     "seeml-update: note — the run so far measured no "
-                     "source-model score; the gate's baseline is the "
-                     "current state's loss %.6f\n",
-                     v->loss);
-      gate_.has_val_initial = true;
-      gate_.val_initial_loss = v->loss;
-      gate_.val_initial_has_accuracy = v->has_accuracy;
-      gate_.val_initial_accuracy = v->accuracy;
-    }
-    if (track_best) {
-      report.best_tracked = true;
-      // The bar to beat is the score of the state the run starts from:
-      // the source model's on a fresh run, the checkpoint's best on a
-      // resume. Until something beats it, the best state IS this one —
-      // labelled with ITS OWN score. A resume whose checkpoint carries the
-      // source model's score but no best (the first run did not track)
-      // starts from the resumed segment, not the source: scoring it as
-      // the source would let any later state between the two displace it.
-      if (!gate_.has_best) {
-        float start_loss = report.val_initial_loss;
-        float start_accuracy = report.val_initial_accuracy;
-        if (resumed) {
-          auto v = EvaluateMetrics(*options.validation);
-          if (!v) return std::unexpected(v.error());
-          start_loss = v->loss;
-          start_accuracy = v->accuracy;
-        }
-        gate_.Snapshot(arena_, header_.persistent_size, step_, start_loss,
-                       start_accuracy);
+std::expected<void, std::string> UpdateEngine::OpenValidation(
+    const TrainOptions& options, bool track_best, TrainReport* report) {
+  const bool resumed = step_ > 0;
+  report->has_validation = true;
+  if (resumed && gate_.has_val_initial) {
+    // The gate's "before" is the SOURCE model's score — not the resumed
+    // adapter's, which would be the baseline of an evaluation made here
+    // and would reject an update that merely held steady over the resumed
+    // segment. A resume from a checkpoint has just re-measured this number
+    // on the source state and found the stored bits (CR4 #221); a second
+    // Train call in one process carries the one its first call measured.
+    report->val_initial_loss = gate_.val_initial_loss;
+    report->has_val_accuracy = gate_.val_initial_has_accuracy;
+    report->val_initial_accuracy = gate_.val_initial_accuracy;
+  } else {
+    auto v = EvaluateMetrics(*options.validation);
+    if (!v) return std::unexpected(v.error());
+    report->val_initial_loss = v->loss;
+    report->has_val_accuracy = v->has_accuracy;
+    report->val_initial_accuracy = v->accuracy;
+    if (resumed)
+      std::fprintf(stderr,
+                   "seeml-update: note — the run so far measured no "
+                   "source-model score; the gate's baseline is the "
+                   "current state's loss %.6f\n",
+                   v->loss);
+    gate_.has_val_initial = true;
+    gate_.val_initial_loss = v->loss;
+    gate_.val_initial_has_accuracy = v->has_accuracy;
+    gate_.val_initial_accuracy = v->accuracy;
+  }
+  if (track_best) {
+    report->best_tracked = true;
+    // The bar to beat is the score of the state the run starts from:
+    // the source model's on a fresh run, the checkpoint's best on a
+    // resume. Until something beats it, the best state IS this one —
+    // labelled with ITS OWN score. A resume whose checkpoint carries the
+    // source model's score but no best (the first run did not track)
+    // starts from the resumed segment, not the source: scoring it as
+    // the source would let any later state between the two displace it.
+    if (!gate_.has_best) {
+      float start_loss = report->val_initial_loss;
+      float start_accuracy = report->val_initial_accuracy;
+      if (resumed) {
+        auto v = EvaluateMetrics(*options.validation);
+        if (!v) return std::unexpected(v.error());
+        start_loss = v->loss;
+        start_accuracy = v->accuracy;
       }
+      gate_.Snapshot(arena_, header_.persistent_size, step_, start_loss,
+                     start_accuracy);
     }
   }
+  return {};
+}
 
+std::expected<void, std::string> UpdateEngine::RunSteps(
+    Dataset& data, uint64_t steps, const TrainOptions& options, bool track_best,
+    bool from_checkpoint, TrainReport* report) {
+  const uint64_t eval_every = report->eval_every;
   float* input_slot = WritePtr(header_.input_ref);
   uint8_t* label_slot =
       header_.label_kind == 0
@@ -781,7 +756,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   // weighs the whole run, and a finished run resumed weighs what it weighed.
   // Any other call starts them, sized by its own step count, as before.
   if (!(from_checkpoint && windows_.live())) windows_.Start(steps);
-  if (options.record_loss_curve) report.loss_curve.reserve(steps);
+  if (options.record_loss_curve) report->loss_curve.reserve(steps);
 
   // N12 (2026-11-16 review, D4): the checkpoint of the evaluation that
   // spent the patience is written before the loop below breaks, so a resume
@@ -792,7 +767,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   // the uninterrupted run never saw.
   if (track_best && options.patience > 0 &&
       gate_.stale_evals >= options.patience) {
-    report.stopped_by_patience = true;
+    report->stopped_by_patience = true;
     steps = 0;
   }
   const uint64_t start = step_;
@@ -815,7 +790,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
                          header_.label_kind == 0 ? 0 : header_.label_bytes);
     for (uint64_t s = start; s < start + steps; ++s) {
       if (options.should_stop && options.should_stop()) {
-        report.stopped_early = true;
+        report->stopped_early = true;
         // #202 item 1: a stop (the host's SIGINT/SIGTERM) leaves a
         // checkpoint of the state it stopped at, so a resume finishes the
         // run the uninterrupted one ran. Written HERE, at the step boundary
@@ -834,11 +809,11 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
             DurableWriteStats written;
             if (auto r = SaveCheckpoint(options.checkpoint_path, &written); !r)
               return std::unexpected(r.error());
-            ++report.checkpoints;
-            report.checkpoint_bytes += written.bytes;
-            report.checkpoint_fsyncs += written.fsyncs;
+            ++report->checkpoints;
+            report->checkpoint_bytes += written.bytes;
+            report->checkpoint_fsyncs += written.fsyncs;
           }
-          report.stop_checkpointed = executed > 0 || from_checkpoint;
+          report->stop_checkpointed = executed > 0 || from_checkpoint;
         }
         break;
       }
@@ -880,7 +855,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         return diag::executing::Error("loss became non-finite at step " +
                                       std::to_string(step_) +
                                       " — aborting the update");
-      if (options.record_loss_curve) report.loss_curve.push_back(loss);
+      if (options.record_loss_curve) report->loss_curve.push_back(loss);
       windows_.Observe(loss);
       if (options.log_every && (s - start) % options.log_every == 0)
         std::fprintf(stderr, "seeml-update: step %llu  loss %.6f\n",
@@ -897,7 +872,7 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
       if (track_best && step_ % eval_every == 0 && s + 1 < start + steps) {
         auto v = EvaluateMetrics(*options.validation);
         if (!v) return std::unexpected(v.error());
-        ++report.evaluations;
+        ++report->evaluations;
         out_of_patience = gate_.Observe(arena_, header_.persistent_size, step_,
                                         v->loss, v->accuracy, options.patience);
         if (options.log_every)
@@ -913,18 +888,107 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
         DurableWriteStats written;
         if (auto r = SaveCheckpoint(options.checkpoint_path, &written); !r)
           return std::unexpected(r.error());
-        ++report.checkpoints;
-        report.checkpoint_bytes += written.bytes;
-        report.checkpoint_fsyncs += written.fsyncs;
+        ++report->checkpoints;
+        report->checkpoint_bytes += written.bytes;
+        report->checkpoint_fsyncs += written.fsyncs;
       }
       if (out_of_patience) {
-        report.stopped_by_patience = true;
+        report->stopped_by_patience = true;
         break;
       }
     }
   }
+  report->steps = executed;
+  report->step_seconds = step_seconds;
+  return {};
+}
 
-  report.steps = executed;
+std::expected<void, std::string> UpdateEngine::CloseValidation(
+    const TrainOptions& options, bool track_best, TrainReport* report) {
+  auto v = EvaluateMetrics(*options.validation);
+  if (!v) return std::unexpected(v.error());
+  report->val_last_loss = v->loss;
+  report->val_last_accuracy = v->accuracy;
+  if (track_best) {
+    if (v->loss < gate_.best_loss)
+      gate_.Snapshot(arena_, header_.persistent_size, step_, v->loss,
+                     v->accuracy);
+    // Leave the best evaluated state in the arena: it is what RunMerge
+    // and CommitToModel will ship. A checkpoint written after this
+    // carries it as both payloads.
+    if (gate_.RestoreBest(arena_, step_)) {
+      if (options.log_every)
+        std::fprintf(stderr,
+                     "seeml-update: restored the best state (step %llu, "
+                     "validation loss %.6f); the last state (step %llu) "
+                     "scored %.6f\n",
+                     static_cast<unsigned long long>(gate_.best_step),
+                     gate_.best_loss, static_cast<unsigned long long>(step_),
+                     v->loss);
+    }
+    report->best_step = gate_.best_step;
+    report->val_final_loss = gate_.best_loss;
+    report->val_final_accuracy = gate_.best_accuracy;
+  } else {
+    report->val_final_loss = v->loss;
+    report->val_final_accuracy = v->accuracy;
+  }
+  return {};
+}
+
+std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
+    Dataset& data, uint64_t steps, const TrainOptions& options) {
+  if (!arena_) return diag::executing::Error("no plan loaded");
+  // An adapter-only plan (v21) reads its frozen weights from the source
+  // model file in the train program too: unbound, the backends would read
+  // through no mapping (the CPU) or the arena standing in for the source
+  // buffer (Metal). Refused the way Evaluate refuses, before anything runs.
+  if (train_reads_source_ && !source_.data)
+    return diag::executing::Error(
+        "this plan reads its frozen weights from the source model file in "
+        "the train program (an adapter-only plan) — bind it with "
+        "BindSourceModel before training");
+  const bool explicit_steps = steps != 0;
+  // Every evaluation of this call is clocked, a resume's re-measurements
+  // included.
+  eval_seconds_ = 0.0;
+  resume_evaluations_ = 0;
+  if (auto r = ValidateDataset(data); !r) return std::unexpected(r.error());
+  if (options.validation)
+    if (auto r = ValidateDataset(*options.validation); !r)
+      return std::unexpected(r.error());
+
+  const auto from_checkpoint = ResumeIfAsked(data, options, explicit_steps);
+  if (!from_checkpoint) return std::unexpected(from_checkpoint.error());
+  const auto decided = DecideStepsAndHorizon(steps, explicit_steps, options);
+  if (!decided) return std::unexpected(decided.error());
+  steps = *decided;
+
+  // The run binding every checkpoint of this run will carry.
+  binding_ = BindingOf(data, options.validation);
+
+  // Periodic evaluation (E9): "auto" resolves against the RUN — its
+  // horizon, already decided above — never against this call's step count,
+  // so a resumed run evaluates on the cadence the uninterrupted one did.
+  const uint64_t eval_every =
+      !options.validation ? 0
+      : options.eval_every == TrainOptions::kEvalEveryAuto
+          ? std::max<uint64_t>(1, horizon_ / 10)
+          : options.eval_every;
+  const bool track_best = options.validation && eval_every > 0;
+
+  TrainReport report;
+  report.eval_every = eval_every;
+  report.patience = track_best ? options.patience : 0;
+  report.resumed_step = *from_checkpoint ? step_ : 0;
+  report.resume_evaluations = resume_evaluations_;
+  if (options.validation)
+    if (auto r = OpenValidation(options, track_best, &report); !r)
+      return std::unexpected(r.error());
+  if (auto r =
+          RunSteps(data, steps, options, track_best, *from_checkpoint, &report);
+      !r)
+    return std::unexpected(r.error());
   report.initial_avg_loss = windows_.FirstMean();
   report.final_avg_loss = windows_.LastMean();
 
@@ -933,38 +997,10 @@ std::expected<TrainReport, std::string> UpdateEngine::TrainImpl(
   // bracketing evaluation would cost a validation pass for a verdict no one
   // reads — and its best-state restore would leave the arena holding a state
   // other than the one checkpointed.
-  if (options.validation && !report.stopped_early) {
-    auto v = EvaluateMetrics(*options.validation);
-    if (!v) return std::unexpected(v.error());
-    report.val_last_loss = v->loss;
-    report.val_last_accuracy = v->accuracy;
-    if (track_best) {
-      if (v->loss < gate_.best_loss)
-        gate_.Snapshot(arena_, header_.persistent_size, step_, v->loss,
-                       v->accuracy);
-      // Leave the best evaluated state in the arena: it is what RunMerge
-      // and CommitToModel will ship. A checkpoint written after this
-      // carries it as both payloads.
-      if (gate_.RestoreBest(arena_, step_)) {
-        if (options.log_every)
-          std::fprintf(stderr,
-                       "seeml-update: restored the best state (step %llu, "
-                       "validation loss %.6f); the last state (step %llu) "
-                       "scored %.6f\n",
-                       static_cast<unsigned long long>(gate_.best_step),
-                       gate_.best_loss, static_cast<unsigned long long>(step_),
-                       v->loss);
-      }
-      report.best_step = gate_.best_step;
-      report.val_final_loss = gate_.best_loss;
-      report.val_final_accuracy = gate_.best_accuracy;
-    } else {
-      report.val_final_loss = v->loss;
-      report.val_final_accuracy = v->accuracy;
-    }
-  }
+  if (options.validation && !report.stopped_early)
+    if (auto r = CloseValidation(options, track_best, &report); !r)
+      return std::unexpected(r.error());
   report.eval_seconds = eval_seconds_;
-  report.step_seconds = step_seconds;
   return report;
 }
 
