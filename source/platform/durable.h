@@ -121,6 +121,24 @@ inline void RemoveFile(const std::string& path) {
 #endif
 }
 
+/// Creates (or truncates) `path` as a stdio stream for writing; nullptr on
+/// failure. fopen(path, "w") asks the OS for mode 0666 and leaves the
+/// result to the process's umask — group- and world-writable under a
+/// permissive one (CWE-732; CodeQL cpp/world-writable-file-creation). This
+/// states the mode CreateForWrite states, 0644, and the umask can only
+/// narrow it. Bytes are written as given (binary) on every platform.
+[[nodiscard]] inline std::FILE* OpenStreamForWrite(const std::string& path) {
+#ifndef _WIN32
+  const FileHandle fd = CreateForWrite(path);
+  if (fd == kNoFile) return nullptr;
+  std::FILE* f = ::fdopen(static_cast<int>(fd), "wb");
+  if (f == nullptr) ::close(static_cast<int>(fd));
+  return f;
+#else
+  return std::fopen(path.c_str(), "wb");
+#endif
+}
+
 /// SyncFile for a stdio stream (already fflush'ed by the caller).
 [[nodiscard]] inline bool SyncStream(std::FILE* f) {
 #ifndef _WIN32

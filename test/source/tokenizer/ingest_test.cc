@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "runtime/pipeline/dataset.h"
+#include "source/platform/durable.h"
 #include "source/tokenizer/byte_level_bpe.h"
 #include "source/tokenizer/text_ingest.h"
 #include "test/framework/seetest.h"
@@ -201,7 +202,7 @@ TEST(Ingest, ThePipelineDropsJoinsCutsAndCountsStraddles) {
   seeml::testing::ScopedTempDir dir;
   const std::string path = dir.File("corpus.sds");
   {
-    std::FILE* f = std::fopen(path.c_str(), "wb");
+    std::FILE* f = seeml::platform::OpenStreamForWrite(path);
     ASSERT_TRUE(f != nullptr);
     std::fwrite(r->sds.data(), 1, r->sds.size(), f);
     std::fclose(f);

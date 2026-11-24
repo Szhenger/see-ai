@@ -164,6 +164,15 @@ too; its command-line errors are right, its run-time failures are not yet 1.
   of `source/contract/bounds.h` (`MulOk`, `RangeOk`) — the one way bounds
   math is written, on both planes.
 - The runtime's working memory is one arena, sized by the compiler.
+- **No file is created with `fopen`.** `fopen(path, "w")` asks for mode
+  0666 and leaves the rest to the umask; the platform seam
+  (`source/platform/durable.h`: `CreateForWrite`, or `OpenStreamForWrite`
+  for a stdio stream) states the mode — 0644, narrowed by the umask —
+  and `test/tool/file_mode_test.py` holds the tree to having no creating
+  `fopen`. Not yet uniform: eight `std::ofstream` sites (the emitter's
+  package files, `SaveSds`, the in-place edit's sidecar, the staged
+  corpus and `--dump-sir`) create files the way `fopen` did; new code
+  uses the seam.
 - `source/` is what both halves share and neither owns: the compiler and
   the runtime include it and never include each other. The on-disk structs
   there are the ABI; `tool/seeml/abi.json` is generated from them and CI
