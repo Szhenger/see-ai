@@ -56,6 +56,7 @@ test/
     driver_shape_test.py      the driver contains orchestration only: no function in compiler/driver/ is longer than 150 lines
     energy_test.py            tool/seeml/energy.py: the energy meter never raises; the per-step regression is the step time's
     export_model_test.py      tool/export_model.py: the streaming writers against the original per-row and whole-blob algorithms, byte for byte
+    file_mode_test.py         no file is created with fopen: the platform seam states the mode (CWE-732)
     formats_test.py           the byte seam between the planes: formats.py against abi.json, seeml-abi, the golden fixtures, the two plan decoders
     frontier_exec_test.py     tool/frontier_exec.py, the reference executor: on its own (finite differences), then differentially against the C++ runtime
     frontier_run_test.py      tool/frontier_run.py, the frontier harness: the adapted-set rule, the parity checks, the split rule, the report

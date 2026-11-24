@@ -35,6 +35,7 @@
 #include "source/identity/hash.h"
 #include "source/language/smf_preamble.h"
 #include "source/parallel/parallel_for.h"
+#include "source/platform/durable.h"
 #include "source/recipe/recipe.h"
 #include "source/recipe/run_flags.h"
 #include "source/statistics/screens.h"
@@ -934,7 +935,7 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
                                 const seeml::update_rt::TrainReport* report) {
   bool outputs_ok = true;
   if (!loss_log.empty()) {
-    std::FILE* f = std::fopen(loss_log.c_str(), "w");
+    std::FILE* f = seeml::platform::OpenStreamForWrite(loss_log);
     if (!f) {
       std::fprintf(stderr, "seeml-update: cannot write --loss-log '%s'\n",
                    loss_log.c_str());
@@ -1023,7 +1024,7 @@ struct ReportContext {
   // Staged and renamed into place, every write checked: a truncated
   // report under the real name is worse than none (CR4 #145 F66).
   const std::string staged = report_path + ".tmp";
-  std::FILE* f = std::fopen(staged.c_str(), "w");
+  std::FILE* f = seeml::platform::OpenStreamForWrite(staged);
   if (!f) {
     std::fprintf(stderr, "seeml-update: cannot write --report '%s'\n",
                  report_path.c_str());

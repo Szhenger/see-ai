@@ -35,6 +35,7 @@
 // point and asserts what they reach (the counters of fuzz_reach.h).
 // =============================================================================
 
+#include "source/platform/durable.h"
 #include "test/fuzz/fuzz_reach.h"
 #include "test/fuzz/plan_mutate.h"
 
@@ -104,7 +105,7 @@ std::string TempPath(const char* tag) {
 }
 
 void WriteBytes(const std::string& path, Bytes bytes) {
-  std::FILE* f = std::fopen(path.c_str(), "wb");
+  std::FILE* f = seeml::platform::OpenStreamForWrite(path);
   if (!f) return;
   if (!bytes.empty()) std::fwrite(bytes.data(), 1, bytes.size(), f);
   std::fclose(f);

@@ -117,6 +117,7 @@
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "source/contract/split.h"
 #include "source/identity/version.h"
+#include "source/platform/durable.h"
 #include "source/recipe/recipe.h"
 #include "source/recipe/recipe_file.h"
 
@@ -929,7 +930,7 @@ void PrintReportLists(std::FILE* f, const ReportContext& context) {
 /// --report: the machine-readable compile report.
 [[nodiscard]] std::optional<int> WriteReport(const ReportContext& context) {
   const std::string* report_path = &*context.args.report_path;
-  std::FILE* f = std::fopen(report_path->c_str(), "w");
+  std::FILE* f = seeml::platform::OpenStreamForWrite(*report_path);
   if (!f) return Fail("cannot write report '" + *report_path + "'");
   PrintReportScalars(f, context);
   PrintReportLists(f, context);

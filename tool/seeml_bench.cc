@@ -99,6 +99,7 @@
 #include "source/identity/version.h"
 #include "source/parallel/parallel_for.h"
 #include "source/plan/update_types.h"
+#include "source/platform/durable.h"
 #include "source/statistics/plan_work.h"
 #include "source/platform/memory.h"
 #include "source/statistics/screens.h"
@@ -394,7 +395,7 @@ AttnCell SweepTiled(const std::vector<float>& q, const std::vector<float>& k,
   // is (CR4 #145 F61): a truncated sweep must not stand under the name a
   // reader trusts.
   const std::string tmp = out_path + ".tmp";
-  std::FILE* f = std::fopen(tmp.c_str(), "w");
+  std::FILE* f = seeml::platform::OpenStreamForWrite(tmp);
   if (!f) {
     std::fprintf(stderr, "seeml-bench: cannot write '%s'\n", tmp.c_str());
     return 1;
@@ -1129,7 +1130,7 @@ int main(int argc, char** argv) {
   // checkpoint temp), so both are cleaned up on any early return.
   const std::string tmp_path = bench.out_path + ".tmp";
   Staging staging{tmp_path, "", nullptr, false};
-  FILE* out = std::fopen(tmp_path.c_str(), "w");
+  FILE* out = seeml::platform::OpenStreamForWrite(tmp_path);
   if (!out) return Fail("cannot open '" + tmp_path + "' for writing");
   staging.file = out;
   // Schema 2 adds the external-standard fields (see the header comment);

@@ -164,6 +164,11 @@ too; its command-line errors are right, its run-time failures are not yet 1.
   of `source/contract/bounds.h` (`MulOk`, `RangeOk`) — the one way bounds
   math is written, on both planes.
 - The runtime's working memory is one arena, sized by the compiler.
+- **A file is created through the platform seam**
+  (`source/platform/durable.h`: `CreateForWrite`, or `OpenStreamForWrite`
+  for a stdio stream), which states its mode — 0644, narrowed by the
+  umask. `fopen(path, "w")` asks for 0666 and leaves the rest to the
+  umask; `test/tool/file_mode_test.py` holds the tree to having none.
 - `source/` is what both halves share and neither owns: the compiler and
   the runtime include it and never include each other. The on-disk structs
   there are the ABI; `tool/seeml/abi.json` is generated from them and CI
