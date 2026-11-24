@@ -2,12 +2,15 @@
 a .jsonl as well as a pre-tokenized .sds, ingested with the model's own
 tokenizer section. The acceptance: the committed model of a run on the raw
 text is byte-identical to the committed model of the same package run on
-the canonical SDS the compiler wrote from that text (pkg/corpus.sds).
+the canonical SDS the compiler wrote from that text (pkg/corpus.sds) —
+also for a corpus with duplicate windows and for a dirty .txt, which both
+sides sanitize and deduplicate by the same vendored stages (#222).
 """
 import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -32,6 +35,20 @@ TEXT = " ".join(
     f"the {w} sat by the {v} and the {w} ate {n} plums."
     for n, (w, v) in enumerate([("cat", "door"), ("dog", "tree"),
                                 ("owl", "barn"), ("fox", "gate")] * 40))
+# TEXT with what the sanitizer removes (#222): a control byte, a bidi
+# override (U+202E) and two bytes of invalid UTF-8.
+DIRTY = (TEXT[:100].encode() + b"\x01" + TEXT[100:300].encode() +
+         "\u202e".encode() + TEXT[300:500].encode() + b"\xff\xfe" +
+         TEXT[500:].encode())
+
+
+def records(path):
+    """The records of an unmasked token SDS, each as its bytes."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    _, ver, n, seq, _, _, _ = struct.unpack_from("<IIQQIIQ", raw, 0)
+    head, width = (64 if ver >= 3 else 40), (seq + 1) * 4
+    return [raw[head + i * width:head + (i + 1) * width] for i in range(n)]
 
 
 def sha256(path):
@@ -90,6 +107,9 @@ class RunnerRawTextTest(unittest.TestCase):
         cls.txt = os.path.join(cls.dir, "story.txt")
         with open(cls.txt, "w") as f:
             f.write(TEXT)
+        cls.dirty = os.path.join(cls.dir, "dirty.txt")
+        with open(cls.dirty, "wb") as f:
+            f.write(DIRTY)
         cls.jsonl = os.path.join(cls.dir, "docs.jsonl")
         with open(cls.jsonl, "w") as f:
             for i in range(0, len(TEXT), 120):
@@ -148,8 +168,81 @@ class RunnerRawTextTest(unittest.TestCase):
         self.assertFalse(os.path.exists(corpus + ".tmp"))
         self.assertTrue(os.path.isdir(corpus))
 
+    def manifest(self, pkg):
+        with open(os.path.join(pkg, "corpus_manifest.json")) as f:
+            return json.load(f)
+
     def test_a_txt_trains_as_its_canonical_sds(self):
         self.assert_text_run_is_the_sds_run("txt", self.txt)
+        # The story repeats itself: windows of five ids recur, and both
+        # sides drop the same ones (#222).
+        man = self.manifest(os.path.join(self.dir, "txt"))
+        self.assertGreater(man["dropped_duplicate_windows"], 0)
+        recs = records(os.path.join(self.dir, "txt", "corpus.sds"))
+        self.assertEqual(len(set(recs)), len(recs))
+
+    def test_a_dirty_txt_trains_as_the_clean_texts_corpus(self):
+        # #222: a .txt is sanitized as a .jsonl is — on the build host and,
+        # by the same vendored function, on the device. The dirty text's
+        # canonical corpus is the clean text's, byte for byte, and the
+        # device's run on either text equals the run on that corpus.
+        pkg = os.path.join(self.dir, "dirty")
+        self.assert_text_run_is_the_sds_run("dirty", self.dirty)
+        clean = os.path.join(self.dir, "clean_ref")
+        r = subprocess.run(
+            [COMPILER, "--source", self.model, "--out", clean, "--data",
+             self.txt, "--data-batch", "16", "--steps", "30", "--no-embed"],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(sha256(os.path.join(pkg, "corpus.sds")),
+                         sha256(os.path.join(clean, "corpus.sds")))
+        man = self.manifest(pkg)
+        self.assertEqual((man["invalid_utf8_bytes"], man["control_chars"],
+                          man["bidi_controls"]), (2, 1, 1))
+        by_sds = os.path.join(self.dir, "dirty_sds.smf")
+        by_clean = os.path.join(self.dir, "dirty_clean_text.smf")
+        r = self.update(pkg, self.txt, by_clean)
+        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
+        self.assertEqual(sha256(by_clean), sha256(by_sds))
+
+    def test_a_given_sds_with_twins_is_compiled_as_is_and_states_them(self):
+        # #222: a given SDS is pinned by its hash, never rewritten; with
+        # --val-frac the held-out records with a byte-identical twin in
+        # training are counted on the screen and in the report.
+        src = os.path.join(self.dir, "twins_src")
+        r = subprocess.run(
+            [COMPILER, "--source", self.model, "--out", src, "--data",
+             self.txt, "--data-batch", "16", "--steps", "30", "--no-embed"],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        with open(os.path.join(src, "corpus.sds"), "rb") as f:
+            raw = f.read()
+        recs = records(os.path.join(src, "corpus.sds"))[:8]
+        twins = os.path.join(self.dir, "twins.sds")
+        with open(twins, "wb") as f:  # every record twice
+            f.write(raw[:8] + struct.pack("<Q", 16) + raw[16:64] +
+                    b"".join(recs) + b"".join(recs))
+        before = sha256(twins)
+        pkg = os.path.join(self.dir, "twins_pkg")
+        report = os.path.join(self.dir, "twins_report.json")
+        r = subprocess.run(
+            [COMPILER, "--source", self.model, "--out", pkg, "--data", twins,
+             "--val-frac", "0.25", "--split-seed", "3", "--data-batch", "16",
+             "--steps", "30", "--no-embed", "--report", report],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(sha256(twins), before)
+        self.assertFalse(os.path.exists(os.path.join(pkg, "corpus.sds")))
+        with open(report) as f:
+            data = json.load(f)["data"]
+        sys.path.insert(0, os.path.join(REPO, "tool"))
+        import frontier_exec as fx
+        held = fx.held_out_indices(16, 3, 0.25)
+        expect = sum(1 for i in held if (i ^ 8) not in held)
+        self.assertGreater(expect, 0)
+        self.assertEqual(data["held_out_twins"], expect)
+        self.assertIn("held-out twins", r.stderr)
+        self.assertRegex(r.stderr, rf"held-out twins +{expect}\b")
 
     def test_a_jsonl_trains_as_its_canonical_sds(self):
         err = self.assert_text_run_is_the_sds_run("jsonl", self.jsonl)

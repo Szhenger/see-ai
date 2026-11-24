@@ -141,11 +141,16 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
              std::to_string(c.dropped_empty) + " empty, " +
                  std::to_string(c.dropped_duplicate) + " duplicate, " +
                  std::to_string(c.dropped_degenerate) + " degenerate");
-      fe.Set("corpus_sanitized",
-             std::to_string(c.invalid_utf8_bytes) + " invalid UTF-8 byte(s), " +
-                 std::to_string(c.control_chars) + " control char(s), " +
-                 std::to_string(c.bidi_controls) + " bidi control(s)" +
-                 (c.kind == "txt" ? " (counted, kept: one document)" : ""));
+      // Exact-duplicate windows, and what the sanitizer removed (#222):
+      // on the default screen whenever there is any, for every kind.
+      if (c.dropped_duplicate_windows)
+        fe.Set("corpus_duplicate_windows", c.dropped_duplicate_windows);
+      if (c.invalid_utf8_bytes + c.control_chars + c.bidi_controls)
+        fe.Set(
+            "corpus_sanitized",
+            std::to_string(c.invalid_utf8_bytes) + " invalid UTF-8 byte(s), " +
+                std::to_string(c.control_chars) + " control char(s), " +
+                std::to_string(c.bidi_controls) + " bidi control(s) removed");
       fe.Set("corpus_remainder", c.remainder_tokens);
       fe.Set("corpus_straddles", c.straddling_windows);
     }
@@ -166,6 +171,9 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
                                " records held out, seed " +
                                std::to_string(c.split_seed) + ", split " +
                                Hex16(c.val_split_hash));
+    // A stated fact for every split (#222): 0 for raw text by construction,
+    // what a given SDS holds otherwise — never a refusal.
+    if (c.split) fe.Set("validation_twins", c.held_out_twins);
   }
   // The identity manifest (S4 #150): every input of the fine-tune, hashed —
   // the accountant prints what the plan's header and metadata carry.

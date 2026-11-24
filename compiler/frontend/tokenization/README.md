@@ -13,15 +13,17 @@ data (security at every layer):
 2. **normalize** — Unicode normalization as the model's tokenizer section
    specifies.
 3. **sanitize / filter** — invalid UTF-8, control characters, bidirectional
-   overrides, empty and degenerate records; every drop recorded by index and
-   reason in the manifest.
+   overrides (removed from a `.txt` as from every `.jsonl` document, #222),
+   empty and degenerate records; every drop recorded by index and reason in
+   the manifest.
 4. **deduplicate** — exact, by record hash (near-duplicates are the Python
    plane's job).
 5. **encode** — byte-level BPE from the SMF tokenizer section only (no
    `--tokenizer` flag exists); proven bit-exact against the reference
    tokenizer at export.
 6. **pack** — concatenate documents with EOS and cut fixed S+1 windows;
-   never pad, because every position is a loss target.
+   never pad, because every position is a loss target; drop a window equal
+   to an earlier one (ids and mask) before any split (#222).
 
 Where the code lives: the normalize, sanitize, deduplicate, encode and pack
 functions are implemented under `source/` (beside the contract check), the
