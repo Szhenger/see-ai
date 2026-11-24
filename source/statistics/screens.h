@@ -123,6 +123,10 @@ inline constexpr StatRow kFrontendRows[] = {
      "the merged f32 deltas, one per adapted weight", screens_detail::kV},
     {"footprint_caches", "step-0 caches", StatKind::kBytes, "B",
      "attention probability caches, or tiled stats rows", screens_detail::kV},
+    {"footprint_moments", "step-0 moments", StatKind::kBytes, "B",
+     "8-bit AdamW moments and their block scales (#192), beside the bound "
+     "and not in it",
+     screens_detail::kV | screens_detail::kO},
     {"footprint_total", "step-0 bound", StatKind::kBytes, "B",
      "the accountant's lower bound the early gate proved fits"},
     {"bound_ratio", "bound ÷ exact", StatKind::kReal, "",
@@ -190,6 +194,10 @@ inline constexpr StatRow kAnalysisRows[] = {
      "cached probabilities, or the tiled family's stats rows"},
     {"segment_mask", "segment mask", StatKind::kText, "",
      "no attention across a window's documents: the decision and its reason",
+     screens_detail::kO},
+    {"moments", "8-bit moments", StatKind::kText, "",
+     "AdamW's state stored block-wise in 8 bits (#192, opt-in): its codes, "
+     "its bytes and what f32 would take",
      screens_detail::kO},
     {"rematerialization", "rematerialization", StatKind::kText, "",
      "forward values the backward recomputes instead of keeping"},

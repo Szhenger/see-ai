@@ -130,3 +130,27 @@ harness's torch / MLX-LM rows still train constant schedules.
   package and none on an exact package.
 - The analysis screen's numbers match `seeml-plan-probe --profile` for
   FLOPs and the arena binder for bytes.
+
+## Status 2026-11-23, 8-bit moments (#192)
+
+On `f192-work`: **8-bit moments** are in `optimization/`, opt-in only
+(`--moments int8`, recipe field `moments`, default `f32`). Plan v27 adds
+`kAdamW8Step` (58): block-wise m and v, both on a logarithmic code (eight
+levels an octave; m sign and magnitude, a nonzero v never coded 0), one f32
+scale each per 256 values, dequantized and requantized inside the step on
+the CPU, on Metal and in the oracle alike — requantized without bias, the
+dither a stateless hash of the step, the element and the operand (the
+first rule rounded to nearest and froze every slow moment; the review's
+finding, fixed before v27 merged). The ledger gained a third arithmetic,
+`quantized`, outside the certificate family (the quantization is
+deterministic given the step and the element and specified bit for bit,
+with no exact execution to fall
+back to — not a permission like `kFlagRelaxed`); the loader holds its count
+to the plan's 58s. A plan that does not ask is byte for byte the v26 plan
+(ten compiled fixtures, SmolLM-135M among them, and every fuzz seed). The
+row (`docs/benchmarks.md`, "8-bit moments, measured"): within 0.0002 nats
+of f32 on SmolLM-135M at two seeds (−0.0002, +0.0001 committed) — a
+necessary check that the first, broken rule also passed; the evidence is
+the dead-band probe, held as kernel and oracle tests; the moments
+3.94× smaller, which at LoRA rank 8 is 18 MB of a 1.56 GB arena — the F5
+caveat, measured.

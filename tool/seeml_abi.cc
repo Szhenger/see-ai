@@ -203,6 +203,27 @@ void PrintSeeu() {
   std::printf("    \"kl_temperature_bits\": {\"min\": %u, \"max\": %u},\n",
               std::bit_cast<uint32_t>(up::kKlTemperatureMin),
               std::bit_cast<uint32_t>(up::kKlTemperatureMax));
+  // 8-bit moments (plan v27, #192): the block, the floor, the codes' level
+  // tables as f32 bits and the dither's hash constants — what the oracle's
+  // quantizer is held to.
+  std::printf(
+      "    \"moments\": {\"version\": %u, \"block\": %llu, "
+      "\"scale_floor_bits\": %u, \"m_max_level\": %u, "
+      "\"v_max_level\": %u,\n      \"level_bits\": [",
+      up::kSeeuInt8MomentsVersion,
+      static_cast<unsigned long long>(up::kMomentBlock),
+      std::bit_cast<uint32_t>(up::kMomentScaleFloor), up::kMomentMMaxLevel,
+      up::kMomentVMaxLevel);
+  for (size_t i = 0; i < 8; ++i)
+    std::printf("%s%u", i ? ", " : "", up::kMomentLevelBits[i]);
+  std::printf("],\n      \"threshold_bits\": [");
+  for (size_t i = 0; i < 8; ++i)
+    std::printf("%s%u", i ? ", " : "", up::kMomentThresholdBits[i]);
+  std::printf(
+      "],\n      \"dither\": {\"m\": %u, \"v\": %u, \"mix\": [%u, %u], "
+      "\"bits\": %u}},\n",
+      up::kMomentDitherM, up::kMomentDitherV, up::kMomentMixA, up::kMomentMixB,
+      up::kMomentDitherBits);
   Enum("fused_stages", fused, sizeof(fused) / sizeof(fused[0]), false);
   std::printf(
       "    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "
@@ -242,13 +263,14 @@ void PrintSeeu() {
       "\"version\": %u, \"ledger_max\": %u,\n"
       "      \"export_flags\": {\"report\": %u, "
       "\"tokenizer_parity\": %u, \"logits_parity\": %u},\n"
-      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u}}\n"
+      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u, "
+      "\"quantized\": %u}}\n"
       "  },\n",
       up::kDataFlagMaskedLoss, up::kDataFlagCorpusPinned, up::kDataFlagSplit,
       up::kDataFlagMetadata, up::kPlanMetadataMagic, up::kPlanMetadataFormat,
       up::kSeeuMetadataVersion, up::kLedgerMaxEntries, up::kExportReportPresent,
       up::kExportTokenizerParity, up::kExportLogitsParity, up::kLedgerExact,
-      up::kLedgerReordered);
+      up::kLedgerReordered, up::kLedgerQuantized);
 }
 
 /// "sekp": the checkpoint.

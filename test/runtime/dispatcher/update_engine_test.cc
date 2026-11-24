@@ -112,7 +112,7 @@ TEST(UpdateEngineLoad, HeaderGemmTilesReachTheBackendAndNeverChangeBits) {
   EXPECT_EQ(HeaderOf(plan_default).gemm_tile_k, 0u);
   EXPECT_EQ(HeaderOf(plan_tuned).gemm_tile_k, 8u);
   EXPECT_EQ(HeaderOf(plan_tuned).gemm_tile_n, 4u);
-  EXPECT_EQ(HeaderOf(plan_tuned).version, kSeeuVersion);
+  EXPECT_EQ(HeaderOf(plan_tuned).version, kSeeuPreInt8MomentsVersion);
 
   // Two datasets: a Dataset carries its shuffle position across Train
   // calls, so sharing one would feed the second engine different batches.

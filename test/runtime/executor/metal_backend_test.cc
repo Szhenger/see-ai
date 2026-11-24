@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -1976,6 +1977,316 @@ TEST(MetalBackend, TheGlobalClipScalesEveryTensorByOneFactorAlike) {
         ADD_FAILURE(what + ": b was written by a refused clip");
     backend->reset();
     std::free(mem);
+  }
+}
+
+// --- 8-bit moments (plan v27, S5 #192) ----------------------------------------
+
+/// Runs one kAdamW8Step on a backend from `init`, once per gradient,
+/// writing `grads[s]` into the gradient (float offset `g_at`) before step
+/// s + 1 and stopping at the first refusal. The arena bytes after, and the
+/// refusal (empty when every step ran).
+struct Stepped8 {
+  std::vector<uint8_t> bytes;
+  std::string error;
+};
+std::expected<Stepped8, std::string> Steps8(
+    bool metal, const std::vector<uint8_t>& init, const UpdateInstruction& ins,
+    const std::vector<std::vector<float>>& grads, size_t g_at) {
+  auto backend =
+      !metal ? std::expected<std::unique_ptr<ExecutorBackend>, std::string>(
+                   CreateCpuBackend())
+             : CreateMetalBackend();
+  if (!backend) return std::unexpected(backend.error());
+  const size_t bytes = (init.size() + 16383) & ~size_t{16383};
+  uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, bytes));
+  if (!arena) return std::unexpected("aligned_alloc failed");
+  std::memset(arena, 0, bytes);
+  std::memcpy(arena, init.data(), init.size());
+  const std::vector<uint8_t> no_rodata(64, 0);
+  std::string error;
+  if (auto r = (*backend)->Bind(arena, bytes, no_rodata.data(),
+                                no_rodata.size(), no_rodata.size());
+      !r)
+    error = r.error();
+  for (size_t s = 0; s < grads.size() && error.empty(); ++s) {
+    std::memcpy(arena + g_at * sizeof(float), grads[s].data(),
+                grads[s].size() * sizeof(float));
+    StepParams params;
+    params.lr = 0.01f;
+    params.weight_decay = 0.01f;
+    params.step = s + 1;
+    if (auto r = (*backend)->Execute(ins, params); !r) error = r.error();
+    if (auto r = (*backend)->Flush(); !r && error.empty()) error = r.error();
+  }
+  Stepped8 out{std::vector<uint8_t>(arena, arena + init.size()), error};
+  backend->reset();  // unbind before the arena goes away
+  std::free(arena);
+  return out;
+}
+
+TEST(MetalBackend, TheEightBitMomentStepMatchesCpuAndIsBitwiseRunToRun) {
+  // #192: kAdamW8Step over 700 values — three blocks, the last one short —
+  // for six steps that carry the state, plain and with the fused clip: the
+  // GPU's parameters at tolerance of the CPU's, its codes within one level
+  // and its scales within f32 rounding (one simdgroup a block runs the
+  // CPU's expressions and draws the CPU's dither; the two differ where a
+  // backend contracts a multiply-add the other rounds twice, and a moment
+  // whose last bit crosses a level's value or the dither's threshold then
+  // lands one level over), and its own bytes bit for bit run to run.
+  if (Skip()) return;
+  const size_t n = 700, blocks = 3;
+  // Bytes: p [0, 2800), g [4096, 6896), m codes at 8192, v codes at 9216,
+  // scales at 10240.
+  UpdateInstruction step;
+  step.opcode = static_cast<uint16_t>(OpCode::kAdamW8Step);
+  step.in[0] = MakeArenaRef(0);
+  step.in[1] = MakeArenaRef(4096);
+  step.in[2] = MakeArenaRef(8192);
+  step.in[3] = MakeArenaRef(9216);
+  step.out[0] = n;
+  step.out[2] = MakeArenaRef(10240);
+  std::vector<uint8_t> init(12288, 0);
+  const std::vector<float> p0 = RandnVector(n, 61);
+  std::memcpy(init.data(), p0.data(), n * sizeof(float));
+  std::vector<std::vector<float>> grads;
+  for (uint64_t s = 0; s < 6; ++s)
+    grads.push_back(RandnVector(n, 70 + s, 0.3f));
+  for (const bool clip : {false, true}) {
+    UpdateInstruction ins = step;
+    if (clip) ins.out[1] = F32Bits(2.0f);  // ||g|| ~ 0.3 sqrt(700): binds
+    const std::string tag = clip ? "clipped" : "plain";
+    auto cpu_run = Steps8(false, init, ins, grads, 1024);
+    auto gpu_run = Steps8(true, init, ins, grads, 1024);
+    auto again = Steps8(true, init, ins, grads, 1024);
+    ASSERT_OK(cpu_run);
+    ASSERT_OK(gpu_run);
+    ASSERT_OK(again);
+    EXPECT_EQ(cpu_run->error, "");
+    EXPECT_EQ(gpu_run->error, "");
+    const std::vector<uint8_t>* cpu = &cpu_run->bytes;
+    const std::vector<uint8_t>* gpu = &gpu_run->bytes;
+    EXPECT_TRUE(*gpu == again->bytes);  // bitwise, run to run
+    std::vector<float> pc(n), pg(n);
+    std::memcpy(pc.data(), cpu->data(), n * sizeof(float));
+    std::memcpy(pg.data(), gpu->data(), n * sizeof(float));
+    ExpectClose((tag + " p").c_str(), pg, pc, 1e-5, 1e-6);
+    size_t off_by_one = 0;
+    for (size_t at : {size_t{8192}, size_t{9216}})
+      for (size_t i = 0; i < n; ++i) {
+        const int a =
+            at == 8192 ? static_cast<int8_t>((*cpu)[at + i]) : (*cpu)[at + i];
+        const int b =
+            at == 8192 ? static_cast<int8_t>((*gpu)[at + i]) : (*gpu)[at + i];
+        if (std::abs(a - b) > 1)
+          ADD_FAILURE(tag + ": code " + std::to_string(i) + " at " +
+                      std::to_string(at) + ": cpu " + std::to_string(a) +
+                      ", metal " + std::to_string(b));
+        off_by_one += a != b;
+      }
+    std::printf("  [ %-32s ] codes one level apart: %zu of %zu\n",
+                ("adamw8 " + tag).c_str(), off_by_one, 2 * n);
+    std::vector<float> sc(2 * blocks), sg(2 * blocks);
+    std::memcpy(sc.data(), cpu->data() + 10240, sc.size() * sizeof(float));
+    std::memcpy(sg.data(), gpu->data() + 10240, sg.size() * sizeof(float));
+    ExpectClose((tag + " scales").c_str(), sg, sc, 1e-5, 1e-12);
+    // The gradient is read, never written.
+    EXPECT_EQ(
+        std::memcmp(cpu->data() + 4096, grads.back().data(), n * sizeof(float)),
+        0);
+  }
+  // The refusal: a NaN gradient at step 4 (no clip to see it) refuses with
+  // one string on both backends and writes nothing — p, the codes and the
+  // scales are what the three steps before it left.
+  std::vector<std::vector<float>> poisoned(grads.begin(), grads.begin() + 4);
+  poisoned[3][650] = std::numeric_limits<float>::quiet_NaN();
+  for (const bool metal : {false, true}) {
+    auto good = Steps8(
+        metal, init, step,
+        std::vector<std::vector<float>>(grads.begin(), grads.begin() + 3),
+        1024);
+    auto bad = Steps8(metal, init, step, poisoned, 1024);
+    ASSERT_OK(good);
+    ASSERT_OK(bad);
+    EXPECT_EQ(good->error, "");
+    EXPECT_STR_CONTAINS(bad->error, "optimizer moments are not finite");
+    EXPECT_EQ(std::memcmp(bad->bytes.data(), good->bytes.data(), 4096), 0);
+    EXPECT_EQ(
+        std::memcmp(bad->bytes.data() + 8192, good->bytes.data() + 8192, 4096),
+        0);
+  }
+}
+
+TEST(MetalBackend, TheEightBitMomentTwinsStayALevelApartOverALongRun) {
+  // #192, the unbiased rule's twin bound over a trajectory. Both backends
+  // draw the same dither (a hash of the step, the element and the operand),
+  // so from one state and one f32 moment they write one code; they part
+  // only where the GPU contracts the moment blend's multiply-add and the
+  // CPU rounds twice — a last-bit difference in the moment, which moves a
+  // code when it crosses a level's value or the dither's 24-bit threshold
+  // (about one element-step in a million). A split is a level wide and
+  // the next step's blend shrinks it (0.9 for m, 0.999 for v), but on a
+  // logarithmic code two neighbours a level apart can draw two levels
+  // apart, so the bound over a run is stated and measured, not assumed:
+  // 4000 values for 300 steps (1.2 million coded moments of each kind),
+  // every code within two levels and no more than one in a thousand
+  // differing at all.
+  if (Skip()) return;
+  const size_t n = 4000, blocks = 16;
+  UpdateInstruction step;
+  step.opcode = static_cast<uint16_t>(OpCode::kAdamW8Step);
+  step.in[0] = MakeArenaRef(0);
+  step.in[1] = MakeArenaRef(16384);
+  step.in[2] = MakeArenaRef(32768);
+  step.in[3] = MakeArenaRef(36864);
+  step.out[0] = n;
+  step.out[2] = MakeArenaRef(40960);
+  std::vector<uint8_t> init(45056, 0);
+  const std::vector<float> p0 = RandnVector(n, 81);
+  std::memcpy(init.data(), p0.data(), n * sizeof(float));
+  // A drifting gradient with a per-element scale over three decades, so
+  // the codes spread over their levels.
+  std::vector<std::vector<float>> grads;
+  for (uint64_t s = 0; s < 300; ++s) {
+    std::vector<float> g = RandnVector(n, 900 + s, 0.3f);
+    for (size_t i = 0; i < n; ++i)
+      g[i] = (g[i] + 0.05f * p0[i]) *
+             std::exp2(-10.0f * static_cast<float>(i % 97) / 97.0f);
+    grads.push_back(std::move(g));
+  }
+  auto cpu = Steps8(false, init, step, grads, 4096);
+  auto gpu = Steps8(true, init, step, grads, 4096);
+  auto again = Steps8(true, init, step, grads, 4096);
+  ASSERT_OK(cpu);
+  ASSERT_OK(gpu);
+  ASSERT_OK(again);
+  EXPECT_EQ(cpu->error, "");
+  EXPECT_EQ(gpu->error, "");
+  EXPECT_TRUE(gpu->bytes == again->bytes);  // bitwise, run to run
+  size_t apart[3] = {0, 0, 0};              // one level, two, more
+  for (size_t at : {size_t{32768}, size_t{36864}})
+    for (size_t i = 0; i < n; ++i) {
+      const int a = at == 32768 ? static_cast<int8_t>(cpu->bytes[at + i])
+                                : cpu->bytes[at + i];
+      const int b = at == 32768 ? static_cast<int8_t>(gpu->bytes[at + i])
+                                : gpu->bytes[at + i];
+      const int d = std::abs(a - b);
+      if (d != 0) ++apart[std::min(d, 3) - 1];
+    }
+  std::printf(
+      "  [ %-32s ] of %zu codes after 300 steps: %zu one level "
+      "apart, %zu two, %zu more\n",
+      "adamw8 twins", 2 * n, apart[0], apart[1], apart[2]);
+  EXPECT_EQ(apart[2], 0u);
+  EXPECT_LE(apart[0] + apart[1], 2 * n / 1000);
+  std::vector<float> pc(n), pg(n), sc(2 * blocks), sg(2 * blocks);
+  std::memcpy(pc.data(), cpu->bytes.data(), n * sizeof(float));
+  std::memcpy(pg.data(), gpu->bytes.data(), n * sizeof(float));
+  ExpectClose("long run p", pg, pc, 1e-3, 1e-4);
+  std::memcpy(sc.data(), cpu->bytes.data() + 40960, sc.size() * sizeof(float));
+  std::memcpy(sg.data(), gpu->bytes.data() + 40960, sg.size() * sizeof(float));
+  ExpectClose("long run scales", sg, sc, 1e-4, 1e-12);
+}
+
+TEST(MetalBackend, TheEightBitMomentStepRefusesTouchingNothing) {
+  // #192: the refusal leaves the arena as the step found it, on both
+  // backends — a hostile stored scale too (a checkpoint is an input).
+  if (Skip()) return;
+  const size_t n = 300;
+  UpdateInstruction step;
+  step.opcode = static_cast<uint16_t>(OpCode::kAdamW8Step);
+  step.in[0] = MakeArenaRef(0);
+  step.in[1] = MakeArenaRef(2048);
+  step.in[2] = MakeArenaRef(4096);
+  step.in[3] = MakeArenaRef(4608);
+  step.out[0] = n;
+  step.out[2] = MakeArenaRef(5120);
+  std::vector<uint8_t> init(8192, 0);
+  const std::vector<float> p0 = RandnVector(n, 62);
+  std::memcpy(init.data(), p0.data(), n * sizeof(float));
+  for (size_t i = 0; i < n; ++i) init[4096 + i] = static_cast<uint8_t>(i);
+  for (size_t i = 0; i < n; ++i) init[4608 + i] = static_cast<uint8_t>(i + 7);
+  const float scales[4] = {0.5f, 0.25f, 1e-3f,
+                           std::numeric_limits<float>::quiet_NaN()};
+  std::memcpy(init.data() + 5120, scales, sizeof(scales));
+  const std::vector<float> g = RandnVector(n, 63);
+  for (const bool metal : {false, true}) {
+    auto backend =
+        !metal ? std::expected<std::unique_ptr<ExecutorBackend>, std::string>(
+                     CreateCpuBackend())
+               : CreateMetalBackend();
+    ASSERT_OK(backend);
+    uint8_t* arena = static_cast<uint8_t*>(std::aligned_alloc(16384, 16384));
+    ASSERT_TRUE(arena != nullptr);
+    std::memset(arena, 0, 16384);
+    std::memcpy(arena, init.data(), init.size());
+    std::memcpy(arena + 2048, g.data(), n * sizeof(float));
+    const std::vector<uint8_t> no_rodata(64, 0);
+    ASSERT_OK((*backend)->Bind(arena, 16384, no_rodata.data(), no_rodata.size(),
+                               no_rodata.size()));
+    StepParams params;
+    params.lr = 0.01f;
+    params.step = 2;
+    std::string error;
+    if (auto r = (*backend)->Execute(step, params); !r) error = r.error();
+    if (auto r = (*backend)->Flush(); !r && error.empty()) error = r.error();
+    EXPECT_STR_CONTAINS(error, "optimizer moments are not finite");
+    EXPECT_EQ(std::memcmp(arena, init.data(), 2048), 0);  // p
+    // The codes and the scales, the poisoned one included.
+    EXPECT_EQ(std::memcmp(arena + 4096, init.data() + 4096, 4096), 0);
+    backend->reset();
+    std::free(arena);
+  }
+}
+
+TEST(MetalBackend, EightBitMomentPlansTrainAlikeAndBitwiseRunToRun) {
+  // #192: compiled plans with --moments int8 — the MLP with the fused
+  // clip, and the decoder accumulating two micro-batches under the global
+  // clip — train on both backends to the loss curve at the tolerance every
+  // family meets, and the GPU's persistent bytes (codes included) are its
+  // own bit for bit run to run.
+  if (Skip()) return;
+  struct Case {
+    const char* name;
+    std::expected<CompiledUpdate, std::string> compiled;
+    DataMaker data;
+  };
+  UpdateConfig mlp = BaseConfig(16);
+  mlp.optimizer.moments = MomentsKind::kInt8;
+  mlp.optimizer.clip_norm = 0.5f;
+  UpdateConfig dec = BaseConfig(16);
+  dec.optimizer.moments = MomentsKind::kInt8;
+  dec.optimizer.clip_norm = 0.5f;
+  dec.optimizer.clip_global = true;
+  dec.grad_accum_steps = 2;
+  Case cases[] = {
+      {"mlp_int8_moments_clip",
+       UpdateCompiler(mlp).Compile(MakeMlp(16, 32, 4, 31)), ClassData},
+      {"decoder_int8_moments_global_accum",
+       UpdateCompiler(dec).Compile(MakeTinyDecoder(8, 2, 4, 16, 2, 34)),
+       DecoderData},
+  };
+  for (Case& c : cases) {
+    ASSERT_OK(c.compiled);
+    PlanHeader header;
+    std::memcpy(&header, c.compiled->plan.data(), sizeof(header));
+    EXPECT_EQ(header.version, kSeeuInt8MomentsVersion);
+    auto cpu = TrainOn(BackendKind::kCpu, c.compiled->plan, c.data, 8);
+    auto gpu = TrainOn(BackendKind::kMetal, c.compiled->plan, c.data, 8);
+    auto again = TrainOn(BackendKind::kMetal, c.compiled->plan, c.data, 8);
+    ASSERT_OK(cpu);
+    ASSERT_OK(gpu);
+    ASSERT_OK(again);
+    ExpectClose((std::string(c.name) + " loss curve").c_str(), gpu->curve,
+                cpu->curve, 2e-3, 1e-4);
+    EXPECT_NEAR(gpu->eval_loss, cpu->eval_loss,
+                1e-4 + 2e-3 * std::fabs(cpu->eval_loss));
+    EXPECT_TRUE(gpu->curve == again->curve);
+    // Bytes, not floats: the codes read as floats may be NaN patterns.
+    ASSERT_EQ(gpu->persistent.size(), again->persistent.size());
+    EXPECT_EQ(std::memcmp(gpu->persistent.data(), again->persistent.data(),
+                          gpu->persistent.size() * sizeof(float)),
+              0);
   }
 }
 

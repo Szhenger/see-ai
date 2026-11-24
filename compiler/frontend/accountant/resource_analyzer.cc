@@ -333,6 +333,36 @@ uint64_t EstimateLoraDeltaBytes(const SmfModel& model,
   return bytes;
 }
 
+uint64_t EstimateMomentBytes(const SmfModel& model,
+                             std::span<const std::string> target_filters,
+                             int64_t rank, MomentsKind moments) {
+  if (rank <= 0) return 0;
+  const std::unordered_set<std::string_view> adapted =
+      AdaptedWeights(model, target_filters);
+  const uint64_t r = static_cast<uint64_t>(rank);
+  auto state = [&](uint64_t count) -> uint64_t {
+    uint64_t bytes = 0;
+    if (moments == MomentsKind::kF32) {
+      if (!MulOk(count, 2 * sizeof(float), &bytes)) return ~uint64_t{0};
+      return bytes;
+    }
+    if (!MulOk(count, 2, &bytes)) return ~uint64_t{0};
+    return SatAdd(bytes, MomentBlocks(count) * 2 * sizeof(float));
+  };
+  uint64_t bytes = 0;
+  for (const SmfTensor& t : model.tensors) {
+    if (!adapted.contains(t.name) || t.dims.size() != 2 || t.dims[0] <= 0 ||
+        t.dims[1] <= 0)
+      continue;
+    uint64_t a = 0, b = 0;
+    if (!MulOk(static_cast<uint64_t>(t.dims[0]), r, &a) ||
+        !MulOk(r, static_cast<uint64_t>(t.dims[1]), &b))
+      return ~uint64_t{0};
+    bytes = SatAdd(SatAdd(bytes, state(a)), state(b));
+  }
+  return bytes;
+}
+
 uint64_t DetectLocalMemoryBytes() {
   // One query, shared with the runtime's load (source/platform/memory.h).
   return DetectHostMemoryBytes();

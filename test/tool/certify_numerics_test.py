@@ -1055,7 +1055,9 @@ class CertifyPlansTest(unittest.TestCase):
                            "--precision", "certified-bf16",
                            "--attention", "tiled")
         plan = fx.Plan.load(os.path.join(pkg, cn.PLAN_FILE))
-        self.assertEqual(plan.version, fx.formats.SEEU_VERSION)
+        # A plan without 8-bit moments is written at v26 (#192).
+        self.assertEqual(plan.version,
+                         fx.formats.SEEU_INT8_MOMENTS_VERSION - 1)
         self.assertGreater(plan.relaxed_instructions, plan.relaxed_gemms)
         attention = ["attn.dk.tiled", "attn.dq.tiled", "attn.dv.tiled",
                      "attn.fwd.tiled"]
@@ -1114,6 +1116,26 @@ class CertifyPlansTest(unittest.TestCase):
                                        "--steps", "5"])
                 self.assertEqual(status, 0, log)
 
+
+    def test_the_8bit_moment_steps_fused_clip_is_a_certified_site(self):
+        # #192 review: opcode 58 carries the fused clip as 18 does, so its
+        # gradient norm is a site the certificate measures. It was missing
+        # from FUSED_CLIP_SITES, and a clipped --moments int8 plan was
+        # granted a certificate that never priced that reduction.
+        for flags, site in (((), "adamw.step"),
+                            (("--moments", "int8"), "adamw8.step")):
+            with self.subTest(site=site):
+                pkg = self.compile("clip8", "mlp.smf", 8, "--clip-norm",
+                                   "0.5", *flags)
+                status, log = run(cn, ["certify", pkg, "--corpus",
+                                       os.path.join(self.dir, "class.sds"),
+                                       "--steps", "4"])
+                self.assertEqual(status, 0, log)
+                with open(os.path.join(pkg, cn.CERT_FILE)) as f:
+                    cert = json.load(f)
+                self.assertIn(site, cert["contract"]["sites"])
+                self.assertGreater(
+                    cert["evidence"]["sites"][site]["instances"], 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -991,6 +991,82 @@ TEST(UpdateSystem, TokenDecoderResumeMatchesUninterruptedRun) {
             0);
 }
 
+TEST(UpdateSystem, EightBitMomentsResumeBitForBitFromTheirCheckpoint) {
+  // #192: the 8-bit moments live in the persistent segment the checkpoint
+  // copies (SEKP is unchanged: the segment is narrower, the format is not).
+  // A run stopped at step 3, checkpointed and resumed cold equals the
+  // uninterrupted run byte for byte — codes and scales included — with and
+  // without accumulation under the global clip; and the checkpoint loads
+  // back into a fresh engine as the bytes that were saved. The codes are
+  // rounded with a dither hashed from the optimizer step (instruction.h):
+  // steps 4 to 6 of the resumed run draw the uninterrupted run's bits only
+  // because the step counter is the checkpoint's — a resumed engine that
+  // counted from 1 again would code other bytes (kernels_test.cc,
+  // TheEightBitDitherIsKeyedOnTheStepAndTheOperand).
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16;
+  const int64_t batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  for (const uint32_t accum : {1u, 2u}) {
+    UpdateConfig config = BaseConfig(batch);
+    config.optimizer.moments = MomentsKind::kInt8;
+    config.optimizer.clip_norm = 0.5f;
+    config.optimizer.clip_global = accum > 1;
+    config.grad_accum_steps = accum;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                         UpdateCompiler(config).Compile(model));
+    auto corpus = [&]() {
+      auto d = seeml::testing::MakeTokenCorpus(10, seq, vocab, 43);
+      if (d) d->EnableShuffle(7);
+      return d;
+    };
+    UpdateEngine straight;
+    ASSERT_OK(
+        straight.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK_AND_ASSIGN(Dataset d1, corpus());
+    ASSERT_OK(straight.Train(d1, 6, Quiet()));
+
+    ScopedTempDir dir;
+    const std::string ck = dir.File("ck.bin");
+    std::vector<uint8_t> saved;
+    {
+      UpdateEngine first;
+      ASSERT_OK(
+          first.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK_AND_ASSIGN(Dataset d2, corpus());
+      ASSERT_OK(first.Train(d2, 3, Quiet()));
+      ASSERT_OK(first.SaveCheckpoint(ck));
+      saved.assign(first.arena(),
+                   first.arena() + first.header().persistent_size);
+    }
+    // The round trip: a fresh engine loads the checkpoint's segment.
+    {
+      UpdateEngine loaded;
+      ASSERT_OK(
+          loaded.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK(loaded.LoadCheckpoint(ck));
+      EXPECT_EQ(loaded.step(), 3u);
+      EXPECT_EQ(std::memcmp(loaded.arena(), saved.data(), saved.size()), 0);
+    }
+    UpdateEngine resumed;
+    ASSERT_OK(
+        resumed.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK_AND_ASSIGN(Dataset d3, corpus());
+    TrainOptions opt = Quiet();
+    opt.checkpoint_path = ck;
+    opt.resume = true;
+    ASSERT_OK(resumed.Train(d3, 3, opt));
+    EXPECT_EQ(straight.step(), 6u);
+    EXPECT_EQ(resumed.step(), 6u);
+    EXPECT_EQ(std::memcmp(straight.arena(), resumed.arena(),
+                          straight.header().persistent_size),
+              0);
+    // Not vacuous: the moments moved off their zero image.
+    const std::vector<uint8_t> zeros(saved.size(), 0);
+    EXPECT_TRUE(saved != zeros);
+  }
+}
+
 TEST(UpdateSystem, TokenDecoderTrainsMergesAndCommits) {
   const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16;
   const int64_t batch = 16;  // 4 sequences per step

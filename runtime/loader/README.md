@@ -15,6 +15,9 @@ environment.
 - `contract.{h,cc}` — the plan, executor and feeder contracts: every operand
   bounds-proven (via the verifier), the staged slots no program writes, the
   label and token bindings, the segment starts (#191), the masked-loss flag,
+  the optimizer steps (in the train and step programs alone; an 8-bit moment
+  step's codes and scales in the persistent segment, #192:
+  `EngineContract.EightBitMomentsArePersistentStateOfTheTrainingPrograms`),
   the quantized column scales, the emit table (CR2 #143's coverage table:
   `test/runtime/dispatcher/engine_test.cc`, `CoverageTable.*`). And the
   relaxed permit (F2 #206, `RelaxedPlanPermit` / `VerifyRelaxedPermit`): a

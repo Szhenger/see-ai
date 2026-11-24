@@ -129,10 +129,26 @@ SMTK_HEAD = Layout("SmtkHead", [
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 26
+SEEU_VERSION = 27
 SEEU_GLOBAL_CLIP_VERSION = 24  # kSqNormAccum, kClipGlobal (#190)
 SEEU_SEGMENT_MASK_VERSION = 25  # kSegmentStarts, kAttnFwdSeg (#191)
 SEEU_TILED_SEGMENT_MASK_VERSION = 26  # kAttnFwdTiledSeg (#191 step 2)
+SEEU_INT8_MOMENTS_VERSION = 27  # kAdamW8Step, the quantized ledger line (#192)
+# 8-bit moments (source/plan/instruction.h, plan v27): the block, the floor,
+# the level tables as f32 bits (m and v share them) and the dither's integer
+# hash, held to the manifest's.
+MOMENT_BLOCK = 256
+MOMENT_SCALE_FLOOR_BITS = 0x17800000  # 2^-80
+MOMENT_M_MAX_LEVEL = 126
+MOMENT_V_MAX_LEVEL = 254
+MOMENT_LEVEL_BITS = (0x3f800000, 0x3f6ac0c7, 0x3f5744fd, 0x3f45672a,
+                     0x3f3504f3, 0x3f25fed7, 0x3f1837f0, 0x3f0b95c2)
+MOMENT_THRESHOLD_BITS = (0x3ff5257d, 0x3fe0ccdf, 0x3fce248c, 0x3fbd08a4,
+                         0x3fad583f, 0x3f9ef532, 0x3f91c3d3, 0x3f85aac3)
+MOMENT_DITHER_M = 0x9E3779B9  # the m stream's constant
+MOMENT_DITHER_V = 0x85EBCA6B  # the v stream's
+MOMENT_MIX = (0x7FEB352D, 0x846CA68B)  # MomentMix's two multipliers
+MOMENT_DITHER_BITS = 24
 SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
 # PlanHeader.data_flags (v22).
 DATA_FLAG_MASKED_LOSS = 1
@@ -152,6 +168,7 @@ EXPORT_TOKENIZER_PARITY = 2
 EXPORT_LOGITS_PARITY = 4
 LEDGER_EXACT = 0
 LEDGER_REORDERED = 1
+LEDGER_QUANTIZED = 2  # v27: state stored narrower (#192)
 SEEU_OLDEST_READABLE = 4
 RODATA_BIT = 1 << 63
 # v17: the source model file (E12), the eval program only; v21: every
@@ -223,6 +240,7 @@ OPCODES = {
     50: "attn.dv.tiled", 51: "softmax_xent_masked.fwd",
     52: "softmax_xent_masked.bwd", 53: "sqnorm.accum", 54: "clip.global",
     55: "segment.starts", 56: "attn.fwd.seg", 57: "attn.fwd.tiled.seg",
+    58: "adamw8.step",
 }
 # The tiled family's stats row: [row max, 1/denominator, delta, start] —
 # the fourth float is the row's document start since v26 (0 unmasked).
@@ -449,8 +467,19 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
           "export_flags": {"report": EXPORT_REPORT_PRESENT,
                            "tokenizer_parity": EXPORT_TOKENIZER_PARITY,
                            "logits_parity": EXPORT_LOGITS_PARITY},
-          "arithmetic": {"exact": LEDGER_EXACT, "reordered": LEDGER_REORDERED}},
+          "arithmetic": {"exact": LEDGER_EXACT, "reordered": LEDGER_REORDERED,
+                         "quantized": LEDGER_QUANTIZED}},
          seeu.get("metadata"))
+    same("seeu.moments",
+         {"version": SEEU_INT8_MOMENTS_VERSION, "block": MOMENT_BLOCK,
+          "scale_floor_bits": MOMENT_SCALE_FLOOR_BITS,
+          "m_max_level": MOMENT_M_MAX_LEVEL,
+          "v_max_level": MOMENT_V_MAX_LEVEL,
+          "level_bits": list(MOMENT_LEVEL_BITS),
+          "threshold_bits": list(MOMENT_THRESHOLD_BITS),
+          "dither": {"m": MOMENT_DITHER_M, "v": MOMENT_DITHER_V,
+                     "mix": list(MOMENT_MIX), "bits": MOMENT_DITHER_BITS}},
+         seeu.get("moments"))
     same("seeu.flags", {"epilogue_bias": FLAG_EPILOGUE_BIAS,
                         "epilogue_act_shift": FLAG_EPILOGUE_ACT_SHIFT,
                         "epilogue_act_mask": FLAG_EPILOGUE_ACT_MASK,

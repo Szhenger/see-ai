@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -111,7 +112,7 @@ TEST(UpdateCompiler, PlanHeaderContract) {
 
   const PlanHeader h = HeaderOf(compiled);
   EXPECT_EQ(h.magic, kSeeuMagic);
-  EXPECT_EQ(h.version, kSeeuVersion);
+  EXPECT_EQ(h.version, kSeeuPreInt8MomentsVersion);
   EXPECT_EQ(h.batch, static_cast<uint64_t>(kBatch));
   EXPECT_EQ(h.label_kind, 1u);  // softmax cross-entropy: class indices
   EXPECT_EQ(h.input_floats, static_cast<uint64_t>(kBatch * kInDim));
@@ -400,7 +401,7 @@ TEST(UpdateCompiler, CertifiedBf16MarksOnlyTheFrozenGemmsOfTraining) {
     EXPECT_EQ(b.relaxed_gemms, flagged);
     for (const auto& ins : EvalProgramOf(b))
       EXPECT_EQ(ins.flags & kFlagRelaxed, 0u);
-    EXPECT_EQ(HeaderOf(b).version, kSeeuVersion);
+    EXPECT_EQ(HeaderOf(b).version, kSeeuPreInt8MomentsVersion);
     EXPECT_GE(kSeeuVersion, kSeeuRelaxedVersion);
   }
 }
@@ -440,7 +441,7 @@ TEST(UpdateCompiler, CertifiedPrecisionAlsoMarksTheTiledAttentionOfTraining) {
     EXPECT_EQ(ins.flags & kFlagRelaxed, 0u);
   }
   EXPECT_GT(tiled_eval, 0u);  // the eval forward is tiled too, and exact
-  EXPECT_EQ(HeaderOf(t).version, kSeeuVersion);
+  EXPECT_EQ(HeaderOf(t).version, kSeeuPreInt8MomentsVersion);
   EXPECT_GE(kSeeuVersion, kSeeuRelaxedAttentionVersion);
   UpdateConfig cached = tiled;
   cached.attention = AttentionKind::kCached;
@@ -463,9 +464,9 @@ TEST(UpdateCompiler, Bf16BaseHalvesRodataAndLowersTheWideningGemms) {
   bf16.bf16_base = true;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate a, UpdateCompiler(f32).Compile(model));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate b, UpdateCompiler(bf16).Compile(model));
-  // Declared at the current version, which is at least the one that
-  // introduced the widening opcodes (the validator gates them on it).
-  EXPECT_EQ(HeaderOf(b).version, kSeeuVersion);
+  // Declared at v26, the version a plan without 8-bit moments is written
+  // at (#192) — at least the one that introduced the widening opcodes.
+  EXPECT_EQ(HeaderOf(b).version, kSeeuPreInt8MomentsVersion);
   EXPECT_GE(kSeeuVersion, kSeeuBf16Version);
   // Both matmul weights are adapted: a forward NN per weight, and a
   // backward NT (dX through the frozen weight) for every weight but the
@@ -1068,7 +1069,7 @@ TEST(UpdateCompiler, AnAdapterOnlyPlanCarriesNoRodataAndReadsTheSourceModel) {
   ASSERT_OK_AND_ASSIGN(CompiledUpdate adapter,
                        UpdateCompiler(config).Compile(saved));
   const PlanHeader h = HeaderOf(adapter);
-  EXPECT_EQ(h.version, kSeeuVersion);
+  EXPECT_EQ(h.version, kSeeuPreInt8MomentsVersion);
   EXPECT_EQ(h.rodata_size, 0u);
   EXPECT_EQ(adapter.rodata_size, 0u);
   EXPECT_GT(HeaderOf(plain).rodata_size, 0u);
@@ -1940,7 +1941,7 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
        {OpCode::kAttnDQTiled, OpCode::kAttnDKTiled, OpCode::kAttnDVTiled})
     EXPECT_EQ(CountOpcode(TrainProgramOf(t), back),
               CountOpcode(TrainProgramOf(tu), back));
-  EXPECT_EQ(HeaderOf(t).version, seeml::update::kSeeuVersion);
+  EXPECT_EQ(HeaderOf(t).version, seeml::update::kSeeuPreInt8MomentsVersion);
   // Off by default: the plan is the unmasked one.
   UpdateConfig plain = BaseConfig(16);
   ASSERT_OK_AND_ASSIGN(CompiledUpdate u, UpdateCompiler(plain).Compile(model));
@@ -2274,7 +2275,7 @@ TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
     ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
                          UpdateCompiler(config).Compile(model));
     const PlanHeader h = HeaderOf(c);
-    EXPECT_EQ(h.version, kSeeuVersion);
+    EXPECT_EQ(h.version, kSeeuPreInt8MomentsVersion);
     const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
     std::vector<OpCode> ops;
     for (const UpdateInstruction& ins : program)
@@ -2323,6 +2324,93 @@ TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
   }
 }
 
+TEST(UpdateCompiler, EightBitMomentsAreAV27PlanWithAQuantizedLedgerLine) {
+  // #192: --moments int8 lowers every AdamW step to kAdamW8Step — the
+  // codes and the scales persistent, the fused clip kept — stamps the plan
+  // v27, and the ledger names the pass that changed arithmetic, right
+  // after the optimizer pass, counting exactly the 8-bit steps. Under
+  // accumulation with the global clip the steps ride the step program.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  for (uint32_t accum : {1u, 2u}) {
+    UpdateConfig config = BaseConfig(kBatch);
+    config.optimizer.moments = MomentsKind::kInt8;
+    config.optimizer.clip_norm = 0.5f;
+    config.optimizer.clip_global = accum > 1;
+    config.grad_accum_steps = accum;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
+                         UpdateCompiler(config).Compile(model));
+    const PlanHeader h = HeaderOf(c);
+    EXPECT_EQ(h.version, kSeeuInt8MomentsVersion);
+    const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
+    uint64_t steps = 0;
+    for (const UpdateInstruction& ins : program) {
+      const auto op = static_cast<OpCode>(ins.opcode);
+      EXPECT_TRUE(op != OpCode::kAdamWStep);
+      if (op != OpCode::kAdamW8Step) continue;
+      ++steps;
+      const uint64_t n = ins.out[0];
+      // The fused per-tensor clip rides out[1] as on kAdamWStep; under the
+      // global clip the gradients arrive scaled and the word is zero.
+      EXPECT_EQ(ins.out[1],
+                accum > 1 ? 0u : uint64_t{std::bit_cast<uint32_t>(0.5f)});
+      // Codes and scales: the persistent prefix, the scales 2 per block.
+      EXPECT_TRUE(RefOffset(ins.in[2]) + n <= h.persistent_size);
+      EXPECT_TRUE(RefOffset(ins.in[3]) + n <= h.persistent_size);
+      EXPECT_TRUE(RefOffset(ins.out[2]) + 8 * MomentBlocks(n) <=
+                  h.persistent_size);
+    }
+    EXPECT_EQ(steps, 4u);  // A and B of the two adapted weights
+    if (accum > 1)
+      for (const UpdateInstruction& ins : TrainProgramOf(c))
+        EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kAdamW8Step);
+    DecodedMetadata meta;
+    const auto why =
+        PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
+    ASSERT_FALSE(why.has_value());
+    size_t at = meta.ledger.size();
+    for (size_t i = 0; i < meta.ledger.size(); ++i)
+      if (std::string(meta.ledger[i].pass) == "moments-int8") at = i;
+    ASSERT_TRUE(at > 0 && at < meta.ledger.size());
+    EXPECT_EQ(std::string(meta.ledger[at - 1].pass), "optimizer");
+    EXPECT_EQ(meta.ledger[at].arithmetic, kLedgerQuantized);
+    EXPECT_EQ(meta.ledger[at].instructions, 4u);
+    for (const LedgerEntry& e : meta.ledger)
+      if (&e != &meta.ledger[at]) EXPECT_EQ(e.arithmetic, kLedgerExact);
+    // The device holds the plan to its ledger, both ways: a quantized line
+    // one short — or a plan whose flag dropped the section — is refused.
+    std::vector<uint8_t> forged = c.plan;
+    const uint64_t entry =
+        PlanMetadataOffset(h) + sizeof(PlanMetadata) + at * sizeof(LedgerEntry);
+    LedgerEntry e;
+    std::memcpy(&e, forged.data() + entry, sizeof(e));
+    e.instructions = 3;
+    std::memcpy(forged.data() + entry, &e, sizeof(e));
+    EXPECT_TRUE(PlanMetadataViolation(h, forged.data(), forged.size()) ==
+                std::optional<std::string>(
+                    "the ledger accounts for 3 instruction(s) of quantized "
+                    "arithmetic, the programs carry 4"));
+    PlanHeader no_flag = h;
+    no_flag.data_flags &= ~kDataFlagMetadata;
+    EXPECT_STR_CONTAINS(
+        PlanMetadataViolation(no_flag, c.plan.data(), c.plan.size())
+            .value_or(""),
+        "8-bit moment steps but no metadata section");
+    // A pre-v27 plan's ledger knows two arithmetics.
+    PlanHeader old = h;
+    old.version = kSeeuPreInt8MomentsVersion;
+    EXPECT_STR_CONTAINS(
+        PlanMetadataViolation(old, c.plan.data(), c.plan.size()).value_or(""),
+        "unknown arithmetic");
+    // The persistent segment is smaller than the f32 moments' plan.
+    UpdateConfig f32 = config;
+    f32.optimizer.moments = MomentsKind::kF32;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate wide,
+                         UpdateCompiler(f32).Compile(model));
+    EXPECT_LT(h.persistent_size, HeaderOf(wide).persistent_size);
+    EXPECT_EQ(HeaderOf(wide).version, kSeeuPreInt8MomentsVersion);
+  }
+}
+
 TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
   // Plan v23 (S4 #150 / S5 #151 / S6 #152): the metadata section holds the
   // resolved recipe's hash and one ledger line per pass; an exact plan's
@@ -2334,8 +2422,9 @@ TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
     const PlanHeader h = HeaderOf(c);
     if ((h.data_flags & kDataFlagMetadata) == 0)
       ADD_FAILURE("the plan carries no metadata flag");
-    if (h.version != kSeeuVersion)
-      ADD_FAILURE("the plan is not at kSeeuVersion");
+    // #192: a plan without 8-bit moments is written at v26.
+    if (h.version != kSeeuPreInt8MomentsVersion)
+      ADD_FAILURE("the plan is not at kSeeuPreInt8MomentsVersion");
     const auto why =
         PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
     if (why) ADD_FAILURE(*why);

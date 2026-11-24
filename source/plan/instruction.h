@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 
 // =============================================================================
@@ -256,8 +257,214 @@ enum class OpCode : uint16_t {
   // +/-0 the cached kernels add, and an accumulator that starts at +0 never
   // holds -0.
   kAttnFwdTiledSeg = 57,  // in: q, k, v, o; out[0]=stats, out[1]=PackAttnGeometry, out[2]=starts ref
+  // 8-bit AdamW moments (S5 #192, plan v27; opt-in, recipe field moments
+  // int8). kAdamWStep's step over moments stored block-wise in 8 bits: m
+  // signed int8 [count], v unsigned uint8 [count], and one f32 scales
+  // vector of 2 * blocks floats — every block's m absmax, then every
+  // block's v max (kMomentBlock values a block, the last one short). Per
+  // block the step dequantizes, runs kAdamWStep's f32 expression on the
+  // dequantized moments (the parameter moves by the unquantized m and v of
+  // this step), then requantizes without bias: between the two decodable
+  // values around a new moment the code is the upper one with the
+  // probability of the fraction of the way there, drawn from a stateless
+  // integer hash of the optimizer step, the element and in[2] (round to
+  // nearest froze every moment that moves less than half a level a step —
+  // the #192 review). The codes, the dither and the dequantization are
+  // MomentCodeM / MomentCodeV, MomentDither and MomentValueM / MomentValueV
+  // below, the same rule on every backend and in the oracle, deterministic
+  // given the step and the element (the coded state may still differ by a
+  // level across backends: the f32 blend before the code is contracted
+  // differently). A
+  // non-finite moment (or a stored scale that is not a finite
+  // non-negative float) refuses the step before anything is written, as a
+  // non-finite clip norm does. out[1] is the fused clip word, as on 18.
+  // Arithmetic the f32 opcode does not compute: the plan's ledger records
+  // it as a quantized pass, and the compiler emits it only when asked.
+  kAdamW8Step = 58,  // in: p, g, m8, v8; out[0]=count, out[1]=clip bits, out[2]=scales ref
 };
 // clang-format on
+
+// --- 8-bit moments (plan v27, S5 #192). ----------------------------------------
+// A block is kMomentBlock consecutive values of one tensor; each carries
+// two f32 scales (the m block's absmax, the v block's max). 256, as in
+// bitsandbytes' 8-bit Adam: two scales per 256 values add 8 / 256 = 0.03 B
+// to the 2 B a value the codes take (8 B in f32: 3.94x smaller), and a
+// block is eight SIMD lanes of 32 on the GPU, one simdgroup.
+inline constexpr uint64_t kMomentBlock = 256;
+/// Blocks of a tensor of `count` values (the last one may be short).
+inline constexpr uint64_t MomentBlocks(uint64_t count) {
+  return count / kMomentBlock + (count % kMomentBlock != 0 ? 1 : 0);
+}
+/// A block whose absmax (m) or max (v) is below this is stored as zeros,
+/// scale 0: it keeps every dequantized value and every product the codes
+/// below form a normal float (2^-80 * 2^-15.75 for m, 2^-80 * 2^-31.75 for
+/// v), so no backend's subnormal handling enters, and sqrt(2^-80) is 1e-12
+/// — far below the eps every AdamW denominator adds.
+inline constexpr float kMomentScaleFloor = 0x1p-80f;
+// Both codes are logarithmic: eight levels an octave below the block's
+// scale S (m's absmax, v's max). Level n is the magnitude
+//   S * (kMomentLevel[n % 8] * 2^-(n / 8)),
+// level 0 the scale itself. The tables are f32 bit patterns — 2^(-r/8) and
+// 2^(1 - (j + 1/2) / 8), each rounded to nearest once — so the CPU, the
+// GPU and the oracle compare and multiply the same floats.
+//   m: int8, sign and magnitude. Code 0 is exactly 0; code +/-q, q in
+//      [1, 127], is level n = 127 - q in [0, 126]: 15.75 octaves (4.7
+//      decades) under the absmax. (A linear m code — 127 equal steps of
+//      absmax / 127 — leaves an element whose m is a thousandth of its
+//      block's largest between code 0 and code 1, where the dither below
+//      is noise of five times its update; the probe in
+//      docs/ledger/moments-int8-2026-11-23/.) -128 is never written.
+//   v: uint8. Code 0 is exactly 0; code q in [1, 255] is level
+//      n = 255 - q in [0, 254]: 31.75 octaves (9.6 decades) under the max.
+// The rounding is unbiased, not to nearest (#192 review). A moment moves
+// by less than a level a step — beta2 moves v by 0.1 %, a level is 9 % —
+// so a code rounded to its nearest level returns to where it was and
+// never moves again: v could not decay, and m froze at whatever code a
+// burst left it. Between the two decodable values lo <= x <= hi that
+// bracket a magnitude x — the dequantizer's own floats, MomentLevelValue
+// of two neighbouring levels, or 0 and the lowest level for m — the code
+// is hi's when
+//   MomentDither(...) < uint32(((x - lo) / (hi - lo)) * 2^24),
+// f32 arithmetic, the conversion truncating: hi with probability
+// (x - lo) / (hi - lo) to within 2^-24, so the dequantized value's
+// expectation is x, in the decoded domain. An x that is a level's value
+// keeps that level whatever the dither; an x at or above the scale is
+// level 0. One deliberate bias: a nonzero v below v's lowest level takes
+// the lowest level, never 0 — no element steps by m / eps for want of a v
+// its m still carries (the failure a linear v code shows; the ledger).
+// The dither is a stateless integer hash of the optimizer step, the
+// element's index in its tensor and the m codes' operand (the plan's own
+// word, the same on every backend and run): no generator state, so a
+// resumed run, any worker count and any chunking of the work draw the
+// same bits. With s the step and o the operand folded to 32 bits
+// (low word xor high word), c the stream's constant (m and v draw
+// independently) and i the index mod 2^32, all sums mod 2^32:
+//   key = MomentMix(MomentMix(o ^ c) + s),
+//   MomentDither = MomentMix(key + i) >> 8                (24 bits).
+// Exponent-field bit operations, compares, one multiply a level value,
+// two subtractions and one division, all single IEEE operations on named
+// floats, and 32-bit integer arithmetic: no transcendental function.
+inline constexpr uint32_t kMomentLevelBits[8] = {
+    0x3f800000u, 0x3f6ac0c7u, 0x3f5744fdu, 0x3f45672au,
+    0x3f3504f3u, 0x3f25fed7u, 0x3f1837f0u, 0x3f0b95c2u};
+inline constexpr uint32_t kMomentThresholdBits[8] = {
+    0x3ff5257du, 0x3fe0ccdfu, 0x3fce248cu, 0x3fbd08a4u,
+    0x3fad583fu, 0x3f9ef532u, 0x3f91c3d3u, 0x3f85aac3u};
+inline constexpr uint32_t kMomentMMaxLevel = 126;
+inline constexpr uint32_t kMomentVMaxLevel = 254;
+inline constexpr uint32_t kMomentDitherM = 0x9E3779B9u;
+inline constexpr uint32_t kMomentDitherV = 0x85EBCA6Bu;
+inline constexpr uint32_t kMomentMixA = 0x7FEB352Du;
+inline constexpr uint32_t kMomentMixB = 0x846CA68Bu;
+inline constexpr uint32_t kMomentDitherBits = 24;
+
+/// The dither's mixer: a 32-bit multiply-xorshift bijection.
+inline constexpr uint32_t MomentMix(uint32_t x) {
+  x ^= x >> 16;
+  x *= kMomentMixA;
+  x ^= x >> 15;
+  x *= kMomentMixB;
+  x ^= x >> 16;
+  return x;
+}
+/// One stream's key for optimizer step `step` of the tensor whose m codes
+/// are operand `operand` (kAdamW8Step's in[2]).
+inline constexpr uint32_t MomentDitherKey(uint64_t step, uint64_t operand,
+                                          uint32_t stream) {
+  const uint32_t s = static_cast<uint32_t>(step ^ (step >> 32));
+  const uint32_t o = static_cast<uint32_t>(operand ^ (operand >> 32));
+  return MomentMix(MomentMix(o ^ stream) + s);
+}
+/// The 24-bit dither of element `index` under `key`.
+inline constexpr uint32_t MomentDither(uint32_t key, uint64_t index) {
+  return MomentMix(key + static_cast<uint32_t>(index)) >>
+         (32 - kMomentDitherBits);
+}
+
+/// The magnitude of level `n` in a block whose scale is `scale`.
+inline float MomentLevelValue(uint32_t n, float scale) {
+  const float octave = std::bit_cast<float>((127u - n / 8) << 23);
+  const float unit = std::bit_cast<float>(kMomentLevelBits[n % 8]) * octave;
+  return scale * unit;
+}
+/// The level of magnitude `x` > 0 in a block whose scale is `scale` (>= the
+/// floor): one of the two levels whose values bracket x, by the rule
+/// above. `max_level` + 1 stands for the zero code, returned only under
+/// `to_zero` (m); without it a magnitude below the lowest level keeps the
+/// lowest level (v).
+inline uint32_t MomentLevel(float x, float scale, uint32_t max_level,
+                            bool to_zero, uint32_t dither) {
+  // The nearest level in the log domain: the ratio x / scale written
+  // y * 2^E, y in [1, 2), is level -8 (E + 1) + #{j : y < threshold[j]}.
+  const uint32_t bits = std::bit_cast<uint32_t>(x / scale);
+  const uint32_t biased = (bits >> 23) & 0xFFu;
+  uint32_t n = max_level;
+  if (biased != 0) {  // a subnormal ratio is far below the lowest level
+    const float y = std::bit_cast<float>((bits & 0x7FFFFFu) | 0x3F800000u);
+    uint32_t below = 0;
+    for (uint32_t t : kMomentThresholdBits)
+      below += y < std::bit_cast<float>(t) ? 1u : 0u;
+    const int64_t level = 8 * (126 - static_cast<int64_t>(biased)) + below;
+    if (level < 0)
+      n = 0;  // a ratio above 1: no block scale is below its values
+    else if (level < static_cast<int64_t>(n))
+      n = static_cast<uint32_t>(level);
+  }
+  // The bracket, in the dequantizer's floats: x's nearest level and the
+  // neighbour on x's side of it.
+  const float at = MomentLevelValue(n, scale);
+  float lo = at, hi = at;
+  uint32_t lo_n = n, hi_n = n;
+  if (x > at) {
+    if (n == 0) return 0;
+    hi_n = n - 1;
+    hi = MomentLevelValue(hi_n, scale);
+  } else if (x < at) {
+    if (n == max_level && !to_zero) return n;
+    lo_n = n + 1;  // max_level + 1: the zero code
+    lo = n == max_level ? 0.0f : MomentLevelValue(lo_n, scale);
+  } else {
+    return n;
+  }
+  if (!(x > lo)) return lo_n;
+  if (!(x < hi)) return hi_n;
+  const float above = x - lo;
+  const float width = hi - lo;
+  const float fraction = above / width;
+  const float scaled = fraction * 0x1p24f;
+  const uint32_t threshold = static_cast<uint32_t>(scaled);
+  return dither < threshold ? hi_n : lo_n;
+}
+
+/// m's code for `m` in a block whose absmax is `amax` (>= the floor).
+inline int8_t MomentCodeM(float m, float amax, uint32_t dither) {
+  if (m == 0.0f) return 0;
+  const uint32_t n =
+      MomentLevel(m < 0.0f ? -m : m, amax, kMomentMMaxLevel, true, dither);
+  const int q = static_cast<int>(kMomentMMaxLevel + 1) - static_cast<int>(n);
+  return static_cast<int8_t>(m < 0.0f ? -q : q);
+}
+/// The dequantized m of code `q` in a block whose absmax is `amax`.
+inline float MomentValueM(int8_t q, float amax) {
+  if (q == 0) return 0.0f;
+  const int magnitude = q < 0 ? -static_cast<int>(q) : static_cast<int>(q);
+  // -128 is never written; it reads as -127 does.
+  const uint32_t n =
+      magnitude > 127 ? 0u : 127u - static_cast<uint32_t>(magnitude);
+  const float value = MomentLevelValue(n, amax);
+  return q < 0 ? -value : value;
+}
+/// v's code for `v` >= 0 in a block whose max is `vmax` (>= the floor).
+inline uint8_t MomentCodeV(float v, float vmax, uint32_t dither) {
+  if (!(v > 0.0f)) return 0;
+  const uint32_t n = MomentLevel(v, vmax, kMomentVMaxLevel, false, dither);
+  return static_cast<uint8_t>(255u - n);
+}
+/// The dequantized v of code `q` in a block whose max is `vmax`.
+inline float MomentValueV(uint8_t q, float vmax) {
+  if (q == 0) return 0.0f;
+  return MomentLevelValue(255u - q, vmax);
+}
 
 inline constexpr uint64_t kAttnStatsWidth = 4;
 /// The stats row's fields: the score max, 1 / the softmax denominator, the

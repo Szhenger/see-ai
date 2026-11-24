@@ -440,6 +440,70 @@ TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
   EXPECT_OK(verify({seg, fill, seg, tiled}));
 }
 
+TEST(EngineContract, EightBitMomentsArePersistentStateOfTheTrainingPrograms) {
+  // #192: the codes and scales of a kAdamW8Step are optimizer state — the
+  // persistent prefix — and the step is the update: in the train or step
+  // program, never eval or merge. Each refusal is one mutation of the
+  // accepted plan.
+  namespace up = seeml::update;
+  up::PlanHeader header{};
+  header.version = up::kSeeuVersion;
+  header.arena_size = 8192;
+  header.persistent_size = 4096;
+  header.rodata_size = 0;
+  up::UpdateInstruction step{};
+  step.opcode = static_cast<uint16_t>(up::OpCode::kAdamW8Step);
+  step.in[0] = up::MakeArenaRef(0);     // p: 300 floats
+  step.in[1] = up::MakeArenaRef(6144);  // g: transient
+  step.in[2] = up::MakeArenaRef(1216);  // m codes: 300 bytes
+  step.in[3] = up::MakeArenaRef(1536);  // v codes: 300 bytes
+  step.out[0] = 300;
+  step.out[2] = up::MakeArenaRef(1856);  // scales: 2 blocks x 2
+  const std::vector<uint8_t> rodata;
+  auto verify = [&](std::vector<up::UpdateInstruction> train,
+                    std::vector<up::UpdateInstruction> merge = {},
+                    std::vector<up::UpdateInstruction> eval = {},
+                    std::vector<up::UpdateInstruction> step_program = {}) {
+    return VerifyExecutorContract(train, merge, eval, step_program, {}, rodata,
+                                  header);
+  };
+  EXPECT_OK(verify({step}));
+  EXPECT_OK(verify({}, {}, {}, {step}));  // the step program of an accumulation
+  EXPECT_ERROR_CONTAINS(verify({}, {}, {step}),
+                        "an 8-bit moment step outside the train / step");
+  EXPECT_ERROR_CONTAINS(verify({}, {step}),
+                        "an 8-bit moment step outside the train / step");
+  // The f32 steps are the update as well, and are held to the same two
+  // programs: an eval or merge program that steps moves the adapters while
+  // they are scored or merged.
+  up::UpdateInstruction sgd{};
+  sgd.opcode = static_cast<uint16_t>(up::OpCode::kSgdStep);
+  sgd.in[0] = up::MakeArenaRef(0);     // p: 300 floats
+  sgd.in[1] = up::MakeArenaRef(6144);  // g: transient
+  sgd.out[0] = 300;
+  up::UpdateInstruction adamw = sgd;
+  adamw.opcode = static_cast<uint16_t>(up::OpCode::kAdamWStep);
+  adamw.in[2] = up::MakeArenaRef(1216);  // m: 300 floats
+  adamw.in[3] = up::MakeArenaRef(2432);  // v: 300 floats
+  for (const up::UpdateInstruction& f32_step : {sgd, adamw}) {
+    EXPECT_OK(verify({f32_step}));
+    EXPECT_OK(verify({}, {}, {}, {f32_step}));
+    EXPECT_ERROR_CONTAINS(verify({}, {}, {f32_step}),
+                          "an optimizer step outside the train / step");
+    EXPECT_ERROR_CONTAINS(verify({}, {f32_step}),
+                          "an optimizer step outside the train / step");
+  }
+  for (int slot = 0; slot < 3; ++slot) {
+    up::UpdateInstruction transient = step;
+    uint64_t& ref = slot == 0   ? transient.in[2]
+                    : slot == 1 ? transient.in[3]
+                                : transient.out[2];
+    ref = up::MakeArenaRef(slot == 2 ? 4092 : 4000);  // straddles the end
+    EXPECT_ERROR_CONTAINS(verify({transient}),
+                          "codes or scales lie outside the persistent segment");
+  }
+}
+
 TEST(EngineContract, FeederContractMatchesCorpusToPlanGeometry) {
   up::SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 2);
   ASSERT_OK_AND_ASSIGN(up::CompiledUpdate compiled,

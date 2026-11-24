@@ -1,0 +1,662 @@
+seeml-update-compile: kernel policy default (the runtime's GEMM tiles; host "arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4")
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'attention-tiling' ok (757 ops, 0.191 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/algebra/lora_grafter.cc:246 — LoraGrafter: grafted 211 adapter(s), rank=8[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'lora-graft' ok (1812 ops, 0.998 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:834 — UpdateCompiler: hoisted the RoPE angles into 1 table(s)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'rope-table' ok (1813 ops, 0.452 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'segment-mask' ok (1814 ops, 0.423 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/calculus/autodiff.cc:496 — TrainableAutodiff: built adjoints for 422 trainable parameter(s)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'autodiff' ok (3580 ops, 1.964 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'optimizer' ok (5268 ops, 1.633 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:958 — UpdateCompiler: quantized 211 frozen weight(s) to int8 rodata[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-epilogue' ok (5268 ops, 1.359 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/algebra/addend_fuser.cc:117 — GemmAddendFuser: folded 419 GEMM(s) into the add reading them, orphaning them for the DCE sweep[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-gemm-addend' ok (5268 ops, 1.760 ms)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'fuse-elementwise' ok (5268 ops, 1.333 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:1071 — UpdateCompiler: dce removed 419 dead op(s)[0m
+[32m[INFO]  15:46:23 compiler/analysis/pass_manager.cc:23 — PassManager: pass 'dce' ok (4849 ops, 1.739 ms)[0m
+[32m[INFO]  15:46:23 compiler/driver/update_compiler.cc:1153 — UpdateCompiler: rematerialization (auto): no memory budget is configured, so the plan stays plain — the decision would otherwise follow the compiling host's memory; --remat on forces it, --memory-budget-mib N decides it against a budget[0m
+[32m[INFO]  15:46:24 compiler/driver/update_compiler.cc:1515 — UpdateCompiler: memory: the step-0 bound is 1600448832 B against the exact arena + plan of 1839455168 B[0m
+[32m[INFO]  15:46:24 compiler/driver/update_compiler.cc:1556 — UpdateCompiler: plan compiled — 2888 train + 908 eval + 422 merge instrs, arena 1558862784 B (18256704 B persistent), rodata 262048512 B[0m
+frontend — the model the compiler read
+  operators                483 ops                       operators in the SMF model file
+  tensors                  274                           tensors the file declares, the input included
+  frozen weights           273                           the file's constant tensors
+  weight payload           704,390,400 B (671.8 MiB)     those tensors' bytes in the file
+  parameters               176,097,600                   weight elements: the payload ÷ 4 B (f32)
+  input                    token ids, 128 per sequence   token ids per sequence, or features per row
+  vocabulary               49,152 tokens                 rows of the embedding table
+  adapted weights          211                           frozen weights LoRA will adapt: read only as a MatMul's weight
+  adapted payload          591,003,648 B (563.6 MiB)     those tensors' f32 bytes
+  activations              483                           forward values the graph computes at this batch
+  activation payload       905,183,232 B (863.3 MiB)     their f32 bytes, every value kept
+  frozen weights live      in the plan                   in the plan, or mapped from the model file (adapter-only)
+  corpus                   492 records of 129 ids (jsonl)  records and their width, and what --data named (text, jsonl, sds)
+  documents                490 in, 490 kept              documents read and kept (raw text)
+  dropped                  0 empty, 0 duplicate, 0 degenerate  documents dropped: empty, exact duplicates, degenerate (raw text)
+  corpus tokens            63,468 tokens                 ids the records hold
+  remainder                69 tokens                     ids the last partial window dropped (raw text)
+  straddling windows       312                           records that span a document boundary (see the segment mask row)
+  distinct ids             5802 of 49152                 distinct token ids the corpus uses, of the vocabulary
+  loss targets             62976 of 62976                positions the loss counts, of all positions
+  batches per epoch        110.75                        training records (less a compiled split) ÷ sequences per optimizer step
+  epochs covered           2.709                         the step budget × sequences per step ÷ training records
+  label entropy            6.6772 nats                   the labels' unigram entropy: the input-blind loss floor
+  corpus hash              6f4903425ae97c27              ContentHash64 of the canonical SDS the plan is pinned to
+  validation               49 of 492 records held out, seed 0, split 108e769ef0137272  the compiled held-out split: records, seed, the indices' hash
+  held-out twins           0                             held-out records byte-identical to a training record (exact only; a given SDS is not modified)
+  model hash               4448e52d513b5011              ContentHash64 of the source model file the plan is bound to
+  tokenizer hash           bc20bbcbeb260e1f              the model's tokenizer section, which every corpus must name
+  recipe hash              859433554140f769              the resolved recipe: the request with every decision written in
+  exporter report          45eb3848a6c02a19; tokenizer parity not run; logits parity not run  the report's hash and the parity the exporter proved
+  step-0 weights           176,097,600 B (167.9 MiB)     frozen weights at the base's storage
+  step-0 activations       762,568,704 B (727.2 MiB)     forward activations the backward reads
+  step-0 deltas            591,003,648 B (563.6 MiB)     the merged f32 deltas, one per adapted weight
+  step-0 caches            70,778,880 B (67.5 MiB)       attention probability caches, or tiled stats rows
+  step-0 moments           6,143,280 B (5.9 MiB)         8-bit AdamW moments and their block scales (#192), beside the bound and not in it
+  step-0 bound             1,600,448,832 B (1.5 GiB)     the accountant's lower bound the early gate proved fits
+  bound ÷ exact            0.8701                        the step-0 bound ÷ arena + plan: the accountant's honesty, ≤ 1
+  memory budget            17,179,869,184 B (16.0 GiB)   the configured budget, else this host's memory
+  frontend time            104.157 ms                    ingress, topology, the accountant and the forward SIR, wall time
+  frozen weights — each constant tensor: its payload and its value range, from the ingress sweep
+    emb                          113,246,208 B (108.0 MiB) -1.953125      3.984375
+    l0.ln1_g                     2,304 B (2.3 KiB) -0.398438      0.180664
+    l0.wq                        1,327,104 B (1.3 MiB) -11.000000     5.406250
+    l0.wk                        1,327,104 B (1.3 MiB) -7.937500      6.500000
+    l0.wv                        1,327,104 B (1.3 MiB) -0.447266      0.443359
+    l0.wo                        1,327,104 B (1.3 MiB) -3.171875      3.046875
+    l0.ln2_g                     2,304 B (2.3 KiB) 0.055420       0.613281
+    l0.w_gate                    3,538,944 B (3.4 MiB) -2.781250      2.656250
+    l0.w_up                      3,538,944 B (3.4 MiB) -2.515625      2.781250
+    l0.w_down                    3,538,944 B (3.4 MiB) -4.062500      3.500000
+    l1.ln1_g                     2,304 B (2.3 KiB) -0.000209      0.535156
+    l1.wq                        1,327,104 B (1.3 MiB) -2.171875      2.234375
+    l1.wk                        1,327,104 B (1.3 MiB) -2.218750      1.726562
+    l1.wv                        1,327,104 B (1.3 MiB) -0.746094      0.734375
+    l1.wo                        1,327,104 B (1.3 MiB) -3.734375      3.234375
+    l1.ln2_g                     2,304 B (2.3 KiB) -0.000159      0.423828
+    l1.w_gate                    3,538,944 B (3.4 MiB) -2.312500      2.406250
+    l1.w_up                      3,538,944 B (3.4 MiB) -3.234375      2.062500
+    l1.w_down                    3,538,944 B (3.4 MiB) -4.656250      6.781250
+    l2.ln1_g                     2,304 B (2.3 KiB) 0.084473       0.585938
+    l2.wq                        1,327,104 B (1.3 MiB) -1.843750      2.359375
+    l2.wk                        1,327,104 B (1.3 MiB) -2.500000      3.765625
+    l2.wv                        1,327,104 B (1.3 MiB) -1.046875      1.007812
+    l2.wo                        1,327,104 B (1.3 MiB) -1.648438      3.609375
+    l2.ln2_g                     2,304 B (2.3 KiB) 0.000004       0.337891
+    l2.w_gate                    3,538,944 B (3.4 MiB) -3.390625      2.906250
+    l2.w_up                      3,538,944 B (3.4 MiB) -2.515625      2.359375
+    l2.w_down                    3,538,944 B (3.4 MiB) -6.343750      6.500000
+    l3.ln1_g                     2,304 B (2.3 KiB) 0.052246       0.410156
+    l3.wq                        1,327,104 B (1.3 MiB) -2.125000      3.531250
+    l3.wk                        1,327,104 B (1.3 MiB) -3.093750      2.234375
+    l3.wv                        1,327,104 B (1.3 MiB) -0.976562      1.109375
+    l3.wo                        1,327,104 B (1.3 MiB) -2.843750      1.507812
+    l3.ln2_g                     2,304 B (2.3 KiB) -0.000094      0.289062
+    l3.w_gate                    3,538,944 B (3.4 MiB) -1.992188      1.507812
+    l3.w_up                      3,538,944 B (3.4 MiB) -2.484375      2.234375
+    l3.w_down                    3,538,944 B (3.4 MiB) -5.687500      5.687500
+    l4.ln1_g                     2,304 B (2.3 KiB) 0.079102       0.443359
+    l4.wq                        1,327,104 B (1.3 MiB) -2.062500      2.734375
+    l4.wk                        1,327,104 B (1.3 MiB) -2.140625      2.468750
+    l4.wv                        1,327,104 B (1.3 MiB) -0.953125      0.937500
+    l4.wo                        1,327,104 B (1.3 MiB) -1.617188      1.742188
+    l4.ln2_g                     2,304 B (2.3 KiB) -0.000143      0.261719
+    l4.w_gate                    3,538,944 B (3.4 MiB) -1.789062      1.773438
+    l4.w_up                      3,538,944 B (3.4 MiB) -1.703125      1.437500
+    l4.w_down                    3,538,944 B (3.4 MiB) -2.750000      5.062500
+    l5.ln1_g                     2,304 B (2.3 KiB) 0.088379       0.376953
+    l5.wq                        1,327,104 B (1.3 MiB) -2.109375      1.773438
+    l5.wk                        1,327,104 B (1.3 MiB) -2.437500      2.578125
+    l5.wv                        1,327,104 B (1.3 MiB) -0.996094      0.835938
+    l5.wo                        1,327,104 B (1.3 MiB) -1.515625      1.218750
+    l5.ln2_g                     2,304 B (2.3 KiB) 0.020752       0.249023
+    l5.w_gate                    3,538,944 B (3.4 MiB) -1.773438      2.218750
+    l5.w_up                      3,538,944 B (3.4 MiB) -2.281250      2.890625
+    l5.w_down                    3,538,944 B (3.4 MiB) -2.140625      5.406250
+    l6.ln1_g                     2,304 B (2.3 KiB) 0.132812       0.451172
+    l6.wq                        1,327,104 B (1.3 MiB) -3.546875      1.664062
+    l6.wk                        1,327,104 B (1.3 MiB) -2.843750      2.406250
+    l6.wv                        1,327,104 B (1.3 MiB) -0.894531      0.832031
+    l6.wo                        1,327,104 B (1.3 MiB) -1.390625      1.156250
+    l6.ln2_g                     2,304 B (2.3 KiB) 0.027466       0.257812
+    l6.w_gate                    3,538,944 B (3.4 MiB) -2.843750      2.265625
+    l6.w_up                      3,538,944 B (3.4 MiB) -1.796875      1.703125
+    l6.w_down                    3,538,944 B (3.4 MiB) -4.562500      3.375000
+    l7.ln1_g                     2,304 B (2.3 KiB) 0.104980       0.582031
+    l7.wq                        1,327,104 B (1.3 MiB) -2.015625      2.531250
+    l7.wk                        1,327,104 B (1.3 MiB) -2.343750      2.921875
+    l7.wv                        1,327,104 B (1.3 MiB) -0.867188      0.812500
+    l7.wo                        1,327,104 B (1.3 MiB) -1.835938      2.500000
+    l7.ln2_g                     2,304 B (2.3 KiB) 0.032471       0.265625
+    l7.w_gate                    3,538,944 B (3.4 MiB) -2.484375      2.218750
+    l7.w_up                      3,538,944 B (3.4 MiB) -2.890625      2.359375
+    l7.w_down                    3,538,944 B (3.4 MiB) -4.593750      5.281250
+    l8.ln1_g                     2,304 B (2.3 KiB) 0.109375       0.523438
+    l8.wq                        1,327,104 B (1.3 MiB) -1.671875      1.734375
+    l8.wk                        1,327,104 B (1.3 MiB) -1.562500      2.187500
+    l8.wv                        1,327,104 B (1.3 MiB) -1.156250      0.929688
+    l8.wo                        1,327,104 B (1.3 MiB) -1.742188      1.984375
+    l8.ln2_g                     2,304 B (2.3 KiB) 0.045898       0.298828
+    l8.w_gate                    3,538,944 B (3.4 MiB) -3.250000      1.710938
+    l8.w_up                      3,538,944 B (3.4 MiB) -2.281250      2.875000
+    l8.w_down                    3,538,944 B (3.4 MiB) -4.406250      4.937500
+    l9.ln1_g                     2,304 B (2.3 KiB) 0.154297       0.433594
+    l9.wq                        1,327,104 B (1.3 MiB) -2.046875      2.187500
+    l9.wk                        1,327,104 B (1.3 MiB) -1.929688      2.265625
+    l9.wv                        1,327,104 B (1.3 MiB) -0.894531      0.953125
+    l9.wo                        1,327,104 B (1.3 MiB) -3.937500      2.328125
+    l9.ln2_g                     2,304 B (2.3 KiB) 0.048584       0.263672
+    l9.w_gate                    3,538,944 B (3.4 MiB) -2.187500      2.828125
+    l9.w_up                      3,538,944 B (3.4 MiB) -2.531250      2.343750
+    l9.w_down                    3,538,944 B (3.4 MiB) -4.281250      3.296875
+    l10.ln1_g                    2,304 B (2.3 KiB) 0.086914       0.355469
+    l10.wq                       1,327,104 B (1.3 MiB) -2.578125      1.812500
+    l10.wk                       1,327,104 B (1.3 MiB) -3.093750      2.562500
+    l10.wv                       1,327,104 B (1.3 MiB) -0.902344      0.957031
+    l10.wo                       1,327,104 B (1.3 MiB) -1.867188      1.593750
+    l10.ln2_g                    2,304 B (2.3 KiB) 0.034912       0.263672
+    l10.w_gate                   3,538,944 B (3.4 MiB) -2.234375      2.406250
+    l10.w_up                     3,538,944 B (3.4 MiB) -2.828125      1.789062
+    l10.w_down                   3,538,944 B (3.4 MiB) -2.656250      3.593750
+    l11.ln1_g                    2,304 B (2.3 KiB) 0.079590       0.302734
+    l11.wq                       1,327,104 B (1.3 MiB) -3.203125      1.843750
+    l11.wk                       1,327,104 B (1.3 MiB) -3.078125      2.265625
+    l11.wv                       1,327,104 B (1.3 MiB) -0.871094      0.957031
+    l11.wo                       1,327,104 B (1.3 MiB) -1.570312      1.375000
+    l11.ln2_g                    2,304 B (2.3 KiB) 0.048340       0.265625
+    l11.w_gate                   3,538,944 B (3.4 MiB) -2.328125      2.343750
+    l11.w_up                     3,538,944 B (3.4 MiB) -2.515625      2.234375
+    l11.w_down                   3,538,944 B (3.4 MiB) -8.687500      4.218750
+    l12.ln1_g                    2,304 B (2.3 KiB) 0.083984       0.435547
+    l12.wq                       1,327,104 B (1.3 MiB) -2.031250      3.265625
+    l12.wk                       1,327,104 B (1.3 MiB) -1.453125      1.296875
+    l12.wv                       1,327,104 B (1.3 MiB) -1.132812      1.031250
+    l12.wo                       1,327,104 B (1.3 MiB) -3.203125      4.093750
+    l12.ln2_g                    2,304 B (2.3 KiB) 0.050293       0.392578
+    l12.w_gate                   3,538,944 B (3.4 MiB) -2.718750      2.093750
+    l12.w_up                     3,538,944 B (3.4 MiB) -2.000000      1.625000
+    l12.w_down                   3,538,944 B (3.4 MiB) -2.828125      8.562500
+    l13.ln1_g                    2,304 B (2.3 KiB) 0.064941       0.402344
+    l13.wq                       1,327,104 B (1.3 MiB) -2.953125      3.375000
+    l13.wk                       1,327,104 B (1.3 MiB) -3.796875      1.429688
+    l13.wv                       1,327,104 B (1.3 MiB) -1.390625      1.507812
+    l13.wo                       1,327,104 B (1.3 MiB) -3.578125      2.453125
+    l13.ln2_g                    2,304 B (2.3 KiB) 0.062500       0.257812
+    l13.w_gate                   3,538,944 B (3.4 MiB) -2.781250      3.390625
+    l13.w_up                     3,538,944 B (3.4 MiB) -1.593750      1.765625
+    l13.w_down                   3,538,944 B (3.4 MiB) -4.218750      3.859375
+    l14.ln1_g                    2,304 B (2.3 KiB) 0.075684       0.722656
+    l14.wq                       1,327,104 B (1.3 MiB) -1.945312      2.093750
+    l14.wk                       1,327,104 B (1.3 MiB) -1.765625      1.585938
+    l14.wv                       1,327,104 B (1.3 MiB) -1.203125      0.992188
+    l14.wo                       1,327,104 B (1.3 MiB) -1.781250      3.765625
+    l14.ln2_g                    2,304 B (2.3 KiB) 0.066895       0.289062
+    l14.w_gate                   3,538,944 B (3.4 MiB) -2.046875      1.718750
+    l14.w_up                     3,538,944 B (3.4 MiB) -2.750000      1.921875
+    l14.w_down                   3,538,944 B (3.4 MiB) -3.750000      3.265625
+    l15.ln1_g                    2,304 B (2.3 KiB) 0.065430       0.402344
+    l15.wq                       1,327,104 B (1.3 MiB) -2.031250      2.718750
+    l15.wk                       1,327,104 B (1.3 MiB) -1.820312      1.937500
+    l15.wv                       1,327,104 B (1.3 MiB) -1.242188      1.320312
+    l15.wo                       1,327,104 B (1.3 MiB) -2.312500      1.921875
+    l15.ln2_g                    2,304 B (2.3 KiB) 0.056152       0.304688
+    l15.w_gate                   3,538,944 B (3.4 MiB) -3.203125      2.640625
+    l15.w_up                     3,538,944 B (3.4 MiB) -1.585938      1.656250
+    l15.w_down                   3,538,944 B (3.4 MiB) -2.953125      2.953125
+    l16.ln1_g                    2,304 B (2.3 KiB) 0.070312       0.423828
+    l16.wq                       1,327,104 B (1.3 MiB) -3.671875      2.890625
+    l16.wk                       1,327,104 B (1.3 MiB) -1.906250      1.968750
+    l16.wv                       1,327,104 B (1.3 MiB) -1.203125      1.164062
+    l16.wo                       1,327,104 B (1.3 MiB) -1.687500      1.843750
+    l16.ln2_g                    2,304 B (2.3 KiB) 0.065918       0.253906
+    l16.w_gate                   3,538,944 B (3.4 MiB) -2.187500      2.250000
+    l16.w_up                     3,538,944 B (3.4 MiB) -1.742188      1.648438
+    l16.w_down                   3,538,944 B (3.4 MiB) -3.937500      3.312500
+    l17.ln1_g                    2,304 B (2.3 KiB) 0.081543       0.488281
+    l17.wq                       1,327,104 B (1.3 MiB) -1.750000      2.609375
+    l17.wk                       1,327,104 B (1.3 MiB) -1.437500      1.554688
+    l17.wv                       1,327,104 B (1.3 MiB) -1.179688      1.226562
+    l17.wo                       1,327,104 B (1.3 MiB) -2.515625      2.984375
+    l17.ln2_g                    2,304 B (2.3 KiB) 0.073242       0.228516
+    l17.w_gate                   3,538,944 B (3.4 MiB) -2.796875      3.031250
+    l17.w_up                     3,538,944 B (3.4 MiB) -1.750000      1.804688
+    l17.w_down                   3,538,944 B (3.4 MiB) -3.343750      2.671875
+    l18.ln1_g                    2,304 B (2.3 KiB) 0.099121       0.470703
+    l18.wq                       1,327,104 B (1.3 MiB) -3.531250      2.671875
+    l18.wk                       1,327,104 B (1.3 MiB) -1.453125      1.546875
+    l18.wv                       1,327,104 B (1.3 MiB) -2.265625      2.000000
+    l18.wo                       1,327,104 B (1.3 MiB) -1.890625      2.515625
+    l18.ln2_g                    2,304 B (2.3 KiB) 0.055176       0.222656
+    l18.w_gate                   3,538,944 B (3.4 MiB) -4.062500      4.156250
+    l18.w_up                     3,538,944 B (3.4 MiB) -2.171875      2.218750
+    l18.w_down                   3,538,944 B (3.4 MiB) -3.406250      3.203125
+    l19.ln1_g                    2,304 B (2.3 KiB) 0.124023       0.437500
+    l19.wq                       1,327,104 B (1.3 MiB) -2.093750      2.281250
+    l19.wk                       1,327,104 B (1.3 MiB) -1.570312      1.351562
+    l19.wv                       1,327,104 B (1.3 MiB) -1.148438      1.335938
+    l19.wo                       1,327,104 B (1.3 MiB) -3.250000      2.453125
+    l19.ln2_g                    2,304 B (2.3 KiB) 0.058838       0.239258
+    l19.w_gate                   3,538,944 B (3.4 MiB) -2.812500      3.203125
+    l19.w_up                     3,538,944 B (3.4 MiB) -2.765625      2.062500
+    l19.w_down                   3,538,944 B (3.4 MiB) -3.031250      3.062500
+    l20.ln1_g                    2,304 B (2.3 KiB) 0.092285       0.378906
+    l20.wq                       1,327,104 B (1.3 MiB) -3.046875      2.890625
+    l20.wk                       1,327,104 B (1.3 MiB) -1.273438      1.492188
+    l20.wv                       1,327,104 B (1.3 MiB) -2.531250      2.921875
+    l20.wo                       1,327,104 B (1.3 MiB) -1.703125      2.250000
+    l20.ln2_g                    2,304 B (2.3 KiB) 0.072266       0.246094
+    l20.w_gate                   3,538,944 B (3.4 MiB) -2.156250      2.796875
+    l20.w_up                     3,538,944 B (3.4 MiB) -2.062500      2.812500
+    l20.w_down                   3,538,944 B (3.4 MiB) -3.937500      2.468750
+    l21.ln1_g                    2,304 B (2.3 KiB) 0.130859       0.439453
+    l21.wq                       1,327,104 B (1.3 MiB) -1.820312      1.640625
+    l21.wk                       1,327,104 B (1.3 MiB) -1.664062      1.187500
+    l21.wv                       1,327,104 B (1.3 MiB) -1.562500      2.187500
+    l21.wo                       1,327,104 B (1.3 MiB) -2.031250      3.578125
+    l21.ln2_g                    2,304 B (2.3 KiB) 0.071777       0.255859
+    l21.w_gate                   3,538,944 B (3.4 MiB) -2.671875      2.875000
+    l21.w_up                     3,538,944 B (3.4 MiB) -1.578125      2.031250
+    l21.w_down                   3,538,944 B (3.4 MiB) -3.375000      3.359375
+    l22.ln1_g                    2,304 B (2.3 KiB) 0.151367       0.458984
+    l22.wq                       1,327,104 B (1.3 MiB) -1.968750      1.875000
+    l22.wk                       1,327,104 B (1.3 MiB) -1.390625      1.375000
+    l22.wv                       1,327,104 B (1.3 MiB) -2.218750      2.437500
+    l22.wo                       1,327,104 B (1.3 MiB) -3.078125      3.343750
+    l22.ln2_g                    2,304 B (2.3 KiB) 0.000230       0.265625
+    l22.w_gate                   3,538,944 B (3.4 MiB) -2.437500      2.218750
+    l22.w_up                     3,538,944 B (3.4 MiB) -1.570312      2.375000
+    l22.w_down                   3,538,944 B (3.4 MiB) -4.656250      2.968750
+    l23.ln1_g                    2,304 B (2.3 KiB) 0.148438       0.675781
+    l23.wq                       1,327,104 B (1.3 MiB) -1.898438      2.453125
+    l23.wk                       1,327,104 B (1.3 MiB) -1.382812      1.296875
+    l23.wv                       1,327,104 B (1.3 MiB) -2.703125      2.812500
+    l23.wo                       1,327,104 B (1.3 MiB) -2.906250      3.140625
+    l23.ln2_g                    2,304 B (2.3 KiB) 0.000061       0.308594
+    l23.w_gate                   3,538,944 B (3.4 MiB) -1.953125      2.203125
+    l23.w_up                     3,538,944 B (3.4 MiB) -1.476562      1.679688
+    l23.w_down                   3,538,944 B (3.4 MiB) -3.984375      3.000000
+    l24.ln1_g                    2,304 B (2.3 KiB) 0.105469       0.519531
+    l24.wq                       1,327,104 B (1.3 MiB) -3.015625      3.187500
+    l24.wk                       1,327,104 B (1.3 MiB) -1.382812      1.406250
+    l24.wv                       1,327,104 B (1.3 MiB) -2.125000      1.796875
+    l24.wo                       1,327,104 B (1.3 MiB) -3.218750      3.328125
+    l24.ln2_g                    2,304 B (2.3 KiB) 0.000111       0.322266
+    l24.w_gate                   3,538,944 B (3.4 MiB) -2.375000      3.031250
+    l24.w_up                     3,538,944 B (3.4 MiB) -2.421875      3.218750
+    l24.w_down                   3,538,944 B (3.4 MiB) -3.562500      4.281250
+    l25.ln1_g                    2,304 B (2.3 KiB) 0.117676       0.589844
+    l25.wq                       1,327,104 B (1.3 MiB) -2.031250      2.265625
+    l25.wk                       1,327,104 B (1.3 MiB) -1.890625      1.648438
+    l25.wv                       1,327,104 B (1.3 MiB) -1.945312      1.984375
+    l25.wo                       1,327,104 B (1.3 MiB) -2.812500      2.687500
+    l25.ln2_g                    2,304 B (2.3 KiB) 0.051514       0.328125
+    l25.w_gate                   3,538,944 B (3.4 MiB) -2.421875      2.468750
+    l25.w_up                     3,538,944 B (3.4 MiB) -2.015625      1.398438
+    l25.w_down                   3,538,944 B (3.4 MiB) -4.250000      2.625000
+    l26.ln1_g                    2,304 B (2.3 KiB) 0.141602       0.609375
+    l26.wq                       1,327,104 B (1.3 MiB) -2.171875      2.156250
+    l26.wk                       1,327,104 B (1.3 MiB) -1.796875      1.492188
+    l26.wv                       1,327,104 B (1.3 MiB) -2.171875      2.187500
+    l26.wo                       1,327,104 B (1.3 MiB) -2.703125      2.750000
+    l26.ln2_g                    2,304 B (2.3 KiB) 0.062988       0.353516
+    l26.w_gate                   3,538,944 B (3.4 MiB) -1.968750      2.203125
+    l26.w_up                     3,538,944 B (3.4 MiB) -1.656250      2.046875
+    l26.w_down                   3,538,944 B (3.4 MiB) -2.265625      3.625000
+    l27.ln1_g                    2,304 B (2.3 KiB) 0.107422       0.742188
+    l27.wq                       1,327,104 B (1.3 MiB) -2.281250      3.750000
+    l27.wk                       1,327,104 B (1.3 MiB) -1.515625      1.312500
+    l27.wv                       1,327,104 B (1.3 MiB) -1.585938      1.593750
+    l27.wo                       1,327,104 B (1.3 MiB) -2.843750      2.703125
+    l27.ln2_g                    2,304 B (2.3 KiB) 0.070312       0.406250
+    l27.w_gate                   3,538,944 B (3.4 MiB) -3.312500      2.328125
+    l27.w_up                     3,538,944 B (3.4 MiB) -2.390625      2.453125
+    l27.w_down                   3,538,944 B (3.4 MiB) -2.546875      3.734375
+    l28.ln1_g                    2,304 B (2.3 KiB) 0.170898       0.683594
+    l28.wq                       1,327,104 B (1.3 MiB) -1.960938      2.109375
+    l28.wk                       1,327,104 B (1.3 MiB) -1.601562      1.562500
+    l28.wv                       1,327,104 B (1.3 MiB) -1.585938      1.703125
+    l28.wo                       1,327,104 B (1.3 MiB) -2.359375      2.109375
+    l28.ln2_g                    2,304 B (2.3 KiB) 0.084473       0.957031
+    l28.w_gate                   3,538,944 B (3.4 MiB) -7.000000      6.968750
+    l28.w_up                     3,538,944 B (3.4 MiB) -12.562500     9.437500
+    l28.w_down                   3,538,944 B (3.4 MiB) -9.250000      2.796875
+    l29.ln1_g                    2,304 B (2.3 KiB) 0.192383       0.734375
+    l29.wq                       1,327,104 B (1.3 MiB) -2.031250      2.109375
+    l29.wk                       1,327,104 B (1.3 MiB) -1.757812      1.585938
+    l29.wv                       1,327,104 B (1.3 MiB) -1.632812      1.570312
+    l29.wo                       1,327,104 B (1.3 MiB) -3.296875      3.015625
+    l29.ln2_g                    2,304 B (2.3 KiB) 0.271484       0.968750
+    l29.w_gate                   3,538,944 B (3.4 MiB) -2.000000      1.914062
+    l29.w_up                     3,538,944 B (3.4 MiB) -4.468750      2.843750
+    l29.w_down                   3,538,944 B (3.4 MiB) -6.125000      5.062500
+    lnf_g                        2,304 B (2.3 KiB) -0.090332      4.343750
+    w_head                       113,246,208 B (108.0 MiB) -1.953125      3.984375
+analysis — what the passes did
+  passes                   20                            passes and driver phases run, each timed
+  ops in                   757 ops                       the forward SIR the frontend built
+  ops out                  4,849 ops                     the training SIR after every pass, as lowered
+  adapters                 211                           LoRA adapters grafted, one per targeted matmul weight
+  rank                     8                             r, each adapter's inner width
+  alpha                    16.0                          the numerator of the adapter scale
+  adapter scale            2 = alpha / r                 what each adapter's delta is multiplied by, and the rule that set it
+  trainable                3,024,384                     the sum of r·(k + m) over the adapters
+  trainable share          1.717 %                       trainable ÷ the model's parameters
+  gradients                422                           trainable tensors autodiff reached (A and B per adapter)
+  RoPE tables              1                             angle tables hoisted, one per geometry
+  epilogue fusions         0                             bias and activation chains folded into a GEMM
+  addend fusions           419                           GEMMs folded into the add that reads them
+  chain fusions            0                             elementwise chains folded into one kernel
+  dead ops removed         419 ops                       ops nothing reads, swept before lowering
+  attention                cached, 30 op(s)              cached probabilities, or the tiled family's stats rows
+  segment mask             on, 30 op(s): 309 of 492 window(s) hold more than one document  no attention across a window's documents: the decision and its reason
+  8-bit moments            int8, block 256 (m and v log2, 8 levels an octave, unbiased dither): 422 step(s), 6159168 B bound; estimate 6143280 B vs 24195072 B as f32 (3.94x fewer); not exact: the ledger's quantized line  AdamW's state stored block-wise in 8 bits (#192, opt-in): its codes, its bytes and what f32 would take
+  rematerialization        off: auto, no memory budget   forward values the backward recomputes instead of keeping
+  narrow weights           211 int8                      frozen weights stored int8 or bf16 in rodata
+  adjoint ops              1,766 ops                     operations autodiff emitted for the backward
+  activations saved        836,837,376 B (798.1 MiB)     forward values the backward reads: kept from forward to backward
+  forward work             158,923,751,424 FLOP          GEMM + attention work of the eval program (the forward and the loss), one pass
+  backward work            165,517,197,312 FLOP          one pass of the train program less the forward's: a step runs grad_accum of each
+  optimizer work           0 FLOP                        the step program's GEMM + attention work (elementwise updates are 0)
+  epilogue fusion saves    0 B                           intermediate tensors the epilogue fusions no longer write
+  addend fusion saves      770,703,360 B (735.0 MiB)     intermediate tensors the addend fusions no longer write
+  chain fusion saves       0 B                           intermediate tensors the elementwise chains no longer write
+  reordered arithmetic     0                             instructions whose reduction order a backend may change (the ledger)
+  analysis time            44.412 ms                     the passes' wall time
+  reduction-order ledger — each pass: bit-identical to its input or not, and why (plan metadata)
+    attention-tiling             bit-identical  0              the cached family: no op rewritten
+    lora-graft                   bit-identical  0              adds the adapter path; B is zero at step 0
+    rope-table                   bit-identical  0              angles hoisted; the kernels' own recurrence
+    segment-mask                 bit-identical  0              same reductions; other documents' keys masked
+    autodiff                     bit-identical  0              adds the backward; the forward is untouched
+    optimizer                    bit-identical  0              adds the update; the forward is untouched
+    moments-int8                 quantized      422            AdamW m, v 8-bit, block 256: log2/8, unbiased dither
+    fuse-gemm-epilogue           bit-identical  0              nothing fused
+    fuse-gemm-addend             bit-identical  0              d + s over the complete dot product
+    fuse-elementwise             bit-identical  0              nothing fused
+    dce                          bit-identical  0              removes ops nothing reads
+  passes — each pass and phase: the ops after it, its time
+    ingress                      0 ops          33.248 ms
+    topology                     483 ops        0.490 ms
+    data                         483 ops        61.828 ms
+    frontend                     757 ops        8.591 ms
+    attention-tiling             757 ops        0.191 ms
+    lora-graft                   1,812 ops      0.998 ms
+    rope-table                   1,813 ops      0.452 ms
+    segment-mask                 1,814 ops      0.423 ms
+    autodiff                     3,580 ops      1.964 ms
+    optimizer                    5,268 ops      1.633 ms
+    merge-and-review             5,268 ops      32.560 ms
+    fuse-gemm-epilogue           5,268 ops      1.359 ms
+    fuse-gemm-addend             5,268 ops      1.760 ms
+    fuse-elementwise             5,268 ops      1.333 ms
+    dce                          4,849 ops      1.739 ms
+    bind-arena                   4,849 ops      22.008 ms
+    lower                        4,849 ops      0.624 ms
+    persist-init                 4,849 ops      21.727 ms
+    assemble                     4,849 ops      81.788 ms
+    seal                         4,849 ops      10.050 ms
+  adapters — each adapted weight [k, m], the rank, the base's storage
+    l0.wq                        576            576            8              int8
+    l0.wk                        576            576            8              int8
+    l0.wv                        576            576            8              int8
+    l0.wo                        576            576            8              int8
+    l0.w_gate                    576            1,536          8              int8
+    l0.w_up                      576            1,536          8              int8
+    l0.w_down                    1,536          576            8              int8
+    l1.wq                        576            576            8              int8
+    l1.wk                        576            576            8              int8
+    l1.wv                        576            576            8              int8
+    l1.wo                        576            576            8              int8
+    l1.w_gate                    576            1,536          8              int8
+    l1.w_up                      576            1,536          8              int8
+    l1.w_down                    1,536          576            8              int8
+    l2.wq                        576            576            8              int8
+    l2.wk                        576            576            8              int8
+    l2.wv                        576            576            8              int8
+    l2.wo                        576            576            8              int8
+    l2.w_gate                    576            1,536          8              int8
+    l2.w_up                      576            1,536          8              int8
+    l2.w_down                    1,536          576            8              int8
+    l3.wq                        576            576            8              int8
+    l3.wk                        576            576            8              int8
+    l3.wv                        576            576            8              int8
+    l3.wo                        576            576            8              int8
+    l3.w_gate                    576            1,536          8              int8
+    l3.w_up                      576            1,536          8              int8
+    l3.w_down                    1,536          576            8              int8
+    l4.wq                        576            576            8              int8
+    l4.wk                        576            576            8              int8
+    l4.wv                        576            576            8              int8
+    l4.wo                        576            576            8              int8
+    l4.w_gate                    576            1,536          8              int8
+    l4.w_up                      576            1,536          8              int8
+    l4.w_down                    1,536          576            8              int8
+    l5.wq                        576            576            8              int8
+    l5.wk                        576            576            8              int8
+    l5.wv                        576            576            8              int8
+    l5.wo                        576            576            8              int8
+    l5.w_gate                    576            1,536          8              int8
+    l5.w_up                      576            1,536          8              int8
+    l5.w_down                    1,536          576            8              int8
+    l6.wq                        576            576            8              int8
+    l6.wk                        576            576            8              int8
+    l6.wv                        576            576            8              int8
+    l6.wo                        576            576            8              int8
+    l6.w_gate                    576            1,536          8              int8
+    l6.w_up                      576            1,536          8              int8
+    l6.w_down                    1,536          576            8              int8
+    l7.wq                        576            576            8              int8
+    l7.wk                        576            576            8              int8
+    l7.wv                        576            576            8              int8
+    l7.wo                        576            576            8              int8
+    l7.w_gate                    576            1,536          8              int8
+    l7.w_up                      576            1,536          8              int8
+    l7.w_down                    1,536          576            8              int8
+    l8.wq                        576            576            8              int8
+    l8.wk                        576            576            8              int8
+    l8.wv                        576            576            8              int8
+    l8.wo                        576            576            8              int8
+    l8.w_gate                    576            1,536          8              int8
+    l8.w_up                      576            1,536          8              int8
+    l8.w_down                    1,536          576            8              int8
+    l9.wq                        576            576            8              int8
+    l9.wk                        576            576            8              int8
+    l9.wv                        576            576            8              int8
+    l9.wo                        576            576            8              int8
+    l9.w_gate                    576            1,536          8              int8
+    l9.w_up                      576            1,536          8              int8
+    l9.w_down                    1,536          576            8              int8
+    l10.wq                       576            576            8              int8
+    l10.wk                       576            576            8              int8
+    l10.wv                       576            576            8              int8
+    l10.wo                       576            576            8              int8
+    l10.w_gate                   576            1,536          8              int8
+    l10.w_up                     576            1,536          8              int8
+    l10.w_down                   1,536          576            8              int8
+    l11.wq                       576            576            8              int8
+    l11.wk                       576            576            8              int8
+    l11.wv                       576            576            8              int8
+    l11.wo                       576            576            8              int8
+    l11.w_gate                   576            1,536          8              int8
+    l11.w_up                     576            1,536          8              int8
+    l11.w_down                   1,536          576            8              int8
+    l12.wq                       576            576            8              int8
+    l12.wk                       576            576            8              int8
+    l12.wv                       576            576            8              int8
+    l12.wo                       576            576            8              int8
+    l12.w_gate                   576            1,536          8              int8
+    l12.w_up                     576            1,536          8              int8
+    l12.w_down                   1,536          576            8              int8
+    l13.wq                       576            576            8              int8
+    l13.wk                       576            576            8              int8
+    l13.wv                       576            576            8              int8
+    l13.wo                       576            576            8              int8
+    l13.w_gate                   576            1,536          8              int8
+    l13.w_up                     576            1,536          8              int8
+    l13.w_down                   1,536          576            8              int8
+    l14.wq                       576            576            8              int8
+    l14.wk                       576            576            8              int8
+    l14.wv                       576            576            8              int8
+    l14.wo                       576            576            8              int8
+    l14.w_gate                   576            1,536          8              int8
+    l14.w_up                     576            1,536          8              int8
+    l14.w_down                   1,536          576            8              int8
+    l15.wq                       576            576            8              int8
+    l15.wk                       576            576            8              int8
+    l15.wv                       576            576            8              int8
+    l15.wo                       576            576            8              int8
+    l15.w_gate                   576            1,536          8              int8
+    l15.w_up                     576            1,536          8              int8
+    l15.w_down                   1,536          576            8              int8
+    l16.wq                       576            576            8              int8
+    l16.wk                       576            576            8              int8
+    l16.wv                       576            576            8              int8
+    l16.wo                       576            576            8              int8
+    l16.w_gate                   576            1,536          8              int8
+    l16.w_up                     576            1,536          8              int8
+    l16.w_down                   1,536          576            8              int8
+    l17.wq                       576            576            8              int8
+    l17.wk                       576            576            8              int8
+    l17.wv                       576            576            8              int8
+    l17.wo                       576            576            8              int8
+    l17.w_gate                   576            1,536          8              int8
+    l17.w_up                     576            1,536          8              int8
+    l17.w_down                   1,536          576            8              int8
+    l18.wq                       576            576            8              int8
+    l18.wk                       576            576            8              int8
+    l18.wv                       576            576            8              int8
+    l18.wo                       576            576            8              int8
+    l18.w_gate                   576            1,536          8              int8
+    l18.w_up                     576            1,536          8              int8
+    l18.w_down                   1,536          576            8              int8
+    l19.wq                       576            576            8              int8
+    l19.wk                       576            576            8              int8
+    l19.wv                       576            576            8              int8
+    l19.wo                       576            576            8              int8
+    l19.w_gate                   576            1,536          8              int8
+    l19.w_up                     576            1,536          8              int8
+    l19.w_down                   1,536          576            8              int8
+    l20.wq                       576            576            8              int8
+    l20.wk                       576            576            8              int8
+    l20.wv                       576            576            8              int8
+    l20.wo                       576            576            8              int8
+    l20.w_gate                   576            1,536          8              int8
+    l20.w_up                     576            1,536          8              int8
+    l20.w_down                   1,536          576            8              int8
+    l21.wq                       576            576            8              int8
+    l21.wk                       576            576            8              int8
+    l21.wv                       576            576            8              int8
+    l21.wo                       576            576            8              int8
+    l21.w_gate                   576            1,536          8              int8
+    l21.w_up                     576            1,536          8              int8
+    l21.w_down                   1,536          576            8              int8
+    l22.wq                       576            576            8              int8
+    l22.wk                       576            576            8              int8
+    l22.wv                       576            576            8              int8
+    l22.wo                       576            576            8              int8
+    l22.w_gate                   576            1,536          8              int8
+    l22.w_up                     576            1,536          8              int8
+    l22.w_down                   1,536          576            8              int8
+    l23.wq                       576            576            8              int8
+    l23.wk                       576            576            8              int8
+    l23.wv                       576            576            8              int8
+    l23.wo                       576            576            8              int8
+    l23.w_gate                   576            1,536          8              int8
+    l23.w_up                     576            1,536          8              int8
+    l23.w_down                   1,536          576            8              int8
+    l24.wq                       576            576            8              int8
+    l24.wk                       576            576            8              int8
+    l24.wv                       576            576            8              int8
+    l24.wo                       576            576            8              int8
+    l24.w_gate                   576            1,536          8              int8
+    l24.w_up                     576            1,536          8              int8
+    l24.w_down                   1,536          576            8              int8
+    l25.wq                       576            576            8              int8
+    l25.wk                       576            576            8              int8
+    l25.wv                       576            576            8              int8
+    l25.wo                       576            576            8              int8
+    l25.w_gate                   576            1,536          8              int8
+    l25.w_up                     576            1,536          8              int8
+    l25.w_down                   1,536          576            8              int8
+    l26.wq                       576            576            8              int8
+    l26.wk                       576            576            8              int8
+    l26.wv                       576            576            8              int8
+    l26.wo                       576            576            8              int8
+    l26.w_gate                   576            1,536          8              int8
+    l26.w_up                     576            1,536          8              int8
+    l26.w_down                   1,536          576            8              int8
+    l27.wq                       576            576            8              int8
+    l27.wk                       576            576            8              int8
+    l27.wv                       576            576            8              int8
+    l27.wo                       576            576            8              int8
+    l27.w_gate                   576            1,536          8              int8
+    l27.w_up                     576            1,536          8              int8
+    l27.w_down                   1,536          576            8              int8
+    l28.wq                       576            576            8              int8
+    l28.wk                       576            576            8              int8
+    l28.wv                       576            576            8              int8
+    l28.wo                       576            576            8              int8
+    l28.w_gate                   576            1,536          8              int8
+    l28.w_up                     576            1,536          8              int8
+    l28.w_down                   1,536          576            8              int8
+    l29.wq                       576            576            8              int8
+    l29.wk                       576            576            8              int8
+    l29.wv                       576            576            8              int8
+    l29.wo                       576            576            8              int8
+    l29.w_gate                   576            1,536          8              int8
+    l29.w_up                     576            1,536          8              int8
+    l29.w_down                   1,536          576            8              int8
+    w_head                       576            49,152         8              int8
+backend — the plan it emitted
+  train program            2,888 instructions            one micro-batch: forward, backward, optimizer
+  eval program             908 instructions              the forward and the loss, for validation
+  merge program            422 instructions              each adapter's delta, s·A·B at its adapter scale s
+  arena                    1,558,862,784 B (1.5 GiB)     the one allocation the device makes
+  persistent               18,256,704 B (17.4 MiB)       adapters and optimizer state, kept across steps
+  io                       4,096 B (4.0 KiB)             the staged input, label and loss slots
+  transient                1,540,601,984 B (1.4 GiB)     activations and gradients alive within a step
+  rodata                   262,048,512 B (249.9 MiB)     frozen weights packed into the plan
+  plan file                280,592,384 B (267.6 MiB)     the sealed .seeu
+  arena + plan             1,839,455,168 B (1.7 GiB)     what the device holds: the arena and the mapped plan
+  GEMM work                310,851,403,776 FLOP          per step: 2·M·N·K over the train GEMMs, times G
+  attention work           13,589,544,960 FLOP           per step: 4·B·H·S²·d forward + 8·B·H·S²·d backward
+  target                   arm64;Apple M5;cores=10;l1d=65536;l2=6291456;simd=4; GPU Apple M5 GPU  the compiling host's key and its GPU family
+  target GPU               Apple M5, Apple10 family, Metal 4  the Metal device: name, Apple GPU family, Metal 4 support
+  GPU cores                10                            the GPU's core count, as IOKit reports it
+  GPU working set          12,713,115,648 B (11.8 GiB)   the device's recommended working set: the memory a plan may keep resident on the GPU
+  kernel policy            runtime default               the CPU GEMM tiles the header carries
+  plan hash                c9249d6bf676074a              the plan's self-hash, which checkpoints bind to
+  backend time             136.197 ms                    binding, lowering, assembly and sealing, wall time
+  largest arena tensors — the five largest values the arena holds, with their segment
+    w_head.delta                 113,246,208 B (108.0 MiB) transient
+    logits                       100,663,296 B (96.0 MiB) transient
+    loss.xent_probs              100,663,296 B (96.0 MiB) transient
+    w_head.lora_out              100,663,296 B (96.0 MiB) transient
+    w_head.lora_out.d0           100,663,296 B (96.0 MiB) transient
+  GEMM census — the train program's products by shape: count, work, share of GEMM work
+    512 x 576 x 1536             90             81,537,269,760 FLOP 26.2 %
+    512 x 1536 x 576             90             81,537,269,760 FLOP 26.2 %
+    512 x 576 x 576              237            80,518,053,888 FLOP 25.9 %
+    512 x 576 x 49152            1              28,991,029,248 FLOP 9.3 %
+    512 x 49152 x 576            1              28,991,029,248 FLOP 9.3 %
+    512 x 8 x 576                331            1,561,853,952 FLOP 0.5 %
+    512 x 576 x 8                328            1,547,698,176 FLOP 0.5 %
+    512 x 8 x 1536               90             1,132,462,080 FLOP 0.4 %
+    512 x 1536 x 8               90             1,132,462,080 FLOP 0.4 %
+    576 x 8 x 512                181            854,065,152 FLOP 0.3 %
+    8 x 1536 x 512               60             754,974,720 FLOP 0.2 %
+    8 x 576 x 512                150            707,788,800 FLOP 0.2 %
+    8 x 49152 x 512              1              402,653,184 FLOP 0.1 %
+    512 x 8 x 49152              1              402,653,184 FLOP 0.1 %
+    512 x 49152 x 8              1              402,653,184 FLOP 0.1 %
+    1536 x 8 x 512               30             377,487,360 FLOP 0.1 %
+runtime — planned by the compiler, measured by the device
+  planned memory           1,839,455,168 B (1.7 GiB)     arena + plan: the resource contract the device checks
+  work per step            324,440,948,736 FLOP          GEMM + attention work of one optimizer step
+seeml-update-compile: emitted /tmp/f192d/row/s7/metal/int8/pkg/update_plan.seeu
+seeml-update-compile: wrote /tmp/f192d/row/s7/metal/int8/pkg/corpus.sds (the canonical corpus the plan is pinned to) and /tmp/f192d/row/s7/metal/int8/pkg/corpus_manifest.json
+seeml-update-compile: no embedded TU (--no-embed); next: python3 tool/pack_update.py /tmp/f192d/row/s7/metal/int8/pkg --build
+pack_update: embedded update_plan.seeu (280592384 bytes) as update_plan_embedded.S, 16384-byte aligned
+built: /private/tmp/f192d/row/s7/metal/int8/pkg/model_update
+pack_update: built /tmp/f192d/row/s7/metal/int8/pkg/model_update in 18.3 s
