@@ -9,7 +9,7 @@
   "smtk": {"magic": 1263816019, "version": 1, "head_bytes": 52, "kinds": {"byte_level_bpe": 1}, "pre_tokenizers": {"gpt2": 1, "digits_then_gpt2": 2}, "flags": {"add_prefix_space": 1, "nfc": 2}},
   "seeu": {
     "magic": 1430603091, "version": 26, "oldest_readable": 4,
-    "rodata_bit": 63, "source_bit": 62, "rodata_alignment": 16384, "rodata_offset_alignment": 16, "gemm_panel_floats": 8192,
+    "rodata_bit": 63, "source_bit": 62, "rodata_alignment": 16384, "rodata_offset_alignment": 16, "gemm_panel_floats": 8192, "max_grad_accum_steps": 65536,
     "flags": {"epilogue_bias": 1, "epilogue_act_shift": 1, "epilogue_act_mask": 6, "gemm_addend": 8, "q8_col_scale": 16, "relaxed": 32},
     "kl_temperature_bits": {"min": 981668463, "max": 1148846080},
     "fused_stages": {"end": 0, "add": 1, "mul": 2, "scale": 3, "relu": 4, "gelu": 5, "silu": 6},
@@ -150,7 +150,7 @@
   "recipe": {"lora_rank_max": 4096, "fields": [
     {"name": "data_batch", "flag": "--data-batch", "kind": "uint", "min": 1, "max": 2147483648},
     {"name": "steps", "flag": "--steps", "kind": "uint", "min": 1, "max": 1099511627776},
-    {"name": "grad_accum", "flag": "--grad-accum", "kind": "uint", "min": 1, "max": 4294967295},
+    {"name": "grad_accum", "flag": "--grad-accum", "kind": "uint", "min": 1, "max": 65536},
     {"name": "loss", "flag": "--loss", "kind": "enum", "choices": "xent|mse|kl|xent+kl"},
     {"name": "distill_weight", "flag": "--distill-weight", "kind": "float", "min": 0, "max": 1, "min_open": false, "max_open": false},
     {"name": "temperature", "flag": "--temperature", "kind": "float", "min": 0.001, "max": 1000, "min_open": false, "max_open": false},

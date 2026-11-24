@@ -237,6 +237,17 @@ inline constexpr uint32_t kSeeuBf16Version = 10;
 // The version that introduced gradient accumulation and kAccumulate.
 inline constexpr uint32_t kSeeuGradAccumVersion = 9;
 
+// The most micro-batches one optimizer step may accumulate (#223): the
+// header's grad_accum_steps above it is refused at load (the shared header
+// contract), and the recipe's grad_accum field holds the same maximum, so
+// the compiler refuses what the device would. The engine runs that many
+// passes of the train program inside one step, and a stop is polled only at
+// step boundaries: unbounded, one flipped bit made a step of 2^30 passes.
+// No setting in the tree accumulates more than 4; 2^16 is four orders of
+// magnitude of headroom over that, and 2^14 times fewer passes per step
+// than the flip the fuzzer found. The ABI manifest publishes it.
+inline constexpr uint32_t kMaxGradAccumSteps = 65536;
+
 // Section alignment. Every section starts 64-byte aligned (one cache line);
 // rodata additionally starts on a 16 KiB boundary and the blob is padded to
 // a 16 KiB multiple, so a page-aligned embedded plan (the .incbin stub)

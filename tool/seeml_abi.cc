@@ -183,12 +183,13 @@ void PrintSeeu() {
       "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "
       "\"source_bit\": %d, "
       "\"rodata_alignment\": %llu, \"rodata_offset_alignment\": %llu, "
-      "\"gemm_panel_floats\": %llu,\n",
+      "\"gemm_panel_floats\": %llu, \"max_grad_accum_steps\": %u,\n",
       up::kSeeuMagic, up::kSeeuVersion, up::kSeeuOldestReadable,
       std::countr_zero(up::kRodataBit), std::countr_zero(up::kSourceBit),
       static_cast<unsigned long long>(up::kSeeuRodataAlignment),
       static_cast<unsigned long long>(up::kSeeuRodataOffsetAlignment),
-      static_cast<unsigned long long>(up::kDefaultGemmPanelFloats));
+      static_cast<unsigned long long>(up::kDefaultGemmPanelFloats),
+      up::kMaxGradAccumSteps);
   std::printf(
       "    \"flags\": {\"epilogue_bias\": %u, \"epilogue_act_shift\": "
       "%u, \"epilogue_act_mask\": %u, \"gemm_addend\": %u, "

@@ -107,6 +107,9 @@ class RecipeCliTest(unittest.TestCase):
             (["--steps", " -1"], "--steps (recipe field steps) must be an integer"),
             (["--lora-seed", " -1"], "--lora-seed (recipe field lora_seed)"),
             (["--lora-rank", "5000"], "must be an integer in [1, 4096]"),
+            # #223: the bound the device's header contract holds.
+            (["--grad-accum", "65537"], "--grad-accum (recipe field "
+             "grad_accum) must be an integer in [1, 65536], got '65537'"),
             (["--temperature", "2"], "applies to a distillation loss only"),
             (["--distill-weight", "0.5"], "applies to a distillation loss only"),
             (["--teacher", teacher], "--teacher applies to a distillation loss"),
@@ -163,6 +166,7 @@ class RecipeCliTest(unittest.TestCase):
             ('{"rank": 4}', "unknown field 'rank'"),
             ('{"lora_rank": "4"}', "field 'lora_rank' takes a number"),
             ('{"lora_rank": 9999}', "must be an integer in [1, 4096]"),
+            ('{"grad_accum": 65537}', "must be an integer in [1, 65536]"),
             ('{"steps": 3, "steps": 4}', "field 'steps' appears twice"),
             ('[]', "not a JSON object"),
             # Not JSON's number: json.loads refuses both, and so does this.
@@ -189,6 +193,11 @@ class RecipeCliTest(unittest.TestCase):
         self.assertEqual(fields["loss"]["choices"], "xent|mse|kl|xent+kl")
         self.assertEqual(fields["val_frac"]["min_open"], True)
         self.assertEqual(fields["temperature"]["max"], 1000)
+        # #223: the accumulation's maximum is the load contract's bound.
+        self.assertEqual(fields["grad_accum"]["max"],
+                         formats.load_abi()["seeu"]["max_grad_accum_steps"])
+        self.assertEqual(fields["grad_accum"]["max"],
+                         formats.MAX_GRAD_ACCUM_STEPS)
         # Every flag the schema names is one the compiler's usage lists.
         usage = subprocess.run([COMPILER, "--help"], capture_output=True,
                                text=True).stderr

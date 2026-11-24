@@ -158,6 +158,7 @@ Key header fields:
 | `lr, beta1, beta2, eps, weight_decay` | optimizer hyperparameters, read at dispatch |
 | `lr_schedule, warmup_steps, min_lr_factor` | runtime LR schedule (0 = constant) |
 | `clip_norm` | informational; clip instructions are baked into the stream |
+| `grad_accum_steps`, `step_instr_offset/count` | gradient accumulation (v9): the micro-batches folded into one optimizer step (0 or 1 = none) and the step program, present exactly when the count is above 1; the count is at most `kMaxGradAccumSteps` = 65,536 (#223) — one step runs the train program that many times and a stop is polled only between steps, so a larger count is refused at load by name (`plan grad_accum_steps N exceeds the bound of 65536`), and the recipe's `grad_accum` holds the same maximum. A load-contract rule, not a format change: the version is unchanged, and no setting the tree measures accumulates more than 4 |
 | `gemm_tile_k`, `gemm_tile_n` | the CPU blocked-GEMM tile geometry (v11) the compiler decided from the offline tuner's host-keyed table or `--gemm-tiles`; 0 = the runtime's compiled-in default; throughput only, never bits (the K tile must be a multiple of 4) |
 
 Notice the "zeroed field" trick in `plan_hash`: you can't hash a file that contains its own hash (the act of writing the digest would change it), so the digest is computed with that one field held at zero, then patched in. The verifier replays the same convention.

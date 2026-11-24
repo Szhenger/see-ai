@@ -158,6 +158,9 @@ class ReaderTest(unittest.TestCase):
              "multiple of the kernel's 4-wide unroll"),
             (good, dict(grad_accum_steps=2),
              "plan step program presence disagrees with grad_accum_steps"),
+            # #223: bounded, on a plan whose step program pairs with it.
+            (stepped, dict(grad_accum_steps=65537),
+             "plan grad_accum_steps 65537 exceeds the bound of 65536"),
             (stepped, dict(version=8),
              "pre-v9 plan carries gradient-accumulation fields"),
             (good, dict(batch=0), "plan batch size is zero"),

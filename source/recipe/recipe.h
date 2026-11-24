@@ -20,6 +20,7 @@
 #include "source/identity/hash.h"
 #include "source/plan/config.h"
 #include "source/plan/instruction.h"
+#include "source/plan/schema.h"
 
 // =============================================================================
 // The recipe (S4 #150): how a fine-tune is configured, as one declarative
@@ -87,8 +88,8 @@ inline constexpr Field kFields[] = {
      false, false, "", "rows per compiled batch (tokens for a token model)"},
     {"steps", "--steps", Kind::kUInt, 1, kStepsMax, 0, 0, false, false, "",
      "the default optimizer-step budget and the schedule's horizon"},
-    {"grad_accum", "--grad-accum", Kind::kUInt, 1, 0xFFFFFFFFull, 0, 0, false,
-     false, "", "micro-batches folded into one optimizer step"},
+    {"grad_accum", "--grad-accum", Kind::kUInt, 1, kMaxGradAccumSteps, 0, 0,
+     false, false, "", "micro-batches folded into one optimizer step"},
     {"loss", "--loss", Kind::kEnum, 0, 0, 0, 0, false, false,
      "xent|mse|kl|xent+kl", "the objective"},
     {"distill_weight", "--distill-weight", Kind::kFloat, 0, 0, 0.0, 1.0, false,
@@ -512,6 +513,11 @@ struct Inputs {
            std::to_string(kLoraRankMax) + "]";
   for (const std::string& t : c.lora.target_filters)
     if (t.empty()) return std::string("an adapter target filter is empty");
+  // #223: 0 and 1 both mean one micro-batch; above the bound the device's
+  // header contract refuses the plan at load.
+  if (c.grad_accum_steps > kMaxGradAccumSteps)
+    return "grad_accum_steps " + std::to_string(c.grad_accum_steps) +
+           " is outside [1, " + std::to_string(kMaxGradAccumSteps) + "]";
   return std::nullopt;
 }
 

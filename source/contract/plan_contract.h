@@ -84,6 +84,13 @@ namespace contract_detail {
   if ((header.grad_accum_steps > 1) != (header.step_instr_count > 0))
     return contract_detail::Violation(
         "plan step program presence disagrees with grad_accum_steps");
+  // Bounded (#223): one optimizer step runs the train program this many
+  // times, and a stop is polled only between steps — unbounded, one flipped
+  // bit asked for a step of 2^30 passes. The recipe holds the same maximum.
+  if (header.grad_accum_steps > kMaxGradAccumSteps)
+    return contract_detail::Violation(
+        "plan grad_accum_steps " + std::to_string(header.grad_accum_steps) +
+        " exceeds the bound of " + std::to_string(kMaxGradAccumSteps));
   if (header.version < kSeeuGradAccumVersion &&
       (header.grad_accum_steps > 1 || header.step_instr_count > 0))
     return contract_detail::Violation(

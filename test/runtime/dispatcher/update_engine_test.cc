@@ -260,6 +260,35 @@ TEST(UpdateEngineLoad, RejectsOperandOutsideItsAddressSpace) {
                         "out of bounds");
 }
 
+// #223: one optimizer step runs grad_accum_steps passes of the train
+// program and a stop is polled only between steps, so the header's count is
+// bounded — a compiled accumulating plan resealed with one more than the
+// bound is refused at load, naming the field and the bound; at the bound it
+// loads. (The fuzzer's 2 -> 2^30 + 2 flip loaded and ran for days.)
+TEST(UpdateEngineLoad, RejectsAccumulationAboveTheBound) {
+  UpdateConfig config = BaseConfig(kBatch);
+  config.grad_accum_steps = 2;
+  std::vector<uint8_t> plan = CompilePlan(config);
+  ASSERT_FALSE(plan.empty());
+  PlanHeader h = HeaderOf(plan);
+  ASSERT_EQ(h.grad_accum_steps, 2u);
+
+  h.grad_accum_steps = seeml::update::kMaxGradAccumSteps;
+  PutHeader(plan, h);
+  UpdateEngine at_bound;
+  EXPECT_OK(at_bound.LoadFromMemory(plan.data(), plan.size()));
+
+  for (const uint32_t over : {seeml::update::kMaxGradAccumSteps + 1,
+                              uint32_t{2} + (uint32_t{1} << 30), UINT32_MAX}) {
+    h.grad_accum_steps = over;
+    PutHeader(plan, h);
+    UpdateEngine engine;
+    const auto r = engine.LoadFromMemory(plan.data(), plan.size());
+    EXPECT_ERROR_CONTAINS(r, "plan grad_accum_steps " + std::to_string(over) +
+                                 " exceeds the bound of 65536");
+  }
+}
+
 TEST(UpdateEngineLoad, RejectsClassLabelPlanWithoutSoftmax) {
   // label_kind == 1 promises the raw dataset labels are validated against a
   // softmax class width; a plan claiming class labels while carrying no

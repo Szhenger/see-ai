@@ -163,6 +163,10 @@ RODATA_ALIGNMENT = 16384  # where the compiler puts rodata (a 16 KiB page)
 # plan the device accepts, laid out by the compiler or not.
 RODATA_OFFSET_ALIGNMENT = 16
 GEMM_PANEL_FLOATS = 8192
+# The most micro-batches one optimizer step may accumulate (#223): the load
+# contract refuses a header above it, and the recipe's grad_accum field
+# holds the same maximum.
+MAX_GRAD_ACCUM_STEPS = 65536
 
 PLAN_HEADER = Layout("PlanHeader", [
     ("magic", "I"), ("version", "I"),
@@ -431,6 +435,8 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
          seeu["rodata_offset_alignment"])
     same("seeu.gemm_panel_floats", GEMM_PANEL_FLOATS,
          seeu["gemm_panel_floats"])
+    same("seeu.max_grad_accum_steps", MAX_GRAD_ACCUM_STEPS,
+         seeu.get("max_grad_accum_steps"))
     same("seeu.opcodes", {n: k for k, n in OPCODES.items()}, seeu["opcodes"])
     same("seeu.data_flags", {"masked_loss": DATA_FLAG_MASKED_LOSS,
                              "corpus_pinned": DATA_FLAG_CORPUS_PINNED,
