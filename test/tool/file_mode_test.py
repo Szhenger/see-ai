@@ -1,7 +1,10 @@
 """No file is created with fopen (CWE-732): fopen(path, "w") asks for mode
 0666 and leaves the result to the umask. A file is created through the
 platform seam — CreateForWrite or OpenStreamForWrite in
-source/platform/durable.h — which states its mode. Standard library only.
+source/platform/durable.h — which states its mode. The rule this holds is
+about fopen alone: std::ofstream creates a file the same way, and the
+tree's remaining ofstream sites are named in STYLE.md section 5. Standard
+library only.
 """
 
 import glob
