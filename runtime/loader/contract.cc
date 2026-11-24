@@ -321,13 +321,20 @@ std::expected<void, std::string> VerifyExecutorContract(
         "header");
   const bool source_anywhere = header.version >= up::kSeeuSourceWeightsVersion;
   bool saw_masked = false;
-  for (const auto& [program, role] :
-       {std::pair{train, ProgramRole{"train", false, source_anywhere}},
-        std::pair{merge, ProgramRole{"merge", true, source_anywhere}},
-        std::pair{eval, ProgramRole{"eval", true, true}},
-        std::pair{step, ProgramRole{"step", false, source_anywhere}}})
-    if (auto r = VerifyProgram(program, role, rodata, header, &saw_masked); !r)
-      return r;
+  const ProgramRole train_role{"train", false, source_anywhere};
+  const ProgramRole merge_role{"merge", true, source_anywhere};
+  const ProgramRole eval_role{"eval", true, true};
+  const ProgramRole step_role{"step", false, source_anywhere};
+  if (auto r = VerifyProgram(train, train_role, rodata, header, &saw_masked);
+      !r)
+    return r;
+  if (auto r = VerifyProgram(merge, merge_role, rodata, header, &saw_masked);
+      !r)
+    return r;
+  if (auto r = VerifyProgram(eval, eval_role, rodata, header, &saw_masked); !r)
+    return r;
+  if (auto r = VerifyProgram(step, step_role, rodata, header, &saw_masked); !r)
+    return r;
 
   if ((header.data_flags & up::kDataFlagMaskedLoss) != 0 && !saw_masked)
     return diag::executing::Error(
