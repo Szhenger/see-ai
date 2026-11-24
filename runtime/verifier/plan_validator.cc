@@ -485,10 +485,11 @@ std::expected<void, std::string> InstructionProof::Elementwise() {
       return Disjoint();
     case up::OpCode::kAddBias:
       if (!MulOk(d0, d1, &mn)) return Fail();
-      if (!RefOk(ins.in[0], mn, false) || !RefOk(ins.in[1], d1, false) ||
-          !RefOk(ins.in[2], mn, true))
+      // PLANTED (#208 demonstration, never merged): the destination's
+      // bounds rule is removed.
+      if (!RefOk(ins.in[0], mn, false) || !RefOk(ins.in[1], d1, false))
         return Fail();
-      return Disjoint();
+      return {};
     case up::OpCode::kReluFwd:
     case up::OpCode::kGeluFwd:
     case up::OpCode::kSiluFwd:
