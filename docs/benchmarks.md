@@ -1762,6 +1762,53 @@ What it saves is small, and the F5 measurement said so in advance: only the adap
 
 The v code was chosen on the toy fixtures before the row, under the first rule (m linear, both codes rounded to nearest — `vcode_toy.txt` and `proto_vcode.txt` are that measurement and were not re-run; what they compare is where a v code puts its zero, which the rounding does not change). A linear v code (the m code's, unsigned) rounds every v below 1/510 of its block's max to 0 while the element's m survives, and that element then steps by `m / eps`: in a NumPy prototype of a LoRA-shaped regression it did so 107–150 thousand times in 600 steps and the loss diverged; through the oracle on the decoder fixture (300 steps) it ended at 3.997 against f32's 1.066, with 70,157 such elements. A sqrt-domain linear code fixes most of it (1.060 on the decoder; 45 elements in one prototype seed). The logarithmic code — eight levels an octave, a nonzero v never coded 0 — had none in any run and ended at 1.027 on the decoder (prototype: within either side of f32). Scripts, every log and the oracle reports: `docs/ledger/moments-int8-2026-11-23/` (`run.sh` the row, `dead_band_probe.py` and `dead_band_probe.txt` the probe, `vcode_toy.py` the oracle comparison, `proto_vcode.py` the prototype).
 
+### The v1.0.0.B close: three checks that are not throughput rows (2026-11-24)
+
+Evidence for #154, #207, #208 and #218, kept with the measurements because
+each is a number someone will want to re-take. Files:
+`docs/ledger/close-2026-11-24/`. The host was on battery with Low Power
+Mode on throughout: the step times below are ratios, not rows.
+
+**The dispatch functions split by kernel family (S8 #154).**
+`CpuBackend::Execute`, `MetalBackend::Encode` and `UpdateEngine::TrainImpl`
+were the last functions over 200 lines; each is now one switch over
+functions under the limit, case bodies moved verbatim. SmolLM-135M r8,
+512 tokens a step, compiled before and after: the same plan bytes
+(`0ece2c0b…`), and the same committed model on the CPU after 6 steps
+(`e3936349…`) and on Metal after 20 (`ac4a0639…`) — `dispatch/sha.txt`.
+Step time, the two packages interleaved in one session
+(`dispatch/step_ms.txt`):
+
+| backend | before, ms | after, ms | runs a side |
+|---|---|---|---|
+| CPU, 10 threads | 1,719.8 (1,713.0 – 1,722.8) | 1,720.4 (1,717.6 – 1,721.8) | 3 × 8 steps |
+| Metal | 243.7 (226.9 – 246.7) | 246.2 (225.3 – 246.6) | 5 × 60 steps |
+
+Medians, with the range. The Metal step sat at one of two levels (≈ 226
+and ≈ 246 ms) on both sides, so the medians differ by which level the
+middle run landed on; the CPU pair differs by 0.04 %. No difference is
+measured; re-take on AC power before quoting an absolute number.
+
+**The nightly's lost input (CR3 #207).** Main `043112d`'s fuzz harness
+over its cached corpus with a 120 s unit limit and the upload on
+`always()`: libFuzzer wrote out a 326-byte unit at 164 s
+(`nightly/timeout-f4679c5a…`, the report in `nightly/timeout_report.txt`).
+It is a v24 plan asking for `grad_accum_steps` = 0x41000000 —
+1,090,519,040 passes of the train program for one optimizer step. The
+load contract has bounded the count at 65,536 since #223 and refuses this
+plan by name; the input is `test/fuzz/seeds/regressions/timeout-nightly-grad-accum`.
+
+**The segment mask on a genuine instruct checkpoint (#218).**
+SmolLM2-135M-Instruct (EOS `<|im_end|>`, id 2; `<|endoftext|>`, id 0),
+600 prompt/response records (`instruct/gen_corpus.py`), `--segment-mask
+on`, S = 128: 221 records, every one holding more than one document,
+14,132 response positions. Starts computed as `kSegmentStarts` computes
+them (`instruct/violations.py`, `instruct/result.txt`): from the id the
+plan carries (0), **0** response positions start after the first position
+of their own prompt; from the EOS, the scan before #227, **12,343** do.
+Main `c7f1e50` (the stopgap) refuses `on` for this model by name and
+decides `off` under `auto` (`instruct/screen_main_c7f1e50.txt`).
+
 ## Tier C — Memory (the gate that refuses compiles)
 
 | metric | definition | what it gates |

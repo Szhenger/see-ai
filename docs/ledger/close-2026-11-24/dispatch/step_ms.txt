@@ -1,0 +1,16 @@
+tip metal 245.72
+close metal 246.58
+tip metal 226.88
+close metal 244.65
+tip metal 243.69
+close metal 246.34
+tip metal 246.65
+close metal 246.18
+tip metal 229.25
+close metal 225.3
+tip cpu 1722.8
+close cpu 1721.83
+tip cpu 1712.96
+close cpu 1717.62
+tip cpu 1719.78
+close cpu 1720.4

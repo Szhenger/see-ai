@@ -114,6 +114,42 @@ What each place does, as of this change:
   finding prefix and the log's tail on `always()`, and saves its corpus
   with an explicit step on `always()`.
 
+## Status 2026-11-24 — the fuzz jobs' workflow steps, and what they were shown to do (#207, #208)
+
+The workflow steps are in `ci.yml` and `nightly.yml` (the combined patch
+of 2026-11-20, applied). What each acceptance line of the two follow-ups
+rests on:
+
+- **#208, the gate.** The PR job's log on the seed corpus reads non-zero
+  hits for all ten named functions (`ExecuteOnce` 453,
+  `ValidateInstructionImpl` 502, `UpdateEngine::ExecuteRange` 452,
+  `AssemblePlan` 436, `ByteLevelBpe::Load` 252, `DocumentsFromJsonl` 177,
+  `ParseRecipeFile` 416 — run 45438244719), and the job fails when one
+  reads zero.
+- **#208, a planted mutation.** With the destination bounds rule of
+  `kAddBias` removed from the validator, ninety seconds of libFuzzer
+  passed three times (28,179, 25,772 and 25,923 units) and found it once,
+  at 197 units (run 45446317062: AddressSanitizer, SEGV in
+  `kernels::AddBias`). That is the honest size of a 90-second campaign
+  against one opcode's rule: the corpus is a thousand units within the
+  run and the plan seeds are fourteen of them. Two things were built
+  from it. `test/fuzz/plan_mutate.h` is a plan-aware edit — one operand
+  field of one instruction, the instruction drawn evenly over the opcodes
+  its stream holds — which the libFuzzer build makes for three in four
+  mutations of a re-sealed plan unit. And the job runs the replay
+  suite's operand pass at 57,344 such edits in its own sanitizer build
+  ("Operand sweep"): on the planted rule that step fails every time
+  (run 45446856402). The replay suite makes 3,584 of them in every
+  build.
+- **#207, failed, not cancelled.** A planted slow unit (the 300th input
+  sleeps 60 s) ended the nightly's fuzz job **failed** at libFuzzer's own
+  25 s limit, with `timeout-8b021012…` and the log's tail uploaded and
+  the corpus saved (run 45442934791).
+- **#207, the lost input.** Recovered: `docs/benchmarks.md`, "The
+  v1.0.0.B close". The candidate of 2026-11-20 is the cause —
+  `grad_accum_steps` = 1,090,519,040 in a plan the fuzzer grew from
+  nothing — and #223's bound refuses it at load.
+
 ## Acceptance
 
 - A deliberately failing Python test turns the seam job red.

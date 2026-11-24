@@ -1,0 +1,21 @@
+{
+  "documents_in": 600,
+  "documents_kept": 600,
+  "chat_documents": 600,
+  "dropped_empty": 0,
+  "dropped_duplicate": 0,
+  "dropped_degenerate": 0,
+  "dropped_zero_target_windows": 0,
+  "dropped_duplicate_windows": 0,
+  "invalid_utf8_bytes": 0,
+  "control_chars": 0,
+  "bidi_controls": 0,
+  "tokens": 28579,
+  "windows": 221,
+  "remainder_tokens": 70,
+  "straddling_windows": 221,
+  "target_tokens": 14132,
+  "total_tokens": 28288,
+  "distinct_ids": 56,
+  "drops": []
+}
