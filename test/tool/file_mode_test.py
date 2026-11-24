@@ -26,7 +26,8 @@ def creating_fopens():
             if not path.endswith(SUFFIXES):
                 continue
             with open(path, encoding="utf-8") as f:
-                n = len(CREATES.findall(f.read()))
+                code = re.sub(r"//[^\n]*", "", f.read())  # not the comments
+            n = len(CREATES.findall(code))
             if n:
                 found[os.path.relpath(path, REPO).replace(os.sep, "/")] = n
     return found
