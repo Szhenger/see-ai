@@ -383,8 +383,9 @@ def poke_header(seed, field, value):
 def build_regressions(seeds):
     """{name: bytes} for seeds/regressions/: inputs that once hung or
     crashed the harness, each derived from a seed so that a plan-version
-    bump regenerates them with everything else. Named by libFuzzer's
-    prefix for the kind of finding."""
+    bump regenerates them with everything else — but for an input a
+    fuzzing run itself wrote out, which is kept byte for byte. Named by
+    libFuzzer's prefix for the kind of finding."""
     return {
         # CR3 #207: one bit of grad_accum_steps (2 -> 2^30 + 2) in an
         # accumulating plan. One optimizer step was then a billion passes of
@@ -399,6 +400,31 @@ def build_regressions(seeds):
         # away: accepted, and nothing run.
         "slow-unit-grad-accum-in-contract": poke_header(
             seeds["plan-mlp-accum"], "grad_accum_steps", 2 + (1 << 15)),
+        # CR3 #207, acceptance 3: the nightly's own input, recovered on
+        # 2026-11-24 by running main 043112d's harness over its cached
+        # corpus with a 120 s unit limit (it was at 164 s when libFuzzer
+        # wrote it out; the nightlies were cancelled with it in flight). A
+        # 325-byte plan the fuzzer grew from nothing — a v24 header whose
+        # two instruction streams lie inside the header itself, a kNop and
+        # a kSqNormAccum over 786,432 floats — with grad_accum_steps =
+        # 0x41000000: 1,090,519,040 passes of the train program for one
+        # step. The candidate cause of 2026-11-20, confirmed. Since #223
+        # the load contract refuses it by name. Verbatim but for the
+        # selector byte: 137 selected the plan arm of the four-arm harness
+        # (137 % 4), and is written here as the nine-arm one's (1). Not
+        # derived from a seed: it is evidence, kept as it was found.
+        "timeout-nightly-grad-accum": bytes.fromhex(
+            "01534545551800000000005a0000000000000000000000000000100000000000"
+            "000000100000000000000000000000ffffff1000000000000000000000000000"
+            "4100000000000000007800000000000000020000000000000000000000000000"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "0000010000000000000000000000000000000000000000000010000000000000"
+            "0000000000ff0002000002020000000000000001000000000035000000000000"
+            "0010000000000000000000000000000000000010000000000000000001000000"
+            "0000000c0000000000000000000000ffffff1000000000000000000000000000"
+            "4100000000000000007800000000000000020000000000000000000000000000"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "000008002c00"),
     }
 
 

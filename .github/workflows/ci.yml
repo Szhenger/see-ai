@@ -360,6 +360,21 @@ jobs:
           gate "the recipe file parser" 'seeml::update::recipe::ParseRecipeFile'
           gate "the export report reader" 'seeml::update::ReadExportReport'
           test "$missed" -eq 0
+      # CR3 #208, acceptance 2. Ninety seconds of libFuzzer do not find one
+      # opcode's missing bounds rule: with kAddBias's destination rule
+      # removed, three runs of the step above passed (25,772-28,179 units
+      # each, 2026-11-24) — the corpus is a thousand units by then, and the
+      # plan seeds are fourteen of them. The replay suite's operand pass is
+      # the same plan-aware edit (test/fuzz/plan_mutate.h) made 57,344
+      # times over those fourteen seeds, in this job's sanitizer build: the
+      # planted rule ends it in an AddressSanitizer report.
+      - name: Operand sweep (plan-aware edits over the plan seeds)
+        timeout-minutes: 6
+        run: |
+          cmake --build build-fuzz -j "$(nproc)" --target seeml_fuzz_replay_test
+          SEEML_FUZZ_MUTATIONS=2048 ./build-fuzz/seeml_fuzz_replay_test \
+            --filter=PlanOperandEdits 2>&1 | tee -a fuzz.log
+          test "${PIPESTATUS[0]}" -eq 0
       - name: Keep the log's tail
         if: failure() || cancelled()
         run: tail -n 400 fuzz.log > fuzz-tail.log || true
