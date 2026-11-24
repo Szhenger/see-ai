@@ -101,8 +101,8 @@ struct Compilation {
   int64_t in_dim = 0;
   std::optional<tokenization::CorpusIngress> corpus;
   bool masked_loss = false;
-  bool segment_mask = false;       // the decision (DecideSegmentMask)
-  std::string segment_mask_why;    // and its reason, for the screen
+  bool segment_mask = false;     // the decision (DecideSegmentMask)
+  std::string segment_mask_why;  // and its reason, for the screen
   TrainingFootprint footprint;
   AttentionKind attention = AttentionKind::kAuto;
   sir::Block block;
@@ -207,7 +207,7 @@ struct Compilation {
 
 Status Compilation::ValidateConfig() {
   wants_teacher = config_.loss == LossKind::kKLDistill ||
-                             config_.loss == LossKind::kXEntPlusKL;
+                  config_.loss == LossKind::kXEntPlusKL;
   // Exporter verification (S4 #150): an imported checkpoint — a model from a
   // file, carrying a tokenizer section — compiles only beside the exporter's
   // verified report (ReadExportReport fills config.export_report).
@@ -267,8 +267,7 @@ Status Compilation::ValidateConfig() {
                 " is not a finite value in its range (got " +
                 std::to_string(r.value) +
                 (std::string(r.name) == "temperature"
-                     ? std::string("; the range is ") +
-                           kKlTemperatureRangeText
+                     ? std::string("; the range is ") + kKlTemperatureRangeText
                      : std::string()) +
                 ")");
   }
@@ -414,9 +413,8 @@ Status Compilation::IngestData() {
         return generating::Error(generating::kDriver,
                                  "val_frac must lie in (0, 1)");
       if (corpus->facts.records < 2)
-        return generating::Error(
-            generating::kDriver,
-            "a held-out split needs at least two records");
+        return generating::Error(generating::kDriver,
+                                 "a held-out split needs at least two records");
       const std::vector<uint64_t> held = HeldOutIndices(
           corpus->facts.records, config_.split_seed, config_.val_frac);
       corpus->facts.val_records = held.size();
@@ -447,8 +445,7 @@ Status Compilation::DecideMaskedLoss() {
   // The masked loss (S3 #149, plan v22 kDataFlagMaskedLoss): asked for, or
   // implied by a corpus that carries a mask. The cross-entropy alone has a
   // masked form; the other objectives take every position.
-  masked_loss =
-      config_.masked_loss || (corpus && corpus->shape.masked);
+  masked_loss = config_.masked_loss || (corpus && corpus->shape.masked);
   if (masked_loss && config_.loss != LossKind::kSoftmaxXEnt)
     return generating::Error(
         generating::kDriver,
@@ -505,8 +502,9 @@ Status Compilation::DecideSegmentMask() {
       } else if (eos < 0) {
         segment_mask_why = "the model's tokenizer section names no EOS id";
       } else if (corpus->facts.multi_document_windows == 0) {
-        segment_mask_why = "no window of the corpus holds more than one "
-                           "document";
+        segment_mask_why =
+            "no window of the corpus holds more than one "
+            "document";
       } else {
         segment_mask = true;
         segment_mask_why =
@@ -598,12 +596,12 @@ Status Compilation::ProveFootprint() {
   attention = DecideAttention(footprint, config_);
   if (attention == AttentionKind::kTiled) {
     if (footprint.probs_cache_bytes > 0)
-      seeml::diag::Note(generating::kDriver,
-                        "attention tiled: " +
-                            std::to_string(footprint.probs_cache_bytes) +
-                            " B of probability caches become " +
-                            std::to_string(footprint.attention_stats_bytes) +
-                            " B of stats rows");
+      seeml::diag::Note(
+          generating::kDriver,
+          "attention tiled: " + std::to_string(footprint.probs_cache_bytes) +
+              " B of probability caches become " +
+              std::to_string(footprint.attention_stats_bytes) +
+              " B of stats rows");
     footprint.probs_cache_bytes = footprint.attention_stats_bytes;
   }
   {
@@ -644,13 +642,13 @@ Status Compilation::ProveFootprint() {
 
 Status Compilation::BuildForwardGraph() {
   // --- 1. Forward SIR: student (+ frozen teacher sharing the input). -------
-  build.input = token_input
-                    ? block.addArgument(sir::DataType::I32, sir::Shape{batch})
-                    : block.addArgument(sir::DataType::F32,
-                                        sir::Shape{batch, in_dim});
+  build.input =
+      token_input
+          ? block.addArgument(sir::DataType::I32, sir::Shape{batch})
+          : block.addArgument(sir::DataType::F32, sir::Shape{batch, in_dim});
 
-  auto student_out = BuildForward(block, source, "", build.input, batch, build,
-                                  &*topology);
+  auto student_out =
+      BuildForward(block, source, "", build.input, batch, build, &*topology);
   if (!student_out) return std::unexpected(student_out.error());
   build.output = *student_out;
   out_dim = build.output->shape().dims.at(1);
@@ -661,8 +659,9 @@ Status Compilation::BuildForwardGraph() {
   if (wants_teacher) {
     // Topology's cross-input check proved the teacher's input and output
     // agree with the student's; the build is a translation.
-    auto t_out = BuildForward(block, *teacher, std::string(sema::kTeacherPrefix),
-                              build.input, batch, build, &*teacher_topology);
+    auto t_out =
+        BuildForward(block, *teacher, std::string(sema::kTeacherPrefix),
+                     build.input, batch, build, &*teacher_topology);
     if (!t_out) return std::unexpected(t_out.error());
     teacher_out = *t_out;
   }
@@ -685,7 +684,8 @@ Status Compilation::GraftLoss() {
         masked_loss ? "sc_high.softmax_xent_masked" : "sc_high.softmax_xent");
     op->addOperand(build.output);
     op->addOperand(labels);
-    sir::Value* l = op->addResult("loss.xent", sir::DataType::F32, sir::Shape{});
+    sir::Value* l =
+        op->addResult("loss.xent", sir::DataType::F32, sir::Shape{});
     op->addResult("loss.xent_probs", sir::DataType::F32,
                   sir::Shape{batch, out_dim});
     return l;
@@ -714,9 +714,8 @@ Status Compilation::GraftLoss() {
       labels =
           block.addArgument(sir::DataType::F32, sir::Shape{batch, out_dim});
       label_kind = 2;
-      label_bytes =
-          static_cast<uint64_t>(batch) * static_cast<uint64_t>(out_dim) *
-          sizeof(float);
+      label_bytes = static_cast<uint64_t>(batch) *
+                    static_cast<uint64_t>(out_dim) * sizeof(float);
       sir::Operation* op = block.appendOp("sc_high.mse");
       op->addOperand(build.output);
       op->addOperand(labels);
@@ -771,53 +770,51 @@ Status Compilation::StructuralPasses() {
     // reads the decision off the op.
     pm.Add("attention-tiling",
            [&](sir::Block& b) -> std::expected<void, std::string> {
-             auto decided =
-                 AttentionTiling(config_.attention,
-                                 attention == AttentionKind::kTiled,
-                                 config_.attention_cache_budget_bytes)
-                     .Run(b);
-             if (!decided) return std::unexpected(decided.error());
-             attention_decision = *decided;
-             return {};
-           });
+      auto decided =
+          AttentionTiling(config_.attention, attention == AttentionKind::kTiled,
+                          config_.attention_cache_budget_bytes)
+              .Run(b);
+      if (!decided) return std::unexpected(decided.error());
+      attention_decision = *decided;
+      return {};
+    });
     pm.Add("lora-graft",
            [&](sir::Block& b) -> std::expected<void, std::string> {
-             auto grafted = LoraGrafter(config_.lora).Run(b);
-             if (!grafted) return std::unexpected(grafted.error());
-             adapters = std::move(*grafted);
-             return {};
-           });
+      auto grafted = LoraGrafter(config_.lora).Run(b);
+      if (!grafted) return std::unexpected(grafted.error());
+      adapters = std::move(*grafted);
+      return {};
+    });
     // The RoPE angle table (E3, plan v12): before the snapshot, so the
     // eval program builds and reads it too, and before autodiff, which
     // hands the same table to every backward rotation.
     if (config_.rope_table)
       pm.Add("rope-table",
              [this](sir::Block& b) -> std::expected<void, std::string> {
-               auto tables = RopeTableHoister().Run(b);
-               if (!tables) return std::unexpected(tables.error());
-               facts.rope_tables = *tables;
-               if (*tables != 0)
-                 seeml::diag::Note(generating::kDriver,
-                                   "hoisted the RoPE angles into " +
-                                       std::to_string(*tables) +
-                                       " table(s)");
-               return {};
-             });
+        auto tables = RopeTableHoister().Run(b);
+        if (!tables) return std::unexpected(tables.error());
+        facts.rope_tables = *tables;
+        if (*tables != 0)
+          seeml::diag::Note(generating::kDriver,
+                            "hoisted the RoPE angles into " +
+                                std::to_string(*tables) + " table(s)");
+        return {};
+      });
     // The attention segment mask (#191, plan v25): before the snapshot, so
     // the eval program masks too. Whether it runs is DecideSegmentMask's.
     if (segment_mask)
       pm.Add("segment-mask",
              [this](sir::Block& b) -> std::expected<void, std::string> {
-               auto head = tokenizer::ReadSmtkHead(source.tokenizer);
-               if (source.tokenizer.empty() || !head || head->eos_id < 0)
-                 return std::unexpected(std::string(
-                     "segment mask: the model's tokenizer section names no "
-                     "EOS id to find document boundaries by"));
-               auto masked = SegmentMasker(build.input, head->eos_id).Run(b);
-               if (!masked) return std::unexpected(masked.error());
-               facts.segment_masked_ops = *masked;
-               return {};
-             });
+        auto head = tokenizer::ReadSmtkHead(source.tokenizer);
+        if (source.tokenizer.empty() || !head || head->eos_id < 0)
+          return std::unexpected(std::string(
+              "segment mask: the model's tokenizer section names no "
+              "EOS id to find document boundaries by"));
+        auto masked = SegmentMasker(build.input, head->eos_id).Run(b);
+        if (!masked) return std::unexpected(masked.error());
+        facts.segment_masked_ops = *masked;
+        return {};
+      });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
     timings.insert(timings.end(), pm.timings().begin(), pm.timings().end());
     phase_start = PhaseClock::now();  // passes are timed by their manager
@@ -849,8 +846,8 @@ Status Compilation::CalculusPasses() {
   {
     PassManager pm;
     pm.Add("autodiff", [&](sir::Block& b) -> std::expected<void, std::string> {
-      auto grads = TrainableAutodiff(AccumulationSeed(accum))
-                       .Run(b, loss, trainables);
+      auto grads =
+          TrainableAutodiff(AccumulationSeed(accum)).Run(b, loss, trainables);
       if (!grads) return std::unexpected(grads.error());
       param_grads = std::move(*grads);
       return {};
@@ -948,79 +945,75 @@ Status Compilation::FusionPasses() {
     if (config_.fuse_epilogues)
       pm.Add("fuse-gemm-epilogue",
              [&](sir::Block& b) -> std::expected<void, std::string> {
-               std::unordered_set<const sir::Value*> quantized;
-               for (const auto& [w, s] : quant_scales) quantized.insert(w);
-               std::unordered_set<const sir::Value*> protected_values;
-               protected_values.insert(loss);
-               for (const auto& [p, g] : param_grads)
-                 protected_values.insert(g);
-               auto fused =
-                   GemmEpilogueFuser().Run(b, quantized, protected_values);
-               if (!fused) return std::unexpected(fused.error());
-               facts.epilogue_fusions = fused->fused_chains;
-               facts.epilogue_bytes_removed = ResultBytes(fused->fused_away);
-               // Fuse-then-rebind: the primal snapshot is the eval program
-               // and the DCE root set; the orphaned ops leave it here, so
-               // eval lowers the fused GEMMs and the sweep may free them.
-               if (!fused->fused_away.empty()) {
-                 std::unordered_set<const sir::Operation*> dead(
-                     fused->fused_away.begin(), fused->fused_away.end());
-                 std::erase_if(primal_ops, [&](const sir::Operation* op) {
-                   return dead.contains(op);
-                 });
-               }
-               return {};
-             });
+        std::unordered_set<const sir::Value*> quantized;
+        for (const auto& [w, s] : quant_scales) quantized.insert(w);
+        std::unordered_set<const sir::Value*> protected_values;
+        protected_values.insert(loss);
+        for (const auto& [p, g] : param_grads) protected_values.insert(g);
+        auto fused = GemmEpilogueFuser().Run(b, quantized, protected_values);
+        if (!fused) return std::unexpected(fused.error());
+        facts.epilogue_fusions = fused->fused_chains;
+        facts.epilogue_bytes_removed = ResultBytes(fused->fused_away);
+        // Fuse-then-rebind: the primal snapshot is the eval program
+        // and the DCE root set; the orphaned ops leave it here, so
+        // eval lowers the fused GEMMs and the sweep may free them.
+        if (!fused->fused_away.empty()) {
+          std::unordered_set<const sir::Operation*> dead(
+              fused->fused_away.begin(), fused->fused_away.end());
+          std::erase_if(primal_ops, [&](const sir::Operation* op) {
+            return dead.contains(op);
+          });
+        }
+        return {};
+      });
     // Before the chain fuser: an add that can absorb a GEMM stops being an
     // elementwise stage at all (its whole pass disappears), which beats
     // sharing one with its neighbours.
     if (config_.fuse_gemm_addend)
       pm.Add("fuse-gemm-addend",
              [&](sir::Block& b) -> std::expected<void, std::string> {
-               std::unordered_set<const sir::Value*> narrow;
-               for (const auto& [w, s] : quant_scales) narrow.insert(w);
-               for (const sir::Value* w : bf16_weights) narrow.insert(w);
-               std::unordered_set<const sir::Value*> protected_values;
-               protected_values.insert(loss);
-               for (const auto& [p, g] : param_grads)
-                 protected_values.insert(g);
-               auto fused = GemmAddendFuser().Run(b, narrow, protected_values);
-               if (!fused) return std::unexpected(fused.error());
-               facts.addend_fusions = fused->fused;
-               facts.addend_bytes_removed = ResultBytes(fused->fused_away);
-               // Fuse-then-rebind, as above: a folded forward GEMM leaves
-               // the eval snapshot; the add that absorbed it stays.
-               if (!fused->fused_away.empty()) {
-                 std::unordered_set<const sir::Operation*> dead(
-                     fused->fused_away.begin(), fused->fused_away.end());
-                 std::erase_if(primal_ops, [&](const sir::Operation* op) {
-                   return dead.contains(op);
-                 });
-               }
-               return {};
-             });
+        std::unordered_set<const sir::Value*> narrow;
+        for (const auto& [w, s] : quant_scales) narrow.insert(w);
+        for (const sir::Value* w : bf16_weights) narrow.insert(w);
+        std::unordered_set<const sir::Value*> protected_values;
+        protected_values.insert(loss);
+        for (const auto& [p, g] : param_grads) protected_values.insert(g);
+        auto fused = GemmAddendFuser().Run(b, narrow, protected_values);
+        if (!fused) return std::unexpected(fused.error());
+        facts.addend_fusions = fused->fused;
+        facts.addend_bytes_removed = ResultBytes(fused->fused_away);
+        // Fuse-then-rebind, as above: a folded forward GEMM leaves
+        // the eval snapshot; the add that absorbed it stays.
+        if (!fused->fused_away.empty()) {
+          std::unordered_set<const sir::Operation*> dead(
+              fused->fused_away.begin(), fused->fused_away.end());
+          std::erase_if(primal_ops, [&](const sir::Operation* op) {
+            return dead.contains(op);
+          });
+        }
+        return {};
+      });
     if (config_.fuse_elementwise)
       pm.Add("fuse-elementwise",
              [&](sir::Block& b) -> std::expected<void, std::string> {
-               std::unordered_set<const sir::Value*> protected_values;
-               protected_values.insert(loss);
-               for (const auto& [p, g] : param_grads)
-                 protected_values.insert(g);
-               auto fused = ElementwiseChainFuser().Run(b, protected_values);
-               if (!fused) return std::unexpected(fused.error());
-               facts.chain_fusions = fused->fused_chains;
-               facts.chain_bytes_removed = ResultBytes(fused->fused_away);
-               // Fuse-then-rebind, as above: the folded ops leave the eval
-               // snapshot (their tail stays in it, now carrying the chain).
-               if (!fused->fused_away.empty()) {
-                 std::unordered_set<const sir::Operation*> dead(
-                     fused->fused_away.begin(), fused->fused_away.end());
-                 std::erase_if(primal_ops, [&](const sir::Operation* op) {
-                   return dead.contains(op);
-                 });
-               }
-               return {};
-             });
+        std::unordered_set<const sir::Value*> protected_values;
+        protected_values.insert(loss);
+        for (const auto& [p, g] : param_grads) protected_values.insert(g);
+        auto fused = ElementwiseChainFuser().Run(b, protected_values);
+        if (!fused) return std::unexpected(fused.error());
+        facts.chain_fusions = fused->fused_chains;
+        facts.chain_bytes_removed = ResultBytes(fused->fused_away);
+        // Fuse-then-rebind, as above: the folded ops leave the eval
+        // snapshot (their tail stays in it, now carrying the chain).
+        if (!fused->fused_away.empty()) {
+          std::unordered_set<const sir::Operation*> dead(
+              fused->fused_away.begin(), fused->fused_away.end());
+          std::erase_if(primal_ops, [&](const sir::Operation* op) {
+            return dead.contains(op);
+          });
+        }
+        return {};
+      });
     // The optimization phase's sweep: no op whose results nothing reads may
     // survive to lowering. Beyond the fusion orphans this proves an
     // invariant (the driver builds its programs minimally) — and it is the
@@ -1038,9 +1031,9 @@ Status Compilation::FusionPasses() {
       if (!removed) return std::unexpected(removed.error());
       facts.dce_removed = *removed;
       if (*removed != 0)
-        seeml::diag::Note(generating::kDriver,
-                          "dce removed " + std::to_string(*removed) +
-                              " dead op(s)");
+        seeml::diag::Note(
+            generating::kDriver,
+            "dce removed " + std::to_string(*removed) + " dead op(s)");
       return {};
     });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
@@ -1105,8 +1098,7 @@ Status Compilation::Rematerialize() {
     };
     std::vector<const sir::Operation*> stream, merge_stream;
     block.walk([&](sir::Operation* op) { stream.push_back(op); });
-    merge->block->walk(
-        [&](sir::Operation* op) { merge_stream.push_back(op); });
+    merge->block->walk([&](sir::Operation* op) { merge_stream.push_back(op); });
     const uint64_t plan_bound =
         AlignUp(sizeof(PlanHeader)) +
         (instructions_of(stream) + instructions_of(primal_ops) +
@@ -1138,11 +1130,11 @@ Status Compilation::Rematerialize() {
     PassManager pm;
     pm.Add("rematerialize",
            [&](sir::Block& b) -> std::expected<void, std::string> {
-             auto done = Rematerializer().Run(b, primal_ops, pinned);
-             if (!done) return std::unexpected(done.error());
-             remat = *done;
-             return {};
-           });
+      auto done = Rematerializer().Run(b, primal_ops, pinned);
+      if (!done) return std::unexpected(done.error());
+      remat = *done;
+      return {};
+    });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
     timings.insert(timings.end(), pm.timings().begin(), pm.timings().end());
     phase_start = PhaseClock::now();  // passes are timed by their manager
@@ -1162,9 +1154,8 @@ Status Compilation::Rematerialize() {
             " forward value(s) of " + std::to_string(remat.recomputed_ops) +
             " op(s) recomputed in the backward, " +
             std::to_string(remat.declined) +
-            " declined (no net saving); arena " +
-            std::to_string(plain_arena) + " -> " +
-            std::to_string(AlignUp(binding->arena_size)) + " B");
+            " declined (no net saving); arena " + std::to_string(plain_arena) +
+            " -> " + std::to_string(AlignUp(binding->arena_size)) + " B");
     phase("rebind-arena", block.numOps());
   }
   return {};
@@ -1211,8 +1202,8 @@ Status Compilation::LowerTrain() {
              op == OpCode::kClipGlobal || op == OpCode::kSgdStep ||
              op == OpCode::kAdamWStep;
     };
-    auto split = std::find_if(train_instrs->begin(), train_instrs->end(),
-                              is_step);
+    auto split =
+        std::find_if(train_instrs->begin(), train_instrs->end(), is_step);
     if (split == train_instrs->end())
       return generating::Error(generating::kDriver,
                                "gradient accumulation requested but the "
@@ -1387,9 +1378,9 @@ Status Compilation::Assemble() {
   if (auto ok = FillHeader(); !ok) return std::unexpected(ok.error());
   const std::vector<uint8_t> metadata = BuildMetadata();
   header.data_flags |= kDataFlagMetadata;
-  const uint64_t plan_bytes = LayOutPlan(header, programs, *binding,
-                                         persist_init.size(),
-                                         emit_table->size(), metadata.size());
+  const uint64_t plan_bytes =
+      LayOutPlan(header, programs, *binding, persist_init.size(),
+                 emit_table->size(), metadata.size());
   phase("persist-init", block.numOps());
   result.plan = AssemblePlan(header, programs, *binding, persist_init,
                              *emit_table, metadata, plan_bytes, consume);
@@ -1439,8 +1430,8 @@ Status Compilation::ReportDebug() {
   }
   std::sort(result.params.begin(), result.params.end(),
             [](const ParamDebugInfo& a, const ParamDebugInfo& b) {
-              return a.id < b.id;
-            });
+    return a.id < b.id;
+  });
 
   for (size_t i = 0; i < adapters.size(); ++i) {
     const GraftedAdapter& a = adapters[i];
@@ -1475,12 +1466,11 @@ Status Compilation::ReportSummary() {
   result.estimate_delta_bytes = footprint.delta_bytes;
   result.estimate_cache_bytes = footprint.probs_cache_bytes;
   result.estimate_bytes = footprint.total_bytes();
-  seeml::diag::Note(generating::kDriver,
-                    "memory: the step-0 bound is " +
-                        std::to_string(result.estimate_bytes) +
-                        " B against the exact arena + plan of " +
-                        std::to_string(header.arena_size + result.plan.size()) +
-                        " B");
+  seeml::diag::Note(
+      generating::kDriver,
+      "memory: the step-0 bound is " + std::to_string(result.estimate_bytes) +
+          " B against the exact arena + plan of " +
+          std::to_string(header.arena_size + result.plan.size()) + " B");
   result.remat_policy = config_.remat;
   result.remat_applied = remat_on;
   result.remat_recomputed_values = remat.recomputed_values;
@@ -1516,23 +1506,24 @@ Status Compilation::ReportSummary() {
   result.gemm_tile_k = header.gemm_tile_k;
   result.gemm_tile_n = header.gemm_tile_n;
 
-  seeml::diag::Note(generating::kDriver, "plan compiled — " +
-               std::to_string(header.train_instr_count) + " train + " +
-               std::to_string(header.eval_instr_count) + " eval + " +
-               std::to_string(header.merge_instr_count) + " merge" +
-               (header.step_instr_count
-                    ? " + " + std::to_string(header.step_instr_count) + " step"
-                    : std::string()) +
-               " instrs, arena " + std::to_string(header.arena_size) + " B (" +
-               std::to_string(header.persistent_size) + " B persistent" +
-               (recorded_accum > 1
-                    ? ", " + std::to_string(accumulator_bytes) +
-                          " B of it gradient accumulators for an effective "
-                          "batch of " +
-                          std::to_string(static_cast<uint64_t>(batch) *
-                                         recorded_accum)
-                    : std::string()) +
-               "), rodata " + std::to_string(header.rodata_size) + " B");
+  seeml::diag::Note(
+      generating::kDriver,
+      "plan compiled — " + std::to_string(header.train_instr_count) +
+          " train + " + std::to_string(header.eval_instr_count) + " eval + " +
+          std::to_string(header.merge_instr_count) + " merge" +
+          (header.step_instr_count
+               ? " + " + std::to_string(header.step_instr_count) + " step"
+               : std::string()) +
+          " instrs, arena " + std::to_string(header.arena_size) + " B (" +
+          std::to_string(header.persistent_size) + " B persistent" +
+          (recorded_accum > 1
+               ? ", " + std::to_string(accumulator_bytes) +
+                     " B of it gradient accumulators for an effective "
+                     "batch of " +
+                     std::to_string(static_cast<uint64_t>(batch) *
+                                    recorded_accum)
+               : std::string()) +
+          "), rodata " + std::to_string(header.rodata_size) + " B");
 
   // The five largest values the arena holds, with their segment (S6 #152):
   // the training block's, and the merged deltas — each the size of the
@@ -1555,8 +1546,8 @@ Status Compilation::ReportSummary() {
       add(delta, merge_bound.at(delta));
     std::sort(tensors.begin(), tensors.end(),
               [](const TensorFact& a, const TensorFact& b) {
-                return a.bytes != b.bytes ? a.bytes > b.bytes : a.name < b.name;
-              });
+      return a.bytes != b.bytes ? a.bytes > b.bytes : a.name < b.name;
+    });
     if (tensors.size() > 5) tensors.resize(5);
     facts.largest_tensors = std::move(tensors);
   }
@@ -1582,9 +1573,9 @@ Status Compilation::BindMerge() {
                                "merge alias to unbound value");
     merge_bound[mirror] = it->second;
   }
-  const uint64_t merge_high = LinearScanTransients(
-      *merge->block, AlignUp(binding->arena_size), merge_bound,
-      merge_pinned, merge_bound);
+  const uint64_t merge_high =
+      LinearScanTransients(*merge->block, AlignUp(binding->arena_size),
+                           merge_bound, merge_pinned, merge_bound);
   binding->arena_size = std::max(binding->arena_size, merge_high);
   return {};
 }
@@ -1607,8 +1598,9 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
       attention_decision.tiled && attention_decision.attention_ops > 0;
   const Reason kExactPasses[] = {
       {"attention-tiling", "same expressions; probabilities recomputed",
-       attention_decision.attention_ops == 0 ? "no attention op: nothing tiled"
-                                             : "the cached family: no op rewritten",
+       attention_decision.attention_ops == 0
+           ? "no attention op: nothing tiled"
+           : "the cached family: no op rewritten",
        tiled},
       {"lora-graft", "adds the adapter path; B is zero at step 0",
        "no adapter grafted", !adapters.empty()},
@@ -1622,7 +1614,8 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
        "nothing fused", facts.addend_fusions > 0},
       {"fuse-elementwise", "stages run per block, in program order",
        "nothing fused", facts.chain_fusions > 0},
-      {"dce", "removes ops nothing reads", "nothing dead", facts.dce_removed > 0},
+      {"dce", "removes ops nothing reads", "nothing dead",
+       facts.dce_removed > 0},
       {"segment-mask", "same reductions; other documents' keys masked",
        "no attention op: nothing masked", facts.segment_masked_ops > 0},
       {"rematerialize", "same opcode over the same operands",
@@ -1639,7 +1632,8 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
   // reason says how many of each.
   if (relaxed_gemms + relaxed_attention != 0) {
     char why[56];
-    std::snprintf(why, sizeof(why), "%llu GEMM + %llu attention relaxed; certificate",
+    std::snprintf(why, sizeof(why),
+                  "%llu GEMM + %llu attention relaxed; certificate",
                   static_cast<unsigned long long>(relaxed_gemms),
                   static_cast<unsigned long long>(relaxed_attention));
     ledger.push_back(MakeLedgerEntry(

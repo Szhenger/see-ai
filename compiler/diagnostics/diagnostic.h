@@ -37,8 +37,8 @@
 namespace seeml::diag {
 
 /// Forms the canonical one-line diagnostic for `unit`.
-[[nodiscard]] inline std::unexpected<std::string> Fail(std::string_view unit,
-                                                       std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Fail(
+    std::string_view unit, std::string_view message) {
   std::string s;
   s.reserve(unit.size() + 2 + message.size());
   s.append(unit).append(": ").append(message);
@@ -46,8 +46,9 @@ namespace seeml::diag {
 }
 
 /// Progress note from `unit` (INFO). The call site's location is preserved.
-inline void Note(std::string_view unit, std::string_view message,
-                 const std::source_location loc = std::source_location::current()) {
+inline void Note(
+    std::string_view unit, std::string_view message,
+    const std::source_location loc = std::source_location::current()) {
   std::string s;
   s.reserve(unit.size() + 2 + message.size());
   s.append(unit).append(": ").append(message);
@@ -56,8 +57,9 @@ inline void Note(std::string_view unit, std::string_view message,
 
 /// Degraded-but-continuing condition in `unit` (WARN) — used where a process
 /// falls back to a conservative default instead of failing.
-inline void Fallback(std::string_view unit, std::string_view message,
-                     const std::source_location loc = std::source_location::current()) {
+inline void Fallback(
+    std::string_view unit, std::string_view message,
+    const std::source_location loc = std::source_location::current()) {
   std::string s;
   s.reserve(unit.size() + 2 + message.size());
   s.append(unit).append(": ").append(message);

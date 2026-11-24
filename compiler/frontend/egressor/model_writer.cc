@@ -171,9 +171,9 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   std::FILE* f = fd < 0 ? nullptr : ::fdopen(fd, "wb");
   if (!f && fd >= 0) ::close(fd);
 #else
-  const int fd = ::_open(tmp.c_str(),
-                         _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
-                         _S_IREAD | _S_IWRITE);
+  const int fd =
+      ::_open(tmp.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY,
+              _S_IREAD | _S_IWRITE);
   std::FILE* f = fd < 0 ? nullptr : ::_fdopen(fd, "wb");
   if (!f && fd >= 0) ::_close(fd);
 #endif

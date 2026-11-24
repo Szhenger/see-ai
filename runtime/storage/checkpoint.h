@@ -99,8 +99,8 @@ struct CheckpointRecord {
 /// will refuse as another plan's. A file that is not a checkpoint is an
 /// error; a v3/v4 file, or a v5 file saved without a binding, yields
 /// has_binding == false.
-[[nodiscard]] std::expected<CheckpointRecord, std::string>
-PeekCheckpointRecord(const std::string& path);
+[[nodiscard]] std::expected<CheckpointRecord, std::string> PeekCheckpointRecord(
+    const std::string& path);
 
 /// The v3/v4-shaped calls: a step, a horizon, one payload.
 [[nodiscard]] std::expected<void, std::string> SaveCheckpointFile(

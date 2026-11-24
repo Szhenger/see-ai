@@ -22,8 +22,8 @@ using seeml::tokenizer::ByteLevelBpe;
 using seeml::tokenizer::PreTokenizer;
 
 struct Section {
-  std::vector<std::string> tokens;                   // id order
-  std::vector<std::array<uint32_t, 3>> merges;       // rank order
+  std::vector<std::string> tokens;              // id order
+  std::vector<std::array<uint32_t, 3>> merges;  // rank order
   std::vector<uint32_t> specials;
   uint32_t pre = 2;  // Digits then GPT-2
   uint32_t flags = 0;
@@ -73,7 +73,8 @@ struct Section {
 Section ByteVocab(std::vector<std::pair<std::string, std::string>> merges,
                   std::vector<std::string> specials = {}) {
   Section s;
-  for (int b = 0; b < 256; ++b) s.tokens.push_back(std::string(1, static_cast<char>(b)));
+  for (int b = 0; b < 256; ++b)
+    s.tokens.push_back(std::string(1, static_cast<char>(b)));
   auto id_of = [&](const std::string& t) -> uint32_t {
     for (uint32_t i = 0; i < s.tokens.size(); ++i)
       if (s.tokens[i] == t) return i;
@@ -90,7 +91,8 @@ Section ByteVocab(std::vector<std::pair<std::string, std::string>> merges,
 
 std::vector<std::string> Pieces(const ByteLevelBpe& t, std::string_view text) {
   std::vector<std::string> out;
-  for (const auto& [b, e] : t.PreTokenize(text)) out.emplace_back(text.substr(b, e - b));
+  for (const auto& [b, e] : t.PreTokenize(text))
+    out.emplace_back(text.substr(b, e - b));
   return out;
 }
 
@@ -114,10 +116,12 @@ TEST(ByteLevelBpe, LoadsASectionAndRefusesWhatItDoesNotImplement) {
 
   Section bad = s;
   bad.kind = 2;
-  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "unsupported tokenizer kind");
+  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()),
+                        "unsupported tokenizer kind");
   bad = s;
   bad.pre = 9;
-  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "unsupported pre-tokenizer");
+  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()),
+                        "unsupported pre-tokenizer");
   bad = s;
   bad.flags = 2;
   EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "NFC normalizer");
@@ -128,11 +132,14 @@ TEST(ByteLevelBpe, LoadsASectionAndRefusesWhatItDoesNotImplement) {
   bad.version = 2;
   EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "unsupported version");
   bad = s;
-  bad.merges[1] = {bad.merges[1][0], bad.merges[1][1], 5};  // "the" != "t"+"h"+"e"? no: c wrong
-  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "does not produce the concatenation");
+  // "the" != "t"+"h"+"e"? no: c wrong
+  bad.merges[1] = {bad.merges[1][0], bad.merges[1][1], 5};
+  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()),
+                        "does not produce the concatenation");
   bad = s;
   bad.specials.push_back(999);
-  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()), "special id out of range");
+  EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(bad.Bytes()),
+                        "special id out of range");
   auto truncated = s.Bytes();
   truncated.resize(truncated.size() - 3);
   EXPECT_ERROR_CONTAINS(ByteLevelBpe::Load(truncated), "truncated");
@@ -147,7 +154,8 @@ TEST(ByteLevelBpe, TheGpt2PatternSplitsAsTheReferenceDoes) {
   Section s = ByteVocab({});
   ASSERT_OK_AND_ASSIGN(ByteLevelBpe t, ByteLevelBpe::Load(s.Bytes()));
   using V = std::vector<std::string>;
-  EXPECT_TRUE(Pieces(t, "Hello world 123") == V({"Hello", " world", " ", "1", "2", "3"}));
+  EXPECT_TRUE(Pieces(t, "Hello world 123") ==
+              V({"Hello", " world", " ", "1", "2", "3"}));
   EXPECT_TRUE(Pieces(t, "don't") == V({"don", "'t"}));
   EXPECT_TRUE(Pieces(t, "it's") == V({"it", "'s"}));
   EXPECT_TRUE(Pieces(t, "'S 'RE") == V({"'", "S", " '", "RE"}));
@@ -163,11 +171,15 @@ TEST(ByteLevelBpe, TheGpt2PatternSplitsAsTheReferenceDoes) {
   EXPECT_TRUE(Pieces(t, "x1.5") == V({"x", "1", ".", "5"}));
   EXPECT_TRUE(Pieces(t, "naïve café") == V({"naïve", " café"}));
   // NBSP (U+00A0) is White_Space: a run before a letter keeps one apart.
-  EXPECT_TRUE(Pieces(t, "a\xC2\xA0\xC2\xA0" "b") == V({"a", "\xC2\xA0", "\xC2\xA0", "b"}));
+  EXPECT_TRUE(Pieces(t,
+                     "a\xC2\xA0\xC2\xA0"
+                     "b") == V({"a", "\xC2\xA0", "\xC2\xA0", "b"}));
   // A combining mark (Mn) is not a letter: "e" then the mark as "other".
   EXPECT_TRUE(Pieces(t, "e\xCC\x81") == V({"e", "\xCC\x81"}));
   // Arabic-Indic digit (Nd) and circled one (No) are numbers: digits apart.
-  EXPECT_TRUE(Pieces(t, "x\xD9\xA3" "y") == V({"x", "\xD9\xA3", "y"}));
+  EXPECT_TRUE(Pieces(t,
+                     "x\xD9\xA3"
+                     "y") == V({"x", "\xD9\xA3", "y"}));
   EXPECT_TRUE(Pieces(t, "a\xE2\x91\xA0") == V({"a", "\xE2\x91\xA0"}));
   // Without the Digits splitter, number runs stay whole.
   Section plain = ByteVocab({});
@@ -184,19 +196,24 @@ TEST(ByteLevelBpe, SpecialTokensSplitFirstAndMergesApplyByRank) {
   const uint32_t th = 256, the = 257, er = 258, he = 259;
   const uint32_t eot = 260, ims = 261, imsx = 262;
   // "the": t h e -> (t,h) rank 0 first -> th, then (th,e) rank 1 -> the.
-  EXPECT_TRUE(Ids(t, "the") == std::vector<int32_t>({static_cast<int32_t>(the)}));
+  EXPECT_TRUE(Ids(t, "the") ==
+              std::vector<int32_t>({static_cast<int32_t>(the)}));
   // "ther": the lowest rank anywhere first: (t,h)=0 -> th e r; (th,e)=1 ->
   // the r; (e,r) is gone: the + r.
-  EXPECT_TRUE(Ids(t, "ther") == std::vector<int32_t>({static_cast<int32_t>(the), 'r'}));
+  EXPECT_TRUE(Ids(t, "ther") ==
+              std::vector<int32_t>({static_cast<int32_t>(the), 'r'}));
   // "her": (h,e)=3 vs (e,r)=2: (e,r) merges first: h + er.
-  EXPECT_TRUE(Ids(t, "her") == std::vector<int32_t>({'h', static_cast<int32_t>(er)}));
+  EXPECT_TRUE(Ids(t, "her") ==
+              std::vector<int32_t>({'h', static_cast<int32_t>(er)}));
   (void)th;
   (void)he;
   // Specials: longest match first, in or out of context, back to back.
   EXPECT_TRUE(Ids(t, "<|endoftext|>the<|endoftext|>") ==
-              std::vector<int32_t>({static_cast<int32_t>(eot), static_cast<int32_t>(the),
+              std::vector<int32_t>({static_cast<int32_t>(eot),
+                                    static_cast<int32_t>(the),
                                     static_cast<int32_t>(eot)}));
-  EXPECT_TRUE(Ids(t, "<|im_start|>x") == std::vector<int32_t>({static_cast<int32_t>(imsx)}));
+  EXPECT_TRUE(Ids(t, "<|im_start|>x") ==
+              std::vector<int32_t>({static_cast<int32_t>(imsx)}));
   EXPECT_TRUE(Ids(t, "<|im_start|>y") ==
               std::vector<int32_t>({static_cast<int32_t>(ims), 'y'}));
   // A near miss is ordinary text.
@@ -209,7 +226,10 @@ TEST(ByteLevelBpe, SpecialTokensSplitFirstAndMergesApplyByRank) {
   for (int b = 0; b < 256; ++b)
     if (b != 4) nb.tokens.push_back(std::string(1, static_cast<char>(b)));
   ASSERT_OK_AND_ASSIGN(ByteLevelBpe u, ByteLevelBpe::Load(nb.Bytes()));
-  EXPECT_EQ(Ids(u, std::string("a\x04" "b")).size(), 2u);
+  EXPECT_EQ(Ids(u, std::string("a\x04"
+                               "b"))
+                .size(),
+            2u);
 }
 
 TEST(ByteLevelBpe, EncodeSplitSeesTheJoinAsOneString) {
@@ -248,13 +268,16 @@ TEST(ByteLevelBpe, AStrayByteIsAnOtherCharacterAndLongRunsEncodeFast) {
   // space, whatever its value: 0xC3 (a letter if read as U+00C3) breaks a
   // letter run, 0xA0 (White_Space if read as U+00A0) joins the ` ?` other
   // run rather than the whitespace run.
-  EXPECT_TRUE(Pieces(t, std::string("ab\xC3" "cd")) ==
+  EXPECT_TRUE(Pieces(t, std::string("ab\xC3"
+                                    "cd")) ==
               std::vector<std::string>({"ab", "\xC3", "cd"}));
-  EXPECT_TRUE(Pieces(t, std::string(" \xA0" "b")) ==
+  EXPECT_TRUE(Pieces(t, std::string(" \xA0"
+                                    "b")) ==
               std::vector<std::string>({" \xA0", "b"}));
   // An overlong encoding is two stray bytes (one run of "others"), not the
   // letter it spells.
-  EXPECT_TRUE(Pieces(t, std::string("\xC1\xA1" "b")) ==
+  EXPECT_TRUE(Pieces(t, std::string("\xC1\xA1"
+                                    "b")) ==
               std::vector<std::string>({"\xC1\xA1", "b"}));
   // The merge loop is O(n log n) per piece: a 40 000-byte run of one letter
   // is one piece, merged pairwise by rank — every (x,x) at rank 0, leftmost

@@ -80,10 +80,9 @@ uint64_t LinearScanTransients(
   // first-fit offsets — and with them the plan bytes and plan_hash — differ
   // across standard-library implementations for identical input. Stability
   // pins ties to the deterministic discovery order.
-  std::stable_sort(intervals.begin(), intervals.end(),
-                   [](const Interval& a, const Interval& b) {
-                     return a.start < b.start;
-                   });
+  std::stable_sort(
+      intervals.begin(), intervals.end(),
+      [](const Interval& a, const Interval& b) { return a.start < b.start; });
 
   struct ActiveBlock {
     uint64_t start, end;
@@ -109,12 +108,12 @@ uint64_t LinearScanTransients(
     }
     refs_out[iv.value] = MakeArenaRef(offset);
     const ActiveBlock fresh{offset, offset + iv.bytes, iv.end};
-    active.insert(std::upper_bound(active.begin(), active.end(), fresh,
-                                   [](const ActiveBlock& a,
-                                      const ActiveBlock& b) {
-                                     return a.start < b.start;
-                                   }),
-                  fresh);
+    active.insert(
+        std::upper_bound(active.begin(), active.end(), fresh,
+                         [](const ActiveBlock& a, const ActiveBlock& b) {
+      return a.start < b.start;
+    }),
+        fresh);
     high_water = std::max(high_water, offset + iv.bytes);
   }
   return high_water;
@@ -132,7 +131,8 @@ std::vector<float> ColumnScales(const SmfTensor& w) {
   const size_t cols =
       w.dims.size() == 2 ? static_cast<size_t>(w.dims[1]) : count;
   const size_t rows = cols ? count / cols : 0;
-  const size_t grain = std::max<size_t>(1, kWeightSweepGrain / std::max<size_t>(1, cols));
+  const size_t grain =
+      std::max<size_t>(1, kWeightSweepGrain / std::max<size_t>(1, cols));
   const size_t chunks = ParallelChunkCount(rows, grain);
   std::vector<float> partial(chunks * cols, 0.0f);
   ParallelFor(rows, grain, [&](size_t r0, size_t r1, size_t c) {
@@ -201,10 +201,9 @@ void PackRodata(const RodataPack& pack, uint8_t* dst) {
   }
 }
 
-uint64_t RebindTransients(
-    sir::Block& train_block,
-    const std::unordered_set<const sir::Value*>& pinned,
-    ArenaBinding& binding) {
+uint64_t RebindTransients(sir::Block& train_block,
+                          const std::unordered_set<const sir::Value*>& pinned,
+                          ArenaBinding& binding) {
   std::unordered_map<const sir::Value*, uint64_t> storage;
   for (const auto& arg : train_block.arguments())
     storage[arg.get()] = binding.refs.at(arg.get());
@@ -215,9 +214,8 @@ uint64_t RebindTransients(
         storage[r.get()] = it->second;
   });
   binding.refs = std::move(storage);
-  binding.arena_size =
-      LinearScanTransients(train_block, AlignUp(binding.io_end), binding.refs,
-                           pinned, binding.refs);
+  binding.arena_size = LinearScanTransients(
+      train_block, AlignUp(binding.io_end), binding.refs, pinned, binding.refs);
   return binding.arena_size;
 }
 
@@ -309,9 +307,8 @@ std::expected<ArenaBinding, std::string> BindArena(
         "frozen weight without SMF backing data");
 
   // --- TRANSIENT segment: liveness-scanned workspace after the IO prefix.
-  binding.arena_size =
-      LinearScanTransients(train_block, AlignUp(binding.io_end), binding.refs,
-                           pinned, binding.refs);
+  binding.arena_size = LinearScanTransients(
+      train_block, AlignUp(binding.io_end), binding.refs, pinned, binding.refs);
   return binding;
 }
 

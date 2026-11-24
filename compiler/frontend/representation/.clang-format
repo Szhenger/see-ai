@@ -1,0 +1,6 @@
+# The SIR dialect (STYLE.md section 1): the root contract, at 4 spaces with
+# access specifiers at 1. compiler/frontend/operator/.clang-format is the
+# same file.
+BasedOnStyle: InheritParentConfig
+IndentWidth: 4
+AccessModifierOffset: -3

@@ -37,12 +37,12 @@ uint64_t F32BitsPair(float hi, float lo) {
 /// order is part of the meaning (S8 #154). A run returns true when the op
 /// was its to lower, whether it filled `ins` or set `error`.
 struct OpLowering {
-  OpLowering(const sir::Operation* operation, const ResolveFn& resolve_fn,
-             const std::unordered_map<const sir::Value*, float>& scales,
-             const std::unordered_set<const sir::Value*>& bf16,
-             const std::unordered_map<const sir::Value*, uint64_t>&
-                 column_scales,
-             std::string& error_out)
+  OpLowering(
+      const sir::Operation* operation, const ResolveFn& resolve_fn,
+      const std::unordered_map<const sir::Value*, float>& scales,
+      const std::unordered_set<const sir::Value*>& bf16,
+      const std::unordered_map<const sir::Value*, uint64_t>& column_scales,
+      std::string& error_out)
       : op(operation),
         m(operation->mnemonic()),
         resolve(resolve_fn),
@@ -108,13 +108,8 @@ struct OpLowering {
   bool TableStepAndFill();
 
   void Run() {
-    if (FusedMap() ||
-        Gemm() ||
-        Elementwise() ||
-        NormAndEmbedding() ||
-        RopeAndAttention() ||
-        ClipScaleAndReduce() ||
-        Loss() ||
+    if (FusedMap() || Gemm() || Elementwise() || NormAndEmbedding() ||
+        RopeAndAttention() || ClipScaleAndReduce() || Loss() ||
         TableStepAndFill())
       return;
     error = "cannot lower '" + std::string(m) + "'";
@@ -148,33 +143,32 @@ bool OpLowering::FusedMap() {
 
 bool OpLowering::Gemm() {
   if (m == "sc_high.matmul" || m == "sc_low.matmul_nt" ||
-             m == "sc_low.matmul_tn") {
+      m == "sc_low.matmul_tn") {
     const sir::Value* a = op->operand(0);
     const sir::Value* c = op->result(0);
     // GEMMs whose B operand is a quantized frozen weight take the q8
     // opcode and carry the dequant scale in in[3].
-    const auto q = m != "sc_low.matmul_tn"
-                       ? quant_scales.find(op->operand(1))
-                       : quant_scales.end();
+    const auto q = m != "sc_low.matmul_tn" ? quant_scales.find(op->operand(1))
+                                           : quant_scales.end();
     const bool q8 = q != quant_scales.end();
     // bf16 frozen weights (v10) take the widening opcodes; the quantization review
     // never selects a weight for both storages.
-    const bool bf16 = !q8 && m != "sc_low.matmul_tn" &&
-                      bf16_weights.contains(op->operand(1));
-    Set(m == "sc_high.matmul"
-            ? (q8 ? OpCode::kGemmNNQ8
-                  : bf16 ? OpCode::kGemmNNBF16 : OpCode::kGemmNN)
-        : m == "sc_low.matmul_nt"
-            ? (q8 ? OpCode::kGemmNTQ8
-                  : bf16 ? OpCode::kGemmNTBF16 : OpCode::kGemmNT)
-            : OpCode::kGemmTN);
+    const bool bf16 =
+        !q8 && m != "sc_low.matmul_tn" && bf16_weights.contains(op->operand(1));
+    Set(m == "sc_high.matmul"     ? (q8     ? OpCode::kGemmNNQ8
+                                     : bf16 ? OpCode::kGemmNNBF16
+                                            : OpCode::kGemmNN)
+        : m == "sc_low.matmul_nt" ? (q8     ? OpCode::kGemmNTQ8
+                                     : bf16 ? OpCode::kGemmNTBF16
+                                            : OpCode::kGemmNT)
+                                  : OpCode::kGemmTN);
     ins.in[0] = Ref(a);
     ins.in[1] = Ref(op->operand(1));
     ins.in[2] = Ref(c);
     if (q8) ins.in[3] = F32Bits(q->second);
     ins.out[0] = static_cast<uint64_t>(c->shape().dims.at(0));  // M
     ins.out[1] = static_cast<uint64_t>(c->shape().dims.at(1));  // N
-    ins.out[2] = static_cast<uint64_t>(                          // K
+    ins.out[2] = static_cast<uint64_t>(                         // K
         m == "sc_low.matmul_tn" ? a->shape().dims.at(0)
                                 : a->shape().dims.at(1));
     // The GEMM alpha (plan v19): the f32 forms carry it in imm. Only the
@@ -184,8 +178,8 @@ bool OpLowering::Gemm() {
     if (const float alpha = op->getAttrAs<float>("alpha").value_or(1.0f);
         alpha != 1.0f) {
       if (q8 || bf16) {
-        error = "GEMM alpha on a narrow-weight GEMM ('" +
-                std::string(c->id()) + "')";
+        error = "GEMM alpha on a narrow-weight GEMM ('" + std::string(c->id()) +
+                "')";
         return true;
       }
       ins.imm = static_cast<uint32_t>(F32Bits(alpha));
@@ -195,11 +189,9 @@ bool OpLowering::Gemm() {
     // Both are produced only by GemmEpilogueFuser, and only on
     // sc_high.matmul — the fuser also guarantees a bias never lands on a
     // q8 GEMM (in[3] is its scale), so a clash here is a compiler bug.
-    const bool fused_bias =
-        m == "sc_high.matmul" && op->numOperands() == 3;
+    const bool fused_bias = m == "sc_high.matmul" && op->numOperands() == 3;
     if (fused_bias && q8) {
-      error = "fused bias on a quantized GEMM ('" +
-              std::string(c->id()) + "')";
+      error = "fused bias on a quantized GEMM ('" + std::string(c->id()) + "')";
       return true;
     }
     if (fused_bias) ins.in[3] = Ref(op->operand(2));
@@ -240,8 +232,8 @@ bool OpLowering::Gemm() {
         op->getAttrAs<std::string>("gemm_addend").value_or("");
     if (op->numOperands() != 3 ||
         (form != "nn" && form != "nt" && form != "tn")) {
-      error = "malformed GEMM addend ('" +
-              std::string(op->result(0)->id()) + "')";
+      error =
+          "malformed GEMM addend ('" + std::string(op->result(0)->id()) + "')";
       return true;
     }
     const sir::Value* a = op->operand(1);
@@ -255,7 +247,7 @@ bool OpLowering::Gemm() {
     ins.in[3] = Ref(op->operand(0));
     ins.out[0] = static_cast<uint64_t>(c->shape().dims.at(0));  // M
     ins.out[1] = static_cast<uint64_t>(c->shape().dims.at(1));  // N
-    ins.out[2] = static_cast<uint64_t>(                          // K
+    ins.out[2] = static_cast<uint64_t>(                         // K
         form == "tn" ? a->shape().dims.at(0) : a->shape().dims.at(1));
     ins.flags = kFlagGemmAddend;
     if (const float alpha = op->getAttrAs<float>("alpha").value_or(1.0f);
@@ -315,19 +307,19 @@ bool OpLowering::NormAndEmbedding() {
     const sir::Value* y = op->result(0);
     Set(OpCode::kLayerNormFwd);
     ins.imm = NormEpsImm(*op);
-    ins.in[0] = Ref(op->operand(0));   // x
-    ins.in[1] = Ref(op->operand(1));   // gamma
-    ins.in[2] = Ref(op->operand(2));   // beta
+    ins.in[0] = Ref(op->operand(0));  // x
+    ins.in[1] = Ref(op->operand(1));  // gamma
+    ins.in[2] = Ref(op->operand(2));  // beta
     ins.in[3] = Ref(y);
     ins.out[0] = Pack32(y->shape().dims.at(0), y->shape().dims.at(1));
-    ins.out[1] = Ref(op->result(1));   // mean cache
-    ins.out[2] = Ref(op->result(2));   // rstd cache
+    ins.out[1] = Ref(op->result(1));  // mean cache
+    ins.out[2] = Ref(op->result(2));  // rstd cache
   } else if (m == "sc_low.layer_norm_grad") {
     const sir::Value* dx = op->result(0);
     Set(OpCode::kLayerNormBwd);
-    ins.in[0] = Ref(op->operand(0));   // dy
-    ins.in[1] = Ref(op->operand(1));   // x
-    ins.in[2] = Ref(op->operand(2));   // gamma
+    ins.in[0] = Ref(op->operand(0));  // dy
+    ins.in[1] = Ref(op->operand(1));  // x
+    ins.in[2] = Ref(op->operand(2));  // gamma
     ins.in[3] = Ref(dx);
     ins.out[0] = Ref(op->operand(3));  // mean cache
     ins.out[1] = Ref(op->operand(4));  // rstd cache
@@ -336,27 +328,26 @@ bool OpLowering::NormAndEmbedding() {
     const sir::Value* out = op->result(0);
     const sir::Value* table = op->operand(1);
     Set(OpCode::kEmbedFwd);
-    ins.in[0] = Ref(op->operand(0));   // i32 tokens
-    ins.in[1] = Ref(table);            // rodata [V, D]
+    ins.in[0] = Ref(op->operand(0));  // i32 tokens
+    ins.in[1] = Ref(table);           // rodata [V, D]
     ins.in[2] = Ref(out);
     ins.out[0] = static_cast<uint64_t>(out->shape().dims.at(0));
-    ins.out[1] =
-        Pack32(table->shape().dims.at(0), table->shape().dims.at(1));
+    ins.out[1] = Pack32(table->shape().dims.at(0), table->shape().dims.at(1));
   } else if (m == "sc_high.rms_norm") {
     const sir::Value* y = op->result(0);
     Set(OpCode::kRmsNormFwd);
     ins.imm = NormEpsImm(*op);
-    ins.in[0] = Ref(op->operand(0));   // x
-    ins.in[1] = Ref(op->operand(1));   // gamma
+    ins.in[0] = Ref(op->operand(0));  // x
+    ins.in[1] = Ref(op->operand(1));  // gamma
     ins.in[2] = Ref(y);
-    ins.in[3] = Ref(op->result(1));    // rstd cache
+    ins.in[3] = Ref(op->result(1));  // rstd cache
     ins.out[0] = Pack32(y->shape().dims.at(0), y->shape().dims.at(1));
   } else if (m == "sc_low.rms_norm_grad") {
     const sir::Value* dx = op->result(0);
     Set(OpCode::kRmsNormBwd);
-    ins.in[0] = Ref(op->operand(0));   // dy
-    ins.in[1] = Ref(op->operand(1));   // x
-    ins.in[2] = Ref(op->operand(2));   // gamma
+    ins.in[0] = Ref(op->operand(0));  // dy
+    ins.in[1] = Ref(op->operand(1));  // x
+    ins.in[2] = Ref(op->operand(2));  // gamma
     ins.in[3] = Ref(dx);
     ins.out[0] = Ref(op->operand(3));  // rstd cache
     ins.out[1] = Pack32(dx->shape().dims.at(0), dx->shape().dims.at(1));
@@ -368,10 +359,10 @@ bool OpLowering::NormAndEmbedding() {
 
 bool OpLowering::RopeAndAttention() {
   if (m == "sc_high.rope" || m == "sc_low.rope_grad" ||
-             m == "sc_high.attention" || m == "sc_low.attn_dp" ||
-             m == "sc_low.attn_dv" || m == "sc_low.attn_dq" ||
-             m == "sc_low.attn_dk" || m == "sc_low.attn_dq_tiled" ||
-             m == "sc_low.attn_dk_tiled" || m == "sc_low.attn_dv_tiled") {
+      m == "sc_high.attention" || m == "sc_low.attn_dp" ||
+      m == "sc_low.attn_dv" || m == "sc_low.attn_dq" || m == "sc_low.attn_dk" ||
+      m == "sc_low.attn_dq_tiled" || m == "sc_low.attn_dk_tiled" ||
+      m == "sc_low.attn_dv_tiled") {
     // Shared sequence geometry, packed as B<<32|S and H<<32|d. Derived
     // from a designated [T, H*d] activation of the op plus the heads/seq
     // attributes the frontend validated (seq | T, heads | D).
@@ -398,8 +389,8 @@ bool OpLowering::RopeAndAttention() {
       ins.out[1] = hd;
       // The parser always sets "base" (SMF v5 attr1, or the format
       // default); the fallback only covers SIR built by hand in tests.
-      ins.out[2] = F32Bits(
-          op->getAttrAs<float>("base").value_or(kSmfDefaultRopeBase));
+      ins.out[2] =
+          F32Bits(op->getAttrAs<float>("base").value_or(kSmfDefaultRopeBase));
     } else if (m == "sc_high.attention" && op->numOperands() == 4) {
       // The segment mask (v25, #191): the starts are the fourth operand,
       // the geometry packed into one word to free a slot for them.
@@ -412,20 +403,18 @@ bool OpLowering::RopeAndAttention() {
       ins.in[2] = Ref(op->operand(2));
       ins.in[3] = Ref(op->result(0));
       ins.out[0] = Ref(op->result(1));
-      ins.out[1] = PackAttnGeometry(static_cast<uint64_t>(rows / seq),
-                                    static_cast<uint64_t>(seq),
-                                    static_cast<uint64_t>(heads),
-                                    static_cast<uint64_t>(width / heads));
+      ins.out[1] = PackAttnGeometry(
+          static_cast<uint64_t>(rows / seq), static_cast<uint64_t>(seq),
+          static_cast<uint64_t>(heads), static_cast<uint64_t>(width / heads));
       ins.out[2] = Ref(op->operand(3));
     } else if (m == "sc_high.attention") {
       // Tiled (v15): the same slots, the stats row where the cache was.
-      Set(op->hasAttribute("tiled") ? OpCode::kAttnFwdTiled
-                                    : OpCode::kAttnFwd);
-      ins.in[0] = Ref(op->operand(0));   // q
-      ins.in[1] = Ref(op->operand(1));   // k
-      ins.in[2] = Ref(op->operand(2));   // v
-      ins.in[3] = Ref(op->result(0));    // o
-      ins.out[0] = Ref(op->result(1));   // probs cache | stats row
+      Set(op->hasAttribute("tiled") ? OpCode::kAttnFwdTiled : OpCode::kAttnFwd);
+      ins.in[0] = Ref(op->operand(0));  // q
+      ins.in[1] = Ref(op->operand(1));  // k
+      ins.in[2] = Ref(op->operand(2));  // v
+      ins.in[3] = Ref(op->result(0));   // o
+      ins.out[0] = Ref(op->result(1));  // probs cache | stats row
       ins.out[1] = bs;
       ins.out[2] = hd;
     } else if (m.ends_with("_tiled")) {
@@ -437,10 +426,9 @@ bool OpLowering::RopeAndAttention() {
       for (size_t s = 0; s < 4; ++s) ins.in[s] = Ref(op->operand(s));
       ins.out[0] = Ref(op->operand(4));  // stats
       ins.out[1] = Ref(op->result(0));
-      ins.out[2] = PackAttnGeometry(static_cast<uint64_t>(rows / seq),
-                                    static_cast<uint64_t>(seq),
-                                    static_cast<uint64_t>(heads),
-                                    static_cast<uint64_t>(width / heads));
+      ins.out[2] = PackAttnGeometry(
+          static_cast<uint64_t>(rows / seq), static_cast<uint64_t>(seq),
+          static_cast<uint64_t>(heads), static_cast<uint64_t>(width / heads));
     } else {
       Set(m == "sc_low.attn_dp"   ? OpCode::kAttnDP
           : m == "sc_low.attn_dv" ? OpCode::kAttnDV
@@ -462,8 +450,8 @@ bool OpLowering::ClipScaleAndReduce() {
   if (m == "sc_low.softmax_rows_grad") {
     const sir::Value* ds = op->result(0);
     Set(OpCode::kSoftmaxRowsBwd);
-    ins.in[0] = Ref(op->operand(0));   // probs
-    ins.in[1] = Ref(op->operand(1));   // dp
+    ins.in[0] = Ref(op->operand(0));  // probs
+    ins.in[1] = Ref(op->operand(1));  // dp
     ins.in[2] = Ref(ds);
     ins.out[0] = Pack32(ds->shape().dims.at(0), ds->shape().dims.at(1));
   } else if (m == "sc_low.clip_norm") {
@@ -483,7 +471,8 @@ bool OpLowering::ClipScaleAndReduce() {
     ins.in[0] = Ref(tokens);
     ins.in[1] = Ref(op->result(0));
     ins.out[0] = Pack32(t / seq, seq);
-    ins.out[1] = static_cast<uint64_t>(op->getAttrAs<int64_t>("eos").value_or(0));
+    ins.out[1] =
+        static_cast<uint64_t>(op->getAttrAs<int64_t>("eos").value_or(0));
   } else if (m == "sc_low.sqnorm_accum") {  // v24, #190
     Set(OpCode::kSqNormAccum);
     ins.in[0] = Ref(op->operand(0));  // g
@@ -516,34 +505,34 @@ bool OpLowering::ClipScaleAndReduce() {
 bool OpLowering::Loss() {
   if (m == "sc_high.softmax_xent") {
     Set(OpCode::kSoftmaxXEntFwd);
-    ins.in[0] = Ref(op->operand(0));   // logits
-    ins.in[1] = Ref(op->operand(1));   // labels (i32)
-    ins.in[2] = Ref(op->result(0));    // loss
-    ins.in[3] = Ref(op->result(1));    // probs cache
+    ins.in[0] = Ref(op->operand(0));  // logits
+    ins.in[1] = Ref(op->operand(1));  // labels (i32)
+    ins.in[2] = Ref(op->result(0));   // loss
+    ins.in[3] = Ref(op->result(1));   // probs cache
     ins.out[0] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(0));
     ins.out[1] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(1));
   } else if (m == "sc_high.softmax_xent_masked") {
     Set(OpCode::kSoftmaxXEntMaskedFwd);
-    ins.in[0] = Ref(op->operand(0));   // logits
-    ins.in[1] = Ref(op->operand(1));   // labels (i32; -1 = ignored)
-    ins.in[2] = Ref(op->result(0));    // loss
-    ins.in[3] = Ref(op->result(1));    // probs cache
+    ins.in[0] = Ref(op->operand(0));  // logits
+    ins.in[1] = Ref(op->operand(1));  // labels (i32; -1 = ignored)
+    ins.in[2] = Ref(op->result(0));   // loss
+    ins.in[3] = Ref(op->result(1));   // probs cache
     ins.out[0] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(0));
     ins.out[1] = static_cast<uint64_t>(op->operand(0)->shape().dims.at(1));
   } else if (m == "sc_low.softmax_xent_masked_grad") {
     Set(OpCode::kSoftmaxXEntMaskedBwd);
-    ins.in[0] = Ref(op->operand(0));   // probs
-    ins.in[1] = Ref(op->operand(1));   // labels
-    ins.in[2] = Ref(op->operand(2));   // seed
-    ins.in[3] = Ref(op->result(0));    // dlogits
+    ins.in[0] = Ref(op->operand(0));  // probs
+    ins.in[1] = Ref(op->operand(1));  // labels
+    ins.in[2] = Ref(op->operand(2));  // seed
+    ins.in[3] = Ref(op->result(0));   // dlogits
     ins.out[0] = static_cast<uint64_t>(op->result(0)->shape().dims.at(0));
     ins.out[1] = static_cast<uint64_t>(op->result(0)->shape().dims.at(1));
   } else if (m == "sc_low.softmax_xent_grad") {
     Set(OpCode::kSoftmaxXEntBwd);
-    ins.in[0] = Ref(op->operand(0));   // probs
-    ins.in[1] = Ref(op->operand(1));   // labels
-    ins.in[2] = Ref(op->operand(2));   // seed
-    ins.in[3] = Ref(op->result(0));    // dlogits
+    ins.in[0] = Ref(op->operand(0));  // probs
+    ins.in[1] = Ref(op->operand(1));  // labels
+    ins.in[2] = Ref(op->operand(2));  // seed
+    ins.in[3] = Ref(op->result(0));   // dlogits
     ins.out[0] = static_cast<uint64_t>(op->result(0)->shape().dims.at(0));
     ins.out[1] = static_cast<uint64_t>(op->result(0)->shape().dims.at(1));
   } else if (m == "sc_high.mse") {
@@ -563,25 +552,25 @@ bool OpLowering::Loss() {
     const sir::Value* s = op->operand(0);
     Set(OpCode::kKLDistillFwd);
     ins.in[0] = Ref(s);
-    ins.in[1] = Ref(op->operand(1));   // teacher logits
-    ins.in[2] = Ref(op->result(0));    // loss
-    ins.in[3] = Ref(op->result(1));    // p_s
-    ins.out[0] = Ref(op->result(2));   // p_t
+    ins.in[1] = Ref(op->operand(1));  // teacher logits
+    ins.in[2] = Ref(op->result(0));   // loss
+    ins.in[3] = Ref(op->result(1));   // p_s
+    ins.out[0] = Ref(op->result(2));  // p_t
     ins.out[1] = Pack32(s->shape().dims.at(0), s->shape().dims.at(1));
-    ins.out[2] = F32BitsPair(
-        op->getAttrAs<float>("loss_scale").value_or(1.0f),
-        op->getAttrAs<float>("temperature").value_or(1.0f));
+    ins.out[2] =
+        F32BitsPair(op->getAttrAs<float>("loss_scale").value_or(1.0f),
+                    op->getAttrAs<float>("temperature").value_or(1.0f));
   } else if (m == "sc_low.kl_grad") {
     const sir::Value* d = op->result(0);
     Set(OpCode::kKLDistillBwd);
-    ins.in[0] = Ref(op->operand(0));   // p_s
-    ins.in[1] = Ref(op->operand(1));   // p_t
-    ins.in[2] = Ref(op->operand(2));   // seed
-    ins.in[3] = Ref(d);                // dlogits
+    ins.in[0] = Ref(op->operand(0));  // p_s
+    ins.in[1] = Ref(op->operand(1));  // p_t
+    ins.in[2] = Ref(op->operand(2));  // seed
+    ins.in[3] = Ref(d);               // dlogits
     ins.out[0] = Pack32(d->shape().dims.at(0), d->shape().dims.at(1));
-    ins.out[1] = F32BitsPair(
-        op->getAttrAs<float>("loss_scale").value_or(1.0f),
-        op->getAttrAs<float>("temperature").value_or(1.0f));
+    ins.out[1] =
+        F32BitsPair(op->getAttrAs<float>("loss_scale").value_or(1.0f),
+                    op->getAttrAs<float>("temperature").value_or(1.0f));
   } else {
     return false;
   }
@@ -594,8 +583,8 @@ bool OpLowering::TableStepAndFill() {
     ins.in[0] = Ref(op->result(0));
     ins.out[0] = Pack32(op->getAttrAs<int64_t>("seq").value_or(0),
                         op->getAttrAs<int64_t>("width").value_or(0));
-    ins.out[1] = F32Bits(
-        op->getAttrAs<float>("base").value_or(kSmfDefaultRopeBase));
+    ins.out[1] =
+        F32Bits(op->getAttrAs<float>("base").value_or(kSmfDefaultRopeBase));
   } else if (m == "sc_low.sgd_step") {
     Set(OpCode::kSgdStep);
     ins.in[0] = Ref(op->operand(0));

@@ -73,7 +73,7 @@ void InstallStopHandlers() {
   std::signal(SIGINT, OnStopSignal);
   std::signal(SIGTERM, OnStopSignal);
 #else
-  struct sigaction sa {};
+  struct sigaction sa{};
   sa.sa_handler = OnStopSignal;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART | SA_RESETHAND;
@@ -194,12 +194,23 @@ constexpr const char* kUsage =
 /// runner follows the same rule — a typo'd --val-frc must not silently
 /// train with the default.
 bool ArgsOk(int argc, char** argv) {
-  static const char* const kValueFlags[] = {
-      "--model",      "--data",     "--out",
-      "--steps",      "--seed",     "--val-frac",
-      "--checkpoint", "--loss-log", "--checkpoint-every",
-      "--backend",    "--min-improvement", "--report",
-      "--eval-every", "--patience", "--plan", "--peak-gflops", "--threads"};
+  static const char* const kValueFlags[] = {"--model",
+                                            "--data",
+                                            "--out",
+                                            "--steps",
+                                            "--seed",
+                                            "--val-frac",
+                                            "--checkpoint",
+                                            "--loss-log",
+                                            "--checkpoint-every",
+                                            "--backend",
+                                            "--min-improvement",
+                                            "--report",
+                                            "--eval-every",
+                                            "--patience",
+                                            "--plan",
+                                            "--peak-gflops",
+                                            "--threads"};
   static const char* const kBoolFlags[] = {"--force", "--resume", "--help",
                                            "-h", "--require-accuracy"};
   for (int i = 1; i < argc; ++i) {
@@ -231,8 +242,7 @@ bool ArgsOk(int argc, char** argv) {
           break;
         }
     if (!known) {
-      std::fprintf(stderr,
-                   "model_update: unknown argument '%s' (see --help)\n",
+      std::fprintf(stderr, "model_update: unknown argument '%s' (see --help)\n",
                    argv[i]);
       return false;
     }
@@ -247,7 +257,8 @@ std::string DataExtension(const std::string& path) {
   if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
     return "";
   std::string ext = path.substr(dot + 1);
-  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  for (char& c : ext)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return ext;
 }
 
@@ -270,10 +281,12 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
         "the plan names no tokenizer: raw text needs a model exported with "
         "its tokenizer section (or pass the pre-tokenized .sds)");
   std::ifstream model(model_path, std::ios::binary);
-  if (!model) return std::unexpected("cannot open --model '" + model_path + "'");
+  if (!model)
+    return std::unexpected("cannot open --model '" + model_path + "'");
   model.seekg(0, std::ios::end);
   const std::streamoff end = model.tellg();
-  if (end <= 0) return std::unexpected("cannot size --model '" + model_path + "'");
+  if (end <= 0)
+    return std::unexpected("cannot size --model '" + model_path + "'");
   const uint64_t model_size = static_cast<uint64_t>(end);
   std::vector<uint8_t> prefix(static_cast<size_t>(
       std::min<uint64_t>(model_size, seeml::update::kSmfPreambleMaxBytes)));
@@ -281,12 +294,14 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
   if (!model.read(reinterpret_cast<char*>(prefix.data()),
                   static_cast<std::streamsize>(prefix.size())))
     return std::unexpected("cannot read --model '" + model_path + "'");
-  auto pre = seeml::update::ReadSmfPreamble(prefix.data(), prefix.size(),
-                                            model_size);
-  if (!pre) return std::unexpected("--model '" + model_path + "': " + pre.error());
+  auto pre =
+      seeml::update::ReadSmfPreamble(prefix.data(), prefix.size(), model_size);
+  if (!pre)
+    return std::unexpected("--model '" + model_path + "': " + pre.error());
   if (pre->tokenizer_size == 0)
-    return std::unexpected("--model '" + model_path +
-                           "' carries no tokenizer section: raw text needs one");
+    return std::unexpected(
+        "--model '" + model_path +
+        "' carries no tokenizer section: raw text needs one");
   std::vector<uint8_t> section(static_cast<size_t>(pre->tokenizer_size));
   model.seekg(static_cast<std::streamoff>(pre->tokenizer_offset));
   if (!model.read(reinterpret_cast<char*>(section.data()),
@@ -300,8 +315,8 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
     std::snprintf(buf, sizeof buf,
                   "the model's tokenizer section (%016llx) is not the one the "
                   "plan was compiled with (%016llx)",
-                  (unsigned long long)tokenizer_hash,
-                  (unsigned long long)header.tokenizer_hash);
+                  static_cast<unsigned long long>(tokenizer_hash),
+                  static_cast<unsigned long long>(header.tokenizer_hash));
     return std::unexpected(std::string(buf));
   }
   auto tok = tk::ByteLevelBpe::Load(section);
@@ -337,15 +352,16 @@ std::expected<seeml::update_rt::Dataset, std::string> LoadRawText(
                "(%llu empty, %llu duplicate, %llu degenerate dropped); %llu "
                "window(s) of %llu, %llu remainder token(s) dropped; corpus "
                "%016llx\n",
-               data_path.c_str(), (unsigned long long)m.documents_kept,
-               (unsigned long long)m.documents_in,
-               (unsigned long long)m.dropped_empty,
-               (unsigned long long)m.dropped_duplicate,
-               (unsigned long long)m.dropped_degenerate,
-               (unsigned long long)m.windows,
-               (unsigned long long)header.seq_len,
-               (unsigned long long)m.remainder_tokens,
-               (unsigned long long)ingest->corpus_hash);
+               data_path.c_str(),
+               static_cast<unsigned long long>(m.documents_kept),
+               static_cast<unsigned long long>(m.documents_in),
+               static_cast<unsigned long long>(m.dropped_empty),
+               static_cast<unsigned long long>(m.dropped_duplicate),
+               static_cast<unsigned long long>(m.dropped_degenerate),
+               static_cast<unsigned long long>(m.windows),
+               static_cast<unsigned long long>(header.seq_len),
+               static_cast<unsigned long long>(m.remainder_tokens),
+               static_cast<unsigned long long>(ingest->corpus_hash));
   auto ds = seeml::update_rt::Dataset::FromTokens(
       std::move(ingest->ids), m.windows, header.seq_len,
       std::move(ingest->mask), tokenizer_hash);
@@ -451,15 +467,17 @@ struct Gate {
   const std::string eval_every_text = Arg(argc, argv, "--eval-every", "auto");
   uint64_t eval_every = seeml::update_rt::TrainOptions::kEvalEveryAuto;
   uint64_t patience = 0;
-  if ((eval_every_text != "auto" && !ParseU64(eval_every_text.c_str(), &eval_every)) ||
+  if ((eval_every_text != "auto" &&
+       !ParseU64(eval_every_text.c_str(), &eval_every)) ||
       !ParseU64(Arg(argc, argv, "--patience", "0"), &patience)) {
     std::fprintf(stderr, "invalid --eval-every / --patience\n");
     return std::unexpected(2);
   }
   if (patience > 0 && (eval_every == 0 || val_frac <= 0.0)) {
-    std::fprintf(stderr,
-                 "model_update: --patience needs periodic evaluation "
-                 "(--eval-every > 0) and a validation split (--val-frac > 0)\n");
+    std::fprintf(
+        stderr,
+        "model_update: --patience needs periodic evaluation "
+        "(--eval-every > 0) and a validation split (--val-frac > 0)\n");
     return std::unexpected(2);
   }
 
@@ -488,8 +506,7 @@ struct Gate {
   const std::string backend_text =
       Arg(argc, argv, "--backend",
           backend_env && *backend_env ? backend_env : "cpu");
-  const auto backend_kind =
-      seeml::update_rt::ParseBackendKind(backend_text);
+  const auto backend_kind = seeml::update_rt::ParseBackendKind(backend_text);
   if (!backend_kind) {
     std::fprintf(stderr,
                  "model_update: --backend (or $SEEML_BACKEND) must be cpu, "
@@ -579,8 +596,7 @@ struct Gate {
   } else {
     std::FILE* f = std::fopen(plan_path.c_str(), "rb");
     if (!f) {
-      std::fprintf(stderr,
-                   "load: cannot open the update plan '%s' (%s)%s\n",
+      std::fprintf(stderr, "load: cannot open the update plan '%s' (%s)%s\n",
                    plan_path.c_str(), std::strerror(errno),
                    plan_flag.empty()
                        ? "; this package carries no embedded plan — keep "
@@ -680,8 +696,8 @@ struct Gate {
   }
   // The backend is recorded wherever results are compared (the per-backend
   // determinism doctrine): the banner, the gate line below, and the report.
-  std::fprintf(stderr, "seeml-update: backend %s (%s)\n",
-               engine.backend_name(), engine.backend_device().c_str());
+  std::fprintf(stderr, "seeml-update: backend %s (%s)\n", engine.backend_name(),
+               engine.backend_device().c_str());
 
   // Fail fast: the plan's emit offsets are only meaningful inside the exact
   // file it was compiled from, and commit would refuse anyway — but only
@@ -699,11 +715,12 @@ struct Gate {
                  "seeml-update: validation scores the shipped model (the "
                  "f32 weights of '%s' plus the update)\n",
                  model.c_str());
-  std::fprintf(stderr,
-               "seeml-update: resource contract — arena %llu bytes"
-               " (%llu persistent)\n",
-               (unsigned long long)engine.header().arena_size,
-               (unsigned long long)engine.header().persistent_size);
+  std::fprintf(
+      stderr,
+      "seeml-update: resource contract — arena %llu bytes"
+      " (%llu persistent)\n",
+      static_cast<unsigned long long>(engine.header().arena_size),
+      static_cast<unsigned long long>(engine.header().persistent_size));
   return std::nullopt;
 }
 
@@ -726,8 +743,9 @@ struct Gate {
                    "model_update: the plan compiled its validation split "
                    "(seed %llu, fraction %g); --val-frac is not a runner "
                    "decision for this plan\n",
-                   (unsigned long long)plan_header.split_seed,
-                   (double)seeml::update::ValFracOf(plan_header.val_frac_bits));
+                   static_cast<unsigned long long>(plan_header.split_seed),
+                   static_cast<double>(
+                       seeml::update::ValFracOf(plan_header.val_frac_bits)));
       return 2;
     }
     const std::vector<uint64_t> held = seeml::update::HeldOutIndices(
@@ -739,9 +757,9 @@ struct Gate {
                    "data: the corpus does not yield the plan's compiled "
                    "split (%llu records; split hash %016llx, the plan's "
                    "%016llx): the plan was compiled over another corpus\n",
-                   (unsigned long long)dataset->num_samples(),
-                   (unsigned long long)split_hash,
-                   (unsigned long long)plan_header.val_split_hash);
+                   static_cast<unsigned long long>(dataset->num_samples()),
+                   static_cast<unsigned long long>(split_hash),
+                   static_cast<unsigned long long>(plan_header.val_split_hash));
       return 1;
     }
     auto split = dataset->SplitHeldOut(held, split_hash);
@@ -750,7 +768,8 @@ struct Gate {
       return 1;
     }
     val_set = std::move(*split);
-    val_frac = (double)seeml::update::ValFracOf(plan_header.val_frac_bits);
+    val_frac = static_cast<double>(
+        seeml::update::ValFracOf(plan_header.val_frac_bits));
   } else if (val_frac > 0.0) {
     auto split = dataset->SplitValidation(val_frac);
     if (!split) {
@@ -783,8 +802,8 @@ struct Gate {
                  "validation samples); resume with the first run's "
                  "--seed and --val-frac\n",
                  options.checkpoint_path.c_str(),
-                 (unsigned long long)resumed_from->train_samples,
-                 (unsigned long long)resumed_from->val_samples);
+                 static_cast<unsigned long long>(resumed_from->train_samples),
+                 static_cast<unsigned long long>(resumed_from->val_samples));
     return 2;
   }
   return std::nullopt;
@@ -804,9 +823,8 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
     report->val_last_loss = none;
     report->val_final_accuracy = none;
     report->val_last_accuracy = none;
-    std::fprintf(stderr,
-                 "seeml-update: stopped by signal %d at step %llu%s\n",
-                 g_stop_signal, (unsigned long long)engine.step(),
+    std::fprintf(stderr, "seeml-update: stopped by signal %d at step %llu%s\n",
+                 g_stop_signal, static_cast<unsigned long long>(engine.step()),
                  checkpoint_path.empty()
                      ? "; no --checkpoint, so nothing resumable was kept"
                      : "");
@@ -814,33 +832,35 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
       std::fprintf(stderr,
                    "seeml-update: '%s' holds step %llu; rerun with --resume "
                    "to finish the run\n",
-                   checkpoint_path.c_str(), (unsigned long long)engine.step());
+                   checkpoint_path.c_str(),
+                   static_cast<unsigned long long>(engine.step()));
   }
-  std::fprintf(stderr, "seeml-update: train loss %.6f -> %.6f over %llu steps\n",
+  std::fprintf(stderr,
+               "seeml-update: train loss %.6f -> %.6f over %llu steps\n",
                report->initial_avg_loss, report->final_avg_loss,
-               (unsigned long long)report->steps);
+               static_cast<unsigned long long>(report->steps));
   if (report->has_validation && !stopped)
     std::fprintf(stderr,
                  "seeml-update: validation loss %.6f -> %.6f [backend %s]\n",
                  report->val_initial_loss, report->val_final_loss,
                  engine.backend_name());
   if (report->best_tracked && !stopped)
-    std::fprintf(stderr,
-                 "seeml-update: best state at step %llu (validation loss "
-                 "%.6f); last state %.6f; %llu periodic evaluation(s)%s\n",
-                 (unsigned long long)report->best_step, report->val_final_loss,
-                 report->val_last_loss,
-                 (unsigned long long)report->evaluations,
-                 report->stopped_by_patience ? "; stopped: out of patience"
-                                             : "");
+    std::fprintf(
+        stderr,
+        "seeml-update: best state at step %llu (validation loss "
+        "%.6f); last state %.6f; %llu periodic evaluation(s)%s\n",
+        static_cast<unsigned long long>(report->best_step),
+        report->val_final_loss, report->val_last_loss,
+        static_cast<unsigned long long>(report->evaluations),
+        report->stopped_by_patience ? "; stopped: out of patience" : "");
   if (report->has_val_accuracy && !stopped)
     std::fprintf(stderr, "seeml-update: validation accuracy %.4f -> %.4f\n",
                  report->val_initial_accuracy, report->val_final_accuracy);
 }
 
 /// --loss-log: the curve as CSV. False when it could not be written.
-[[nodiscard]] bool WriteLossLog(
-    const std::string& loss_log, const seeml::update_rt::TrainReport* report) {
+[[nodiscard]] bool WriteLossLog(const std::string& loss_log,
+                                const seeml::update_rt::TrainReport* report) {
   bool outputs_ok = true;
   if (!loss_log.empty()) {
     std::FILE* f = std::fopen(loss_log.c_str(), "w");
@@ -854,8 +874,7 @@ void ReportTraining(const seeml::update_rt::UpdateEngine& engine,
         std::fprintf(f, "%zu,%.6f\n", i + 1, report->loss_curve[i]);
       const bool bad = std::ferror(f) != 0;
       if (std::fclose(f) != 0 || bad) {
-        std::fprintf(stderr,
-                     "seeml-update: failed writing --loss-log '%s'\n",
+        std::fprintf(stderr, "seeml-update: failed writing --loss-log '%s'\n",
                      loss_log.c_str());
         outputs_ok = false;
       }
@@ -943,15 +962,19 @@ struct ReportContext {
   // JSON has no NaN/inf and no raw quotes: non-finite numbers become
   // null, strings are escaped.
   auto num = [&](float v) {
-    if (std::isfinite(v)) std::fprintf(f, "%.8g", v);
-    else std::fputs("null", f);
+    if (std::isfinite(v))
+      std::fprintf(f, "%.8g", v);
+    else
+      std::fputs("null", f);
   };
   auto str = [&](const std::string& v) {
     std::fputc('"', f);
     for (char c : v) {
       if (c == '"' || c == '\\') std::fputc('\\', f);
-      if (static_cast<unsigned char>(c) < 0x20) std::fputc(' ', f);
-      else std::fputc(c, f);
+      if (static_cast<unsigned char>(c) < 0x20)
+        std::fputc(' ', f);
+      else
+        std::fputc(c, f);
     }
     std::fputc('"', f);
   };
@@ -963,17 +986,19 @@ struct ReportContext {
   // backend ran on a relaxed kernel (plan v18) — 0 on the reference
   // build, and for an exact plan, whatever the backend could do.
   std::fprintf(f, ",\n  \"relaxed_executions\": %llu",
-               (unsigned long long)engine.relaxed_executions());
+               static_cast<unsigned long long>(engine.relaxed_executions()));
   // The package mode (#158): the plan this run executed and where it
   // came from — the binary, or a file mapped at start-up.
   std::fputs(",\n  \"plan\": {\"source\": ", f);
   str(plan_path.empty() ? "embedded" : "file");
   std::fputs(", \"path\": ", f);
-  if (plan_path.empty()) std::fputs("null", f);
-  else str(plan_path);
+  if (plan_path.empty())
+    std::fputs("null", f);
+  else
+    str(plan_path);
   std::fprintf(f, ", \"bytes\": %zu}", engine.plan_size());
   std::fprintf(f, ",\n  \"steps\": %llu,\n  \"train_loss\": [",
-               (unsigned long long)report->steps);
+               static_cast<unsigned long long>(report->steps));
   num(report->initial_avg_loss);
   std::fputs(", ", f);
   num(report->final_avg_loss);
@@ -993,16 +1018,15 @@ struct ReportContext {
   if (report->best_tracked) {
     // validation_loss[1] above is the committed (best) state's; here is
     // the run's endpoint and where the best was found.
-    std::fprintf(f,
-                 "  \"best_state\": {\"step\": %llu, \"last_loss\": ",
-                 (unsigned long long)report->best_step);
+    std::fprintf(f, "  \"best_state\": {\"step\": %llu, \"last_loss\": ",
+                 static_cast<unsigned long long>(report->best_step));
     num(report->val_last_loss);
     std::fprintf(f,
                  ", \"eval_every\": %llu, \"patience\": %llu, "
                  "\"evaluations\": %llu, \"stopped_by_patience\": %s},\n",
-                 (unsigned long long)report->eval_every,
-                 (unsigned long long)report->patience,
-                 (unsigned long long)report->evaluations,
+                 static_cast<unsigned long long>(report->eval_every),
+                 static_cast<unsigned long long>(report->patience),
+                 static_cast<unsigned long long>(report->evaluations),
                  report->stopped_by_patience ? "true" : "false");
   }
   if (accuracy_measured) {
@@ -1021,8 +1045,8 @@ struct ReportContext {
                "\"train_s\": %.4f, \"eval_s\": %.4f, \"evaluations\": %llu, "
                "\"merge_s\": %.4f, \"commit_s\": %.4f, \"wall_s\": %.4f},\n",
                load_s, data_s, train_s, report->eval_seconds,
-               (unsigned long long)(report->evaluations +
-                                    (report->has_validation ? 2 : 0)),
+               static_cast<unsigned long long>(
+                   report->evaluations + (report->has_validation ? 2 : 0)),
                merge_s, commit_s, SecondsSince(t_main0));
   // The runtime screen, by key (S0 #146; the schema seeml-abi publishes).
   std::fprintf(f, "  \"runtime\": %s,\n", runtime_screen.Json(2).c_str());
@@ -1033,8 +1057,7 @@ struct ReportContext {
                "\"forced\": %s},\n  \"verdict\": \"%s\",\n"
                "  \"committed\": %s",
                min_improvement, require_accuracy ? "true" : "false",
-               loss_ok ? "true" : "false",
-               accuracy_measured ? "true" : "false",
+               loss_ok ? "true" : "false", accuracy_measured ? "true" : "false",
                acc_ok ? "true" : "false",
                (!accepted && force) ? "true" : "false", verdict,
                committed ? "true" : "false");
@@ -1146,10 +1169,10 @@ int main(int argc, char** argv) {
   // --data: a pre-tokenized .sds, or raw text (#202 item 2) ingested here
   // with the model's own tokenizer.
   const std::string data_ext = DataExtension(args.data);
-  auto dataset = data_ext == "txt" || data_ext == "jsonl"
-                     ? LoadRawText(args.model, args.data, data_ext,
-                                   engine.header())
-                     : seeml::update_rt::Dataset::LoadFromFile(args.data);
+  auto dataset =
+      data_ext == "txt" || data_ext == "jsonl"
+          ? LoadRawText(args.model, args.data, data_ext, engine.header())
+          : seeml::update_rt::Dataset::LoadFromFile(args.data);
   if (!dataset) {
     std::fprintf(stderr, "data: %s\n", dataset.error().c_str());
     return 1;
@@ -1213,11 +1236,11 @@ int main(int argc, char** argv) {
     std::optional<double> entropy;
     if (engine.header().label_kind == 1) entropy = dataset->LabelEntropyNats();
     seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,
-                                        args.peak_gflops, gate.verdict,
-                                        entropy, &energy);
+                                        args.peak_gflops, gate.verdict, entropy,
+                                        &energy);
   }
   std::fputs(runtime_screen.Text(/*verbose=*/false).c_str(), stderr);
-  const ReportContext context{args, engine, *report, gate, runtime_screen,
-                              life};
+  const ReportContext context{args, engine,         *report,
+                              gate, runtime_screen, life};
   return Conclude(context, engine, life, stopped, outputs_ok);
 }

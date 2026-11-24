@@ -1,0 +1,7 @@
+# Commits `git blame` should look through: layout only, no token changed.
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# A commit listed here must keep its hash: if the branch is rebased or
+# squash-merged, replace the hash with the one the reformat landed as.
+
+# S8 (#154): the tree reformatted to its .clang-format (clang-format 19).
+65eb5e9537449a9c0f2c7a4953dfece6efb46003

@@ -45,9 +45,9 @@ TEST(ForwardBuilder, BuildsMlpGraph) {
   GraphBuild build;
   build.input = AddInput(block, 6);
 
-  ASSERT_OK_AND_ASSIGN(sir::Value * out,
-                       BuildForward(block, model, "", build.input, kBatch,
-                                    build));
+  ASSERT_OK_AND_ASSIGN(
+      sir::Value * out,
+      BuildForward(block, model, "", build.input, kBatch, build));
   EXPECT_TRUE(out->shape() == sir::Shape({kBatch, 3}));
   EXPECT_EQ(out->id(), "logits");
   EXPECT_TRUE(block.validate());
@@ -85,9 +85,9 @@ TEST(ForwardBuilder, PrefixNamespacesValueIds) {
   GraphBuild build;
   build.input = AddInput(block, 6);
 
-  ASSERT_OK_AND_ASSIGN(sir::Value * out,
-                       BuildForward(block, model, "t::", build.input, kBatch,
-                                    build));
+  ASSERT_OK_AND_ASSIGN(
+      sir::Value * out,
+      BuildForward(block, model, "t::", build.input, kBatch, build));
   EXPECT_EQ(out->id(), "t::logits");
   block.walk([&](sir::Operation* op) {
     if (op->mnemonic() == "sc_mem.weight")
@@ -123,9 +123,9 @@ TEST(ForwardBuilder, RejectsNonConstWeight) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "not a constant tensor");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "not a constant tensor");
 }
 
 TEST(ForwardBuilder, RejectsMissingWeightByName) {
@@ -140,9 +140,9 @@ TEST(ForwardBuilder, RejectsMissingWeightByName) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "not a tensor of the model");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "not a tensor of the model");
 }
 
 TEST(ForwardBuilder, RejectsRank1MatMulOperand) {
@@ -160,9 +160,8 @@ TEST(ForwardBuilder, RejectsRank1MatMulOperand) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "rank-2");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build), "rank-2");
 }
 
 TEST(ForwardBuilder, RejectsInnerDimensionMismatch) {
@@ -170,20 +169,19 @@ TEST(ForwardBuilder, RejectsInnerDimensionMismatch) {
   model.input_name = "x";
   model.output_name = "y";
   model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
-  model.tensors.push_back(
-      {.name = "w",
-       .dims = {3, 2},
-       .is_const = true,
-       .data = AsPayload({1, 2, 3, 4, 5, 6})});
+  model.tensors.push_back({.name = "w",
+                           .dims = {3, 2},
+                           .is_const = true,
+                           .data = AsPayload({1, 2, 3, 4, 5, 6})});
   model.tensors.back().byte_size = model.tensors.back().data.size();
   model.ops.push_back({SmfOpKind::kMatMul, "mm", {"x", "w"}, "y"});
 
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "inner dimensions disagree");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "inner dimensions disagree");
 }
 
 TEST(ForwardBuilder, RejectsBiasWidthMismatch) {
@@ -201,9 +199,8 @@ TEST(ForwardBuilder, RejectsBiasWidthMismatch) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "bias width");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build), "bias width");
 }
 
 TEST(ForwardBuilder, RejectsWrongOperandCount) {
@@ -216,9 +213,9 @@ TEST(ForwardBuilder, RejectsWrongOperandCount) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "needs 2 inputs");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "needs 2 inputs");
 }
 
 TEST(ForwardBuilder, RejectsMissingOutput) {
@@ -231,9 +228,47 @@ TEST(ForwardBuilder, RejectsMissingOutput) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "was never produced");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "was never produced");
+}
+
+TEST(ForwardBuilder, RejectsAnOutputThatIsNotRankTwoWithAStaticWidth) {
+  // The output proof (VerifyModel's last step): loss grafting reads the
+  // output as [rows, classes], so a rank-1 output — an activation of a
+  // rank-1 constant — and an output whose width is not a positive constant
+  // are diagnostics here, not an out-of-range read later. Until 2026-11-19
+  // no test asserted either: ignoring the proof's result passed every suite.
+  auto model_over = [](std::vector<int64_t> dims, size_t floats) {
+    SmfModel model;
+    model.input_name = "x";
+    model.output_name = "y";
+    model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+    model.tensors.push_back(
+        {.name = "w",
+         .dims = std::move(dims),
+         .is_const = true,
+         .data = AsPayload(std::vector<float>(floats, 1.0f))});
+    model.tensors.back().byte_size = model.tensors.back().data.size();
+    model.ops.push_back({SmfOpKind::kRelu, "r", {"w"}, "y"});
+    return model;
+  };
+  {
+    sir::Block block;
+    GraphBuild build;
+    build.input = AddInput(block, 4);
+    EXPECT_ERROR_CONTAINS(
+        BuildForward(block, model_over({4}, 4), "", build.input, kBatch, build),
+        "must be rank-2 [batch, classes], got rank 1");
+  }
+  {
+    sir::Block block;
+    GraphBuild build;
+    build.input = AddInput(block, 4);
+    EXPECT_ERROR_CONTAINS(BuildForward(block, model_over({2, 0}, 0), "",
+                                       build.input, kBatch, build),
+                          "width must be static and positive");
+  }
 }
 
 TEST(ForwardBuilder, RejectsNonPositiveBatch) {
@@ -256,9 +291,9 @@ TEST(ForwardBuilder, RejectsDuplicateOutputName) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "redefines an existing value");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "redefines an existing value");
 }
 
 TEST(ForwardBuilder, RejectsOutputShadowingTensorName) {
@@ -272,9 +307,9 @@ TEST(ForwardBuilder, RejectsOutputShadowingTensorName) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "redefines an existing value");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "redefines an existing value");
 }
 
 TEST(ForwardBuilder, RejectsUseBeforeProduction) {
@@ -290,9 +325,9 @@ TEST(ForwardBuilder, RejectsUseBeforeProduction) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "before it is produced");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "before it is produced");
 }
 
 TEST(ForwardBuilder, RejectsWeightAsModelOutput) {
@@ -306,9 +341,9 @@ TEST(ForwardBuilder, RejectsWeightAsModelOutput) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "was never produced by an operation");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "was never produced by an operation");
 }
 
 TEST(ForwardBuilder, RejectsInputAsModelOutput) {
@@ -321,9 +356,9 @@ TEST(ForwardBuilder, RejectsInputAsModelOutput) {
   sir::Block block;
   GraphBuild build;
   build.input = AddInput(block, 4);
-  EXPECT_ERROR_CONTAINS(BuildForward(block, model, "", build.input, kBatch,
-                                     build),
-                        "was never produced by an operation");
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "was never produced by an operation");
 }
 
 TEST(ForwardBuilder, ConcurrentDisjointBuildsAreSafe) {
@@ -438,8 +473,8 @@ TEST(ForwardBuilder, RejectsEmbeddingTableThatIsNotAWeight) {
   SmfModel model = seeml::testing::MakeTinyTokenDecoder(16, 8, 2, 4, 12, 7);
   // Declare a non-const rank-2 tensor and point the table at it: bound up
   // front (so topological order passes), but not a frozen weight.
-  model.tensors.push_back({.name = "io_table", .dims = {16, 8},
-                           .is_const = false});
+  model.tensors.push_back(
+      {.name = "io_table", .dims = {16, 8}, .is_const = false});
   for (auto& op : model.ops)
     if (op.kind == SmfOpKind::kEmbedding) op.inputs[1] = "io_table";
   sir::Block block;

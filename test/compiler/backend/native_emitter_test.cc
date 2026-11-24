@@ -48,9 +48,8 @@ TEST(NativeEmitter, EmitsCompletePackage) {
                        EmitNativePackage(compiled.plan, out_dir, RepoRoot()));
   EXPECT_FALSE(std::filesystem::exists(out_dir + "/update_plan_embedded.S"));
 
-  for (const std::string& p :
-       {paths.plan_file, paths.embedded_tu, paths.main_tu,
-        paths.build_script}) {
+  for (const std::string& p : {paths.plan_file, paths.embedded_tu,
+                               paths.main_tu, paths.build_script}) {
     EXPECT_TRUE(std::filesystem::exists(p));
     EXPECT_GT(std::filesystem::file_size(p), 0u);
   }
@@ -75,35 +74,43 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   // spelled out.
   EXPECT_STR_CONTAINS(main_tu, "kSeemlUpdatePlanSize > 0");
   EXPECT_STR_CONTAINS(main_tu, "\"--plan\"");
-  EXPECT_STR_CONTAINS(main_tu, "ExecutableDir(argv[0]) + \"/\" + kPlanFileName");
+  EXPECT_STR_CONTAINS(main_tu,
+                      "ExecutableDir(argv[0]) + \"/\" + kPlanFileName");
   EXPECT_STR_CONTAINS(main_tu, "kPlanFileName = \"update_plan.seeu\"");
   EXPECT_STR_CONTAINS(main_tu, "engine.LoadFromFileMapped(plan_path)");
-  EXPECT_STR_CONTAINS(main_tu,
-                      "engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize)");
+  EXPECT_STR_CONTAINS(
+      main_tu, "engine.LoadFromMemory(kSeemlUpdatePlan, kSeemlUpdatePlanSize)");
   EXPECT_STR_CONTAINS(main_tu, "this package carries no embedded plan");
   EXPECT_STR_CONTAINS(main_tu, "[--plan update_plan.seeu]");
 
   // The package is self-contained: the runtime sources are vendored in and
   // the build script compiles them from the package directory, never from
   // the repository checkout.
-  for (const char* rel :
-       {"runtime/dispatcher/update_engine.cc", "runtime/loader/contract.cc",
-        "runtime/executor/update_kernels.h", "runtime/executor/gemm.cc",
-        "runtime/executor/elementwise.cc", "runtime/executor/activation.cc",
-        "runtime/executor/normalization.cc", "runtime/executor/loss.cc",
-        "runtime/executor/optimizer.cc", "runtime/executor/attention.cc",
-        "runtime/pipeline/dataset.cc",
-        "runtime/pipeline/batch_pipeline.cc", "runtime/storage/durable_io.cc",
-        "runtime/verifier/plan_validator.cc",
-        "runtime/storage/checkpoint.cc",
-        "runtime/diagnostics/diagnostic.h",
-        "runtime/diagnostics/executing/error.h", "source/plan/update_types.h",
-        "source/plan/config.h", "source/plan/instruction.h",
-        "source/plan/schema.h", "source/identity/hash.h",
-        "source/parallel/parallel_for.h",
-        "source/parallel/parallel_for.cc"}) {
-    EXPECT_TRUE(std::filesystem::exists(
-        std::filesystem::path(out_dir) / rel));
+  for (const char* rel : {"runtime/dispatcher/update_engine.cc",
+                          "runtime/loader/contract.cc",
+                          "runtime/executor/update_kernels.h",
+                          "runtime/executor/gemm.cc",
+                          "runtime/executor/elementwise.cc",
+                          "runtime/executor/activation.cc",
+                          "runtime/executor/normalization.cc",
+                          "runtime/executor/loss.cc",
+                          "runtime/executor/optimizer.cc",
+                          "runtime/executor/attention.cc",
+                          "runtime/pipeline/dataset.cc",
+                          "runtime/pipeline/batch_pipeline.cc",
+                          "runtime/storage/durable_io.cc",
+                          "runtime/verifier/plan_validator.cc",
+                          "runtime/storage/checkpoint.cc",
+                          "runtime/diagnostics/diagnostic.h",
+                          "runtime/diagnostics/executing/error.h",
+                          "source/plan/update_types.h",
+                          "source/plan/config.h",
+                          "source/plan/instruction.h",
+                          "source/plan/schema.h",
+                          "source/identity/hash.h",
+                          "source/parallel/parallel_for.h",
+                          "source/parallel/parallel_for.cc"}) {
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(out_dir) / rel));
   }
   const std::string script = ReadText(paths.build_script);
   EXPECT_STR_CONTAINS(script, "dispatcher/update_engine");
@@ -126,17 +133,18 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   // the packer's .incbin stub when present (assembled without the C++
   // flags — it is preprocessed assembly), else the decimal TU emitted here.
   EXPECT_STR_CONTAINS(script, "if [ -f update_plan_embedded.S ]; then");
-  EXPECT_STR_CONTAINS(script,
-                      "$CXX -c update_plan_embedded.S -o update_plan_embedded.o");
   EXPECT_STR_CONTAINS(
-      script, "$CXX $FLAGS -c update_plan_embedded.cc -o update_plan_embedded.o");
+      script, "$CXX -c update_plan_embedded.S -o update_plan_embedded.o");
+  EXPECT_STR_CONTAINS(
+      script,
+      "$CXX $FLAGS -c update_plan_embedded.cc -o update_plan_embedded.o");
   EXPECT_STR_CONTAINS(script, "update_main.o update_plan_embedded.o");
   // ... and with neither TU present, the disk mode (#158): the script
   // writes the two-line TU that defines an empty plan, compiles it under
   // the same name, and never stops the build for a missing embed TU.
   EXPECT_STR_CONTAINS(script, "elif [ -f update_plan_embedded.cc ]; then");
-  EXPECT_STR_CONTAINS(script,
-                      "$CXX $FLAGS -c update_plan_none.cc -o update_plan_embedded.o");
+  EXPECT_STR_CONTAINS(
+      script, "$CXX $FLAGS -c update_plan_none.cc -o update_plan_embedded.o");
   EXPECT_STR_CONTAINS(script,
                       "const unsigned char kSeemlUpdatePlan[1] = {0}; "
                       "const size_t kSeemlUpdatePlanSize = 0;");
@@ -164,16 +172,17 @@ TEST(NativeEmitter, ThePackageCompilesTheTokenizerAndTheTextIngest) {
   std::filesystem::create_directories(out_dir);
   ASSERT_OK_AND_ASSIGN(EmitPaths paths,
                        EmitNativePackage(compiled.plan, out_dir, RepoRoot()));
-  for (const char* f : {"source/tokenizer/byte_level_bpe.cc",
-                        "source/tokenizer/byte_level_bpe.h",
-                        "source/tokenizer/text_ingest.cc",
-                        "source/tokenizer/text_ingest.h",
-                        "source/tokenizer/unicode_tables.h",
-                        "source/language/dataset_format.h"})
+  for (const char* f :
+       {"source/tokenizer/byte_level_bpe.cc",
+        "source/tokenizer/byte_level_bpe.h", "source/tokenizer/text_ingest.cc",
+        "source/tokenizer/text_ingest.h", "source/tokenizer/unicode_tables.h",
+        "source/language/dataset_format.h"})
     EXPECT_TRUE(std::filesystem::exists(out_dir + "/" + f));
   const std::string script = ReadText(paths.build_script);
-  EXPECT_STR_CONTAINS(script, "-c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o");
-  EXPECT_STR_CONTAINS(script, "-c source/tokenizer/text_ingest.cc -o text_ingest.o");
+  EXPECT_STR_CONTAINS(
+      script, "-c source/tokenizer/byte_level_bpe.cc -o byte_level_bpe.o");
+  EXPECT_STR_CONTAINS(script,
+                      "-c source/tokenizer/text_ingest.cc -o text_ingest.o");
   EXPECT_STR_CONTAINS(script, "byte_level_bpe.o text_ingest.o");
 }
 
@@ -202,15 +211,14 @@ TEST(NativeEmitter, SkipsTheDecimalTUOnRequest) {
   // build.sh that will assemble the stub the packer adds.
   EXPECT_TRUE(std::filesystem::exists(paths.plan_file));
   EXPECT_TRUE(std::filesystem::exists(paths.main_tu));
-  EXPECT_TRUE(std::filesystem::exists(
-      std::filesystem::path(out_dir) / "runtime/dispatcher/update_engine.cc"));
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(out_dir) /
+                                      "runtime/dispatcher/update_engine.cc"));
   const std::string plan_bytes = ReadText(paths.plan_file);
   EXPECT_EQ(plan_bytes.size(), compiled.plan.size());
-  EXPECT_TRUE(std::equal(compiled.plan.begin(), compiled.plan.end(),
-                         plan_bytes.begin(), plan_bytes.end(),
-                         [](uint8_t a, char b) {
-                           return a == static_cast<uint8_t>(b);
-                         }));
+  EXPECT_TRUE(std::equal(
+      compiled.plan.begin(), compiled.plan.end(), plan_bytes.begin(),
+      plan_bytes.end(),
+      [](uint8_t a, char b) { return a == static_cast<uint8_t>(b); }));
   const std::string script = ReadText(paths.build_script);
   EXPECT_STR_CONTAINS(script, "update_plan_embedded.S");
   // ... or that builds the disk mode as it stands, with no TU at all
@@ -233,10 +241,9 @@ TEST(NativeEmitter, TheDiskModeBranchOfBuildScriptCompilesAnEmptyPlan) {
                        UpdateCompiler(BaseConfig(4)).Compile(model));
   EmitOptions options;
   options.embed_plan_tu = false;
-  ASSERT_OK_AND_ASSIGN(
-      EmitPaths paths,
-      EmitNativePackage(compiled.plan, dir.path().string(), RepoRoot(),
-                        options));
+  ASSERT_OK_AND_ASSIGN(EmitPaths paths,
+                       EmitNativePackage(compiled.plan, dir.path().string(),
+                                         RepoRoot(), options));
   std::string script = ReadText(paths.build_script);
   // Cut the script after the plan-TU branch: "fi" closes it, and the first
   // compile of the driver follows.
@@ -250,12 +257,12 @@ TEST(NativeEmitter, TheDiskModeBranchOfBuildScriptCompilesAnEmptyPlan) {
     f << script;
   }
   const std::string log = dir.File("branch.log");
-  const int rc = std::system(("sh \"" + probe + "\" > \"" + log +
-                              "\" 2>&1")
-                                 .c_str());
+  const int rc =
+      std::system(("sh \"" + probe + "\" > \"" + log + "\" 2>&1").c_str());
   EXPECT_EQ(rc, 0);
-  EXPECT_STR_CONTAINS(ReadText(log),
-                      "note: (no embedded plan: ship update_plan.seeu beside it)");
+  EXPECT_STR_CONTAINS(
+      ReadText(log),
+      "note: (no embedded plan: ship update_plan.seeu beside it)");
   EXPECT_TRUE(std::filesystem::exists(dir.File("update_plan_embedded.o")));
   EXPECT_FALSE(std::filesystem::exists(dir.File("update_plan_none.cc")));
   // The object defines both symbols (nm's spelling is per platform; the
@@ -282,23 +289,22 @@ TEST(NativeEmitter, RelaxedPlanBuildScriptDemandsTheCertificate) {
   EmitOptions options;
   options.embed_plan_tu = false;
   options.relaxed_plan = true;
-  ASSERT_OK_AND_ASSIGN(EmitPaths relaxed,
-                       EmitNativePackage(compiled.plan,
-                                         (dir.path() / "relaxed").string(),
-                                         RepoRoot(), options));
+  ASSERT_OK_AND_ASSIGN(
+      EmitPaths relaxed,
+      EmitNativePackage(compiled.plan, (dir.path() / "relaxed").string(),
+                        RepoRoot(), options));
   const std::string script = ReadText(relaxed.build_script);
   EXPECT_STR_CONTAINS(script, "numerics_certificate.json");
   EXPECT_STR_CONTAINS(script, "\"verdict\": \"granted\"");
   EXPECT_STR_CONTAINS(script, "shasum -a 256 update_plan.seeu");
   EXPECT_STR_CONTAINS(script, "SEEML_ACCELERATE");
-  EXPECT_LT(script.find("numerics_certificate.json"),
-            script.find("$CXX "));
+  EXPECT_LT(script.find("numerics_certificate.json"), script.find("$CXX "));
 
   options.relaxed_plan = false;
-  ASSERT_OK_AND_ASSIGN(EmitPaths exact,
-                       EmitNativePackage(compiled.plan,
-                                         (dir.path() / "exact").string(),
-                                         RepoRoot(), options));
+  ASSERT_OK_AND_ASSIGN(
+      EmitPaths exact,
+      EmitNativePackage(compiled.plan, (dir.path() / "exact").string(),
+                        RepoRoot(), options));
   const std::string plain = ReadText(exact.build_script);
   EXPECT_EQ(plain.find("numerics_certificate.json"), std::string::npos);
   EXPECT_EQ(plain.find("SEEML_ACCELERATE"), std::string::npos);
@@ -353,7 +359,8 @@ TEST(NativeEmitter, TheStreamedDecimalTUIsCharacterIdenticalAcrossWindows) {
     want += ',';
     if ((i + 1) % 24 == 0) want += '\n';
   }
-  want += "\n};\nconst size_t kSeemlUpdatePlanSize = sizeof(kSeemlUpdatePlan);\n";
+  want +=
+      "\n};\nconst size_t kSeemlUpdatePlanSize = sizeof(kSeemlUpdatePlan);\n";
   EXPECT_TRUE(got.compare(body + 4, std::string::npos, want) == 0);
 }
 
@@ -373,7 +380,8 @@ TEST(NativeEmitter, TheRunnerStagesItsReportAndExitsFourOnAFailedOutput) {
   ASSERT_OK_AND_ASSIGN(EmitPaths paths,
                        EmitNativePackage(compiled.plan, out_dir, RepoRoot()));
   const std::string main_tu = ReadText(paths.main_tu);
-  EXPECT_STR_CONTAINS(main_tu, "const std::string staged = report_path + \".tmp\";");
+  EXPECT_STR_CONTAINS(main_tu,
+                      "const std::string staged = report_path + \".tmp\";");
   EXPECT_STR_CONTAINS(main_tu,
                       "std::rename(staged.c_str(), report_path.c_str())");
   EXPECT_STR_CONTAINS(main_tu, "cannot write --loss-log");
@@ -397,13 +405,16 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     std::filesystem::create_directories(out_dir);
     EmitOptions options;
     options.peak_gflops = peak;
-    ASSERT_OK_AND_ASSIGN(EmitPaths paths, EmitNativePackage(compiled.plan, out_dir,
-                                                            RepoRoot(), options));
+    ASSERT_OK_AND_ASSIGN(
+        EmitPaths paths,
+        EmitNativePackage(compiled.plan, out_dir, RepoRoot(), options));
     const std::string main_tu = ReadText(paths.main_tu);
-    EXPECT_STR_CONTAINS(main_tu, peak > 0.0
-                                     ? "kSeemlPeakGflops = 3500 /*seeml:peak_gflops*/;"
-                                     : "kSeemlPeakGflops = 0 /*seeml:peak_gflops*/;");
-    EXPECT_STR_CONTAINS(main_tu, "seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);");
+    EXPECT_STR_CONTAINS(
+        main_tu, peak > 0.0 ? "kSeemlPeakGflops = 3500 /*seeml:peak_gflops*/;"
+                            : "kSeemlPeakGflops = 0 /*seeml:peak_gflops*/;");
+    EXPECT_STR_CONTAINS(
+        main_tu,
+        "seeml::update::Screen runtime_screen(seeml::update::kRuntimeScreen);");
     EXPECT_STR_CONTAINS(main_tu, "\"--peak-gflops\"");
     EXPECT_STR_CONTAINS(main_tu, "runtime_screen.Json(2)");
     // S3 #149: the runner takes a compiled split from the plan header,
@@ -414,7 +425,8 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     EXPECT_STR_CONTAINS(main_tu, "dataset->SplitHeldOut(held, split_hash)");
     // S4 #150: the runner's integers are digits alone and its flags are
     // held to the plan by the recipe's rules, from the vendored headers.
-    EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseU64Strict(s, out)");
+    EXPECT_STR_CONTAINS(main_tu,
+                        "seeml::update::recipe::ParseU64Strict(s, out)");
     EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::RunFlagsViolation(");
     // The rules run on the header read for the usage errors, before the
     // plan loads; a resume is a checkpoint that is there (a bare --resume
@@ -422,24 +434,27 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
     EXPECT_STR_CONTAINS(main_tu, "RunFlagsViolation(hdr, flags)");
     // ... and one bound to this plan: the engine refuses another plan's
     // checkpoint and starts fresh, so the fresh run's rule holds there too.
-    EXPECT_STR_CONTAINS(main_tu,
-                        "flags.resume = resumed_from && resumed_from->step > 0 &&");
+    EXPECT_STR_CONTAINS(
+        main_tu, "flags.resume = resumed_from && resumed_from->step > 0 &&");
     EXPECT_STR_CONTAINS(main_tu, "resumed_from->plan_hash == hdr.plan_hash;");
     // ... which is also the only checkpoint the seed / split refusal reads:
     // another plan's binds this run to nothing (test/tool/recipe_test.py
     // runs both through a built runner).
     EXPECT_STR_CONTAINS(main_tu, "if (!flags.resume) resumed_from.reset();");
-    EXPECT_STR_CONTAINS(main_tu, "seeml::update::recipe::ParseF64Strict(s, out)");
+    EXPECT_STR_CONTAINS(main_tu,
+                        "seeml::update::recipe::ParseF64Strict(s, out)");
     // S7 #153: the rows are the profiler's, filled by the vendored
     // FillRuntimeScreen that seeml-bench shares.
-    EXPECT_STR_CONTAINS(main_tu, "seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,");
+    EXPECT_STR_CONTAINS(
+        main_tu,
+        "seeml::update_rt::FillRuntimeScreen(runtime_screen, engine, *report,");
     // CR4 #145, the storage role's rows: only for a run that saved a
     // checkpoint, the bytes and the fsyncs as means over its checkpoints.
     const std::string screen_cc =
         ReadText(out_dir + "/runtime/profiler/runtime_screen.cc");
     EXPECT_STR_CONTAINS(screen_cc, "if (report.checkpoints > 0) {");
-    EXPECT_STR_CONTAINS(screen_cc,
-                        "runtime_screen.Set(\"checkpoints\", report.checkpoints);");
+    EXPECT_STR_CONTAINS(
+        screen_cc, "runtime_screen.Set(\"checkpoints\", report.checkpoints);");
     EXPECT_STR_CONTAINS(screen_cc,
                         "report.checkpoint_bytes / report.checkpoints");
     EXPECT_STR_CONTAINS(screen_cc,
@@ -450,14 +465,14 @@ TEST(NativeEmitter, TheRunnerCarriesTheRuntimeScreenAndTheCompilesPeak) {
           "runtime/profiler/step_timings.h",
           "runtime/profiler/runtime_screen.h",
           "runtime/profiler/energy_meter.h",
-          "runtime/profiler/kernel_profile.h",
-          "source/language/model_format.h",
+          "runtime/profiler/kernel_profile.h", "source/language/model_format.h",
           "source/language/smf_preamble.h",
-          "runtime/profiler/runtime_screen.cc",
-          "source/contract/split.h", "source/language/dataset_format.h",
-          "source/recipe/recipe.h", "source/recipe/run_flags.h"}) {
+          "runtime/profiler/runtime_screen.cc", "source/contract/split.h",
+          "source/language/dataset_format.h", "source/recipe/recipe.h",
+          "source/recipe/run_flags.h"}) {
       bool vendored = false;
-      for (const std::string& v : paths.vendored_sources) vendored |= v == header;
+      for (const std::string& v : paths.vendored_sources)
+        vendored |= v == header;
       if (!vendored) ADD_FAILURE(std::string(header) + " is not vendored");
       EXPECT_TRUE(std::filesystem::exists(out_dir + "/" + header));
     }

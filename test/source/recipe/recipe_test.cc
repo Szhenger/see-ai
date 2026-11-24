@@ -37,12 +37,15 @@ TEST(Recipe, IntegersAreDigitsAlone) {
   EXPECT_EQ(v, ~uint64_t{0});
   double d = 0;
   // strtod alone takes a hex float and skips every isspace() prefix.
-  for (const char* bad : {"nan", "inf", "-inf", "infinity", " 1", "+1", "1x",
-                          "", "1e999", "0x1p-3", "0x10", "\r1", "\v1", "\f1",
-                          "1 "})
+  for (const char* bad :
+       {"nan", "inf", "-inf", "infinity", " 1", "+1", "1x", "", "1e999",
+        "0x1p-3", "0x10", "\r1", "\v1", "\f1", "1 "})
     EXPECT_FALSE(recipe::ParseF64Strict(bad, &d));
   // An embedded NUL is not the end of the text.
-  EXPECT_FALSE(recipe::ParseF64Strict(std::string_view("1\0" "2", 3), &d));
+  EXPECT_FALSE(recipe::ParseF64Strict(std::string_view("1\0"
+                                                       "2",
+                                                       3),
+                                      &d));
   EXPECT_TRUE(recipe::ParseF64Strict("-2.5e-1", &d));
   EXPECT_EQ(d, -0.25);
 }
@@ -54,7 +57,8 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
     const char* says;
   };
   const Case cases[] = {
-      {"steps", " -1", "--steps (recipe field steps) must be an integer in [1, "},
+      {"steps", " -1",
+       "--steps (recipe field steps) must be an integer in [1, "},
       {"steps", "0", "--steps (recipe field steps) must be an integer in [1, "},
       {"data_batch", "-4", "--data-batch (recipe field data_batch)"},
       // N18: the rank was unbounded.
@@ -97,9 +101,10 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
   EXPECT_ERROR_CONTAINS(Apply({{"learning_rate", "1"}}, {}, &config),
                         "unknown recipe field 'learning_rate'");
   // #190: a global clip measures one norm against clip_norm, so it needs one.
-  EXPECT_ERROR_CONTAINS(Apply({{"clip_mode", "global"}}, {}, &config),
-                        "--clip-mode (recipe field clip_mode) global measures "
-                        "one norm to clip at clip_norm; it needs clip_norm > 0");
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"clip_mode", "global"}}, {}, &config),
+      "--clip-mode (recipe field clip_mode) global measures "
+      "one norm to clip at clip_norm; it needs clip_norm > 0");
   EXPECT_OK(Apply({{"clip_mode", "global"}, {"clip_norm", "1"}}, {}, &config));
   EXPECT_TRUE(config.optimizer.clip_global);
   EXPECT_OK(Apply({{"clip_mode", "per_tensor"}}, {}, &config));
@@ -124,24 +129,33 @@ TEST(Recipe, EveryFieldIsHeldToItsBoundByName) {
   for (const recipe::Field& f : recipe::kFields) {
     std::string value;
     switch (f.kind) {
-      case recipe::Kind::kUInt: value = std::to_string(f.umin); break;
+      case recipe::Kind::kUInt:
+        value = std::to_string(f.umin);
+        break;
       case recipe::Kind::kFloat:
         value = recipe::Number((f.fmin + f.fmax) / 2);
         break;
       case recipe::Kind::kEnum:
-        value = std::string(f.choices).substr(0, std::string(f.choices).find('|'));
+        value =
+            std::string(f.choices).substr(0, std::string(f.choices).find('|'));
         break;
-      case recipe::Kind::kBool: value = "true"; break;
-      case recipe::Kind::kList: value = "w"; break;
+      case recipe::Kind::kBool:
+        value = "true";
+        break;
+      case recipe::Kind::kList:
+        value = "w";
+        break;
     }
     UpdateConfig each;
-    auto applied = Apply({{f.name, value}}, {.teacher = true, .data = true}, &each);
+    auto applied =
+        Apply({{f.name, value}}, {.teacher = true, .data = true}, &each);
     if (!applied)
-      EXPECT_TRUE(applied.error().find("does not apply it") == std::string::npos);
+      EXPECT_TRUE(applied.error().find("does not apply it") ==
+                  std::string::npos);
   }
   // The f32 bound itself is admitted ("0.001" is 1e-3f).
-  EXPECT_OK(Apply({{"temperature", "0.001"}, {"loss", "kl"}},
-                  {.teacher = true}, &config));
+  EXPECT_OK(Apply({{"temperature", "0.001"}, {"loss", "kl"}}, {.teacher = true},
+                  &config));
   // The f32 stored is the text's own nearest one, not the nearest double's
   // narrowed, which rounds twice: this text sits just above the midpoint of
   // 1.0f and the next float, and its nearest double is that midpoint.
@@ -158,17 +172,18 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
   EXPECT_ERROR_CONTAINS(Apply({{"temperature", "2"}}, {}, &c),
                         "--temperature (recipe field temperature) applies to a "
                         "distillation loss only");
-  EXPECT_ERROR_CONTAINS(Apply({{"distill_weight", "0.5"}}, {}, &c),
-                        "--distill-weight (recipe field distill_weight) applies "
-                        "to a distillation loss only");
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"distill_weight", "0.5"}}, {}, &c),
+      "--distill-weight (recipe field distill_weight) applies "
+      "to a distillation loss only");
   c = {};
   EXPECT_ERROR_CONTAINS(
       Apply({{"loss", "kl"}, {"distill_weight", "0.5"}}, {.teacher = true}, &c),
       "weighs the KL term of loss xent+kl");
   c = {};
-  EXPECT_OK(Apply({{"loss", "xent+kl"}, {"distill_weight", "0.4"},
-                   {"temperature", "2"}},
-                  {.teacher = true}, &c));
+  EXPECT_OK(Apply(
+      {{"loss", "xent+kl"}, {"distill_weight", "0.4"}, {"temperature", "2"}},
+      {.teacher = true}, &c));
   EXPECT_EQ(c.distill_weight, 0.4f);
   // N27: targets that name nothing.
   for (const char* empty : {"", ",", ",,"}) {
@@ -183,9 +198,10 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
   // The cosine schedule's knobs, and warmup < steps.
   c = {};
   // (#151: cosine is the default, so the knobs need a written const.)
-  EXPECT_ERROR_CONTAINS(Apply({{"lr_schedule", "const"}, {"warmup", "3"}}, {}, &c),
-                        "--warmup (recipe field warmup) applies to lr_schedule "
-                        "cosine only");
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"lr_schedule", "const"}, {"warmup", "3"}}, {}, &c),
+      "--warmup (recipe field warmup) applies to lr_schedule "
+      "cosine only");
   c = {};
   EXPECT_ERROR_CONTAINS(
       Apply({{"lr_schedule", "const"}, {"allow_zero_lr", "true"}}, {}, &c),
@@ -216,18 +232,19 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
       Apply({{"quantize_base", "true"}, {"bf16_base", "true"}}, {}, &c),
       "mutually exclusive");
   c = {};
-  EXPECT_ERROR_CONTAINS(Apply({{"attention", "tiled"},
-                               {"attention_cache_budget_mib", "8"}},
-                              {}, &c),
-                        "applies to attention auto only");
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"attention", "tiled"}, {"attention_cache_budget_mib", "8"}}, {},
+            &c),
+      "applies to attention auto only");
   c = {};
-  EXPECT_ERROR_CONTAINS(Apply({{"val_frac", "0.1"}}, {}, &c), "pass --data too");
+  EXPECT_ERROR_CONTAINS(Apply({{"val_frac", "0.1"}}, {}, &c),
+                        "pass --data too");
   c = {};
   EXPECT_ERROR_CONTAINS(Apply({{"split_seed", "3"}}, {.data = true}, &c),
                         "needs val_frac");
   c = {};
-  EXPECT_OK(Apply({{"val_frac", "0.25"}, {"split_seed", "3"}}, {.data = true},
-                  &c));
+  EXPECT_OK(
+      Apply({{"val_frac", "0.25"}, {"split_seed", "3"}}, {.data = true}, &c));
   EXPECT_EQ(c.split_seed, 3u);
   // A refused recipe leaves the config as it was — whichever rule refuses,
   // a value's own or a cross-field one: nothing is half-applied (the
@@ -239,10 +256,10 @@ TEST(Recipe, FieldsAreHeldToEachOther) {
       Apply({{"lora_rank", "4"}, {"targets", ","}}, {}, &kept),
       "must name at least one weight");
   EXPECT_EQ(recipe::ResolvedText(kept), before);
-  EXPECT_ERROR_CONTAINS(Apply({{"lora_rank", "4"}, {"lr_schedule", "const"},
-                               {"warmup", "3"}},
-                              {}, &kept),
-                        "applies to lr_schedule cosine only");
+  EXPECT_ERROR_CONTAINS(
+      Apply({{"lora_rank", "4"}, {"lr_schedule", "const"}, {"warmup", "3"}}, {},
+            &kept),
+      "applies to lr_schedule cosine only");
   EXPECT_EQ(recipe::ResolvedText(kept), before);
   // The library path's bounds.
   UpdateConfig lib;
@@ -267,9 +284,13 @@ TEST(Recipe, TheFileIsAFlatStrictObjectAndResolvesAsTheFlagsDo) {
   EXPECT_EQ(parsed->at("quantize_base"), "true");
   UpdateConfig from_file, from_flags;
   ASSERT_OK(Apply(*parsed, {}, &from_file));
-  ASSERT_OK(Apply({{"loss", "xent"}, {"lora_rank", "4"}, {"targets", "wq,wv"},
-                   {"lr", "0.0001"}, {"lr_schedule", "cosine"},
-                   {"warmup", "10"}, {"steps", "300"},
+  ASSERT_OK(Apply({{"loss", "xent"},
+                   {"lora_rank", "4"},
+                   {"targets", "wq,wv"},
+                   {"lr", "0.0001"},
+                   {"lr_schedule", "cosine"},
+                   {"warmup", "10"},
+                   {"steps", "300"},
                    {"quantize_base", "true"}},
                   {}, &from_flags));
   EXPECT_EQ(recipe::ResolvedText(from_file), recipe::ResolvedText(from_flags));
@@ -288,7 +309,8 @@ TEST(Recipe, TheFileIsAFlatStrictObjectAndResolvesAsTheFlagsDo) {
   const Bad bad[] = {
       {"[]", "not a JSON object"},
       {"{\"rank\": 4}", "unknown field 'rank'"},
-      {"{\"lora_rank\": 4, \"lora_rank\": 8}", "field 'lora_rank' appears twice"},
+      {"{\"lora_rank\": 4, \"lora_rank\": 8}",
+       "field 'lora_rank' appears twice"},
       {"{\"lora_rank\": \"4\"}", "field 'lora_rank' takes a number"},
       {"{\"lora_rank\": true}", "field 'lora_rank' takes a number"},
       {"{\"loss\": xent}", "field 'loss' takes a string"},
@@ -354,8 +376,8 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
       Lines(recipe::ResolvedText(UpdateConfig{}));
   ASSERT_EQ(defaults.size(), std::size(recipe::kFields));
   for (size_t i = 0; i < defaults.size(); ++i)
-    EXPECT_TRUE(defaults[i].starts_with(std::string(recipe::kFields[i].name) +
-                                        "="));
+    EXPECT_TRUE(
+        defaults[i].starts_with(std::string(recipe::kFields[i].name) + "="));
 
   // A distillation loss is what admits a teacher, and needs one.
   auto inputs_of = [](const Values& v) {
@@ -378,7 +400,9 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
     // A value inside the bound that is not the default.
     std::string value;
     switch (f.kind) {
-      case recipe::Kind::kUInt: value = "7"; break;
+      case recipe::Kind::kUInt:
+        value = "7";
+        break;
       case recipe::Kind::kFloat:
         value = recipe::Number(f.fmin + (f.fmax - f.fmin) / 4);
         break;
@@ -387,8 +411,12 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
         value = choices.substr(choices.rfind('|') + 1);
         break;
       }
-      case recipe::Kind::kBool: value = "true"; break;
-      case recipe::Kind::kList: value = "w"; break;
+      case recipe::Kind::kBool:
+        value = "true";
+        break;
+      case recipe::Kind::kList:
+        value = "w";
+        break;
     }
     Values moved = with;
     moved[name] = value;
@@ -400,8 +428,8 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
     ASSERT_EQ(a.size(), b.size());
     for (size_t j = 0; j < a.size(); ++j) {
       if ((a[j] != b[j]) != (j == i))
-        ADD_FAILURE("applying '" + name + "' = '" + value + "': line '" +
-                    a[j] + "' became '" + b[j] + "'");
+        ADD_FAILURE("applying '" + name + "' = '" + value + "': line '" + a[j] +
+                    "' became '" + b[j] + "'");
     }
   }
 
@@ -410,7 +438,8 @@ TEST(Recipe, EachFieldMovesItsOwnLineOfTheResolvedTextAndNoOther) {
   UpdateConfig ordered, shuffled;
   ASSERT_OK(Apply({{"targets", "wq,wv"}}, {}, &ordered));
   ASSERT_OK(Apply({{"targets", "wv,wq,wv"}}, {}, &shuffled));
-  EXPECT_EQ(shuffled.lora.target_filters.size(), 3u);  // the config is as written
+  // the config is as written
+  EXPECT_EQ(shuffled.lora.target_filters.size(), 3u);
   EXPECT_EQ(recipe::ResolvedText(ordered), recipe::ResolvedText(shuffled));
   EXPECT_STR_CONTAINS(recipe::ResolvedText(shuffled), "targets=wq,wv\n");
 

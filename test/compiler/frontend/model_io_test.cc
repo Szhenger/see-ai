@@ -113,13 +113,13 @@ std::vector<uint8_t> LegacySmfBytes(uint32_t version, uint8_t kind) {
   u32(1);  // num_ops
   str("x");
   str("y");
-  str("x");           // tensor name
-  b.push_back(1);     // rank
-  b.push_back(0);     // flags: non-const
+  str("x");                                 // tensor name
+  b.push_back(1);                           // rank
+  b.push_back(0);                           // flags: non-const
   u64(static_cast<uint64_t>(int64_t{-1}));  // dynamic leading dim
-  u64(0);             // data_offset
-  u64(0);             // byte_size
-  b.push_back(kind);  // op kind
+  u64(0);                                   // data_offset
+  u64(0);                                   // byte_size
+  b.push_back(kind);                        // op kind
   str("a");
   b.push_back(1);  // num_inputs
   str("x");
@@ -468,8 +468,9 @@ TEST(Smf, ThePreambleReaderFindsTheTokenizerSectionLoadSmfFinds) {
   std::ifstream f(path, std::ios::binary);
   const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                    std::istreambuf_iterator<char>());
-  ASSERT_OK_AND_ASSIGN(SmfPreamble pre,
-                       ReadSmfPreamble(bytes.data(), bytes.size(), bytes.size()));
+  ASSERT_OK_AND_ASSIGN(
+      SmfPreamble pre,
+      ReadSmfPreamble(bytes.data(), bytes.size(), bytes.size()));
   EXPECT_EQ(pre.version, kSmfVersion);
   EXPECT_EQ(pre.seq_len, loaded.seq_len);
   ASSERT_EQ(pre.tokenizer_size, model.tokenizer.size());
@@ -485,8 +486,9 @@ TEST(Smf, ThePreambleReaderFindsTheTokenizerSectionLoadSmfFinds) {
   for (size_t n : {size_t{3}, size_t{12}, size_t{20}, size_t{30}})
     EXPECT_FALSE(ReadSmfPreamble(bytes.data(), n, bytes.size()).has_value());
   // A section that runs past the file: refused.
-  EXPECT_FALSE(ReadSmfPreamble(bytes.data(), bytes.size(),
-                               pre.tokenizer_offset + 1).has_value());
+  EXPECT_FALSE(
+      ReadSmfPreamble(bytes.data(), bytes.size(), pre.tokenizer_offset + 1)
+          .has_value());
   std::vector<uint8_t> bad = bytes;
   bad[0] ^= 0xFF;
   EXPECT_FALSE(ReadSmfPreamble(bad.data(), bad.size(), bad.size()).has_value());
@@ -498,9 +500,9 @@ TEST(Smf, ThePreambleReaderFindsTheTokenizerSectionLoadSmfFinds) {
   std::ifstream g(bare_path, std::ios::binary);
   const std::vector<uint8_t> bare_bytes((std::istreambuf_iterator<char>(g)),
                                         std::istreambuf_iterator<char>());
-  ASSERT_OK_AND_ASSIGN(SmfPreamble bare_pre,
-                       ReadSmfPreamble(bare_bytes.data(), bare_bytes.size(),
-                                       bare_bytes.size()));
+  ASSERT_OK_AND_ASSIGN(
+      SmfPreamble bare_pre,
+      ReadSmfPreamble(bare_bytes.data(), bare_bytes.size(), bare_bytes.size()));
   EXPECT_EQ(bare_pre.tokenizer_size, 0u);
 }
 
@@ -521,7 +523,8 @@ TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {
     return std::string(b);
   };
   auto write = [&](const std::string& body) {
-    std::ofstream f(path + kExportReportSuffix, std::ios::binary | std::ios::trunc);
+    std::ofstream f(path + kExportReportSuffix,
+                    std::ios::binary | std::ios::trunc);
     f << body;
   };
   auto report = [&](const std::string& smf, const std::string& tok,
@@ -532,7 +535,8 @@ TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {
   const std::string good_rest =
       "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 1234, "
       "\"logits_parity_checked\": true, \"logits_parity_max_delta\": 6.4e-05";
-  const std::string smf = hex(loaded.content_hash), tok = hex(loaded.TokenizerHash());
+  const std::string smf = hex(loaded.content_hash),
+                    tok = hex(loaded.TokenizerHash());
 
   EXPECT_ERROR_CONTAINS(ReadExportReport(path, loaded), "no exporter report");
   write(report(smf, tok, good_rest));
@@ -567,30 +571,36 @@ TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {
        "unsupported schema 2"},
       {report(smf, tok, good_rest + ", \"extra\": 1"), "unknown key 'extra'"},
       {report(smf, tok, "\"tokenizer_parity_checked\": true"), "is missing"},
-      {report(smf, tok,
-              "\"tokenizer_parity_checked\": 1, \"tokenizer_parity_ids\": 1, "
-              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+      {report(
+           smf, tok,
+           "\"tokenizer_parity_checked\": 1, \"tokenizer_parity_ids\": 1, "
+           "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
        "takes true or false"},
-      {report(smf, tok,
-              "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 5, "
-              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+      {report(
+           smf, tok,
+           "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 5, "
+           "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
        "the parity was not checked"},
-      {report(smf, tok,
-              "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 0, "
-              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+      {report(
+           smf, tok,
+           "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 0, "
+           "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
        "checked over zero ids"},
-      {report(smf, tok,
-              "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
-              "\"logits_parity_checked\": true, \"logits_parity_max_delta\": -1"),
+      {report(
+           smf, tok,
+           "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
+           "\"logits_parity_checked\": true, \"logits_parity_max_delta\": -1"),
        "finite non-negative number"},
       // Numbers are JSON's: the strict scalar parsers alone would take these.
-      {report(smf, tok,
-              "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 010, "
-              "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
+      {report(
+           smf, tok,
+           "\"tokenizer_parity_checked\": true, \"tokenizer_parity_ids\": 010, "
+           "\"logits_parity_checked\": false, \"logits_parity_max_delta\": 0"),
        "takes a JSON number"},
-      {report(smf, tok,
-              "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
-              "\"logits_parity_checked\": true, \"logits_parity_max_delta\": .5"),
+      {report(
+           smf, tok,
+           "\"tokenizer_parity_checked\": false, \"tokenizer_parity_ids\": 0, "
+           "\"logits_parity_checked\": true, \"logits_parity_max_delta\": .5"),
        "takes a JSON number"},
       {"[]", "not a JSON object"},
       {report(smf, tok, good_rest) + " x", "content after the closing"},
@@ -606,7 +616,8 @@ TEST(Smf, TheExportersReportIsHeldToTheModelItDescribes) {
   ASSERT_OK(SaveSmf(plain_path, plain));
   ASSERT_OK_AND_ASSIGN(SmfModel plain_loaded, LoadSmf(plain_path));
   EXPECT_FALSE(NeedsExportReport(plain_loaded));
-  ASSERT_OK_AND_ASSIGN(ExportReport none, ReadExportReport(plain_path, plain_loaded));
+  ASSERT_OK_AND_ASSIGN(ExportReport none,
+                       ReadExportReport(plain_path, plain_loaded));
   EXPECT_FALSE(none.present);
   {
     std::ofstream f(plain_path + kExportReportSuffix);
@@ -645,8 +656,8 @@ TEST(Smf, TheTokenizerSectionRoundTripsAsV7) {
   EXPECT_EQ(loaded.tensors.size(), model.tensors.size());
   // The section sits 64-aligned past the metadata, before the payloads,
   // and the content hash covers it.
-  const size_t after_names = 16 + 2 + model.input_name.size() + 2 +
-                             model.output_name.size() + 8;
+  const size_t after_names =
+      16 + 2 + model.input_name.size() + 2 + model.output_name.size() + 8;
   uint64_t tok_offset = 0, tok_size = 0;
   std::memcpy(&tok_offset, bytes.data() + after_names, 8);
   std::memcpy(&tok_size, bytes.data() + after_names + 8, 8);
@@ -780,13 +791,16 @@ TEST(ModelIo, ByteBalancedParallelLoadIsExactAtAnyWidth) {
   for (size_t i = 0; i < shapes.size(); ++i) {
     const auto [rows, cols] = shapes[i];
     const std::string w = "w" + std::to_string(i);
-    model.tensors.push_back(
-        {.name = w, .dims = {rows, cols}, .is_const = true,
-         .data = AsPayload(seeml::testing::RandnVector(
-             static_cast<size_t>(rows * cols), 100 + i))});
+    model.tensors.push_back({.name = w,
+                             .dims = {rows, cols},
+                             .is_const = true,
+                             .data = AsPayload(seeml::testing::RandnVector(
+                                 static_cast<size_t>(rows * cols), 100 + i))});
     const std::string out = "h" + std::to_string(i);
-    model.ops.push_back({.kind = SmfOpKind::kMatMul, .name = "mm" + w,
-                         .inputs = {prev, w}, .output = out});
+    model.ops.push_back({.kind = SmfOpKind::kMatMul,
+                         .name = "mm" + w,
+                         .inputs = {prev, w},
+                         .output = out});
     prev = out;
   }
   model.output_name = prev;
@@ -828,19 +842,18 @@ TEST(Smf, AWriteThatFailsMidwayLeavesTheModelAndTheDiskUntouched) {
       t.byte_size = 1;
     }
   model.content_hash = 42;
-  const int status = seeml::testing::RunUnderFileSizeLimit(
-      full / 2, PastTheLimit::kFail, [&] {
-        auto r = SaveSmf(path, model);
-        if (r) return 1;
-        if (r.error().find("short write") == std::string::npos) return 2;
-        if (ReadAll(path) != old_bytes) return 3;
-        if (std::ifstream(path + ".tmp").good()) return 4;
-        for (const SmfTensor& t : model.tensors)
-          if (t.is_const && (t.data_offset != 7777 || t.byte_size != 1))
-            return 5;
-        if (model.content_hash != 42) return 6;
-        return 0;
-      });
+  const int status =
+      seeml::testing::RunUnderFileSizeLimit(full / 2, PastTheLimit::kFail, [&] {
+    auto r = SaveSmf(path, model);
+    if (r) return 1;
+    if (r.error().find("short write") == std::string::npos) return 2;
+    if (ReadAll(path) != old_bytes) return 3;
+    if (std::ifstream(path + ".tmp").good()) return 4;
+    for (const SmfTensor& t : model.tensors)
+      if (t.is_const && (t.data_offset != 7777 || t.byte_size != 1)) return 5;
+    if (model.content_hash != 42) return 6;
+    return 0;
+  });
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 0);
 }
@@ -861,11 +874,11 @@ TEST(Smf, AWriterKilledMidSaveLeavesTheOldFile) {
   SmfModel probe = model;
   ASSERT_OK(SaveSmf(dir.File("probe.smf"), probe));
   const uint64_t full = ReadAll(dir.File("probe.smf")).size();
-  const int status = seeml::testing::RunUnderFileSizeLimit(
-      full / 2, PastTheLimit::kKill, [&] {
-        (void)SaveSmf(path, model);
-        return 0;  // reached only if the writer survived
-      });
+  const int status =
+      seeml::testing::RunUnderFileSizeLimit(full / 2, PastTheLimit::kKill, [&] {
+    (void)SaveSmf(path, model);
+    return 0;  // reached only if the writer survived
+  });
   ASSERT_TRUE(WIFSIGNALED(status));
   EXPECT_EQ(WTERMSIG(status), SIGXFSZ);
   EXPECT_TRUE(ReadAll(path) == old_bytes);

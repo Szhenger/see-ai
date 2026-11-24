@@ -47,9 +47,9 @@ sir::Value* AddMatmul(sir::Block& block, const char* out, sir::Value* x,
   sir::Operation* mm = block.appendOp("sc_high.matmul");
   mm->addOperand(x);
   mm->addOperand(w);
-  return mm->addResult(out, sir::DataType::F32,
-                       sir::Shape{x->shape().dims.at(0),
-                                  w->shape().dims.at(1)});
+  return mm->addResult(
+      out, sir::DataType::F32,
+      sir::Shape{x->shape().dims.at(0), w->shape().dims.at(1)});
 }
 
 TEST(Reviewer, SelectsMatmulOnlyWeightsAtMaxAbsScale) {
@@ -162,8 +162,8 @@ TEST(Reviewer, SweepFindsMaxBeyondTheFirstChunk) {
   GraphBuild build;
   sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{1, 1});
   SmfTensor tensor;
-  sir::Value* w = AddWeight(block, build, tensor, "w",
-                            {1, static_cast<int64_t>(n)}, data);
+  sir::Value* w =
+      AddWeight(block, build, tensor, "w", {1, static_cast<int64_t>(n)}, data);
   AddMatmul(block, "y", x, w);
 
   const auto scales = SelectQuantizedWeights(block, build);
@@ -181,8 +181,8 @@ TEST(Reviewer, ANonFiniteWeightIsNeverSelected) {
     GraphBuild build;
     sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{4, 2});
     SmfTensor tensor;
-    sir::Value* w = AddWeight(block, build, tensor, "w", {2, 2},
-                              {1.0f, bad, 2.0f, 0.5f});
+    sir::Value* w =
+        AddWeight(block, build, tensor, "w", {2, 2}, {1.0f, bad, 2.0f, 0.5f});
     AddMatmul(block, "y", x, w);
     EXPECT_EQ(SelectQuantizedWeights(block, build).size(), 0u);
   }

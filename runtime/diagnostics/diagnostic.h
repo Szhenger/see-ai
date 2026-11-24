@@ -30,8 +30,8 @@
 namespace seeml::update_rt::diag {
 
 /// Forms the canonical one-line diagnostic for `unit`.
-[[nodiscard]] inline std::unexpected<std::string> Fail(std::string_view unit,
-                                                       std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Fail(
+    std::string_view unit, std::string_view message) {
   std::string s;
   s.reserve(unit.size() + 2 + message.size());
   s.append(unit).append(": ").append(message);

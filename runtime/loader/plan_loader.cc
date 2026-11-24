@@ -16,11 +16,12 @@ namespace seeml::update_rt {
 
 namespace up = seeml::update;
 
-std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
-                                                   size_t plan_size) {
-  // Everything below validates into locals; the engine commits them only
-  // after every contract has passed. A failed re-Load must leave the
-  // previous plan fully usable.
+namespace {
+
+/// The header, proven before any section is read: the size, the magic, the
+/// version, the seal, and the plan-boundary contract.
+[[nodiscard]] std::expected<up::PlanHeader, std::string> DecodeHeader(
+    const uint8_t* plan, size_t plan_size) {
   up::PlanHeader header{};
   if (plan_size < sizeof(header))
     return diag::executing::Error("plan smaller than its header");
@@ -54,6 +55,197 @@ std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
   // counts below are plain multiplies.
   if (auto ok = VerifyPlanContract(header, plan_size); !ok)
     return std::unexpected(ok.error());
+  return header;
+}
+
+/// The four decoded programs, for the scans that read them together.
+struct Programs {
+  const std::vector<up::UpdateInstruction>& train;
+  const std::vector<up::UpdateInstruction>& merge;
+  const std::vector<up::UpdateInstruction>& eval;
+  const std::vector<up::UpdateInstruction>& step;
+};
+
+/// Softmax class-width discipline (the kernels index rows of this width
+/// with raw dataset labels). Every program must agree on the forward
+/// width — train and eval are the label-consuming ones, and a softmax in
+/// the merge or step program is a crafted plan's, whose narrower rows the
+/// labels bounded by another program's width would index past (CR2
+/// #143 F07: the check walked train and eval alone) — and a class-label
+/// plan with no softmax at all would leave labels entirely unvalidated,
+/// so it is rejected. Scanned on the freshly decoded local streams and
+/// the local header — the members still describe whatever plan was loaded
+/// before this call, and nothing may be committed until every contract
+/// has passed.
+[[nodiscard]] std::expected<void, std::string> CheckSoftmaxWidths(
+    const Programs& programs, const up::PlanHeader& header) {
+  const std::vector<up::UpdateInstruction>& train = programs.train;
+  const std::vector<up::UpdateInstruction>& merge = programs.merge;
+  const std::vector<up::UpdateInstruction>& eval = programs.eval;
+  const std::vector<up::UpdateInstruction>& step = programs.step;
+  uint64_t fwd_classes = 0;
+  for (const auto* program : {&train, &merge, &eval, &step})
+    for (const up::UpdateInstruction& ins : *program)
+      if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kSoftmaxXEntFwd ||
+          static_cast<up::OpCode>(ins.opcode) ==
+              up::OpCode::kSoftmaxXEntMaskedFwd) {
+        if (fwd_classes != 0 && fwd_classes != ins.out[1])
+          return diag::executing::Error(
+              "plan softmax class widths disagree across programs");
+        fwd_classes = ins.out[1];
+      }
+  if (header.label_kind == 1 && fwd_classes == 0)
+    return diag::executing::Error(
+        "class-label plan carries no softmax cross-entropy — its labels "
+        "could never be validated");
+  return {};
+}
+
+/// The source model extent the programs read (v17: the eval program's
+/// f32 weights; v21: every program's, in an adapter-only plan): the file
+/// bound at BindSourceModel must cover it. The contract proved every
+/// source ref against kSourceSpaceLimit; this recovers the real
+/// requirement.
+void ScanSourceReads(const Programs& programs, const up::PlanHeader& header,
+                     DecodedPlan& out) {
+  const std::vector<up::UpdateInstruction>& train = programs.train;
+  const std::vector<up::UpdateInstruction>& merge = programs.merge;
+  const std::vector<up::UpdateInstruction>& eval = programs.eval;
+  const std::vector<up::UpdateInstruction>& step = programs.step;
+  uint64_t source_required = 0;
+  bool train_reads_source = false, merge_reads_source = false;
+  for (const auto* program : {&train, &merge, &eval, &step})
+    for (const up::UpdateInstruction& ins : *program)
+      if (auto ex = DescribeInstruction(ins, header.arena_size,
+                                        header.rodata_size, header.version,
+                                        /*allow_source=*/true))
+        for (size_t i = 0; i < ex->count; ++i)
+          if (ex->ranges[i].source) {
+            source_required = std::max(source_required,
+                                       ex->ranges[i].off + ex->ranges[i].bytes);
+            if (program == &train || program == &step)
+              train_reads_source = true;
+            else if (program == &merge)
+              merge_reads_source = true;
+          }
+  out.source_required = source_required;
+  out.train_reads_source = train_reads_source;
+  out.merge_reads_source = merge_reads_source;
+}
+
+/// The eval program's softmax and its row-separable loss tail.
+void ScanEvalTail(const std::vector<up::UpdateInstruction>& eval,
+                  const up::PlanHeader& header, DecodedPlan& out) {
+  // The accuracy metric reads the probabilities the eval program's softmax
+  // already materializes (its in[3] write); no extra compute or arena space
+  // is spent. Plans without a class-label softmax report loss only.
+  // Scanned on the freshly decoded local stream — like everything here,
+  // committed to members only after every contract has passed.
+  uint64_t eval_probs_ref = up::kNullRef;
+  uint64_t eval_softmax_rows = 0;
+  uint64_t eval_softmax_cols = 0;
+  // The eval program's loss instruction, when the loss slot is exactly one
+  // row-separable loss (G13, #97): the wrapped duplicates of a final
+  // partial batch can then be excluded from the reported loss exactly, as
+  // they already are from accuracy. A composite loss (xent + KL, pure KL)
+  // is not row-separable from what the program keeps; it is weighted.
+  EvalTail eval_tail;
+  for (const up::UpdateInstruction& ins : eval) {
+    const auto op = static_cast<up::OpCode>(ins.opcode);
+    if (op == up::OpCode::kSoftmaxXEntFwd ||
+        op == up::OpCode::kSoftmaxXEntMaskedFwd) {
+      eval_probs_ref = ins.in[3];
+      eval_softmax_rows = ins.out[0];
+      eval_softmax_cols = ins.out[1];
+      if (ins.in[2] == header.loss_ref && ins.out[0] == header.batch)
+        eval_tail = {op == up::OpCode::kSoftmaxXEntFwd ? EvalTail::kXent
+                                                       : EvalTail::kXentMasked,
+                     ins.in[3], ins.in[1], ins.out[1]};
+    } else if (op == up::OpCode::kMseFwd && ins.in[2] == header.loss_ref &&
+               header.batch > 0 && ins.out[0] % header.batch == 0) {
+      eval_tail = {EvalTail::kMse, ins.in[0], ins.in[1],
+                   ins.out[0] / header.batch};
+    }
+  }
+  out.eval_probs_ref = eval_probs_ref;
+  out.eval_softmax_rows = eval_softmax_rows;
+  out.eval_softmax_cols = eval_softmax_cols;
+  out.eval_tail = eval_tail;
+}
+
+/// Class count for validating class-index labels at Train() time. The raw
+/// dataset labels feed every softmax kernel in every program, so the check
+/// must hold for the narrowest width anywhere — not just the train
+/// program's last softmax, which would leave a narrower eval softmax
+/// indexing past its validated rows.
+uint64_t NarrowestSoftmax(const Programs& programs) {
+  const std::vector<up::UpdateInstruction>& train = programs.train;
+  const std::vector<up::UpdateInstruction>& merge = programs.merge;
+  const std::vector<up::UpdateInstruction>& eval = programs.eval;
+  const std::vector<up::UpdateInstruction>& step = programs.step;
+  uint64_t num_classes = 0;
+  // Every program, the step program included (CR2 #143 F07): a softmax
+  // anywhere narrows the bound the feeder enforces on every staged label.
+  for (const auto* program : {&train, &merge, &eval, &step})
+    for (const up::UpdateInstruction& ins : *program) {
+      const auto op = static_cast<up::OpCode>(ins.opcode);
+      if (op != up::OpCode::kSoftmaxXEntFwd &&
+          op != up::OpCode::kSoftmaxXEntBwd &&
+          op != up::OpCode::kSoftmaxXEntMaskedFwd &&
+          op != up::OpCode::kSoftmaxXEntMaskedBwd)
+        continue;
+      const uint64_t classes = ins.out[1];
+      if (classes != 0 && (num_classes == 0 || classes < num_classes))
+        num_classes = classes;
+    }
+  return num_classes;
+}
+
+/// Token-native plans (v7): the vocab bound plays the role class labels'
+/// softmax width plays — every staged token indexes embedding rows, so the
+/// narrowest table anywhere is the runtime bound the feeder contract will
+/// enforce, and a token plan with NO embedding would leave the ids
+/// entirely unvalidated (and meaningless), so it is rejected. Sequence
+/// geometry must divide the batch: staging serves whole records.
+[[nodiscard]] std::expected<uint64_t, std::string> VocabBound(
+    const Programs& programs, const up::PlanHeader& header) {
+  const std::vector<up::UpdateInstruction>& train = programs.train;
+  const std::vector<up::UpdateInstruction>& merge = programs.merge;
+  const std::vector<up::UpdateInstruction>& eval = programs.eval;
+  const std::vector<up::UpdateInstruction>& step = programs.step;
+  uint64_t vocab_bound = 0;
+  for (const auto* program : {&train, &merge, &eval, &step})
+    for (const up::UpdateInstruction& ins : *program)
+      if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kEmbedFwd) {
+        const uint64_t vocab = up::HighWord(ins.out[1]);
+        if (vocab != 0 && (vocab_bound == 0 || vocab < vocab_bound))
+          vocab_bound = vocab;
+      }
+  if (header.input_kind > 1)
+    return diag::executing::Error("unknown plan input kind " +
+                                  std::to_string(header.input_kind));
+  if (header.input_kind == 1) {
+    if (vocab_bound == 0)
+      return diag::executing::Error(
+          "token plan carries no embedding — its token ids could never be "
+          "validated");
+    if (header.seq_len == 0 || header.batch % header.seq_len != 0)
+      return diag::executing::Error(
+          "token plan sequence length must be nonzero and divide the batch");
+  }
+  return vocab_bound;
+}
+
+}  // namespace
+
+std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
+                                                   size_t plan_size) {
+  // Everything below validates into locals; the engine commits them only
+  // after every contract has passed. A failed re-Load must leave the
+  // previous plan fully usable.
+  auto decoded_header = DecodeHeader(plan, plan_size);
+  if (!decoded_header) return std::unexpected(decoded_header.error());
+  const up::PlanHeader& header = *decoded_header;
   // The metadata section (v23): the manifest words and the ledger, held to
   // the plan they sit in before anything reads them.
   up::DecodedMetadata metadata;
@@ -98,137 +290,17 @@ std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
       !ok)
     return std::unexpected(ok.error());
 
-  // Softmax class-width discipline (the kernels index rows of this width
-  // with raw dataset labels). Every program must agree on the forward
-  // width — train and eval are the label-consuming ones, and a softmax in
-  // the merge or step program is a crafted plan's, whose narrower rows the
-  // labels bounded by another program's width would index past (CR2
-  // #143 F07: the check walked train and eval alone) — and a class-label
-  // plan with no softmax at all would leave labels entirely unvalidated,
-  // so it is rejected. Scanned on the freshly decoded local streams and
-  // the local header — the members still describe whatever plan was loaded
-  // before this call, and nothing may be committed until every contract
-  // has passed.
-  uint64_t fwd_classes = 0;
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program)
-      if (static_cast<up::OpCode>(ins.opcode) ==
-              up::OpCode::kSoftmaxXEntFwd ||
-          static_cast<up::OpCode>(ins.opcode) ==
-              up::OpCode::kSoftmaxXEntMaskedFwd) {
-        if (fwd_classes != 0 && fwd_classes != ins.out[1])
-          return diag::executing::Error(
-              "plan softmax class widths disagree across programs");
-        fwd_classes = ins.out[1];
-      }
-  if (header.label_kind == 1 && fwd_classes == 0)
-    return diag::executing::Error(
-        "class-label plan carries no softmax cross-entropy — its labels "
-        "could never be validated");
-
-  // The accuracy metric reads the probabilities the eval program's softmax
-  // already materializes (its in[3] write); no extra compute or arena space
-  // is spent. Plans without a class-label softmax report loss only.
-  // Scanned on the freshly decoded local stream — like everything here,
-  // committed to members only after every contract has passed.
-  uint64_t eval_probs_ref = up::kNullRef;
-  uint64_t eval_softmax_rows = 0;
-  uint64_t eval_softmax_cols = 0;
-  // The eval program's loss instruction, when the loss slot is exactly one
-  // row-separable loss (G13, #97): the wrapped duplicates of a final
-  // partial batch can then be excluded from the reported loss exactly, as
-  // they already are from accuracy. A composite loss (xent + KL, pure KL)
-  // is not row-separable from what the program keeps; it is weighted.
-  EvalTail eval_tail;
-  // The source model extent the programs read (v17: the eval program's
-  // f32 weights; v21: every program's, in an adapter-only plan): the file
-  // bound at BindSourceModel must cover it. The contract proved every
-  // source ref against kSourceSpaceLimit; this recovers the real
-  // requirement.
-  uint64_t source_required = 0;
-  bool train_reads_source = false, merge_reads_source = false;
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program)
-      if (auto ex = DescribeInstruction(ins, header.arena_size,
-                                        header.rodata_size, header.version,
-                                        /*allow_source=*/true))
-        for (size_t i = 0; i < ex->count; ++i)
-          if (ex->ranges[i].source) {
-            source_required =
-                std::max(source_required,
-                         ex->ranges[i].off + ex->ranges[i].bytes);
-            if (program == &train || program == &step)
-              train_reads_source = true;
-            else if (program == &merge)
-              merge_reads_source = true;
-          }
-  for (const up::UpdateInstruction& ins : eval) {
-    const auto op = static_cast<up::OpCode>(ins.opcode);
-    if (op == up::OpCode::kSoftmaxXEntFwd ||
-        op == up::OpCode::kSoftmaxXEntMaskedFwd) {
-      eval_probs_ref = ins.in[3];
-      eval_softmax_rows = ins.out[0];
-      eval_softmax_cols = ins.out[1];
-      if (ins.in[2] == header.loss_ref && ins.out[0] == header.batch)
-        eval_tail = {op == up::OpCode::kSoftmaxXEntFwd ? EvalTail::kXent
-                                                        : EvalTail::kXentMasked,
-                     ins.in[3], ins.in[1], ins.out[1]};
-    } else if (op == up::OpCode::kMseFwd && ins.in[2] == header.loss_ref &&
-               header.batch > 0 && ins.out[0] % header.batch == 0) {
-      eval_tail = {EvalTail::kMse, ins.in[0], ins.in[1],
-                   ins.out[0] / header.batch};
-    }
-  }
-
-  // Class count for validating class-index labels at Train() time. The raw
-  // dataset labels feed every softmax kernel in every program, so the check
-  // must hold for the narrowest width anywhere — not just the train
-  // program's last softmax, which would leave a narrower eval softmax
-  // indexing past its validated rows.
-  uint64_t num_classes = 0;
-  // Every program, the step program included (CR2 #143 F07): a softmax
-  // anywhere narrows the bound the feeder enforces on every staged label.
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program) {
-      const auto op = static_cast<up::OpCode>(ins.opcode);
-      if (op != up::OpCode::kSoftmaxXEntFwd &&
-          op != up::OpCode::kSoftmaxXEntBwd &&
-          op != up::OpCode::kSoftmaxXEntMaskedFwd &&
-          op != up::OpCode::kSoftmaxXEntMaskedBwd)
-        continue;
-      const uint64_t classes = ins.out[1];
-      if (classes != 0 && (num_classes == 0 || classes < num_classes))
-        num_classes = classes;
-    }
-
-  // Token-native plans (v7): the vocab bound plays the role class labels'
-  // softmax width plays — every staged token indexes embedding rows, so the
-  // narrowest table anywhere is the runtime bound the feeder contract will
-  // enforce, and a token plan with NO embedding would leave the ids
-  // entirely unvalidated (and meaningless), so it is rejected. Sequence
-  // geometry must divide the batch: staging serves whole records.
-  uint64_t vocab_bound = 0;
-  for (const auto* program : {&train, &merge, &eval, &step})
-    for (const up::UpdateInstruction& ins : *program)
-      if (static_cast<up::OpCode>(ins.opcode) == up::OpCode::kEmbedFwd) {
-        const uint64_t vocab = up::HighWord(ins.out[1]);
-        if (vocab != 0 && (vocab_bound == 0 || vocab < vocab_bound))
-          vocab_bound = vocab;
-      }
-  if (header.input_kind > 1)
-    return diag::executing::Error("unknown plan input kind " +
-                                  std::to_string(header.input_kind));
-  if (header.input_kind == 1) {
-    if (vocab_bound == 0)
-      return diag::executing::Error(
-          "token plan carries no embedding — its token ids could never be "
-          "validated");
-    if (header.seq_len == 0 || header.batch % header.seq_len != 0)
-      return diag::executing::Error(
-          "token plan sequence length must be nonzero and divide the batch");
-  }
+  const Programs programs{train, merge, eval, step};
+  if (auto ok = CheckSoftmaxWidths(programs, header); !ok)
+    return std::unexpected(ok.error());
 
   DecodedPlan out;
+  ScanSourceReads(programs, header, out);
+  ScanEvalTail(eval, header, out);
+  out.num_classes = NarrowestSoftmax(programs);
+  auto vocab_bound = VocabBound(programs, header);
+  if (!vocab_bound) return std::unexpected(vocab_bound.error());
+  out.vocab_bound = *vocab_bound;
   out.header = header;
   out.metadata = std::move(metadata);
   out.train = std::move(train);
@@ -236,15 +308,6 @@ std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
   out.eval = std::move(eval);
   out.step = std::move(step);
   out.emit = std::move(emit);
-  out.num_classes = num_classes;
-  out.vocab_bound = vocab_bound;
-  out.eval_probs_ref = eval_probs_ref;
-  out.eval_softmax_rows = eval_softmax_rows;
-  out.eval_softmax_cols = eval_softmax_cols;
-  out.eval_tail = eval_tail;
-  out.source_required = source_required;
-  out.train_reads_source = train_reads_source;
-  out.merge_reads_source = merge_reads_source;
   return out;
 }
 
@@ -259,9 +322,9 @@ std::expected<Arena, std::string> AllocateArena(const up::PlanHeader& header,
   // zero-copy shared buffer; on the CPU path the alignment changes the
   // allocation's address and nothing else.
   if (header.arena_size > SIZE_MAX - kArenaAlignment)
-    return diag::executing::Error(
-        "plan arena of " + std::to_string(header.arena_size) +
-        " bytes exceeds this host's address space");
+    return diag::executing::Error("plan arena of " +
+                                  std::to_string(header.arena_size) +
+                                  " bytes exceeds this host's address space");
   // An arena the host cannot hold is refused before the allocation is
   // attempted: the executing fuzzer (CR3 #144 F22) reached aligned_alloc
   // with a header asking for exabytes — an abort under the sanitizer, and
@@ -270,15 +333,15 @@ std::expected<Arena, std::string> AllocateArena(const up::PlanHeader& header,
   // allocation's own failure, as before.
   if (const uint64_t host = up::DetectHostMemoryBytes();
       host != 0 && header.arena_size > host)
-    return diag::executing::Error(
-        "plan arena of " + std::to_string(header.arena_size) +
-        " bytes exceeds this host's memory (" + std::to_string(host) +
-        " bytes)");
+    return diag::executing::Error("plan arena of " +
+                                  std::to_string(header.arena_size) +
+                                  " bytes exceeds this host's memory (" +
+                                  std::to_string(host) + " bytes)");
   const size_t arena_bytes =
       (static_cast<size_t>(header.arena_size) + (kArenaAlignment - 1)) &
       ~size_t{kArenaAlignment - 1};
-  uint8_t* arena = static_cast<uint8_t*>(
-      std::aligned_alloc(kArenaAlignment, arena_bytes));
+  uint8_t* arena =
+      static_cast<uint8_t*>(std::aligned_alloc(kArenaAlignment, arena_bytes));
   if (!arena) return diag::executing::Error("arena allocation failed");
   std::memset(arena, 0, arena_bytes);
   std::memcpy(arena, plan + header.persist_init_offset,

@@ -54,7 +54,9 @@ inline constexpr uint64_t MakeRodataRef(uint64_t offset) {
 inline constexpr uint64_t MakeSourceRef(uint64_t offset) {
   return offset | kSourceBit;
 }
-inline constexpr bool IsRodataRef(uint64_t ref) { return (ref & kRodataBit) != 0; }
+inline constexpr bool IsRodataRef(uint64_t ref) {
+  return (ref & kRodataBit) != 0;
+}
 inline constexpr bool IsSourceRef(uint64_t ref) {
   return (ref & (kRodataBit | kSourceBit)) == kSourceBit;
 }
@@ -62,6 +64,8 @@ inline constexpr uint64_t RefOffset(uint64_t ref) {
   return ref & ~(kRodataBit | kSourceBit);
 }
 
+// The ISA table: an opcode to a line, its operands in the trailing comment.
+// clang-format off
 enum class OpCode : uint16_t {
   kNop = 0,
   // GEMM family. C[M,N]; refs in in[0..2], dims in out[0..2] = M, N, K.
@@ -251,6 +255,7 @@ enum class OpCode : uint16_t {
   // holds -0.
   kAttnFwdTiledSeg = 57,  // in: q, k, v, o; out[0]=stats, out[1]=PackAttnGeometry, out[2]=starts ref
 };
+// clang-format on
 
 inline constexpr uint64_t kAttnStatsWidth = 4;
 /// The stats row's fields: the score max, 1 / the softmax denominator, the
@@ -330,7 +335,7 @@ inline constexpr uint8_t FusedStageArg(uint8_t stage) {
 // — its in[3] already carries the dequant scale, so a bias has nowhere to
 // ride. Every other opcode requires flags == 0.
 inline constexpr uint16_t kFlagEpilogueBias = 1u << 0;  // in[3] = bias ref [N]
-inline constexpr uint16_t kFlagEpilogueActShift = 1;    // bits 1..2: EpilogueAct
+inline constexpr uint16_t kFlagEpilogueActShift = 1;  // bits 1..2: EpilogueAct
 inline constexpr uint16_t kFlagEpilogueActMask = 3u << kFlagEpilogueActShift;
 inline constexpr uint16_t kEpilogueFlagsMask =
     kFlagEpilogueBias | kFlagEpilogueActMask;
@@ -345,7 +350,8 @@ inline constexpr uint16_t kEpilogueFlagsMask =
 // the two-instruction form computed, so the fold changes memory traffic and
 // never bits. It excludes the bias / activation epilogue (kGemmNN's in[3]
 // holds one ref), and the narrow-weight GEMMs do not take it.
-inline constexpr uint16_t kFlagGemmAddend = 1u << 3;  // in[3] = addend ref [M,N]
+// in[3] = addend ref [M,N]
+inline constexpr uint16_t kFlagGemmAddend = 1u << 3;
 // --- Per-column int8 scales (plan v17, E12 #95). ------------------------------
 // kGemmNNQ8 / kGemmNTQ8 only: in[3] is a rodata ref to one f32 scale per
 // OUTPUT COLUMN of the quantized weight W [K, M] (float[M]) instead of the
@@ -426,7 +432,12 @@ inline float GemmAlphaOf(uint32_t imm) {
   return imm == 0 ? 1.0f : std::bit_cast<float>(imm);
 }
 
-enum class EpilogueAct : uint16_t { kNone = 0, kRelu = 1, kGelu = 2, kSilu = 3 };
+enum class EpilogueAct : uint16_t {
+  kNone = 0,
+  kRelu = 1,
+  kGelu = 2,
+  kSilu = 3
+};
 
 inline constexpr EpilogueAct EpilogueActOf(uint16_t flags) {
   return static_cast<EpilogueAct>((flags & kFlagEpilogueActMask) >>

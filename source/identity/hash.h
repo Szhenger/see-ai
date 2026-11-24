@@ -109,9 +109,8 @@ inline uint64_t ContentHash64(const uint8_t* data, size_t size) {
   } else {
     ParallelFor(size, kContentHashChunk,
                 [&](size_t begin, size_t end, size_t chunk_index) {
-                  partial[chunk_index] =
-                      StripedFnv1a64(data + begin, end - begin);
-                });
+      partial[chunk_index] = StripedFnv1a64(data + begin, end - begin);
+    });
   }
 
   uint64_t h = kFnvOffsetBasis;

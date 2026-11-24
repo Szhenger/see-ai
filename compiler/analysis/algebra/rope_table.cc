@@ -46,9 +46,9 @@ std::expected<size_t, std::string> RopeTableHoister::Run(sir::Block& block) {
       table->setAttribute("seq", seq);
       table->setAttribute("width", width);
       table->setAttribute("base", base);
-      sir::Value* result = table->addResult(
-          "rope_table." + std::to_string(tables.size()), sir::DataType::F32,
-          sir::Shape{{seq, width}});
+      sir::Value* result =
+          table->addResult("rope_table." + std::to_string(tables.size()),
+                           sir::DataType::F32, sir::Shape{{seq, width}});
       block.moveOpBefore(table, rope);
       it = tables.emplace(key, result).first;
     }

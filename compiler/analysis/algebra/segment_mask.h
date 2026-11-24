@@ -30,7 +30,8 @@ class SegmentMasker {
   SegmentMasker(seeml::sir::Value* tokens, int32_t eos)
       : tokens_(tokens), eos_(eos) {}
   /// The number of attention ops masked.
-  [[nodiscard]] std::expected<size_t, std::string> Run(seeml::sir::Block& block);
+  [[nodiscard]] std::expected<size_t, std::string> Run(
+      seeml::sir::Block& block);
 
  private:
   seeml::sir::Value* tokens_;

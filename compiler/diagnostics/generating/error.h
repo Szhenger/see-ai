@@ -28,15 +28,14 @@ inline constexpr std::string_view kInstructionLowering = "InstructionLowering";
 inline constexpr std::string_view kNativeEmitter = "NativeEmitter";
 
 /// Codegen failure in `unit`: "<unit>: <message>".
-[[nodiscard]] inline std::unexpected<std::string> Error(std::string_view unit,
-                                                        std::string_view message) {
+[[nodiscard]] inline std::unexpected<std::string> Error(
+    std::string_view unit, std::string_view message) {
   return Fail(unit, message);
 }
 
 /// Emission failure against the filesystem: "<unit>: <what> '<path>'".
-[[nodiscard]] inline std::unexpected<std::string> FileError(std::string_view unit,
-                                                            std::string_view what,
-                                                            std::string_view path) {
+[[nodiscard]] inline std::unexpected<std::string> FileError(
+    std::string_view unit, std::string_view what, std::string_view path) {
   std::string m;
   m.reserve(what.size() + path.size() + 3);
   m.append(what).append(" '").append(path).append("'");

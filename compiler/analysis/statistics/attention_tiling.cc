@@ -48,15 +48,15 @@ std::expected<AttilingDecision, std::string> AttentionTiling::Run(
                              "attention geometry does not fit the tiled "
                              "family's 16-bit fields");
     op->setAttribute("tiled", int64_t{1});
-    op->result(1)->setShape(sir::Shape{
-        rows * heads, static_cast<int64_t>(kAttnStatsWidth)});
+    op->result(1)->setShape(
+        sir::Shape{rows * heads, static_cast<int64_t>(kAttnStatsWidth)});
   }
   seeml::diag::Note(updating::kAttentionTiling,
                     "tiled " + std::to_string(ops.size()) +
                         " attention op(s): a probability cache of " +
                         std::to_string(decision.probs_cache_bytes) +
-                        " B becomes " +
-                        std::to_string(ops.size()) + " stats row(s)");
+                        " B becomes " + std::to_string(ops.size()) +
+                        " stats row(s)");
   return decision;
 }
 

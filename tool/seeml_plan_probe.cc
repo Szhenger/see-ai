@@ -104,11 +104,11 @@ namespace fs = std::filesystem;
 namespace up = seeml::update;
 namespace rt = seeml::update_rt;
 
-int Usage(const std::string& msg) {
+[[nodiscard]] int Usage(const std::string& msg) {
   std::fprintf(stderr, "seeml-plan-probe: %s\n", msg.c_str());
   return 2;
 }
-int Fail(const std::string& msg) {
+[[nodiscard]] int Fail(const std::string& msg) {
   std::fprintf(stderr, "seeml-plan-probe: %s\n", msg.c_str());
   return 1;
 }
@@ -121,7 +121,7 @@ class Args {
   Args(int argc, char** argv)
       : argc_(argc), argv_(argv), taken_(static_cast<size_t>(argc), false) {}
 
-  bool Take(const char* flag) {
+  [[nodiscard]] bool Take(const char* flag) {
     for (int i = 1; i < argc_; ++i)
       if (!taken_[i] && std::strcmp(argv_[i], flag) == 0) {
         taken_[i] = true;
@@ -132,7 +132,7 @@ class Args {
 
   /// The value after `flag`, consuming both slots. A following "--flag" is
   /// a missing value, not a value.
-  std::optional<std::string> TakeValue(const char* flag) {
+  [[nodiscard]] std::optional<std::string> TakeValue(const char* flag) {
     for (int i = 1; i < argc_; ++i) {
       if (taken_[i] || std::strcmp(argv_[i], flag) != 0) continue;
       if (i + 1 >= argc_ || std::strncmp(argv_[i + 1], "--", 2) == 0) {
@@ -148,7 +148,7 @@ class Args {
   const std::optional<std::string>& MissingValue() const {
     return missing_value_;
   }
-  std::optional<std::string> FirstUnknown() const {
+  [[nodiscard]] std::optional<std::string> FirstUnknown() const {
     for (int i = 1; i < argc_; ++i)
       if (!taken_[i]) return std::string(argv_[i]);
     return std::nullopt;
@@ -161,7 +161,7 @@ class Args {
   std::optional<std::string> missing_value_;
 };
 
-bool ParseU64(const std::string& s, int base, uint64_t* out) {
+[[nodiscard]] bool ParseU64(const std::string& s, int base, uint64_t* out) {
   if (s.empty() || s[0] == '-' || s[0] == '+') return false;
   errno = 0;
   char* end = nullptr;
@@ -184,7 +184,8 @@ struct Options {
 /// An input path the probe will read: it must name an existing regular
 /// file. Returns the canonical path (symlinks resolved), so the file that
 /// was classified is the file that is opened.
-std::optional<fs::path> InputFile(const std::string& arg, std::string* why) {
+[[nodiscard]] std::optional<fs::path> InputFile(const std::string& arg,
+                                                std::string* why) {
   std::error_code ec;
   const fs::path canonical = fs::canonical(fs::path(arg), ec);
   if (ec) {
@@ -202,15 +203,16 @@ std::optional<fs::path> InputFile(const std::string& arg, std::string* why) {
 /// exist, and the destination must be absent or a regular file — never a
 /// symlink (not followed), a directory or a device. Returns the path
 /// inside the canonical directory.
-std::optional<fs::path> OutputFile(const std::string& arg, std::string* why) {
+[[nodiscard]] std::optional<fs::path> OutputFile(const std::string& arg,
+                                                 std::string* why) {
   std::error_code ec;
   const fs::path given(arg);
   if (!given.has_filename()) {
     *why = "'" + arg + "' names no file";
     return std::nullopt;
   }
-  const fs::path parent = given.has_parent_path() ? given.parent_path()
-                                                  : fs::path(".");
+  const fs::path parent =
+      given.has_parent_path() ? given.parent_path() : fs::path(".");
   const fs::path dir = fs::canonical(parent, ec);
   if (ec || !fs::is_directory(dir, ec) || ec) {
     *why = "the directory of '" + arg + "' does not exist";
@@ -219,7 +221,8 @@ std::optional<fs::path> OutputFile(const std::string& arg, std::string* why) {
   const fs::path out = dir / given.filename();
   const fs::file_status st = fs::symlink_status(out, ec);
   if (fs::exists(st) && !fs::is_regular_file(st)) {
-    *why = "'" + arg + "' exists and is not a regular file (a symlink is "
+    *why = "'" + arg +
+           "' exists and is not a regular file (a symlink is "
            "refused, not followed)";
     return std::nullopt;
   }
@@ -227,7 +230,7 @@ std::optional<fs::path> OutputFile(const std::string& arg, std::string* why) {
 }
 
 /// Parses argv into `opts`. Returns 0, or the exit code after reporting.
-int ParseOptions(int argc, char** argv, Options* opts) {
+[[nodiscard]] int ParseOptions(int argc, char** argv, Options* opts) {
   Args args(argc, argv);
   const auto plan = args.TakeValue("--plan");
   const auto section = args.TakeValue("--section");
@@ -301,7 +304,7 @@ int ParseOptions(int argc, char** argv, Options* opts) {
   return 0;
 }
 
-bool ReadFile(const fs::path& path, std::vector<uint8_t>* out) {
+[[nodiscard]] bool ReadFile(const fs::path& path, std::vector<uint8_t>* out) {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) return false;
   const std::streamoff size = f.tellg();
@@ -340,7 +343,7 @@ class StagedFile {
     Write(&value, sizeof(value));
   }
   /// Flushes, closes and renames; false if any byte failed to land.
-  bool Commit() {
+  [[nodiscard]] bool Commit() {
     stream_.close();
     if (stream_.fail()) return false;
     std::error_code ec;
@@ -453,21 +456,20 @@ std::string TimeProgram(rt::ExecutorBackend& backend, const Program& program,
   }
   std::sort(ms.begin(), ms.end());
   const size_t n = ms.size();
-  std::printf("{\"backend\": \"%s\", \"section\": \"%s\", "
-              "\"executions\": %zu, \"ms_median\": %.4f, "
-              "\"ms_min\": %.4f, \"ms_max\": %.4f, "
-              "\"relaxed_executions\": %" PRIu64 "}\n",
-              backend.name(), section.c_str(), n,
-              n % 2 ? ms[n / 2] : 0.5 * (ms[n / 2 - 1] + ms[n / 2]),
-              ms.front(), ms.back(),
-              backend.relaxed_executions() - relaxed_after_warmup);
+  std::printf(
+      "{\"backend\": \"%s\", \"section\": \"%s\", "
+      "\"executions\": %zu, \"ms_median\": %.4f, "
+      "\"ms_min\": %.4f, \"ms_max\": %.4f, "
+      "\"relaxed_executions\": %" PRIu64 "}\n",
+      backend.name(), section.c_str(), n,
+      n % 2 ? ms[n / 2] : 0.5 * (ms[n / 2 - 1] + ms[n / 2]), ms.front(),
+      ms.back(), backend.relaxed_executions() - relaxed_after_warmup);
   return {};
 }
 
 /// Profile mode: per-opcode (and per-GEMM-shape) wall time over `runs`
 /// executions, each instruction flushed; one JSON object on stdout.
-std::string ProfileProgram(rt::ExecutorBackend& backend,
-                           const Program& program,
+std::string ProfileProgram(rt::ExecutorBackend& backend, const Program& program,
                            const rt::StepParams& params, uint64_t runs) {
   using Clock = std::chrono::steady_clock;
   std::map<std::string, std::pair<double, uint64_t>> rows;  // ms, count
@@ -522,8 +524,7 @@ std::string ProfileProgram(rt::ExecutorBackend& backend,
   for (size_t i = 0; i < sorted.size(); ++i)
     std::printf("%s{\"key\": \"%s\", \"ms\": %.4f, \"calls\": %" PRIu64 "}",
                 i ? ", " : "", sorted[i].first.c_str(),
-                sorted[i].second.first / n,
-                sorted[i].second.second / runs);
+                sorted[i].second.first / n, sorted[i].second.second / runs);
   std::printf("]}\n");
   return {};
 }
@@ -547,12 +548,13 @@ std::string RunProgram(rt::ExecutorBackend& backend, const Program& program,
     if (auto r = backend.Flush(); !r) return "flush: " + r.error();
     const rt::InstructionExtents& ext = program.extents[i];
     uint16_t writes = 0;
-    for (size_t k = 0; k < ext.count; ++k) writes += ext.ranges[k].write ? 1 : 0;
+    for (size_t k = 0; k < ext.count; ++k)
+      writes += ext.ranges[k].write ? 1 : 0;
     trace->Put<uint32_t>(static_cast<uint32_t>(i));
     trace->Put<uint16_t>(program.instructions[i].opcode);
     trace->Put<uint16_t>(writes);
-    trace->Put<uint32_t>(static_cast<uint32_t>(backend.relaxed_executions() -
-                                               relaxed_before));
+    trace->Put<uint32_t>(
+        static_cast<uint32_t>(backend.relaxed_executions() - relaxed_before));
     for (size_t k = 0; k < ext.count; ++k) {
       const rt::OperandExtent& e = ext.ranges[k];
       if (!e.write) continue;
@@ -599,8 +601,9 @@ int main(int argc, char** argv) {
     return Fail("the arena image is " + std::to_string(image_bytes) +
                 " bytes; the plan declares " + std::to_string(h.arena_size));
   const size_t aligned =
-      std::max<size_t>(1, (static_cast<size_t>(h.arena_size) +
-                           rt::kArenaAlignment - 1) / rt::kArenaAlignment) *
+      std::max<size_t>(
+          1, (static_cast<size_t>(h.arena_size) + rt::kArenaAlignment - 1) /
+                 rt::kArenaAlignment) *
       rt::kArenaAlignment;
   struct Free {
     void operator()(uint8_t* p) const { std::free(p); }
@@ -621,9 +624,8 @@ int main(int argc, char** argv) {
   auto selected = rt::CreateBackend(opts.backend);
   if (!selected) return Fail(selected.error());
   rt::ExecutorBackend& backend = *selected->backend;
-  if (auto r = backend.Bind(arena.get(), aligned,
-                            plan.data() + h.rodata_offset, h.rodata_size,
-                            plan.size() - h.rodata_offset);
+  if (auto r = backend.Bind(arena.get(), aligned, plan.data() + h.rodata_offset,
+                            h.rodata_size, plan.size() - h.rodata_offset);
       !r)
     return Fail("bind: " + r.error());
   // v17: an eval program that reads the source model needs the file, and
@@ -657,8 +659,11 @@ int main(int argc, char** argv) {
 
   float lr = 0.0f;
   std::memcpy(&lr, &opts.lr_bits, sizeof(lr));
-  const rt::StepParams params{.lr = lr, .beta1 = h.beta1, .beta2 = h.beta2,
-                              .eps = h.eps, .weight_decay = h.weight_decay,
+  const rt::StepParams params{.lr = lr,
+                              .beta1 = h.beta1,
+                              .beta2 = h.beta2,
+                              .eps = h.eps,
+                              .weight_decay = h.weight_decay,
                               .step = opts.step};
 
   if (opts.timed) {
@@ -677,9 +682,8 @@ int main(int argc, char** argv) {
       trace.emplace(opts.trace);
       if (!trace->ok()) return Fail("cannot stage the trace");
     }
-    if (const std::string err = RunProgram(backend, program, params,
-                                           arena.get(),
-                                           trace ? &*trace : nullptr);
+    if (const std::string err = RunProgram(
+            backend, program, params, arena.get(), trace ? &*trace : nullptr);
         !err.empty())
       return Fail(err);
     if (trace && !trace->Commit()) return Fail("short write to the trace");

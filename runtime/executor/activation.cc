@@ -49,11 +49,10 @@ void GeluBwd(const float* dy, const float* x, float* dx, size_t n) {
       // v — 0 * Inf would emit NaN where the correct gradient is dy * 1
       // (v > 0) or dy * 0 (v < 0). Drop the dead term instead.
       const float one_minus_t2 = 1.0f - t * t;
-      const float tail =
-          one_minus_t2 == 0.0f
-              ? 0.0f
-              : 0.5f * v * one_minus_t2 *
-                    (kGeluC * (1.0f + 3.0f * kGeluA * v * v));
+      const float tail = one_minus_t2 == 0.0f
+                             ? 0.0f
+                             : 0.5f * v * one_minus_t2 *
+                                   (kGeluC * (1.0f + 3.0f * kGeluA * v * v));
       dx[i] = dy[i] * (0.5f * (1.0f + t) + tail);
     }
   });

@@ -108,12 +108,12 @@ enum class SmfOpKind : uint8_t {
   kLayerNorm = 6,  // inputs: {x, gamma, beta}; normalizes the last dim
   // v3 vocabulary: the transformer family. Rows are sequence positions,
   // grouped into sequences of the model-level seq_len; heads ride attr0.
-  kAdd = 7,        // elementwise sum of two same-shape activations (residual)
-  kRmsNorm = 8,    // inputs: {x, gamma}; RMS-normalizes the last dim
-  kRope = 9,       // rotary position embedding; attr0 = num_heads
-  kAttention = 10, // inputs: {q, k, v}; causal SDPA; attr0 = num_heads
+  kAdd = 7,         // elementwise sum of two same-shape activations (residual)
+  kRmsNorm = 8,     // inputs: {x, gamma}; RMS-normalizes the last dim
+  kRope = 9,        // rotary position embedding; attr0 = num_heads
+  kAttention = 10,  // inputs: {q, k, v}; causal SDPA; attr0 = num_heads
   // v4 vocabulary.
-  kEmbedding = 11, // inputs: {tokens (the i32 graph input), table [V, D]}
+  kEmbedding = 11,  // inputs: {tokens (the i32 graph input), table [V, D]}
 };
 inline constexpr uint8_t kSmfOpKindMax = 11;
 // A file carrying a kind newer than its own version is corrupt, not

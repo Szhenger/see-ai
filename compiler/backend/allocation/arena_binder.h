@@ -55,7 +55,7 @@ struct RodataPack {
   uint64_t offset = 0;                // within the rodata section
   uint64_t bytes = 0;                 // at that offset
   Storage storage = Storage::kF32;
-  float scale = 0.0f;                 // kInt8: the per-tensor dequant scale
+  float scale = 0.0f;  // kInt8: the per-tensor dequant scale
   // kInt8 (plan v17): one scale per output column of W [K, M], stored as
   // f32 at `scales_offset` right after the int8 levels; the levels are
   // quantized per column. Empty = the per-tensor form above.
@@ -67,8 +67,8 @@ struct ArenaBinding {
   // value -> ref word (MakeArenaRef / MakeRodataRef encoded).
   std::unordered_map<const seeml::sir::Value*, uint64_t> refs;
   uint64_t persistent_size = 0;
-  uint64_t io_end = 0;      // end of [persistent | io] prefix
-  uint64_t arena_size = 0;  // total (after transient scan, both programs)
+  uint64_t io_end = 0;            // end of [persistent | io] prefix
+  uint64_t arena_size = 0;        // total (after transient scan, both programs)
   std::vector<ParamInit> params;  // in allocation order
   // The rodata section as a LAYOUT, in offset order — its bytes do not
   // exist until PackRodata writes them straight into the plan blob (E2,
@@ -95,8 +95,7 @@ void PackRodata(const RodataPack& pack, uint8_t* dst);
 /// Returns the high-water mark; assignments are appended to `refs_out`.
 uint64_t LinearScanTransients(
     seeml::sir::Block& block, uint64_t base,
-    const std::unordered_map<const seeml::sir::Value*, uint64_t>&
-        already_bound,
+    const std::unordered_map<const seeml::sir::Value*, uint64_t>& already_bound,
     const std::unordered_set<const seeml::sir::Value*>& pinned,
     std::unordered_map<const seeml::sir::Value*, uint64_t>& refs_out);
 

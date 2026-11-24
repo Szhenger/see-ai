@@ -79,9 +79,8 @@ inline constexpr bool kSafeIntegerCompare =
 // identical strings "not equal" because their storage differs would be
 // actively misleading.
 template <typename T>
-inline constexpr bool kIsCString =
-    std::same_as<std::decay_t<T>, char*> ||
-    std::same_as<std::decay_t<T>, const char*>;
+inline constexpr bool kIsCString = std::same_as<std::decay_t<T>, char*> ||
+                                   std::same_as<std::decay_t<T>, const char*>;
 
 template <typename A, typename B>
 bool CmpEq(const A& a, const B& b) {
@@ -160,8 +159,8 @@ std::string BinaryFailure(const char* a_text, const char* b_text,
   return msg;
 }
 
-inline std::string NearFailure(const char* a_text, const char* b_text,
-                               double a, double b, double tol) {
+inline std::string NearFailure(const char* a_text, const char* b_text, double a,
+                               double b, double tol) {
   std::ostringstream os;
   os << "expected: |" << a_text << " - " << b_text << "| <= " << tol
      << "\n  lhs = " << std::setprecision(12) << a

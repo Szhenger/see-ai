@@ -80,7 +80,7 @@ inline int64_t WriteSome(FileHandle f, const uint8_t* data, size_t n,
 }
 
 /// Forces the file's data to stable storage: fsync / FlushFileBuffers.
-inline bool SyncFile(FileHandle f) {
+[[nodiscard]] inline bool SyncFile(FileHandle f) {
 #ifndef _WIN32
   return ::fsync(static_cast<int>(f)) == 0;
 #else
@@ -88,7 +88,7 @@ inline bool SyncFile(FileHandle f) {
 #endif
 }
 
-inline bool CloseFile(FileHandle f) {
+[[nodiscard]] inline bool CloseFile(FileHandle f) {
 #ifndef _WIN32
   return ::close(static_cast<int>(f)) == 0;
 #else
@@ -108,7 +108,8 @@ inline void RemoveFile(const std::string& path) {
 /// rename does; CRT rename on Windows refuses an existing destination, so
 /// Win32 uses MoveFileEx (and writes the move through). Not "ReplaceFile":
 /// <windows.h> defines that name as a macro (ReplaceFileA / ReplaceFileW).
-inline bool AtomicReplace(const std::string& from, const std::string& to) {
+[[nodiscard]] inline bool AtomicReplace(const std::string& from,
+                                        const std::string& to) {
 #ifndef _WIN32
   return std::rename(from.c_str(), to.c_str()) == 0;
 #else
@@ -118,11 +119,12 @@ inline bool AtomicReplace(const std::string& from, const std::string& to) {
 }
 
 /// SyncFile for a stdio stream (already fflush'ed by the caller).
-inline bool SyncStream(std::FILE* f) {
+[[nodiscard]] inline bool SyncStream(std::FILE* f) {
 #ifndef _WIN32
   return ::fsync(::fileno(f)) == 0;
 #else
-  return ::FlushFileBuffers(reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)))) != 0;
+  return ::FlushFileBuffers(
+             reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)))) != 0;
 #endif
 }
 
@@ -130,7 +132,7 @@ inline bool SyncStream(std::FILE* f) {
 /// commit target with weight ranges past 2 GiB would wrap the offset and
 /// patch the wrong bytes (the bounds check upstream runs on the untruncated
 /// value, so nothing trips).
-inline bool SeekStream(std::FILE* f, uint64_t offset) {
+[[nodiscard]] inline bool SeekStream(std::FILE* f, uint64_t offset) {
 #ifndef _WIN32
   return ::fseeko(f, static_cast<off_t>(offset), SEEK_SET) == 0;
 #else
@@ -155,9 +157,9 @@ inline LockResult TryLockExclusive(const std::string& lock_path,
   }
   *out = static_cast<FileHandle>(fd);
 #else
-  HANDLE h = ::CreateFileA(lock_path.c_str(), GENERIC_WRITE, /*share=*/0,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           nullptr);
+  HANDLE h =
+      ::CreateFileA(lock_path.c_str(), GENERIC_WRITE, /*share=*/0, nullptr,
+                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE)
     return ::GetLastError() == ERROR_SHARING_VIOLATION
                ? LockResult::kHeldElsewhere
@@ -182,7 +184,7 @@ inline std::string ParentDirectory(const std::string& path) {
 /// Persists a rename into `path`'s directory: fsyncs the directory. Best
 /// effort — some filesystems reject a directory fsync — so it reports
 /// whether one happened rather than failing.
-inline bool SyncParentDirectory(const std::string& path) {
+[[nodiscard]] inline bool SyncParentDirectory(const std::string& path) {
 #ifndef _WIN32
   const int dfd = ::open(ParentDirectory(path).c_str(), O_RDONLY);
   if (dfd < 0) return false;

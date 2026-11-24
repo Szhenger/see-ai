@@ -11,15 +11,14 @@ namespace seeml::update {
 /// Import state threaded through the student and teacher builds and consumed
 /// downstream by arena binding (rodata packing) and the emit table.
 struct GraphBuild {
-  seeml::sir::Value* input = nullptr;   // shared batch input block argument
+  seeml::sir::Value* input = nullptr;  // shared batch input block argument
   // Network output (logits). Valid only until the first rewriting pass:
   // the rewriting passes redirect consumers to another value (LoRA grafting,
   // to the adapted one) or destroy values, and none updates this field. The
   // driver nulls it once the loss is grafted so a stale read fails loudly.
   seeml::sir::Value* output = nullptr;
   // Frozen weight values -> their SMF tensor (for rodata packing + commit).
-  std::unordered_map<const seeml::sir::Value*, const SmfTensor*>
-      weight_sources;
+  std::unordered_map<const seeml::sir::Value*, const SmfTensor*> weight_sources;
 };
 
 }  // namespace seeml::update

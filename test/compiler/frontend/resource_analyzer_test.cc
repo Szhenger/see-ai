@@ -31,8 +31,7 @@ TEST(ResourceAnalyzer, FootprintCountsWeightsAndWhatTheBackwardReads) {
   // model output the loss differentiates: [16x8], [16x8], [16x2]. The two
   // MatMul outputs feed bias adds, which read nothing of their forward, so
   // they die there and are not counted (N29).
-  EXPECT_EQ(fp.activation_bytes,
-            (2 * kBatch * 8 + kBatch * 2) * sizeof(float));
+  EXPECT_EQ(fp.activation_bytes, (2 * kBatch * 8 + kBatch * 2) * sizeof(float));
   // Rematerialization would recompute relu1's output from ab1's, which
   // the backward holds anyway.
   EXPECT_EQ(fp.recomputable_bytes, kBatch * 8 * sizeof(float));
@@ -193,8 +192,7 @@ TEST(ResourceAnalyzer, DeltaSegmentCountsExactlyWhatLoraWillAdapt) {
   // MakeMlp(4, 8, 2): w1[4x8] and w2[8x2] are MatMul weights; the biases
   // are consumed by AddBias and can never be adapted.
   SmfModel model = MakeMlp(4, 8, 2, /*seed=*/1);
-  EXPECT_EQ(EstimateLoraDeltaBytes(model, {}),
-            (4 * 8 + 8 * 2) * sizeof(float));
+  EXPECT_EQ(EstimateLoraDeltaBytes(model, {}), (4 * 8 + 8 * 2) * sizeof(float));
   const std::vector<std::string> only_w2 = {"w2"};
   EXPECT_EQ(EstimateLoraDeltaBytes(model, only_w2), 8 * 2 * sizeof(float));
   const std::vector<std::string> nothing = {"no-such-tensor"};
@@ -248,10 +246,12 @@ TEST(ResourceAnalyzer, TheGateCountsTheBaseAtItsStoredWidth) {
   UpdateConfig config;
   config.batch = kBatch;
   config.memory_budget_bytes = 64ull << 20;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate plain,
+                       UpdateCompiler(config).Compile(model));
   EXPECT_EQ(plain.estimate_weight_bytes, f32);
   config.bf16_base = true;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate half, UpdateCompiler(config).Compile(model));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate half,
+                       UpdateCompiler(config).Compile(model));
   EXPECT_EQ(half.estimate_weight_bytes, f32 / 2);
   config.bf16_base = false;
   config.quantize_base = true;
@@ -279,23 +279,23 @@ TEST(ResourceAnalyzer, TheEstimateNeverExceedsTheExactFootprint) {
     return UpdateCompiler(config).Compile(model);
   };
   ASSERT_OK_AND_ASSIGN(CompiledUpdate plain, compiled_with([](UpdateConfig& c) {
-                         c.remat = RematKind::kOff;
-                       }));
+    c.remat = RematKind::kOff;
+  }));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate remat, compiled_with([](UpdateConfig& c) {
-                         c.remat = RematKind::kOn;
-                       }));
+    c.remat = RematKind::kOn;
+  }));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate int8, compiled_with([](UpdateConfig& c) {
-                         c.remat = RematKind::kOff;
-                         c.quantize_base = true;
-                       }));
+    c.remat = RematKind::kOff;
+    c.quantize_base = true;
+  }));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate tiled, compiled_with([](UpdateConfig& c) {
-                         c.remat = RematKind::kOff;
-                         c.attention = AttentionKind::kTiled;
-                       }));
+    c.remat = RematKind::kOff;
+    c.attention = AttentionKind::kTiled;
+  }));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate bf16, compiled_with([](UpdateConfig& c) {
-                         c.remat = RematKind::kOff;
-                         c.bf16_base = true;
-                       }));
+    c.remat = RematKind::kOff;
+    c.bf16_base = true;
+  }));
   // Distillation: the teacher's frozen forward joins the bound at its peak.
   SmfModel teacher =
       seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 43);

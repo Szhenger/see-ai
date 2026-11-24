@@ -5,7 +5,8 @@
 namespace seeml::sir {
 
 bool Shape::isFullyStatic() const {
-    return std::none_of(dims.begin(), dims.end(), [](int64_t d) { return d == kDynamic; });
+    return std::none_of(dims.begin(), dims.end(),
+                        [](int64_t d) { return d == kDynamic; });
 }
 
 int64_t Shape::volume() const {
@@ -29,4 +30,4 @@ size_t Shape::byteSize(DataType dt) const {
     return static_cast<size_t>(vol) * width;
 }
 
-} // namespace seeml::sir
+}  // namespace seeml::sir

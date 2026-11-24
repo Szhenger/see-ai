@@ -12,14 +12,14 @@
 namespace seeml::update {
 
 /// Overflow-checked u64 multiply for file-supplied offsets and sizes.
-inline bool MulOk(uint64_t a, uint64_t b, uint64_t* out) {
+[[nodiscard]] inline bool MulOk(uint64_t a, uint64_t b, uint64_t* out) {
   if (b != 0 && a > UINT64_MAX / b) return false;
   *out = a * b;
   return true;
 }
 
 /// True iff [off, off + bytes) lies inside [0, size) without wrapping.
-inline bool RangeOk(uint64_t off, uint64_t bytes, uint64_t size) {
+[[nodiscard]] inline bool RangeOk(uint64_t off, uint64_t bytes, uint64_t size) {
   return off <= size && bytes <= size - off;
 }
 

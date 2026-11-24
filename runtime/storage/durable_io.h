@@ -116,8 +116,7 @@ class DurableFileEdit {
   const std::string& sidecar_path() const { return tmp_; }
 
   [[nodiscard]] std::expected<void, std::string> ReadAt(uint64_t offset,
-                                                        uint8_t* buf,
-                                                        size_t n);
+                                                        uint8_t* buf, size_t n);
   [[nodiscard]] std::expected<void, std::string> WriteAt(uint64_t offset,
                                                          const uint8_t* buf,
                                                          size_t n);

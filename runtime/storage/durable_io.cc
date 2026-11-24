@@ -46,7 +46,8 @@ void FailNextDurableWriteForTesting(int errno_value) {
 
 std::expected<void, std::string> WriteFileDurable(
     const std::string& path, std::initializer_list<ByteSpan> parts) {
-  return WriteFileDurable(path, std::span<const ByteSpan>(parts.begin(), parts.size()));
+  return WriteFileDurable(
+      path, std::span<const ByteSpan>(parts.begin(), parts.size()));
 }
 
 std::expected<void, std::string> WriteFileDurable(
@@ -60,7 +61,8 @@ std::expected<void, std::string> WriteFileDurable(
   // that installs over an existing file, and the replace itself persisted.
   const platform::FileHandle f = platform::CreateForWrite(tmp);
   if (f == platform::kNoFile)
-    return diag::persisting::Error(diag::persisting::kDurableIo, "cannot write '" + tmp + "'");
+    return diag::persisting::Error(diag::persisting::kDurableIo,
+                                   "cannot write '" + tmp + "'");
   // Every failure past this point removes the sidecar (CR4 #145 F08): a
   // partial temp file beside the destination is a stray no later writer
   // reuses and a reader can mistake for a checkpoint.
@@ -93,9 +95,11 @@ std::expected<void, std::string> WriteFileDurable(
     }
     cost.bytes += written;
   }
-  if (!platform::SyncFile(f)) return fail(true, "fsync of '" + tmp + "' failed");
+  if (!platform::SyncFile(f))
+    return fail(true, "fsync of '" + tmp + "' failed");
   ++cost.fsyncs;
-  if (!platform::CloseFile(f)) return fail(false, "close of '" + tmp + "' failed");
+  if (!platform::CloseFile(f))
+    return fail(false, "close of '" + tmp + "' failed");
   if (!platform::AtomicReplace(tmp, path))
     return fail(false, "atomic rename to '" + path + "' failed");
   // Persist the rename itself (best effort: some filesystems reject a
@@ -114,17 +118,20 @@ std::expected<void, std::string> WriteFileDurable(const std::string& path,
 std::expected<std::vector<uint8_t>, std::string> ReadFileBytes(
     const std::string& path) {
   std::ifstream f(path, std::ios::binary);
-  if (!f) return diag::persisting::Error(diag::persisting::kDurableIo, "cannot open '" + path + "'");
+  if (!f)
+    return diag::persisting::Error(diag::persisting::kDurableIo,
+                                   "cannot open '" + path + "'");
   f.seekg(0, std::ios::end);
   const std::streamoff end = f.tellg();
   if (end < 0)
-    return diag::persisting::Error(diag::persisting::kDurableIo, "cannot stat '" + path + "'");
+    return diag::persisting::Error(diag::persisting::kDurableIo,
+                                   "cannot stat '" + path + "'");
   f.seekg(0);
   std::vector<uint8_t> bytes(static_cast<size_t>(end));
-  if (!bytes.empty() &&
-      !f.read(reinterpret_cast<char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size())))
-    return diag::persisting::Error(diag::persisting::kDurableIo, "cannot read '" + path + "'");
+  if (!bytes.empty() && !f.read(reinterpret_cast<char*>(bytes.data()),
+                                static_cast<std::streamsize>(bytes.size())))
+    return diag::persisting::Error(diag::persisting::kDurableIo,
+                                   "cannot read '" + path + "'");
   return bytes;
 }
 
@@ -155,9 +162,8 @@ std::expected<uint64_t, std::string> HashFileContent(const std::string& path) {
   for (size_t c = 0; c < folds; ++c) {
     const size_t begin = c * grain;
     const size_t n = chunks <= 1 ? size : std::min(grain, size - begin);
-    if (n != 0 &&
-        !f.read(reinterpret_cast<char*>(buf.data()),
-                static_cast<std::streamsize>(n)))
+    if (n != 0 && !f.read(reinterpret_cast<char*>(buf.data()),
+                          static_cast<std::streamsize>(n)))
       return diag::persisting::Error(diag::persisting::kDurableIo,
                                      "cannot read '" + path + "'");
     h = up::FnvMixWord(h, up::StripedFnv1a64(buf.data(), n));
@@ -178,10 +184,10 @@ std::expected<CommitLock, std::string> CommitLock::Acquire(
     case platform::LockResult::kLocked:
       break;
     case platform::LockResult::kHeldElsewhere:
-      return diag::persisting::Error(
-          diag::persisting::kDurableIo,
-          "another update is committing to '" + target_path +
-              "' — refusing to race it");
+      return diag::persisting::Error(diag::persisting::kDurableIo,
+                                     "another update is committing to '" +
+                                         target_path +
+                                         "' — refusing to race it");
     case platform::LockResult::kCannotOpen:
       return diag::persisting::Error(diag::persisting::kDurableIo,
                                      "cannot open lock '" + lock_path + "'");

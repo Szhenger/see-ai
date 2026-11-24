@@ -72,14 +72,16 @@ struct PlanMetadata {
 };
 
 struct LedgerEntry {
-  char pass[32] = {};         // NUL-padded pass name
+  char pass[32] = {};  // NUL-padded pass name
   uint32_t arithmetic = kLedgerExact;
   uint32_t instructions = 0;  // instructions carrying the change (0 if exact)
   char why[56] = {};          // NUL-padded reason
 };
 
-static_assert(sizeof(PlanMetadata) == 64, "PlanMetadata layout is part of the ABI.");
-static_assert(sizeof(LedgerEntry) == 96, "LedgerEntry layout is part of the ABI.");
+static_assert(sizeof(PlanMetadata) == 64,
+              "PlanMetadata layout is part of the ABI.");
+static_assert(sizeof(LedgerEntry) == 96,
+              "LedgerEntry layout is part of the ABI.");
 
 /// Where the section starts: the first 64-aligned byte after the emit table.
 inline uint64_t PlanMetadataOffset(const PlanHeader& header) {
@@ -122,17 +124,17 @@ struct DecodedMetadata {
 
 namespace metadata_detail {
 
-inline bool Text(const char* s, size_t n, bool allow_empty) {
+[[nodiscard]] inline bool Text(const char* s, size_t n, bool allow_empty) {
   size_t len = 0;
   while (len < n && s[len] != '\0') ++len;
-  if (len == n) return false;                 // not NUL-terminated
+  if (len == n) return false;  // not NUL-terminated
   if (len == 0 && !allow_empty) return false;
   for (size_t i = 0; i < len; ++i)
     if (static_cast<unsigned char>(s[i]) < 0x20 ||
         static_cast<unsigned char>(s[i]) > 0x7E)
       return false;
   for (size_t i = len; i < n; ++i)
-    if (s[i] != '\0') return false;           // padding is zero
+    if (s[i] != '\0') return false;  // padding is zero
   return true;
 }
 
@@ -153,7 +155,7 @@ inline uint64_t RelaxedInstructions(const uint8_t* plan, uint64_t offset,
 /// `header` has already passed PlanHeaderViolation for a blob of
 /// `plan_size` bytes. The first violated rule's reason, or nothing; `out`
 /// (optional) receives the decoded section.
-inline std::optional<std::string> PlanMetadataViolation(
+[[nodiscard]] inline std::optional<std::string> PlanMetadataViolation(
     const PlanHeader& header, const uint8_t* plan, uint64_t plan_size,
     DecodedMetadata* out = nullptr) {
   if ((header.data_flags & kDataFlagMetadata) == 0) return std::nullopt;
@@ -183,13 +185,15 @@ inline std::optional<std::string> PlanMetadataViolation(
     return std::string("plan metadata names an export report without its hash");
   if (!(meta.export_flags & kExportTokenizerParity) &&
       meta.tokenizer_parity_ids != 0)
-    return std::string("plan metadata carries parity ids without the parity flag");
+    return std::string(
+        "plan metadata carries parity ids without the parity flag");
   if (!std::isfinite(meta.logits_parity_max_delta) ||
       meta.logits_parity_max_delta < 0.0f ||
       (!(meta.export_flags & kExportLogitsParity) &&
        meta.logits_parity_max_delta != 0.0f))
-    return std::string("plan metadata logits-parity figure is not a finite "
-                       "non-negative value under its flag");
+    return std::string(
+        "plan metadata logits-parity figure is not a finite "
+        "non-negative value under its flag");
   // The ledger against the programs: the instructions it says carry
   // reordered arithmetic are exactly the ones flagged relaxed.
   std::vector<LedgerEntry> ledger(meta.ledger_count);
@@ -202,7 +206,8 @@ inline std::optional<std::string> PlanMetadataViolation(
         !metadata_detail::Text(e.why, sizeof(e.why), true))
       return std::string("plan metadata ledger entry is not NUL-padded text");
     if (e.arithmetic != kLedgerExact && e.arithmetic != kLedgerReordered)
-      return std::string("plan metadata ledger entry has an unknown arithmetic");
+      return std::string(
+          "plan metadata ledger entry has an unknown arithmetic");
     if (e.arithmetic == kLedgerExact && e.instructions != 0)
       return std::string("an exact ledger entry counts changed instructions");
     if (e.arithmetic == kLedgerReordered && e.instructions == 0)

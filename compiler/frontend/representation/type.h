@@ -17,37 +17,47 @@
 
 namespace seeml::sir {
 
-enum class DataType : uint8_t {
-    F16, BF16, F32, F64,
-    I8, I32, I64,
-    Bool
-};
+enum class DataType : uint8_t { F16, BF16, F32, F64, I8, I32, I64, Bool };
 
 constexpr size_t dtypeByteWidth(DataType dt) {
     switch (dt) {
         case DataType::Bool:
-        case DataType::I8:   return 1;
+        case DataType::I8:
+            return 1;
         case DataType::F16:
-        case DataType::BF16: return 2;
+        case DataType::BF16:
+            return 2;
         case DataType::F32:
-        case DataType::I32:  return 4;
+        case DataType::I32:
+            return 4;
         case DataType::F64:
-        case DataType::I64:  return 8;
-        default: return 0;
+        case DataType::I64:
+            return 8;
+        default:
+            return 0;
     }
 }
 
 constexpr std::string_view dtypeName(DataType dt) {
     switch (dt) {
-        case DataType::F16:  return "f16";
-        case DataType::BF16: return "bf16";
-        case DataType::F32:  return "f32";
-        case DataType::F64:  return "f64";
-        case DataType::I8:   return "i8";
-        case DataType::I32:  return "i32";
-        case DataType::I64:  return "i64";
-        case DataType::Bool: return "bool";
-        default: return "unknown";
+        case DataType::F16:
+            return "f16";
+        case DataType::BF16:
+            return "bf16";
+        case DataType::F32:
+            return "f32";
+        case DataType::F64:
+            return "f64";
+        case DataType::I8:
+            return "i8";
+        case DataType::I32:
+            return "i32";
+        case DataType::I64:
+            return "i64";
+        case DataType::Bool:
+            return "bool";
+        default:
+            return "unknown";
     }
 }
 
@@ -75,11 +85,9 @@ struct Shape {
     bool operator==(const Shape& o) const = default;
 };
 
-using AttributeValue = std::variant<
-    int64_t, float, double, std::string,
-    std::vector<int64_t>, std::vector<float>
->;
+using AttributeValue = std::variant<int64_t, float, double, std::string,
+                                    std::vector<int64_t>, std::vector<float>>;
 
-} // namespace seeml::sir
+}  // namespace seeml::sir
 
-#endif // SEEML_COMPILER_FRONTEND_REPRESENTATION_TYPE_H_
+#endif  // SEEML_COMPILER_FRONTEND_REPRESENTATION_TYPE_H_

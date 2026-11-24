@@ -69,8 +69,8 @@ class BatchPipeline {
 
   std::mutex mutex_;
   std::condition_variable cv_;
-  bool full_ = false;   // guarded by mutex_: staged batch ready to consume
-  bool stop_ = false;   // guarded by mutex_
+  bool full_ = false;  // guarded by mutex_: staged batch ready to consume
+  bool stop_ = false;  // guarded by mutex_
   // Dataset position before the in-flight stage. Written by the feeder
   // thread only; the destructor reads it after join() to un-consume a
   // staged batch the engine never took.

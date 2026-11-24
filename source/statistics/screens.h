@@ -154,7 +154,8 @@ inline constexpr StatRow kAnalysisRows[] = {
      "the training SIR after every pass, as lowered"},
     {"adapters", "adapters", StatKind::kCount, "",
      "LoRA adapters grafted, one per targeted matmul weight"},
-    {"lora_rank", "rank", StatKind::kCount, "", "r, each adapter's inner width"},
+    {"lora_rank", "rank", StatKind::kCount, "",
+     "r, each adapter's inner width"},
     {"lora_alpha", "alpha", StatKind::kReal, "",
      "the numerator of the adapter scale", screens_detail::kV, 1},
     {"lora_scale", "adapter scale", StatKind::kText, "",
@@ -217,10 +218,8 @@ inline constexpr StatColumn kPassColumns[] = {
     {"ms", StatKind::kReal, "ms", screens_detail::kX, 3},
 };
 inline constexpr StatColumn kAdapterColumns[] = {
-    {"weight", StatKind::kText, ""},
-    {"k", StatKind::kCount, ""},
-    {"m", StatKind::kCount, ""},
-    {"rank", StatKind::kCount, ""},
+    {"weight", StatKind::kText, ""},  {"k", StatKind::kCount, ""},
+    {"m", StatKind::kCount, ""},      {"rank", StatKind::kCount, ""},
     {"storage", StatKind::kText, ""},
 };
 inline constexpr StatColumn kLedgerColumns[] = {
@@ -292,7 +291,8 @@ inline constexpr StatRow kBackendRows[] = {
      screens_detail::kO | screens_detail::kX},
     {"gpu_working_set_bytes", "GPU working set", StatKind::kBytes, "B",
      "the device's recommended working set: the memory a plan may keep "
-     "resident on the GPU", screens_detail::kO | screens_detail::kX},
+     "resident on the GPU",
+     screens_detail::kO | screens_detail::kX},
     {"kernel_policy", "kernel policy", StatKind::kText, "",
      "the CPU GEMM tiles the header carries", screens_detail::kX},
     {"plan_hash", "plan hash", StatKind::kText, "",
@@ -320,8 +320,8 @@ inline constexpr StatTable kBackendTables[] = {
      "the train program's products by shape: count, work, share of GEMM work",
      kGemmCensusColumns},
 };
-inline constexpr ScreenSpec kBackendScreen = {
-    "backend", "the plan it emitted", kBackendRows, kBackendTables};
+inline constexpr ScreenSpec kBackendScreen = {"backend", "the plan it emitted",
+                                              kBackendRows, kBackendTables};
 
 // --- runtime: planned by the compiler, measured by the device -------------------
 
@@ -335,7 +335,8 @@ inline constexpr StatRow kRuntimeRows[] = {
      "the tokenizer section every corpus must name",
      screens_detail::kO | screens_detail::kX},
     {"corpus_hash", "corpus hash", StatKind::kText, "",
-     "the corpus the plan is pinned to", screens_detail::kO | screens_detail::kX},
+     "the corpus the plan is pinned to",
+     screens_detail::kO | screens_detail::kX},
     {"recipe_hash", "recipe hash", StatKind::kText, "",
      "the resolved recipe the plan was compiled from",
      screens_detail::kO | screens_detail::kX},
@@ -376,19 +377,21 @@ inline constexpr StatRow kRuntimeRows[] = {
      "the file's and its directory's, the mean",
      screens_detail::kO | screens_detail::kX, 1},
     {"train_loss_first", "train loss, start", StatKind::kReal, "nats",
-     "the mean loss over the run's first window of steps", screens_detail::kO, 4},
+     "the mean loss over the run's first window of steps", screens_detail::kO,
+     4},
     {"train_loss_last", "train loss, end", StatKind::kReal, "nats",
-     "the mean loss over the run's last window of steps", screens_detail::kO, 4},
-    {"validation_loss_first", "validation loss, start", StatKind::kReal,
-     "nats", "the held-out loss before training", screens_detail::kO, 4},
+     "the mean loss over the run's last window of steps", screens_detail::kO,
+     4},
+    {"validation_loss_first", "validation loss, start", StatKind::kReal, "nats",
+     "the held-out loss before training", screens_detail::kO, 4},
     {"validation_loss_last", "validation loss, end", StatKind::kReal, "nats",
      "the held-out loss of the state the gate weighed", screens_detail::kO, 4},
     {"label_entropy", "input-blind loss", StatKind::kReal, "nats",
      "the training labels' entropy: an input-blind predictor's loss",
      screens_detail::kO, 4},
     {"validation_accuracy", "validation accuracy", StatKind::kReal, "",
-     "the held-out accuracy of the state the gate weighed",
-     screens_detail::kO, 4},
+     "the held-out accuracy of the state the gate weighed", screens_detail::kO,
+     4},
     // Energy (#202 item 3): IOReport's GPU counter over the training run,
     // on a Metal run; a cpu run has no number (the profiler's
     // FillEnergyRows). Whole-SoC — every process on the machine — and only
@@ -409,8 +412,7 @@ inline constexpr StatRow kRuntimeRows[] = {
      screens_detail::kO},
 };
 inline constexpr ScreenSpec kRuntimeScreen = {
-    "runtime", "planned by the compiler, measured by the device",
-    kRuntimeRows};
+    "runtime", "planned by the compiler, measured by the device", kRuntimeRows};
 
 /// Every screen, in the order the console prints them.
 inline constexpr const ScreenSpec* kScreens[] = {

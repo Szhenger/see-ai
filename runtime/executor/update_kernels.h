@@ -45,8 +45,7 @@ namespace seeml::update_rt::kernels {
 // on it.
 void GemmNN(const float* A, const float* B, float* C, size_t M, size_t N,
             size_t K, const float* bias = nullptr,
-            seeml::update::EpilogueAct act =
-                seeml::update::EpilogueAct::kNone,
+            seeml::update::EpilogueAct act = seeml::update::EpilogueAct::kNone,
             const GemmTiles& tiles = kDefaultGemmTiles,
             const float* addend = nullptr,
             float alpha = 1.0f);  // C = [D +] alpha * A[M,K] @ B[K,N]
@@ -69,26 +68,26 @@ void GemmTN(const float* A, const float* B, float* C, size_t M, size_t N,
             size_t K, const GemmTiles& tiles = kDefaultGemmTiles,
             const float* addend = nullptr,
             float alpha = 1.0f);  // C = [D +] alpha * A[K,M]^T @ B[K,N]
-void GemmAccNN(const float* A, const float* B, float* C, size_t M, size_t N,
-               size_t K, float alpha,
-               const GemmTiles& tiles = kDefaultGemmTiles);  // C += alpha * A @ B
+void GemmAccNN(
+    const float* A, const float* B, float* C, size_t M, size_t N, size_t K,
+    float alpha,
+    const GemmTiles& tiles = kDefaultGemmTiles);  // C += alpha * A @ B
 
 // --- Quantized GEMM: B is per-tensor symmetric int8, dequantized on the fly.
 // GemmNNQ8 takes an activation epilogue only: the instruction's in[3] slot
 // carries the dequant scale, so a fused bias has nowhere to ride (ABI note
 // in source/plan/instruction.h).
-void GemmNNQ8(const float* A, const int8_t* B, float* C, size_t M, size_t N,
-              size_t K, float scale,
-              seeml::update::EpilogueAct act =
-                  seeml::update::EpilogueAct::kNone,
-              const GemmTiles& tiles = kDefaultGemmTiles,
-              const float* col_scale = nullptr);
-                                            // C = A[M,K] @ (scale*B)[K,N]
+void GemmNNQ8(
+    const float* A, const int8_t* B, float* C, size_t M, size_t N, size_t K,
+    float scale,
+    seeml::update::EpilogueAct act = seeml::update::EpilogueAct::kNone,
+    const GemmTiles& tiles = kDefaultGemmTiles,
+    const float* col_scale = nullptr);
+// C = A[M,K] @ (scale*B)[K,N]
 void GemmNTQ8(const float* A, const int8_t* B, float* C, size_t M, size_t N,
-              size_t K, float scale,
-              const GemmTiles& tiles = kDefaultGemmTiles,
+              size_t K, float scale, const GemmTiles& tiles = kDefaultGemmTiles,
               const float* k_scale = nullptr);
-                                            // C = A[M,K] @ (scale*B)[N,K]^T
+// C = A[M,K] @ (scale*B)[N,K]^T
 // Per-column scales (plan v17, kFlagQ8ColScale): with `col_scale` (float[N])
 // the NN form computes C[m, n] = act(col_scale[n] * sum_k A[m, k] * q[k, n]);
 // with `k_scale` (float[K]) the NT form computes
@@ -97,16 +96,15 @@ void GemmNTQ8(const float* A, const int8_t* B, float* C, size_t M, size_t N,
 // --- bf16 GEMM (plan v10): B is bfloat16 rodata, widened exactly to f32 on
 // the way into the tile; compute is f32. GemmNNBF16 takes the full fused
 // epilogue like GemmNN (its in[3] is free for the bias).
-void GemmNNBF16(const float* A, const uint16_t* B, float* C, size_t M,
-                size_t N, size_t K, const float* bias = nullptr,
-                seeml::update::EpilogueAct act =
-                    seeml::update::EpilogueAct::kNone,
-                const GemmTiles& tiles = kDefaultGemmTiles);
-                                            // C = A[M,K] @ widen(B)[K,N]
-void GemmNTBF16(const float* A, const uint16_t* B, float* C, size_t M,
-                size_t N, size_t K,
-                const GemmTiles& tiles = kDefaultGemmTiles);
-                                            // C = A[M,K] @ widen(B)[N,K]^T
+void GemmNNBF16(
+    const float* A, const uint16_t* B, float* C, size_t M, size_t N, size_t K,
+    const float* bias = nullptr,
+    seeml::update::EpilogueAct act = seeml::update::EpilogueAct::kNone,
+    const GemmTiles& tiles = kDefaultGemmTiles);
+// C = A[M,K] @ widen(B)[K,N]
+void GemmNTBF16(const float* A, const uint16_t* B, float* C, size_t M, size_t N,
+                size_t K, const GemmTiles& tiles = kDefaultGemmTiles);
+// C = A[M,K] @ widen(B)[N,K]^T
 
 // --- Elementwise / broadcast -------------------------------------------------
 void AddEW(const float* x, const float* y, float* out, size_t n);
@@ -115,9 +113,9 @@ void AddBias(const float* x, const float* b, float* out, size_t rows,
              size_t cols);
 void ReluFwd(const float* x, float* out, size_t n);
 void ReluBwd(const float* dy, const float* x, float* dx, size_t n);
-void GeluFwd(const float* x, float* out, size_t n);   // tanh approximation
+void GeluFwd(const float* x, float* out, size_t n);  // tanh approximation
 void GeluBwd(const float* dy, const float* x, float* dx, size_t n);
-void SiluFwd(const float* x, float* out, size_t n);   // x * sigmoid(x)
+void SiluFwd(const float* x, float* out, size_t n);  // x * sigmoid(x)
 void SiluBwd(const float* dy, const float* x, float* dx, size_t n);
 void Scale(const float* x, float* out, float alpha, size_t n);
 // A fused elementwise chain (plan v13): `stages` is kFusedMap's out[1]
@@ -160,8 +158,8 @@ void RmsNormBwd(const float* dy, const float* x, const float* gamma,
 // nullptr to compute the angles in place; both give identical bits.
 void RopeFwd(const float* x, float* y, size_t B, size_t S, size_t H, size_t d,
              float base, const float* table = nullptr);
-void RopeBwd(const float* dy, float* dx, size_t B, size_t S, size_t H,
-             size_t d, float base, const float* table = nullptr);
+void RopeBwd(const float* dy, float* dx, size_t B, size_t S, size_t H, size_t d,
+             float base, const float* table = nullptr);
 // table[(s * (d/2) + c) * 2 + {0, 1}] = cos, sin of s * base^(-2c/d), by
 // the recurrence above.
 void RopeTable(float* table, size_t S, size_t d, float base);
@@ -179,16 +177,16 @@ void AttnFwd(const float* q, const float* k, const float* v, float* o,
 void SegmentStarts(const int32_t* tokens, int32_t* starts, size_t B, size_t S,
                    int32_t eos);
 void AttnDP(const float* dout, const float* v, float* dp, size_t B, size_t S,
-            size_t H, size_t d);             // dP = dO V^T
+            size_t H, size_t d);  // dP = dO V^T
 void AttnDV(const float* probs, const float* dout, float* dv, size_t B,
-            size_t S, size_t H, size_t d);   // dV = P^T dO
+            size_t S, size_t H, size_t d);  // dV = P^T dO
 // Row-softmax backward for any [rows, cols]: dS = P * (dP - rowsum(dP * P)).
-void SoftmaxRowsBwd(const float* probs, const float* dp, float* ds,
-                    size_t rows, size_t cols);
+void SoftmaxRowsBwd(const float* probs, const float* dp, float* ds, size_t rows,
+                    size_t cols);
 void AttnDQ(const float* ds, const float* k, float* dq, size_t B, size_t S,
-            size_t H, size_t d);             // dQ = (dS K) / sqrt(d)
+            size_t H, size_t d);  // dQ = (dS K) / sqrt(d)
 void AttnDK(const float* ds, const float* q, float* dk, size_t B, size_t S,
-            size_t H, size_t d);             // dK = (dS^T Q) / sqrt(d)
+            size_t H, size_t d);  // dK = (dS^T Q) / sqrt(d)
 
 // The tiled family (plan v15, E11): the same attention, the same bits, no
 // S x S matrix. `stats` is [B*H*S, kAttnStatsWidth] f32: per query row the
@@ -207,8 +205,8 @@ void AttnFwdTiled(const float* q, const float* k, const float* v, float* o,
                   float* stats, size_t B, size_t S, size_t H, size_t d,
                   const int32_t* starts = nullptr);
 void AttnDQTiled(const float* q, const float* k, const float* v,
-                 const float* dout, float* stats, float* dq, size_t B,
-                 size_t S, size_t H, size_t d);
+                 const float* dout, float* stats, float* dq, size_t B, size_t S,
+                 size_t H, size_t d);
 void AttnDKTiled(const float* q, const float* k, const float* v,
                  const float* dout, const float* stats, float* dk, size_t B,
                  size_t S, size_t H, size_t d);
