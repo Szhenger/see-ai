@@ -140,6 +140,15 @@ are on the default frontend screen when nonzero, no longer under
 earlier kept one (`dropped_duplicate_windows`); the device runs the same
 code. Near-duplicates stay out of scope.
 
+**#218 (2026-11-23).** The pack stage joins documents with the document
+separator (`tokenizer::FindDocumentSeparator`, one definition for the
+compiler, the device's ingest and `seeml-tokenize --info`): the EOS, or
+`<|endoftext|>` on a model whose EOS is the ChatML turn end `<|im_end|>`, so
+the segment mask, which scans for the same id, never takes a chat turn for a
+document. Base models' corpora and plans are byte-identical; an instruct
+model's corpus changes its joiner (and so its hash). An `<|im_end|>` EOS with
+no `<|endoftext|>` keeps the EOS as joiner and is never masked.
+
 ## Acceptance
 
 - `seeml-update-compile --data corpus.txt` on SmolLM-135M produces the same

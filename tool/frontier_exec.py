@@ -1921,8 +1921,9 @@ def _attn_fwd(m, x, ins, step):
 
 
 def _segment_starts(m, x, ins, step):
-    """v25 (#191): every position's document start, one past the last EOS
-    strictly before it — written as the i32 bits the runtime writes."""
+    """v25 (#191): every position's document start, one past the last
+    out[1] id (the document separator, #218) strictly before it — written
+    as the i32 bits the runtime writes."""
     import numpy as np
     b, s = hi_lo(ins.out[0])
     eos = int(ins.out[1])

@@ -1616,6 +1616,83 @@ TEST(UpdateSystem, AMaskedWindowsSecondDocumentIgnoresItsFirst) {
             std::bit_cast<uint32_t>(loss_of(true, AttentionKind::kTiled, 1)));
 }
 
+TEST(UpdateSystem, AnInstructModelsMaskSeparatesDocumentsNotTurns) {
+  // #218 with #191's acceptance: on a model whose EOS is the chat turn end
+  // <|im_end|> and whose vocabulary has <|endoftext|>, the compiled mask
+  // finds documents by <|endoftext|>. Every window is
+  // [a a a <|endoftext|> p <|im_end|> y y] — a first document, then a chat
+  // document whose prompt p ends its turn — and the loss is masked to the
+  // two response positions (labels of -1 elsewhere). The loss carries the
+  // same bits whatever the first document holds, and moves with the
+  // response's own prompt p, which a mask that split at the turn end would
+  // hide from it. On both families.
+  const int64_t vocab = 259, dim = 8, heads = 2, seq = 8, ffn = 16;
+  const int64_t windows = 4, batch = windows * seq;
+  const int32_t kEndOfText = 256, kImEnd = 258;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 73);
+  {
+    // A byte vocabulary, specials <|endoftext|> <|im_start|> <|im_end|>
+    // (ids 256..258), the EOS <|im_end|>.
+    std::vector<uint8_t>& b = model.tokenizer;
+    auto u32 = [&](uint32_t v) {
+      for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    auto u16 = [&](uint16_t v) {
+      for (int i = 0; i < 2; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    for (uint32_t x : {0x4B544D53u, 1u, 1u, 2u, 0u, 259u, 0u, 3u, 258u,
+                       0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+      u32(x);
+    for (int v = 0; v < 256; ++v) {
+      u16(1);
+      b.push_back(static_cast<uint8_t>(v));
+    }
+    for (const char* lit : {"<|endoftext|>", "<|im_start|>", "<|im_end|>"}) {
+      const std::string s = lit;
+      u16(static_cast<uint16_t>(s.size()));
+      b.insert(b.end(), s.begin(), s.end());
+    }
+    for (uint32_t i = 0; i < 3; ++i) u32(256 + i);
+  }
+  auto loss_of = [&](AttentionKind kind, int32_t first_doc,
+                     int32_t prompt) -> float {
+    UpdateConfig config = BaseConfig(batch);
+    config.emit_optimizer = false;
+    config.masked_loss = true;
+    config.segment_mask = SegmentMaskKind::kOn;
+    config.attention = kind;
+    auto compiled = UpdateCompiler(config).Compile(model);
+    if (!compiled) return std::numeric_limits<float>::quiet_NaN();
+    UpdateEngine engine;
+    if (!engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()))
+      return std::numeric_limits<float>::quiet_NaN();
+    std::vector<int32_t> tokens(batch), labels(batch, -1);
+    for (int64_t w = 0; w < windows; ++w)
+      for (int64_t t = 0; t < seq; ++t) {
+        const int64_t at = w * seq + t;
+        tokens[at] = t < 3 ? static_cast<int32_t>('a' + (first_doc + w + t) % 4)
+                     : t == 3 ? kEndOfText
+                     : t == 4 ? static_cast<int32_t>('p' + (prompt + w) % 4)
+                     : t == 5 ? kImEnd
+                              : static_cast<int32_t>('y' + (w + t) % 2);
+        if (t >= 6)
+          labels[at] = static_cast<int32_t>((3 * tokens[at] + 1) % vocab);
+      }
+    seeml::testing::FillTokenSlots(engine, tokens, labels);
+    engine.ExecuteTrainOnce();
+    return engine.LossValue();
+  };
+  for (AttentionKind kind : {AttentionKind::kCached, AttentionKind::kTiled}) {
+    const float a = loss_of(kind, 0, 0), b = loss_of(kind, 2, 0);
+    EXPECT_TRUE(std::isfinite(a));
+    EXPECT_EQ(std::bit_cast<uint32_t>(a), std::bit_cast<uint32_t>(b));
+    const float c = loss_of(kind, 0, 1);
+    EXPECT_TRUE(std::isfinite(c));
+    EXPECT_NE(c, a);
+  }
+}
+
 TEST(UpdateSystem, SegmentMaskedGradientsMatchFiniteDifferences) {
   // The masked attention's backward against central differences, through a
   // compiled plan, on both families: the windows hold an EOS (id 3) at

@@ -9,9 +9,11 @@
 
 // =============================================================================
 // The attention segment mask (#191, plan v25). A packed window holds several
-// documents joined by EOS; without a mask a position attends to the tail of
-// the previous, unrelated document. Segments are contiguous, so the mask is
-// one start per position — one past the last EOS strictly before it — which
+// documents joined by the document separator (the EOS, or <|endoftext|> on a
+// model whose EOS ends a chat turn: tokenizer::FindDocumentSeparator, #218);
+// without a mask a position attends to the tail of the previous, unrelated
+// document. Segments are contiguous, so the mask is one start per position —
+// one past the last separator strictly before it — which
 // one sc_low.segment_starts op computes from the token input, and every
 // sc_high.attention op reads as its fourth operand (keys before the row's
 // start masked as the causal ones are). It runs before the primal
@@ -27,6 +29,7 @@ namespace seeml::update {
 
 class SegmentMasker {
  public:
+  // `eos` is the document separator's id (#218), not necessarily the EOS.
   SegmentMasker(seeml::sir::Value* tokens, int32_t eos)
       : tokens_(tokens), eos_(eos) {}
   /// The number of attention ops masked.

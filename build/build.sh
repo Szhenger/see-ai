@@ -185,7 +185,7 @@ eval "$CXX -pthread build/seeml_abi.o -o build/seeml-abi"
 echo "  LINK seeml-tokenize"
 # The core's tokenizer over an SMF model's section (S2 #148): the parity
 # harness and the frontend's data path call the same encoder.
-eval "$CXX -pthread build/seeml_tokenize.o build/tokenizer_bpe.o build/model_format.o build/model_reader.o build/parallel_for.o build/logger.o -o build/seeml-tokenize"
+eval "$CXX -pthread build/seeml_tokenize.o build/tokenizer_bpe.o build/tokenizer_ingest.o build/model_format.o build/model_reader.o build/parallel_for.o build/logger.o -o build/seeml-tokenize"
 echo "  LINK seeml-plan-probe"
 # The frontier executor's C++ oracle (tool/frontier_exec.py, P4): one plan
 # section through one executor backend, every write traced.

@@ -21,7 +21,9 @@ data (security at every layer):
 5. **encode** — byte-level BPE from the SMF tokenizer section only (no
    `--tokenizer` flag exists); proven bit-exact against the reference
    tokenizer at export.
-6. **pack** — concatenate documents with EOS and cut fixed S+1 windows;
+6. **pack** — concatenate documents with the document separator (the EOS,
+   or `<|endoftext|>` when the EOS is the ChatML turn end `<|im_end|>`, #218)
+   and cut fixed S+1 windows;
    never pad, because every position is a loss target; drop a window equal
    to an earlier one (ids and mask) before any split (#222).
 

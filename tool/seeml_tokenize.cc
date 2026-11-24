@@ -2,8 +2,11 @@
 //
 //   seeml-tokenize model.smf --info
 //       the tokenizer section's summary: kind, pre-tokenizer, vocabulary,
-//       merges, special tokens, eos / bos, whether a chat template is
-//       carried, and the section's hash (the identity corpora bind to).
+//       merges, special tokens, eos / bos, the document separator (the id
+//       a .jsonl's documents are joined by and the segment mask finds them
+//       by: the EOS, or <|endoftext|> when the EOS is the ChatML turn end,
+//       #218), whether a chat template is carried, and the section's hash
+//       (the identity corpora bind to).
 //   seeml-tokenize model.smf text.txt [--pieces | --lines]
 //       the ids of the file's bytes, one per line (the whole file is one
 //       document: no EOS appended, nothing dropped but bytes without a
@@ -28,6 +31,7 @@
 
 #include "compiler/frontend/ingressor/model_reader.h"
 #include "source/tokenizer/byte_level_bpe.h"
+#include "source/tokenizer/text_ingest.h"
 
 namespace {
 
@@ -91,6 +95,14 @@ int main(int argc, char** argv) {
     std::printf("merges          %u\n", in.num_merges);
     std::printf("special tokens  %u\n", in.num_special);
     std::printf("eos / bos       %d / %d\n", in.eos_id, in.bos_id);
+    // The one definition the compiler and the device's ingest call (#218).
+    const seeml::tokenizer::DocumentSeparator sep =
+        seeml::tokenizer::FindDocumentSeparator(*tok);
+    std::printf("separator       %d%s\n", sep.id,
+                sep.id < 0            ? " (none: no EOS)"
+                : sep.is_turn_end     ? " (the turn end: no segment mask)"
+                : sep.id != in.eos_id ? " (<|endoftext|>: the EOS ends a turn)"
+                                      : " (the EOS)");
     std::printf("chat template   %s\n",
                 in.chat_template.empty()
                     ? "none"
