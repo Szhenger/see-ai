@@ -21,8 +21,13 @@
 #define SEETEST_CAT_INNER_(a, b) a##b
 #define SEETEST_CAT_(a, b) SEETEST_CAT_INNER_(a, b)
 
+// The test function is reached only through its registrar's initializer —
+// a static object nothing names. [[gnu::used]] says what is true (the
+// function is used, by registration) to the compiler and to a static
+// analyser alike: CodeQL's cpp/unused-static-function otherwise reports
+// every TEST body, and every helper only tests call, as unreachable.
 #define TEST(Suite, Name)                                            \
-  static void SeeTest_##Suite##_##Name();                            \
+  [[gnu::used]] static void SeeTest_##Suite##_##Name();              \
   static const ::seeml::testing::internal::Registrar                 \
       seetest_registrar_##Suite##_##Name{#Suite, #Name,              \
                                          &SeeTest_##Suite##_##Name}; \

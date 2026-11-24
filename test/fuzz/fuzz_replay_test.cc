@@ -678,15 +678,20 @@ TEST(FuzzReplay, MutatedSeedsAreRefusedOrRunNeverCrash) {
   //
   //   SEEML_FUZZ_MUTATIONS=N    mutated inputs per seed (default 128)
   //   SEEML_FUZZ_MUTATION_SEED  the pass's seed (default 1)
-  //   SEEML_FUZZ_KEEP=path      each input is written there before it
-  //                             runs, so a crash or a hang leaves its
-  //                             reproducer on disk
+  //   SEEML_FUZZ_KEEP=1         each input is written, before it runs, to
+  //                             seeml_fuzz_keep.unit in the system's temp
+  //                             directory, so a crash or a hang leaves its
+  //                             reproducer on disk. A switch, not a path:
+  //                             nothing the environment says names a file
+  //                             this suite opens (cpp/path-injection).
   uint64_t per_seed = 128, pass_seed = 1;
   if (const char* n = std::getenv("SEEML_FUZZ_MUTATIONS"))
     per_seed = std::strtoull(n, nullptr, 10);
   if (const char* s = std::getenv("SEEML_FUZZ_MUTATION_SEED"))
     pass_seed = std::strtoull(s, nullptr, 10);
-  const char* keep = std::getenv("SEEML_FUZZ_KEEP");
+  const bool keep = std::getenv("SEEML_FUZZ_KEEP") != nullptr;
+  const std::filesystem::path keep_path =
+      std::filesystem::temp_directory_path() / "seeml_fuzz_keep.unit";
   std::vector<std::vector<uint8_t>> seeds;
   for (const SeedCase& seed : SeedCases()) seeds.push_back(ReadSeed(seed.name));
   Reach total;
@@ -700,7 +705,7 @@ TEST(FuzzReplay, MutatedSeedsAreRefusedOrRunNeverCrash) {
       for (uint64_t e = 0; e < edits; ++e)
         input = Mutate(std::move(input), rng, seeds[rng.Below(seeds.size())]);
       if (keep) {
-        std::ofstream f(keep, std::ios::binary | std::ios::trunc);
+        std::ofstream f(keep_path, std::ios::binary | std::ios::trunc);
         f.write(reinterpret_cast<const char*>(input.data()),
                 static_cast<std::streamsize>(input.size()));
       }

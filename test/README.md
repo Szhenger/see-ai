@@ -103,10 +103,10 @@ python3 test/fuzz/make_seeds.py --check    # what test/tool/fuzz_seeds_test.py r
 
 A plan-version bump — or any change that makes the loader refuse yesterday's plans — turns `fuzz_replay_test` red, naming each stale seed and the first command above; regenerate in the commit that moved the format. Everything but the plans is byte-compared against the generator on every host; a plan is the compiler's output on the host that generated it, so it is held to being *accepted and executed* instead. `seeds/regressions/` holds inputs that once hung or crashed the harness, named by libFuzzer's prefix for the kind (`slow-unit-`, `crash-`, `oom-`, `timeout-`). One that is a plan is *derived* in `make_seeds.py` (`build_regressions`: a seed with a header field rewritten), so a plan-version bump regenerates it with everything else; add a reproducer there, with its fix.
 
-The suite's mutation pass is tunable from the environment — `SEEML_FUZZ_MUTATIONS` (inputs per seed, default 128), `SEEML_FUZZ_MUTATION_SEED`, and `SEEML_FUZZ_KEEP=path`, which writes each input before it runs so a crash or a hang leaves its reproducer on disk:
+The suite's mutation pass is tunable from the environment — `SEEML_FUZZ_MUTATIONS` (inputs per seed, default 128), `SEEML_FUZZ_MUTATION_SEED`, and `SEEML_FUZZ_KEEP=1`, which writes each input before it runs to `seeml_fuzz_keep.unit` in the system's temp directory, so a crash or a hang leaves its reproducer on disk (a switch, not a path: the suite opens no file the environment names):
 
 ```bash
-SEEML_FUZZ_MUTATIONS=5000 SEEML_FUZZ_KEEP=/tmp/unit ./build/seeml_fuzz_replay_test --filter=MutatedSeeds
+SEEML_FUZZ_MUTATIONS=5000 SEEML_FUZZ_KEEP=1 ./build/seeml_fuzz_replay_test --filter=MutatedSeeds
 ```
 
 The Python-plane tools have their own suite under `test/tool/`, run with `python3 -m unittest discover -s test/tool -p '*_test.py'` and needing nothing beyond the standard library (plus a C++ driver on `PATH` for the one test that assembles the packer's `.incbin` stub for real).
