@@ -51,6 +51,13 @@ struct DurableWriteStats {
 
 [[nodiscard]] std::expected<void, std::string> WriteFileDurable(
     const std::string& path, const uint8_t* data, size_t size);
+/// Removes the sidecars of `path` that dead writers left behind (CR4 #221):
+/// every `<path>.tmp.<pid>.<n>` whose process the OS says no longer exists.
+/// A kill between the sidecar's creation and its rename leaves one, a full
+/// write's size, and nothing else ever removes it. A live process's sidecar
+/// — this one's, or another writer's still writing — is never touched, nor
+/// is any name not of exactly that shape. Returns how many were removed.
+uint64_t CollectDeadSidecars(const std::string& path);
 /// Fault injection for the tests of WriteFileDurable's failure paths (CR4
 /// #145 F08): the next write it issues fails with `errno_value` (ENOSPC
 /// for a full disk); 0 disarms. Process-global, consumed once; tests only.

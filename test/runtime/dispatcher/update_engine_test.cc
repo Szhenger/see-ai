@@ -4,7 +4,10 @@
 // round-trips, and the merge-before-commit protocol.
 // =============================================================================
 
+#include <bit>
 #include <chrono>
+#include <cstddef>
+#include <expected>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +24,7 @@
 #include "source/plan/update_types.h"
 #include "runtime/pipeline/dataset.h"
 #include "runtime/storage/checkpoint.h"
+#include "runtime/storage/checkpoint_format.h"
 #include "runtime/storage/durable_io.h"
 #include "runtime/dispatcher/update_engine.h"
 #include "runtime/profiler/energy_meter.h"
@@ -1603,12 +1607,12 @@ TEST(UpdateEngineLr, AHorizonInsideTheCompiledWarmupIsRefused) {
     EXPECT_EQ(resumed.horizon(), 5u);
   }
   {
-    // A checkpoint that does not load: the engine starts fresh, and the
-    // fresh run's 2-step horizon is refused all the same.
-    const std::string broken = tmp.File("broken.ckpt");
-    std::ofstream(broken, std::ios::binary) << "not a checkpoint";
+    // A resume of a checkpoint path with no file there starts fresh, and the
+    // fresh run's 2-step horizon is refused all the same. (A file that is
+    // there and does not load is refused outright — CR4 #221's strict
+    // resume, UpdateEngineCheckpointInput.)
     TrainOptions bopt = Quiet();
-    bopt.checkpoint_path = broken;
+    bopt.checkpoint_path = tmp.File("absent.ckpt");
     bopt.resume = true;
     UpdateEngine engine;
     ASSERT_OK(engine.LoadFromMemory(plan.data(), plan.size()));
@@ -1706,10 +1710,12 @@ TEST(UpdateEngineLr, ResumeTrainsTheRemainderOnTheSameSchedule) {
   EXPECT_ERROR_CONTAINS(bad.Train(d7, 12, hopt), "ends before the run");
 }
 
-TEST(UpdateEngineLr, V3CheckpointsStillResume) {
-  // A pre-E8 (v3) checkpoint has no horizon: it resumes on the plan's
-  // compiled default, exactly as it always did. Reproduced by rewriting a
-  // v4 file: drop the 8-byte horizon and set the version word back.
+TEST(UpdateEngineLr, OlderCheckpointsAreRefusedByVersion) {
+  // A pre-v6 checkpoint cannot carry the header hash, the corpus and split
+  // binding or the train-loss windows (CR4 #221): it is refused, naming
+  // both versions, and the arena is untouched — never silently restarted
+  // over. Reproduced by rewriting a v6 file: drop the tails, set the
+  // version word back to 3.
   const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
   ASSERT_FALSE(plan.empty());
   ScopedTempDir tmp;
@@ -1724,19 +1730,21 @@ TEST(UpdateEngineLr, V3CheckpointsStillResume) {
                           std::istreambuf_iterator<char>());
   const uint32_t version3 = 3;
   std::memcpy(bytes.data() + 4, &version3, sizeof(version3));
-  bytes.erase(bytes.begin() + 40, bytes.begin() + 112);  // the v4 + v5 tails
+  bytes.erase(bytes.begin() + 40,
+              bytes.begin() +
+                  static_cast<ptrdiff_t>(seeml::update_rt::kCkptHeaderBytes));
   std::ofstream(v3, std::ios::binary)
       .write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   UpdateEngine old;
   ASSERT_OK(old.LoadFromMemory(plan.data(), plan.size()));
-  ASSERT_OK(old.LoadCheckpoint(v3));
-  EXPECT_EQ(old.step(), 4u);
-  EXPECT_EQ(old.horizon(), old.header().default_steps);
-  const std::vector<uint8_t> a(
-      engine.arena(), engine.arena() + engine.header().persistent_size);
-  const std::vector<uint8_t> b(old.arena(),
-                               old.arena() + old.header().persistent_size);
-  EXPECT_TRUE(a == b);
+  const std::vector<uint8_t> before(old.arena(),
+                                    old.arena() + old.header().persistent_size);
+  const auto r = old.LoadCheckpoint(v3);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_STR_CONTAINS(r.error(), "format v3; this runtime reads v6");
+  EXPECT_STR_CONTAINS(r.error(), "refused, not restarted over");
+  EXPECT_EQ(old.step(), 0u);
+  EXPECT_TRUE(std::equal(before.begin(), before.end(), old.arena()));
 }
 
 // =============================================================================
@@ -2283,6 +2291,443 @@ TEST(UpdateEngineTrain, StepSecondsTimeTheStepsAlone) {
   EXPECT_TRUE(report.step_seconds > 0.0);
   EXPECT_TRUE(report.eval_seconds > 0.0);
   EXPECT_TRUE(report.step_seconds + report.eval_seconds <= wall);
+}
+
+// =============================================================================
+// The checkpoint is an input (CR4 #221): the header hashed and bounded, the
+// run's corpus bound, the gate's losses re-measured, the train-loss windows
+// carried, and --resume strict.
+// =============================================================================
+
+namespace ckpt_input {
+
+using seeml::update_rt::CkptHeader;
+using seeml::update_rt::CkptHeaderV4Tail;
+using seeml::update_rt::CkptHeaderV5Tail;
+using seeml::update_rt::CkptHeaderV6Tail;
+using seeml::update_rt::kCkptHeaderBytes;
+
+constexpr size_t kV5At = sizeof(CkptHeader) + sizeof(CkptHeaderV4Tail);
+constexpr size_t kV6At = kV5At + sizeof(CkptHeaderV5Tail);
+constexpr size_t kStepAt = offsetof(CkptHeader, step);
+constexpr size_t kVersionAt = offsetof(CkptHeader, version);
+constexpr size_t kValInitialAt =
+    kV5At + offsetof(CkptHeaderV5Tail, val_initial_loss_bits);
+constexpr size_t kBestLossAt =
+    kV5At + offsetof(CkptHeaderV5Tail, best_loss_bits);
+constexpr size_t kHeaderHashAt =
+    kV6At + offsetof(CkptHeaderV6Tail, header_hash);
+
+std::vector<uint8_t> ReadAll(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+}
+
+void WriteAll(const std::string& path, const std::vector<uint8_t>& bytes) {
+  std::ofstream(path, std::ios::binary | std::ios::trunc)
+      .write(reinterpret_cast<const char*>(bytes.data()),
+             static_cast<std::streamsize>(bytes.size()));
+}
+
+/// Recomputes the header's integrity hash after a deliberate rewrite: a
+/// forgery the hash cannot see, so what refuses it is a bound or the
+/// re-measurement (the hash is integrity, not authenticity — no key).
+void Reseal(std::vector<uint8_t>& raw) {
+  std::memset(raw.data() + kHeaderHashAt, 0, 8);
+  const uint64_t h = ContentHash64(raw.data(), kCkptHeaderBytes);
+  std::memcpy(raw.data() + kHeaderHashAt, &h, 8);
+}
+
+template <class T>
+std::vector<uint8_t> Forged(std::vector<uint8_t> raw, size_t at, T value) {
+  std::memcpy(raw.data() + at, &value, sizeof(value));
+  Reseal(raw);
+  return raw;
+}
+
+size_t FilesIn(const std::string& dir) {
+  size_t n = 0;
+  for (auto it = std::filesystem::directory_iterator(dir);
+       it != std::filesystem::directory_iterator(); ++it)
+    ++n;
+  return n;
+}
+
+Dataset Shuffled(uint64_t content_hash = 0) {
+  auto d = MakeClassificationData(64, kInDim, 9);
+  if (!d) std::abort();
+  if (content_hash) d->set_content_hash(content_hash);
+  d->EnableShuffle(5);
+  return std::move(*d);
+}
+
+}  // namespace ckpt_input
+
+TEST(UpdateEngineCheckpointInput, AForgedGateLossIsRemeasuredAndRefused) {
+  // Reproduction 1 of #221: one forged float in the header flipped the gate.
+  // Resealed, the hash cannot see it — the re-measurement does: the source
+  // model's loss and the best state's are scored again, through the path a
+  // fresh run's first evaluation takes, and must be the stored bits.
+  using namespace best_state;
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("gate.ckpt");
+  TrainOptions o = Quiet();
+  o.eval_every = 2;
+  {
+    UpdateEngine first;
+    ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = TrainSet(), v = ValSet();
+    TrainOptions cut = o;
+    cut.validation = &v;
+    cut.checkpoint_path = ckpt;
+    cut.checkpoint_every = 1;
+    uint64_t polls = 0;
+    cut.should_stop = [&] { return polls++ == 3; };
+    ASSERT_OK(first.Train(d, 11, cut));
+  }
+  const std::vector<uint8_t> honest = ReadAll(ckpt);
+  bool untouched = false;
+  auto resume = [&](const std::vector<uint8_t>& file)
+      -> std::expected<seeml::update_rt::TrainReport, std::string> {
+    untouched = false;
+    WriteAll(ckpt, file);
+    UpdateEngine e;
+    if (auto r = e.LoadFromMemory(plan.data(), plan.size()); !r)
+      return std::unexpected(r.error());
+    const std::vector<uint8_t> before = Persistent(e);
+    Dataset d = TrainSet(), v = ValSet();
+    TrainOptions ropt = o;
+    ropt.validation = &v;
+    ropt.checkpoint_path = ckpt;
+    ropt.checkpoint_every = 1;
+    ropt.resume = true;
+    auto r = e.Train(d, 0, ropt);
+    // A refusal is the call's only effect: the engine and the file are as
+    // they were.
+    if (!r)
+      untouched =
+          e.step() == 0 && Persistent(e) == before && ReadAll(ckpt) == file;
+    return r;
+  };
+  const auto forged_source = resume(Forged(honest, kValInitialAt, 1.0e6f));
+  ASSERT_FALSE(forged_source.has_value());
+  EXPECT_TRUE(untouched);
+  EXPECT_STR_CONTAINS(forged_source.error(), "field 'val_initial_loss'");
+  EXPECT_STR_CONTAINS(forged_source.error(), "re-measured");
+  const auto forged_best = resume(Forged(honest, kBestLossAt, 1.0e-6f));
+  ASSERT_FALSE(forged_best.has_value());
+  EXPECT_TRUE(untouched);
+  EXPECT_STR_CONTAINS(forged_best.error(), "field 'best_loss'");
+  // The honest file resumes, re-measuring both — no tolerance needed: the
+  // bits are the stored ones.
+  ASSERT_OK_AND_ASSIGN(auto rest, resume(honest));
+  EXPECT_EQ(rest.resumed_step, 3u);
+  EXPECT_EQ(rest.resume_evaluations, 2u);
+}
+
+TEST(UpdateEngineCheckpointInput, AChangedStepIsRefusedByItsBounds) {
+  // Reproduction 1 of #221, the step: a changed step loaded silently and
+  // trained at the wrong feeder position and schedule. Unsealed, the
+  // header hash refuses it; resealed, the bounds the other fields set do.
+  using namespace best_state;
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("step.ckpt");
+  {
+    UpdateEngine first;
+    ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = TrainSet(), v = ValSet();
+    TrainOptions cut = Quiet();
+    cut.validation = &v;
+    cut.eval_every = 2;
+    cut.checkpoint_path = ckpt;
+    cut.checkpoint_every = 1;
+    uint64_t polls = 0;
+    cut.should_stop = [&] { return polls++ == 3; };
+    ASSERT_OK(first.Train(d, 11, cut));
+  }
+  const std::vector<uint8_t> honest = ReadAll(ckpt);
+  auto refused = [&](const std::vector<uint8_t>& file) {
+    WriteAll(ckpt, file);
+    UpdateEngine e;
+    if (!e.LoadFromMemory(plan.data(), plan.size())) return std::string();
+    Dataset d = TrainSet(), v = ValSet();
+    TrainOptions ropt = Quiet();
+    ropt.validation = &v;
+    ropt.eval_every = 2;
+    ropt.checkpoint_path = ckpt;
+    ropt.resume = true;
+    auto r = e.Train(d, 0, ropt);
+    if (ReadAll(ckpt) != file) return std::string("the file changed");
+    return r ? std::string("resumed") : r.error();
+  };
+  std::vector<uint8_t> unsealed = honest;
+  unsealed[kStepAt] ^= 0x01;
+  EXPECT_STR_CONTAINS(refused(unsealed), "integrity hash");
+  // Step 2: the best state (step 2) has a payload of its own, which a best
+  // at the main payload's step never carries. Step 1: earlier than the best.
+  EXPECT_STR_CONTAINS(refused(Forged(honest, kStepAt, uint64_t{2})),
+                      "field 'best_step'");
+  EXPECT_STR_CONTAINS(refused(Forged(honest, kStepAt, uint64_t{1})),
+                      "field 'best_step'");
+  // Past the run's horizon (11).
+  EXPECT_STR_CONTAINS(refused(Forged(honest, kStepAt, uint64_t{12})),
+                      "field 'step'");
+}
+
+TEST(UpdateEngineCheckpointInput, AnotherCorpusIsRefusedByName) {
+  // Reproduction 2 of #221: corpus B with corpus A's record count resumed
+  // A's checkpoint. Without a validation split nothing is re-measured, so
+  // the corpus hash is the only thing that can tell them apart.
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("corpus.ckpt");
+  {
+    UpdateEngine first;
+    ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+    Dataset a = Shuffled(0xA);
+    TrainOptions cut = Quiet();
+    cut.checkpoint_path = ckpt;
+    cut.checkpoint_every = 1;
+    uint64_t polls = 0;
+    cut.should_stop = [&] { return polls++ == 4; };
+    ASSERT_OK(first.Train(a, 20, cut));
+  }
+  const std::vector<uint8_t> file = ReadAll(ckpt);
+  TrainOptions ropt = Quiet();
+  ropt.checkpoint_path = ckpt;
+  ropt.resume = true;
+  UpdateEngine e;
+  ASSERT_OK(e.LoadFromMemory(plan.data(), plan.size()));
+  Dataset b = Shuffled(0xB);
+  EXPECT_ERROR_CONTAINS(e.Train(b, 0, ropt), "field 'corpus_hash'");
+  EXPECT_EQ(e.step(), 0u);
+  EXPECT_TRUE(ReadAll(ckpt) == file);
+  Dataset a = Shuffled(0xA);
+  ASSERT_OK_AND_ASSIGN(auto rest, e.Train(a, 0, ropt));
+  EXPECT_EQ(rest.steps, 16u);
+}
+
+TEST(UpdateEngineCheckpointInput,
+     WithoutASplitAResumeReachesTheWholeRunsVerdict) {
+  // Reproduction 3 of #221: the train-loss windows were per call, so a
+  // resume from the final checkpoint gated on "0 steps" and one from step
+  // 190 of 200 on the last ten steps alone. The windows are the run's and
+  // ride in every checkpoint: from ANY stop — inside the first window, in
+  // the middle, inside the last, and the final checkpoint itself — the
+  // resume's verdict and committed bytes are the uninterrupted run's.
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
+  ASSERT_FALSE(plan.empty());
+  constexpr uint64_t kSteps = 30;  // windows of 6
+  UpdateEngine straight;
+  ASSERT_OK(straight.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d0 = Shuffled();
+  ASSERT_OK_AND_ASSIGN(auto whole, straight.Train(d0, kSteps, Quiet()));
+  const std::vector<uint8_t> want(
+      straight.arena(), straight.arena() + straight.header().persistent_size);
+  // Not vacuous: the run's two windows differ, so a resume that gated on
+  // the wrong window would disagree. (Whether 30 steps inside the default
+  // warmup IMPROVE the loss is the platform's libm's to say — on Linux
+  // they did not; the property here is agreement, either way.)
+  ASSERT_NE(std::bit_cast<uint32_t>(whole.initial_avg_loss),
+            std::bit_cast<uint32_t>(whole.final_avg_loss));
+  for (const uint64_t stop : {uint64_t{1}, uint64_t{4}, uint64_t{15},
+                              uint64_t{27}, uint64_t{29}, kSteps}) {
+    ScopedTempDir tmp;
+    const std::string ckpt = tmp.File("w.ckpt");
+    {
+      UpdateEngine first;
+      ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+      Dataset d = Shuffled();
+      TrainOptions cut = Quiet();
+      cut.checkpoint_path = ckpt;
+      cut.checkpoint_every = 1;
+      uint64_t polls = 0;
+      cut.should_stop = [&] { return polls++ == stop; };
+      ASSERT_OK(first.Train(d, kSteps, cut));
+      ASSERT_EQ(first.step(), stop);
+    }
+    UpdateEngine resumed;
+    ASSERT_OK(resumed.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = Shuffled();
+    TrainOptions ropt = Quiet();
+    ropt.checkpoint_path = ckpt;
+    ropt.resume = true;
+    ASSERT_OK_AND_ASSIGN(auto rest, resumed.Train(d, 0, ropt));
+    EXPECT_EQ(rest.steps + stop, kSteps);
+    EXPECT_EQ(std::bit_cast<uint32_t>(rest.initial_avg_loss),
+              std::bit_cast<uint32_t>(whole.initial_avg_loss));
+    EXPECT_EQ(std::bit_cast<uint32_t>(rest.final_avg_loss),
+              std::bit_cast<uint32_t>(whole.final_avg_loss));
+    for (const float margin : {0.0f, 0.1f, 0.5f, 0.9f})
+      EXPECT_EQ(rest.ImprovedBy(margin), whole.ImprovedBy(margin));
+    EXPECT_TRUE(std::equal(want.begin(), want.end(), resumed.arena()));
+  }
+}
+
+TEST(UpdateEngineCheckpointInput, AStrictResumeRefusesAndLeavesTheFile) {
+  // #221 item 4: a truncated, bit-flipped, foreign-plan or older-version
+  // checkpoint under --resume was "no checkpoint resumed" and a fresh
+  // full-budget run that then overwrote it. Each is now a refusal naming
+  // its reason; the file is byte for byte what it was, no sidecar appears,
+  // and the engine has not moved. (No file at all is still a fresh run.)
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
+  const std::vector<uint8_t> other_plan = CompilePlan(BaseConfig(kBatch), 2);
+  ASSERT_FALSE(plan.empty());
+  ASSERT_FALSE(other_plan.empty());
+  ScopedTempDir tmp;
+  const std::string good = tmp.File("good.ckpt");
+  const std::string foreign = tmp.File("foreign.ckpt");
+  for (const auto* p : {&plan, &other_plan}) {
+    UpdateEngine first;
+    ASSERT_OK(first.LoadFromMemory(p->data(), p->size()));
+    Dataset d = Shuffled();
+    TrainOptions cut = Quiet();
+    cut.checkpoint_path = p == &plan ? good : foreign;
+    cut.checkpoint_every = 1;
+    uint64_t polls = 0;
+    cut.should_stop = [&] { return polls++ == 6; };
+    ASSERT_OK(first.Train(d, 20, cut));
+  }
+  const std::vector<uint8_t> raw = ReadAll(good);
+  // A whole checkpoint is past its header; said first, so the edits below
+  // index a non-empty file (GCC's -Warray-bounds cannot see it otherwise).
+  ASSERT_TRUE(raw.size() > kCkptHeaderBytes);
+  const size_t last = raw.size() - 1;
+  const std::vector<uint8_t> truncated(
+      raw.begin(), raw.begin() + static_cast<ptrdiff_t>(last));
+  std::vector<uint8_t> payload_flip = raw;
+  payload_flip[last] ^= 0x01;
+  // The step's low bit: 6 -> 7, inside the horizon and past every window
+  // count — a corruption only the header hash can see.
+  std::vector<uint8_t> header_flip = raw;
+  header_flip[kStepAt] ^= 0x01;
+  // A v5 file: the version word back, the v6 tail gone.
+  std::vector<uint8_t> v5 = raw;
+  const uint32_t five = 5;
+  std::memcpy(v5.data() + kVersionAt, &five, sizeof(five));
+  v5.erase(v5.begin() + static_cast<ptrdiff_t>(kV6At),
+           v5.begin() + static_cast<ptrdiff_t>(kCkptHeaderBytes));
+  struct Case {
+    std::vector<uint8_t> bytes;
+    std::vector<const char*> says;
+  };
+  const Case cases[] = {
+      {truncated, {"truncated checkpoint"}},
+      {payload_flip, {"payload is corrupt"}},
+      {header_flip, {"integrity hash"}},
+      {ReadAll(foreign), {"different plan"}},
+      {v5, {"format v5", "reads v6"}},
+  };
+  for (const Case& c : cases) {
+    const std::string path = tmp.File("case.ckpt");
+    WriteAll(path, c.bytes);
+    const size_t files = FilesIn(tmp.path());
+    UpdateEngine e;
+    ASSERT_OK(e.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = Shuffled();
+    TrainOptions ropt = Quiet();
+    ropt.checkpoint_path = path;
+    ropt.checkpoint_every = 1;
+    ropt.resume = true;
+    const auto r = e.Train(d, 0, ropt);
+    ASSERT_FALSE(r.has_value());
+    for (const char* says : c.says) EXPECT_STR_CONTAINS(r.error(), says);
+    EXPECT_EQ(e.step(), 0u);
+    EXPECT_TRUE(ReadAll(path) == c.bytes);
+    EXPECT_EQ(FilesIn(tmp.path()), files);
+  }
+  // No file there: nothing to resume, a fresh run.
+  UpdateEngine fresh;
+  ASSERT_OK(fresh.LoadFromMemory(plan.data(), plan.size()));
+  Dataset d = Shuffled();
+  TrainOptions ropt = Quiet();
+  ropt.checkpoint_path = tmp.File("absent.ckpt");
+  ropt.resume = true;
+  ASSERT_OK_AND_ASSIGN(auto run, fresh.Train(d, 20, ropt));
+  EXPECT_EQ(run.resumed_step, 0u);
+  EXPECT_EQ(run.steps, 20u);
+}
+
+TEST(UpdateEngineCheckpointInput,
+     TheRemeasurementLeavesTheSegmentBitIdentical) {
+  // The re-measurement sets the persistent segment aside, scores the plan's
+  // initial image and the best payload in the arena, and puts the restored
+  // segment back. Resumed from the FINAL checkpoint of a tracked run with
+  // nothing left to train and no best-state restore after (eval_every 0),
+  // the segment the call ends with is the checkpoint's main payload, byte
+  // for byte — after both passes ran.
+  using namespace best_state;
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = OverfitPlan();
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("final.ckpt");
+  {
+    UpdateEngine first;
+    ASSERT_OK(first.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = TrainSet(), v = ValSet();
+    TrainOptions o = Quiet();
+    o.validation = &v;
+    o.eval_every = 2;
+    o.checkpoint_path = ckpt;
+    o.checkpoint_every = 1;
+    ASSERT_OK_AND_ASSIGN(auto whole, first.Train(d, 11, o));
+    ASSERT_NE(whole.best_step, 11u);  // the best is a payload of its own
+  }
+  const std::vector<uint8_t> raw = ReadAll(ckpt);
+  UpdateEngine resumed;
+  ASSERT_OK(resumed.LoadFromMemory(plan.data(), plan.size()));
+  const size_t bytes = resumed.header().persistent_size;
+  ASSERT_GE(raw.size(), kCkptHeaderBytes + 2 * bytes);
+  Dataset d = TrainSet(), v = ValSet();
+  TrainOptions ropt = Quiet();
+  ropt.validation = &v;
+  ropt.eval_every = 0;
+  ropt.checkpoint_path = ckpt;
+  ropt.resume = true;
+  ASSERT_OK_AND_ASSIGN(auto rest, resumed.Train(d, 0, ropt));
+  EXPECT_EQ(rest.steps, 0u);
+  EXPECT_EQ(rest.resume_evaluations, 2u);
+  EXPECT_TRUE(std::equal(raw.begin() + kCkptHeaderBytes,
+                         raw.begin() + kCkptHeaderBytes + bytes,
+                         resumed.arena()));
+  EXPECT_TRUE(ReadAll(ckpt) == raw);
+}
+
+TEST(UpdateEngineCheckpointInput, AStopClaimsACheckpointOnlyWhenOneWasWritten) {
+  // #221 item 5: a stop before the first step said "'x.ck' holds step 0;
+  // rerun with --resume" with no file written. The report now says whether
+  // the file holds the state the run stopped at; the runner's stop line
+  // reads it.
+  using namespace ckpt_input;
+  const std::vector<uint8_t> plan = CompilePlan(BaseConfig(kBatch));
+  ASSERT_FALSE(plan.empty());
+  ScopedTempDir tmp;
+  const std::string ckpt = tmp.File("stop.ckpt");
+  for (const uint64_t stop : {uint64_t{0}, uint64_t{3}}) {
+    UpdateEngine e;
+    ASSERT_OK(e.LoadFromMemory(plan.data(), plan.size()));
+    Dataset d = Shuffled();
+    TrainOptions o = Quiet();
+    o.checkpoint_path = ckpt;
+    uint64_t polls = 0;
+    o.should_stop = [&] { return polls++ == stop; };
+    ASSERT_OK_AND_ASSIGN(auto cut, e.Train(d, 20, o));
+    EXPECT_TRUE(cut.stopped_early);
+    EXPECT_EQ(cut.stop_checkpointed, stop > 0);
+    EXPECT_EQ(std::filesystem::exists(ckpt), stop > 0);
+  }
 }
 
 }  // namespace

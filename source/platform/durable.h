@@ -7,9 +7,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #ifndef _WIN32
+#include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <unistd.h>
 #else
@@ -194,6 +197,53 @@ inline std::string ParentDirectory(const std::string& path) {
 #else
   (void)path;
   return false;
+#endif
+}
+
+/// The names of the entries of directory `dir`, "." and ".." left out;
+/// empty when the directory cannot be read (a caller sweeping leftovers
+/// then simply finds none).
+inline std::vector<std::string> ListDirectory(const std::string& dir) {
+  std::vector<std::string> names;
+#ifndef _WIN32
+  if (DIR* d = ::opendir(dir.c_str())) {
+    while (const dirent* e = ::readdir(d)) {
+      const std::string name = e->d_name;
+      if (name != "." && name != "..") names.push_back(name);
+    }
+    ::closedir(d);
+  }
+#else
+  WIN32_FIND_DATAA found;
+  HANDLE h = ::FindFirstFileA((dir + "\\*").c_str(), &found);
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      const std::string name = found.cFileName;
+      if (name != "." && name != "..") names.push_back(name);
+    } while (::FindNextFileA(h, &found));
+    ::FindClose(h);
+  }
+#endif
+  return names;
+}
+
+/// Whether process `pid` may be running. False only when the OS says no
+/// such process exists: a caller collecting a dead writer's leftovers must
+/// never take a live writer's, so every doubt (no permission to signal it,
+/// an unexpected error) answers true.
+inline bool ProcessMayBeAlive(uint64_t pid) {
+#ifndef _WIN32
+  if (pid == 0 || pid > static_cast<uint64_t>(INT32_MAX)) return true;
+  return ::kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH;
+#else
+  if (pid == 0 || pid > 0xFFFFFFFFull) return true;
+  HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                           static_cast<DWORD>(pid));
+  if (!h) return ::GetLastError() != ERROR_INVALID_PARAMETER;
+  DWORD code = 0;
+  const bool alive = !::GetExitCodeProcess(h, &code) || code == STILL_ACTIVE;
+  ::CloseHandle(h);
+  return alive;
 #endif
 }
 

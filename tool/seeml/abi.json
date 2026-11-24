@@ -105,8 +105,10 @@
       "arithmetic": {"exact": 0, "reordered": 1}}
   },
   "sekp": {
-    "magic": 1347110227, "version": 5, "oldest_readable": 3,
-    "flags": {"has_val_initial": 1, "has_accuracy": 2, "has_best_payload": 4, "has_best": 8, "has_binding": 16},
+    "magic": 1347110227, "version": 6, "oldest_readable": 6,
+    "flags": {"has_val_initial": 1, "has_accuracy": 2, "has_best_payload": 4, "has_best": 8, "has_binding": 16, "has_windows": 32},
+    "header_bytes": 240, "window_max": 20,
+    "backends": {"unstated": 0, "cpu": 1, "metal": 2},
     "structs": {
       "CkptHeader": {"size": 40, "fields": [
         {"name": "magic", "offset": 0, "size": 4},
@@ -131,6 +133,16 @@
         {"name": "best_loss_bits", "offset": 52, "size": 4},
         {"name": "best_accuracy_bits", "offset": 56, "size": 4},
         {"name": "stale_evals", "offset": 60, "size": 4}
+      ]},
+      "CkptHeaderV6Tail": {"size": 128, "fields": [
+        {"name": "corpus_hash", "offset": 0, "size": 8},
+        {"name": "split_hash", "offset": 8, "size": 8},
+        {"name": "window_count", "offset": 16, "size": 8},
+        {"name": "first_window_sum_bits", "offset": 24, "size": 8},
+        {"name": "backend", "offset": 32, "size": 4},
+        {"name": "window", "offset": 36, "size": 4},
+        {"name": "last_losses_bits", "offset": 40, "size": 80},
+        {"name": "header_hash", "offset": 120, "size": 8}
       ]}
     }
   },
