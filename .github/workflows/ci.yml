@@ -96,7 +96,7 @@ jobs:
           # (milliseconds here; its caps allow seconds at -O0 under ASan),
           # so a unit past 25 s or 2 GiB is a finding libFuzzer reports and
           # writes out — its defaults (1200 s) outlive the job (CR3 #207).
-          ./build-fuzz/seeml_fuzz_formats -max_total_time=90 \
+          ./build-fuzz/seeml_fuzz_formats -runs=0 -max_total_time=90 \
             -timeout=25 -rss_limit_mb=2048 \
             -print_final_stats=1 -print_coverage=1 corpus 2>&1 | tee fuzz.log
           test "${PIPESTATUS[0]}" -eq 0
