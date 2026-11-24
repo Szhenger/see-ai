@@ -128,9 +128,11 @@ rests on:
   reads zero.
 - **#208, a planted mutation.** With the destination bounds rule of
   `kAddBias` removed from the validator, ninety seconds of libFuzzer
-  passed three times (28,179, 25,772 and 25,923 units) and found it once,
-  at 197 units (run 45446317062: AddressSanitizer, SEGV in
-  `kernels::AddBias`). That is the honest size of a 90-second campaign
+  passed on the seed corpus alone (28,179 units) and with a first form of
+  the mutator below (25,772); with its final form it passed once (25,923)
+  and found the rule once, at 197 units (run 45446317062:
+  AddressSanitizer, SEGV in `kernels::AddBias`). Four runs, one find:
+  that is the honest size of a 90-second campaign
   against one opcode's rule: the corpus is a thousand units within the
   run and the plan seeds are fourteen of them. Two things were built
   from it. `test/fuzz/plan_mutate.h` is a plan-aware edit — one operand
@@ -145,10 +147,13 @@ rests on:
   sleeps 60 s) ended the nightly's fuzz job **failed** at libFuzzer's own
   25 s limit, with `timeout-8b021012…` and the log's tail uploaded and
   the corpus saved (run 45442934791).
-- **#207, the lost input.** Recovered: `docs/benchmarks.md`, "The
-  v1.0.0.B close". The candidate of 2026-11-20 is the cause —
-  `grad_accum_steps` = 1,090,519,040 in a plan the fuzzer grew from
-  nothing — and #223's bound refuses it at load.
+- **#207, the lost input.** The hang is reproduced in the nightly's own
+  harness over its cached corpus, and the unit libFuzzer wrote out is
+  kept (`docs/benchmarks.md`, "The v1.0.0.B close"). It is the candidate
+  of 2026-11-20 — `grad_accum_steps` = 1,090,519,040 in a plan the fuzzer
+  grew from nothing — and #223's bound refuses it at load. That the
+  cancelled nights held these very bytes cannot be shown: they uploaded
+  nothing.
 
 ## Acceptance
 

@@ -182,10 +182,18 @@ The macOS cell earns its keep twice: it also compiles the Objective-C++
 Metal GPU harness (`runtime/executor/metal_gemm.mm`), which exists only
 on Apple platforms. One subtlety worth internalizing: GitHub's macOS
 runners are virtual machines that may expose **no Metal device**. The
-test suite was written for exactly this: with no device it prints a note
-and passes vacuously. A check that cannot run *must* say so and step
+test suite was written for exactly this: with no device a Metal test is
+printed and counted as `[  SKIPPED ]` with its reason, apart from the
+passes (`SKIP()`, S8 #154). A check that cannot run *must* say so and step
 aside — a skipped check that pretends to be a passed check is how CI
 lies to you.
+
+Two steps here hold the house style (`STYLE.md`) rather than behavior.
+The clang cell runs `clang-format-19 --dry-run -Werror` over every
+tracked `.cc`, `.h` and `.mm`: the formatter is the rule, and it must be
+release 19, the one the tree was laid out with. And every cell runs the
+exit-code test of the six built tools — 0 done, 1 failed, 2 a bad command
+line — with no skip allowed, since here all six exist.
 
 ### 3.2 `determinism` — same bits at every width
 
@@ -269,12 +277,28 @@ seed corpus (`test/fuzz/seeds/`) through the harness's entry point in
 plan is not accepted and executed, a compile does not complete, or a
 parser is not reached.
 
+The job's own gate reads the fuzzer's coverage report (CR3 #208): ten
+named functions — the execution of an accepted plan, the validator, the
+train loop, the dispatch, a completed compile and each text-facing
+parser — must show non-zero hits, or the job fails. It starts from the
+seed corpus, so the first unit already runs a plan.
+
 Per pull request this job runs **90 seconds** of fuzzing. Ninety seconds
 is not a security audit — it is a smoke test that catches *shallow*
 regressions (an unguarded length field, a reordered bounds check) while
 staying affordable on every diff. Depth is the nightly's job (Part 4).
-If it ever fails, the crashing input itself is uploaded as an artifact,
-so the counterexample lands in your hands, reproducible.
+If it ever fails — or is cancelled — the input is uploaded as an artifact
+under whatever name libFuzzer gave the finding (`crash-`, `timeout-`,
+`oom-`, `slow-unit-`), with the log's tail, so the counterexample lands in
+your hands, reproducible.
+
+Ninety seconds is also not enough to find one opcode's missing bounds
+rule: with one removed on purpose, the fuzzer found it in one run of
+four. So the job ends with an **operand sweep**: the replay suite's
+plan-aware edit (`test/fuzz/plan_mutate.h` — one operand field of one
+instruction pushed to a boundary or past it) made 57,344 times over the
+plan seeds, in this job's sanitizer build. On the planted rule that step
+fails every time.
 
 ### 3.5 `e2e-package` — the product contract, literally
 
@@ -395,7 +419,12 @@ sampled. At ~10× slowdown, it's a nightly.
 **`fuzz-extended`** is the same fuzzer as 3.4 with a budget of fifteen
 minutes — and one crucial upgrade: the **corpus** (the set of
 interesting inputs discovered so far) is cached between runs via
-`actions/cache`. Tonight's fuzzing starts where last night's stopped.
+`actions/cache`. Tonight's fuzzing starts where last night's stopped —
+and from the checked-in seeds, every night. The corpus is saved by a step
+of its own that runs whether the job passed, failed or was cancelled, and
+the fuzz step has a time limit below the job's with a 25-second limit a
+unit: a slow unit ends the job **failed**, with the unit uploaded, instead
+of cancelled with nothing (five nights were lost that way, #207).
 Coverage compounds. This is the difference between poking at a lock for
 90 seconds and hiring someone to pick it a little further every night.
 

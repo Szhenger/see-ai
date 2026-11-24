@@ -360,11 +360,12 @@ jobs:
           gate "the recipe file parser" 'seeml::update::recipe::ParseRecipeFile'
           gate "the export report reader" 'seeml::update::ReadExportReport'
           test "$missed" -eq 0
-      # CR3 #208, acceptance 2. Ninety seconds of libFuzzer do not find one
-      # opcode's missing bounds rule: with kAddBias's destination rule
-      # removed, three runs of the step above passed (25,772-28,179 units
-      # each, 2026-11-24) — the corpus is a thousand units by then, and the
-      # plan seeds are fourteen of them. The replay suite's operand pass is
+      # CR3 #208, acceptance 2. Ninety seconds of libFuzzer do not reliably
+      # find one opcode's missing bounds rule: with kAddBias's destination
+      # rule removed, the step above found it in one run of four
+      # (2026-11-24; one of two with the plan-aware mutator as it is now) —
+      # the corpus is a thousand units within the run, and the plan seeds
+      # are fourteen of them. The replay suite's operand pass is
       # the same plan-aware edit (test/fuzz/plan_mutate.h) made 57,344
       # times over those fourteen seeds, in this job's sanitizer build: the
       # planted rule ends it in an AddressSanitizer report.

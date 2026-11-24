@@ -400,19 +400,21 @@ def build_regressions(seeds):
         # away: accepted, and nothing run.
         "slow-unit-grad-accum-in-contract": poke_header(
             seeds["plan-mlp-accum"], "grad_accum_steps", 2 + (1 << 15)),
-        # CR3 #207, acceptance 3: the nightly's own input, recovered on
-        # 2026-11-24 by running main 043112d's harness over its cached
-        # corpus with a 120 s unit limit (it was at 164 s when libFuzzer
-        # wrote it out; the nightlies were cancelled with it in flight). A
-        # 325-byte plan the fuzzer grew from nothing — a v24 header whose
-        # two instruction streams lie inside the header itself, a kNop and
-        # a kSqNormAccum over 786,432 floats — with grad_accum_steps =
-        # 0x41000000: 1,090,519,040 passes of the train program for one
-        # step. The candidate cause of 2026-11-20, confirmed. Since #223
-        # the load contract refuses it by name. Verbatim but for the
-        # selector byte: 137 selected the plan arm of the four-arm harness
-        # (137 % 4), and is written here as the nine-arm one's (1). Not
-        # derived from a seed: it is evidence, kept as it was found.
+        # CR3 #207, acceptance 3: the nightly's hang, reproduced on
+        # 2026-11-24 by running main 043112d's harness over the nightly's
+        # cached corpus (3,589 units, cache key fuzz-corpus-44918953982)
+        # with a 120 s unit limit: libFuzzer wrote this unit out at 164 s,
+        # two mutations from a unit of that corpus. A 325-byte plan — a v24
+        # header whose two instruction streams lie inside the header
+        # itself, a kNop and a kSqNormAccum over 786,432 floats — with
+        # grad_accum_steps = 0x41000000: 1,090,519,040 passes of the train
+        # program for one step. It is the candidate cause of 2026-11-20
+        # reproduced where the nightlies hung; whether the cancelled nights
+        # held these very bytes cannot be known (they uploaded nothing).
+        # Since #223 the load contract refuses it by name. Verbatim but for
+        # the selector byte: 137 selected the plan arm of the four-arm
+        # harness (137 % 4), and is written here as the nine-arm one's (1).
+        # Not derived from a seed: it is evidence, kept as it was found.
         "timeout-nightly-grad-accum": bytes.fromhex(
             "01534545551800000000005a0000000000000000000000000000100000000000"
             "000000100000000000000000000000ffffff1000000000000000000000000000"

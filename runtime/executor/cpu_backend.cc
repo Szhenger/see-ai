@@ -252,6 +252,17 @@ class CpuBackend final : public ExecutorBackend {
   [[nodiscard]] std::expected<void, std::string> ExecuteAttention(
       const up::UpdateInstruction& ins);
 
+  /// A family function handed an opcode it has no case for. Execute's own
+  /// switch has no default, so -Wswitch holds it to the whole ISA; a family's
+  /// must have one, and an opcode routed to the wrong family is this error,
+  /// never a skipped instruction.
+  static std::unexpected<std::string> NotInFamily(
+      const up::UpdateInstruction& ins, const char* family) {
+    return std::unexpected("opcode " + std::to_string(ins.opcode) +
+                           " was routed to the CPU backend's " + family +
+                           " family, which has no kernel for it");
+  }
+
   const float* ReadPtr(uint64_t ref) const {
     const uint64_t offset = up::RefOffset(ref);
     if (up::IsRodataRef(ref))
@@ -399,7 +410,7 @@ std::expected<void, std::string> CpuBackend::ExecuteGemm(
                     policy_.gemm_tiles);
       break;
     default:
-      break;
+      return NotInFamily(ins, "Gemm");
   }
   return {};
 }
@@ -469,7 +480,7 @@ std::expected<void, std::string> CpuBackend::ExecuteMap(
       break;
     }
     default:
-      break;
+      return NotInFamily(ins, "Map");
   }
   return {};
 }
@@ -501,7 +512,7 @@ std::expected<void, std::string> CpuBackend::ExecuteNorm(
                     up::HighWord(ins.out[1]), up::LowWord(ins.out[1]));
       break;
     default:
-      break;
+      return NotInFamily(ins, "Norm");
   }
   return {};
 }
@@ -555,7 +566,7 @@ std::expected<void, std::string> CpuBackend::ExecuteLoss(
                       KlTemperatureOf(ins.out[1]), KlLossScaleOf(ins.out[1]));
       break;
     default:
-      break;
+      return NotInFamily(ins, "Loss");
   }
   return {};
 }
@@ -620,7 +631,7 @@ std::expected<void, std::string> CpuBackend::ExecuteOptimizer(
       }
       break;
     default:
-      break;
+      return NotInFamily(ins, "Optimizer");
   }
   return {};
 }
@@ -653,7 +664,7 @@ std::expected<void, std::string> CpuBackend::ExecutePosition(
                   up::LowWord(ins.out[1]));
       break;
     default:
-      break;
+      return NotInFamily(ins, "Position");
   }
   return {};
 }
@@ -742,7 +753,7 @@ std::expected<void, std::string> CpuBackend::ExecuteAttention(
       break;
     }
     default:
-      break;
+      return NotInFamily(ins, "Attention");
   }
   return {};
 }

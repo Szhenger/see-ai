@@ -593,9 +593,10 @@ TEST(FuzzReplay, EveryRegressionInputRunsToTheEnd) {
       EXPECT_EQ(r.train_steps + r.train_refused, uint64_t{0});
       EXPECT_EQ(r.evals + r.merges, uint64_t{0});
     }
-    // timeout-nightly-grad-accum is the nightly's own input (CR3 #207),
-    // recovered 2026-11-24: a 325-byte plan asking for 1,090,519,040
-    // micro-batches a step. The load contract's bound (#223) refuses it.
+    // timeout-nightly-grad-accum is the hang reproduced in the nightly's
+    // own harness over its cached corpus (CR3 #207, 2026-11-24): a 325-byte
+    // plan asking for 1,090,519,040 micro-batches a step. The load
+    // contract's bound (#223) refuses it.
     if (name == "timeout-nightly-grad-accum") {
       EXPECT_EQ(r.plans_accepted, uint64_t{0});
       EXPECT_EQ(r.plans_refused, uint64_t{1});

@@ -1789,11 +1789,15 @@ and ≈ 246 ms) on both sides, so the medians differ by which level the
 middle run landed on; the CPU pair differs by 0.04 %. No difference is
 measured; re-take on AC power before quoting an absolute number.
 
-**The nightly's lost input (CR3 #207).** Main `043112d`'s fuzz harness
-over its cached corpus with a 120 s unit limit and the upload on
-`always()`: libFuzzer wrote out a 326-byte unit at 164 s
-(`nightly/timeout-f4679c5a…`, the report in `nightly/timeout_report.txt`).
-It is a v24 plan asking for `grad_accum_steps` = 0x41000000 —
+**The nightly's hang, reproduced (CR3 #207).** Main `043112d`'s fuzz
+harness over the nightly's cached corpus (3,589 units, restored from
+`fuzz-corpus-44918953982`) with a 120 s unit limit and the upload on
+`always()`: libFuzzer wrote out a 326-byte unit at 164 s, two mutations
+from a unit of that corpus (`nightly/timeout-f4679c5a…`, the report in
+`nightly/timeout_report.txt`). Whether the cancelled nights held these
+very bytes cannot be known — they uploaded nothing — but it is the same
+harness, the same corpus and the same symptom. It is a v24 plan asking
+for `grad_accum_steps` = 0x41000000 —
 1,090,519,040 passes of the train program for one optimizer step. The
 load contract has bounded the count at 65,536 since #223 and refuses this
 plan by name; the input is `test/fuzz/seeds/regressions/timeout-nightly-grad-accum`.
@@ -1805,7 +1809,8 @@ on`, S = 128: 221 records, every one holding more than one document,
 14,132 response positions. Starts computed as `kSegmentStarts` computes
 them (`instruct/violations.py`, `instruct/result.txt`): from the id the
 plan carries (0), **0** response positions start after the first position
-of their own prompt; from the EOS, the scan before #227, **12,343** do.
+of their own prompt; from the EOS — the scan before #227, modelled on
+this corpus, not a pre-fix build — **12,343** do.
 Main `c7f1e50` (the stopgap) refuses `on` for this model by name and
 decides `off` under `auto` (`instruct/screen_main_c7f1e50.txt`).
 
