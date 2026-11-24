@@ -62,9 +62,14 @@ inline constexpr StatRow kFrontendRows[] = {
     {"corpus_dropped", "dropped", StatKind::kText, "",
      "documents dropped: empty, exact duplicates, degenerate (raw text)",
      screens_detail::kO},
+    {"corpus_duplicate_windows", "duplicate windows", StatKind::kCount, "",
+     "records dropped as byte-identical to an earlier one, before any split "
+     "(raw text; exact only, near-duplicates are not detected)",
+     screens_detail::kO},
     {"corpus_sanitized", "sanitized", StatKind::kText, "",
-     "bytes and characters the sanitizer removed or counted (raw text)",
-     screens_detail::kO | screens_detail::kV},
+     "invalid UTF-8 bytes, control and bidi characters the sanitizer "
+     "removed (raw text; shown when any)",
+     screens_detail::kO},
     {"corpus_tokens", "corpus tokens", StatKind::kCount, "tokens",
      "ids the records hold", screens_detail::kO},
     {"corpus_remainder", "remainder", StatKind::kCount, "tokens",
@@ -93,6 +98,10 @@ inline constexpr StatRow kFrontendRows[] = {
     {"validation", "validation", StatKind::kText, "",
      "the compiled held-out split: records, seed, the indices' hash",
      screens_detail::kO},
+    {"validation_twins", "held-out twins", StatKind::kCount, "",
+     "held-out records byte-identical to a training record (exact only; "
+     "a given SDS is not modified)",
+     screens_detail::kO},
     // The identity manifest (S4 #150): every input of the fine-tune, hashed.
     {"model_hash", "model hash", StatKind::kText, "",
      "ContentHash64 of the source model file the plan is bound to",
@@ -114,6 +123,10 @@ inline constexpr StatRow kFrontendRows[] = {
      "the merged f32 deltas, one per adapted weight", screens_detail::kV},
     {"footprint_caches", "step-0 caches", StatKind::kBytes, "B",
      "attention probability caches, or tiled stats rows", screens_detail::kV},
+    {"footprint_moments", "step-0 moments", StatKind::kBytes, "B",
+     "8-bit AdamW moments and their block scales (#192), beside the bound "
+     "and not in it",
+     screens_detail::kV | screens_detail::kO},
     {"footprint_total", "step-0 bound", StatKind::kBytes, "B",
      "the accountant's lower bound the early gate proved fits"},
     {"bound_ratio", "bound ÷ exact", StatKind::kReal, "",
@@ -181,6 +194,10 @@ inline constexpr StatRow kAnalysisRows[] = {
      "cached probabilities, or the tiled family's stats rows"},
     {"segment_mask", "segment mask", StatKind::kText, "",
      "no attention across a window's documents: the decision and its reason",
+     screens_detail::kO},
+    {"moments", "8-bit moments", StatKind::kText, "",
+     "AdamW's state stored block-wise in 8 bits (#192, opt-in): its codes, "
+     "its bytes and what f32 would take",
      screens_detail::kO},
     {"rematerialization", "rematerialization", StatKind::kText, "",
      "forward values the backward recomputes instead of keeping"},

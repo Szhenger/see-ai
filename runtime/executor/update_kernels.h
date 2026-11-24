@@ -173,7 +173,8 @@ void AttnFwd(const float* q, const float* k, const float* v, float* o,
              const int32_t* starts = nullptr);
 // Backward primitives (dispatched in this order by the compiled stream):
 // The segment mask (#191, plan v25): starts[b*S + t] = the first position of
-// t's document in window b (one past the last `eos` strictly before t).
+// t's document in window b (one past the last `eos` strictly before t;
+// the plan's id operand, the document separator: #218).
 void SegmentStarts(const int32_t* tokens, int32_t* starts, size_t B, size_t S,
                    int32_t eos);
 void AttnDP(const float* dout, const float* v, float* dp, size_t B, size_t S,
@@ -281,6 +282,24 @@ bool ClipGlobal(float* g, size_t n, const float* acc, float max_norm);
                              size_t n, float lr, float beta1, float beta2,
                              float eps, float weight_decay, uint64_t step,
                              float clip_norm = 0.0f);
+
+// 8-bit moments (plan v27, S5 #192): AdamWStep over block-wise quantized
+// state — m int8 [n], v uint8 [n] (instruction.h's codes), scales f32
+// [2 * MomentBlocks(n)] (m absmaxes, then v maxes). The parameter moves by
+// AdamWStep's expression on the dequantized moments; the new moments are
+// requantized per block, without bias: the dither is instruction.h's
+// MomentDither of `step`, the element's index and `operand` (the m codes'
+// plan operand, kAdamW8Step's in[2]) — no state, so the bytes do not
+// depend on the worker count or on where a run was resumed.
+// kNormRefused / kMomentRefused touch nothing: a non-finite clip norm, or
+// a new moment (or a stored scale) not finite.
+enum class MomentStep : uint8_t { kDone, kNormRefused, kMomentRefused };
+[[nodiscard]] MomentStep AdamW8Step(float* p, const float* g, int8_t* m8,
+                                    uint8_t* v8, float* scales, size_t n,
+                                    float lr, float beta1, float beta2,
+                                    float eps, float weight_decay,
+                                    uint64_t step, uint64_t operand,
+                                    float clip_norm = 0.0f);
 
 // --- Gradient accumulation (plan v9): dst += src, in place -------------------
 void Accumulate(float* dst, const float* src, size_t n);

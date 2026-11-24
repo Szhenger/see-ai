@@ -165,6 +165,13 @@ class Dataset {
       const std::vector<uint64_t>& held, uint64_t split_hash);
   uint64_t split_hash() const { return split_hash_; }
 
+  /// Of the records at `held` (sorted ascending, distinct, each below
+  /// num_samples), how many are byte-identical to a record not held — the
+  /// same ids and mask, or the same features and labels (#222). What the
+  /// compiler reports of a split it cannot change: a given SDS is pinned
+  /// by its hash. Exact equality alone; a near-duplicate is not a twin.
+  uint64_t HeldOutTwins(const std::vector<uint64_t>& held) const;
+
   [[nodiscard]] std::expected<Dataset, std::string> SplitValidation(
       double fraction);
 

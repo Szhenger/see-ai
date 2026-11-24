@@ -1,0 +1,43 @@
+ALARM: working on the last Unit for 164 seconds
+       and the timeout value is 120 (use -timeout=N to change)
+MS: 2 InsertByte-CopyPart-; base unit: 6fe1c0650409fea33991c9ade2204de1df39e4f3
+artifact_prefix='./'; Test unit written to ./timeout-f4679c5a66cfd9565da652a521526f3ea688d598
+==4132== ERROR: libFuzzer: timeout after 164 seconds
+    #0 0x561da32a6295 in __sanitizer_print_stack_trace (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x1f5295) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #1 0x561da31fa1dc in fuzzer::PrintStackTrace() (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x1491dc) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #2 0x561da31df2bb in fuzzer::Fuzzer::AlarmCallback() (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x12e2bb) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #3 0x7f992e44532f  (/lib/x86_64-linux-gnu/libc.so.6+0x4532f) (BuildId: 8cebda42d140fc2b09639f8b13a5d5f2e617ef09)
+    #4 0x561da3660f1d in seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0::operator()(unsigned long, unsigned long, unsigned long) const /home/runner/work/see-ai/see-ai/runtime/executor/optimizer.cc:27:31
+    #5 0x561da3660d6c in void seeml::update::ParallelFor<seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0>(unsigned long, unsigned long, seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0&&)::'lambda'(void*, unsigned long, unsigned long, unsigned long)::operator()(void*, unsigned long, unsigned long, unsigned long) const /home/runner/work/see-ai/see-ai/source/parallel/parallel_for.h:99:9
+    #6 0x561da3660c93 in void seeml::update::ParallelFor<seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0>(unsigned long, unsigned long, seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0&&)::'lambda'(void*, unsigned long, unsigned long, unsigned long)::__invoke(void*, unsigned long, unsigned long, unsigned long) /home/runner/work/see-ai/see-ai/source/parallel/parallel_for.h:98:7
+    #7 0x561da36c8f47 in seeml::update::(anonymous namespace)::DrainJob(seeml::update::(anonymous namespace)::Job&) /home/runner/work/see-ai/see-ai/source/parallel/parallel_for.cc:77:9
+    #8 0x561da36c6c24 in seeml::update::(anonymous namespace)::WorkerPool::Run(seeml::update::(anonymous namespace)::Job&) /home/runner/work/see-ai/see-ai/source/parallel/parallel_for.cc:139:5
+    #9 0x561da36c65d5 in seeml::update::internal_par::ParallelForRaw(unsigned long, unsigned long, void (*)(void*, unsigned long, unsigned long, unsigned long), void*) /home/runner/work/see-ai/see-ai/source/parallel/parallel_for.cc:257:8
+    #10 0x561da3660af1 in void seeml::update::ParallelFor<seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0>(unsigned long, unsigned long, seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long)::$_0&&) /home/runner/work/see-ai/see-ai/source/parallel/parallel_for.h:96:3
+    #11 0x561da365efa0 in seeml::update_rt::kernels::(anonymous namespace)::L2Squared(float const*, unsigned long) /home/runner/work/see-ai/see-ai/runtime/executor/optimizer.cc:25:3
+    #12 0x561da365ed22 in seeml::update_rt::kernels::SqNormAccum(float const*, unsigned long, float*) /home/runner/work/see-ai/see-ai/runtime/executor/optimizer.cc:72:61
+    #13 0x561da35df315 in seeml::update_rt::(anonymous namespace)::CpuBackend::Execute[abi:cxx11](seeml::update::UpdateInstruction const&, seeml::update_rt::StepParams const&) /home/runner/work/see-ai/see-ai/runtime/executor/cpu_backend.cc:417:7
+    #14 0x561da35bd6a0 in seeml::update_rt::UpdateEngine::ExecuteRange[abi:cxx11](std::vector<seeml::update::UpdateInstruction, std::allocator<seeml::update::UpdateInstruction>> const&, unsigned long, unsigned long) /home/runner/work/see-ai/see-ai/runtime/dispatcher/update_engine.cc:346:28
+    #15 0x561da35d5e2f in seeml::update_rt::UpdateEngine::ExecuteTrainProgram[abi:cxx11]()::$_0::operator()[abi:cxx11](unsigned long, unsigned long) const /home/runner/work/see-ai/see-ai/runtime/dispatcher/update_engine.cc:321:16
+    #16 0x561da35be740 in std::expected<void, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>>> seeml::update_rt::StepProfiler::TrainProgram<seeml::update_rt::UpdateEngine::ExecuteTrainProgram[abi:cxx11]()::$_0>(unsigned long, seeml::update_rt::UpdateEngine::ExecuteTrainProgram[abi:cxx11]()::$_0&&) /home/runner/work/see-ai/see-ai/runtime/profiler/step_timings.h:97:12
+    #17 0x561da35be666 in seeml::update_rt::UpdateEngine::ExecuteTrainProgram[abi:cxx11]() /home/runner/work/see-ai/see-ai/runtime/dispatcher/update_engine.cc:319:20
+    #18 0x561da35c8639 in seeml::update_rt::UpdateEngine::TrainImpl[abi:cxx11](seeml::update_rt::Dataset&, unsigned long, seeml::update_rt::TrainOptions const&) /home/runner/work/see-ai/see-ai/runtime/dispatcher/update_engine.cc:854:22
+    #19 0x561da35c330f in seeml::update_rt::UpdateEngine::Train[abi:cxx11](seeml::update_rt::Dataset&, unsigned long, seeml::update_rt::TrainOptions const&) /home/runner/work/see-ai/see-ai/runtime/dispatcher/update_engine.cc:584:17
+    #20 0x561da32e3fb5 in (anonymous namespace)::ExecuteOnce(seeml::update_rt::UpdateEngine&, std::vector<unsigned char, std::allocator<unsigned char>> const&) /home/runner/work/see-ai/see-ai/test/fuzz/binary_formats.cc:137:19
+    #21 0x561da32df06e in LLVMFuzzerTestOneInput /home/runner/work/see-ai/see-ai/test/fuzz/binary_formats.cc:196:12
+    #22 0x561da31e091a in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long) (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x12f91a) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #23 0x561da31dff29 in fuzzer::Fuzzer::RunOne(unsigned char const*, unsigned long, bool, fuzzer::InputInfo*, bool, bool*) (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x12ef29) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #24 0x561da31e1925 in fuzzer::Fuzzer::MutateAndTestOne() (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x130925) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #25 0x561da31e2415 in fuzzer::Fuzzer::Loop(std::vector<fuzzer::SizedFile, std::allocator<fuzzer::SizedFile>>&) (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x131415) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #26 0x561da31ce8c5 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long)) (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x11d8c5) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #27 0x561da31fad46 in main (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x149d46) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+    #28 0x7f992e42a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: 8cebda42d140fc2b09639f8b13a5d5f2e617ef09)
+    #29 0x7f992e42a28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: 8cebda42d140fc2b09639f8b13a5d5f2e617ef09)
+    #30 0x561da31c2d44 in _start (/home/runner/work/see-ai/see-ai/build-fuzz/seeml_fuzz_formats+0x111d44) (BuildId: 90f2e441fb598652ed38cdc13e572fa97d36fac4)
+
+SUMMARY: libFuzzer: timeout
+stat::number_of_executed_units: 214014
+stat::average_exec_per_sec:     1169
+stat::new_units_added:          36
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              451

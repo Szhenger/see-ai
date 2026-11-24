@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -2116,6 +2117,563 @@ TEST(FusedMap, EveryStageMatchesItsStandaloneKernelInSequence) {
       EXPECT_BITWISE_EQ_F32(want, got);
     }
   }
+}
+
+// --- 8-bit moments (plan v27, S5 #192) ----------------------------------------
+
+/// One kAdamW8Step's state: the codes and the scales a tensor of n carries.
+struct Moments8 {
+  explicit Moments8(size_t n)
+      : m(n, 0), v(n, 0), scales(2 * seeml::update::MomentBlocks(n), 0.0f) {}
+  std::vector<int8_t> m;
+  std::vector<uint8_t> v;
+  std::vector<float> scales;
+  bool operator==(const Moments8&) const = default;
+};
+
+k::MomentStep Step8(std::vector<float>& p, const std::vector<float>& g,
+                    Moments8& s, uint64_t step, float clip = 0.0f,
+                    float lr = 0.01f, uint64_t operand = 8192) {
+  return k::AdamW8Step(p.data(), g.data(), s.m.data(), s.v.data(),
+                       s.scales.data(), p.size(), lr, 0.9f, 0.999f, 1e-8f,
+                       0.01f, step, operand, clip);
+}
+
+TEST(Moments8, TheMCodeIsSignAndLevelOverFourDecadesAndReachesZero) {
+  namespace up = seeml::update;
+  const float amax = 3.0f;
+  // The absmax is the top level either side, and dequantizes exactly; zero
+  // is code 0.
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(amax, amax, 0)), 127);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(-amax, amax, 0xFFFFFFu)), -127);
+  EXPECT_EQ(up::MomentValueM(127, amax), amax);
+  EXPECT_EQ(up::MomentValueM(-127, amax), -amax);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(0.0f, amax, 0)), 0);
+  EXPECT_EQ(up::MomentValueM(0, amax), 0.0f);
+  // Clamped, never wrapped; -128 is never written and reads as -127.
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(1e9f, amax, 0)), 127);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(-1e9f, amax, 0)), -127);
+  EXPECT_EQ(up::MomentValueM(-128, amax), -amax);
+  // Inside the code's 15.75 octaves a coded m is one of the two levels
+  // around it, whatever the dither: within a level (2^(1/8)) of itself,
+  // its sign kept.
+  const double level = std::exp2(1.0 / 8.0);
+  std::mt19937 rng(51);
+  std::uniform_real_distribution<double> octaves(0.0, 15.7);
+  for (int i = 0; i < 4000; ++i) {
+    const float m = static_cast<float>((i % 2 ? -1.0 : 1.0) * amax *
+                                       std::exp2(-octaves(rng)));
+    const int8_t q = up::MomentCodeM(m, amax, rng() >> 8);
+    ASSERT_NE(static_cast<int>(q), 0);
+    const double back = up::MomentValueM(q, amax);
+    EXPECT_GT(back / m, 1.0 / level / 1.000001);
+    EXPECT_LT(back / m, level * 1.000001);
+  }
+  // Below the lowest level m is 0 or that level — it can reach zero, as v
+  // must not: the smallest dither is below every nonzero threshold, the
+  // largest below none but 2^24's.
+  const float lowest = up::MomentValueM(1, amax);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(0.5f * lowest, amax, 0)), 1);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(0.5f * lowest, amax, 0xFFFFFFu)),
+            0);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(-0.5f * lowest, amax, 0)), -1);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeM(amax * 1e-30f, amax, 0)), 0);
+  // Monotone: a larger code is a larger m.
+  for (int q = -126; q <= 127; ++q)
+    EXPECT_GT(up::MomentValueM(static_cast<int8_t>(q), amax),
+              up::MomentValueM(static_cast<int8_t>(q - 1), amax));
+}
+
+TEST(Moments8, TheVCodeHoldsRelativeErrorOverNineDecadesAndNeverZeroes) {
+  namespace up = seeml::update;
+  const float vmax = 3.0f;
+  // The max is the top level, and dequantizes exactly.
+  EXPECT_EQ(static_cast<int>(up::MomentCodeV(vmax, vmax, 0)), 255);
+  EXPECT_EQ(up::MomentValueV(255, vmax), vmax);
+  EXPECT_EQ(static_cast<int>(up::MomentCodeV(0.0f, vmax, 0)), 0);
+  EXPECT_EQ(up::MomentValueV(0, vmax), 0.0f);
+  // A coded v is one of the two levels around it, whatever the dither:
+  // within a level (2^(1/8)) of itself over the code's 31.75 octaves.
+  const double level = std::exp2(1.0 / 8.0);
+  std::mt19937 rng(52);
+  std::uniform_real_distribution<double> octaves(0.0, 31.5);
+  for (int i = 0; i < 4000; ++i) {
+    const float v = static_cast<float>(vmax * std::exp2(-octaves(rng)));
+    const uint8_t q = up::MomentCodeV(v, vmax, rng() >> 8);
+    ASSERT_GE(static_cast<int>(q), 1);
+    const double back = up::MomentValueV(q, vmax);
+    EXPECT_GT(back / v, 1.0 / level / 1.000001);
+    EXPECT_LT(back / v, level * 1.000001);
+  }
+  // Below the lowest level a nonzero v keeps the lowest level, code 1 —
+  // never 0, which would leave its m stepping by m / eps — under the
+  // dither that rounds everything else down, too.
+  for (uint32_t dither : {0u, 0xFFFFFFu}) {
+    EXPECT_EQ(static_cast<int>(up::MomentCodeV(vmax * 1e-30f, vmax, dither)),
+              1);
+    EXPECT_EQ(static_cast<int>(up::MomentCodeV(
+                  std::numeric_limits<float>::denorm_min(), vmax, dither)),
+              1);
+    EXPECT_EQ(static_cast<int>(up::MomentCodeV(0.5f * up::MomentValueV(1, vmax),
+                                               vmax, dither)),
+              1);
+  }
+  // Every code dequantizes to a level no larger than the max, monotone.
+  for (int q = 2; q <= 255; ++q)
+    EXPECT_GT(up::MomentValueV(static_cast<uint8_t>(q), vmax),
+              up::MomentValueV(static_cast<uint8_t>(q - 1), vmax));
+}
+
+TEST(Moments8, AValueOnALevelNeverMovesAndBetweenTwoItAveragesToItself) {
+  // The rule (#192 review): between the two decodable values around x the
+  // code is the upper one when the dither is below the fraction of the way
+  // there — in the decoded domain, so on a level the fraction is 0 and no
+  // dither moves the code, and off it the dequantized value's mean over
+  // the dither is x. Round-to-nearest fails the second half: its mean is
+  // the nearer level, up to 4.4 % off.
+  namespace up = seeml::update;
+  for (float scale : {3.0f, 1.7e-9f, 4.1e11f}) {
+    for (uint32_t dither : {0u, 1u, 0x7FFFFFu, 0xFFFFFFu}) {
+      for (int q = 1; q <= 127; ++q) {
+        const auto code = static_cast<int8_t>(q);
+        ASSERT_EQ(static_cast<int>(up::MomentCodeM(
+                      up::MomentValueM(code, scale), scale, dither)),
+                  q);
+        ASSERT_EQ(static_cast<int>(up::MomentCodeM(
+                      -up::MomentValueM(code, scale), scale, dither)),
+                  -q);
+      }
+      for (int q = 1; q <= 255; ++q) {
+        const auto code = static_cast<uint8_t>(q);
+        ASSERT_EQ(static_cast<int>(up::MomentCodeV(
+                      up::MomentValueV(code, scale), scale, dither)),
+                  q);
+      }
+    }
+  }
+  std::mt19937 rng(59);
+  std::uniform_real_distribution<double> octaves(0.0, 15.0);
+  const float scale = 2.5f;
+  const uint32_t key_m = up::MomentDitherKey(7, 4096, up::kMomentDitherM);
+  const uint32_t key_v = up::MomentDitherKey(7, 4096, up::kMomentDitherV);
+  const uint64_t draws = 40'000;
+  for (int trial = 0; trial < 40; ++trial) {
+    // The last trials sit under m's lowest level: between 0 and it.
+    const float x = static_cast<float>(
+        scale * std::exp2(trial < 36 ? -octaves(rng) : -15.8 - trial * 0.01));
+    double m_sum = 0.0, v_sum = 0.0;
+    for (uint64_t i = 0; i < draws; ++i) {
+      m_sum += up::MomentValueM(
+          up::MomentCodeM(-x, scale, up::MomentDither(key_m, i)), scale);
+      v_sum += up::MomentValueV(
+          up::MomentCodeV(x, scale, up::MomentDither(key_v, i)), scale);
+    }
+    // A level is 9 % wide: 40000 draws put the mean within 0.1 % of x
+    // (three standard errors are 0.07 %), 1.5 % under m's lowest level
+    // where the two values are 0 and the level.
+    EXPECT_NEAR(m_sum / static_cast<double>(draws), -x,
+                (trial < 36 ? 0.001 : 0.015) * x);
+    EXPECT_NEAR(v_sum / static_cast<double>(draws), x, 0.001 * x);
+  }
+}
+
+TEST(Moments8, TheDitherIsAStatelessHashPinnedAcrossBackends) {
+  // The same vectors are pinned in test/tool/frontier_exec_test.py
+  // (test_eight_bit_moments_dither_is_the_devices_hash): the oracle and
+  // the device draw the same 24 bits from the step, the m codes' operand
+  // and the element, and code a fixed block alike.
+  namespace up = seeml::update;
+  auto draw = [](uint64_t step, uint64_t operand, uint32_t stream) {
+    const uint32_t key = up::MomentDitherKey(step, operand, stream);
+    return std::vector<uint32_t>{
+        up::MomentDither(key, 0), up::MomentDither(key, 1),
+        up::MomentDither(key, 2), up::MomentDither(key, 3)};
+  };
+  EXPECT_TRUE(draw(1, 8192, up::kMomentDitherM) ==
+              (std::vector<uint32_t>{9272214, 15330162, 8064360, 10661393}));
+  EXPECT_TRUE(draw(1, 8192, up::kMomentDitherV) ==
+              (std::vector<uint32_t>{15715996, 11661756, 10892955, 7251541}));
+  // The operand's and the step's high words are folded in, not dropped.
+  const uint64_t one = 1;
+  EXPECT_TRUE(draw(3000, (one << 40) + 12288, up::kMomentDitherM) ==
+              (std::vector<uint32_t>{11430572, 14592737, 14047368, 2439640}));
+  EXPECT_TRUE(draw((one << 32) + 5, 8192, up::kMomentDitherV) ==
+              (std::vector<uint32_t>{11355500, 15652291, 14557753, 5131573}));
+  // The index is taken mod 2^32.
+  const uint32_t key = up::MomentDitherKey(1, 8192, up::kMomentDitherM);
+  EXPECT_EQ(up::MomentDither(key, (one << 32) + 3), up::MomentDither(key, 3));
+  // One block's codes at step 7 of operand 8192: the moments 0.37 (i + 1),
+  // alternating in sign, and their squares.
+  const uint32_t key_m = up::MomentDitherKey(7, 8192, up::kMomentDitherM);
+  const uint32_t key_v = up::MomentDitherKey(7, 8192, up::kMomentDitherV);
+  const std::vector<int> want_m = {103, -111, 115, -119, 122, -124, 125, -127};
+  const std::vector<int> want_v = {207, 223, 232, 239, 244, 248, 252, 255};
+  std::vector<float> x(8);
+  for (size_t i = 0; i < 8; ++i) x[i] = static_cast<float>(i + 1) * 0.37f;
+  for (size_t i = 0; i < 8; ++i) {
+    const float m = i % 2 ? -x[i] : x[i];
+    const float v = x[i] * x[i];
+    EXPECT_EQ(
+        static_cast<int>(up::MomentCodeM(m, x[7], up::MomentDither(key_m, i))),
+        want_m[i]);
+    EXPECT_EQ(static_cast<int>(
+                  up::MomentCodeV(v, x[7] * x[7], up::MomentDither(key_v, i))),
+              want_v[i]);
+  }
+}
+
+TEST(Moments8, TheFirstStepMovesTheParametersAsF32AdamWDoes) {
+  // From zero state the dequantized moments are exactly zero, so step 1
+  // moves p by AdamWStep's expression over the same floats.
+  const size_t n = 700;  // three blocks, the last one 188 short
+  const std::vector<float> g = RandnVector(n, 53);
+  std::vector<float> p8 = RandnVector(n, 54), p32 = p8;
+  std::vector<float> m(n, 0.0f), v(n, 0.0f);
+  Moments8 s(n);
+  ASSERT_TRUE(Step8(p8, g, s, 1) == k::MomentStep::kDone);
+  ASSERT_TRUE(k::AdamWStep(p32.data(), g.data(), m.data(), v.data(), n, 0.01f,
+                           0.9f, 0.999f, 1e-8f, 0.01f, 1));
+  for (size_t i = 0; i < n; ++i) EXPECT_NEAR(p8[i], p32[i], 1e-6);
+  // The stored moments are the f32 ones, coded per block.
+  for (size_t b = 0; b < 3; ++b) {
+    float amax = 0.0f, vmax = 0.0f;
+    for (size_t i = b * 256; i < std::min<size_t>(n, (b + 1) * 256); ++i) {
+      amax = std::max(amax, std::fabs(m[i]));
+      vmax = std::max(vmax, v[i]);
+    }
+    EXPECT_EQ(s.scales[b], amax);
+    EXPECT_EQ(s.scales[3 + b], vmax);
+  }
+}
+
+TEST(Moments8, EachBlockKeepsItsOwnScaleAcrossTheBoundary) {
+  // A gradient a million times larger in block 0 leaves block 1's small
+  // values their own resolution: block-wise, not per tensor.
+  const size_t n = 2 * 256 + 3;  // and a three-value tail block
+  std::vector<float> g(n, 1e-3f);
+  for (size_t i = 0; i < 256; ++i) g[i] = 1e3f;
+  g[300] = -2e-3f;
+  std::vector<float> p(n, 0.0f);
+  Moments8 s(n);
+  ASSERT_TRUE(Step8(p, g, s, 1) == k::MomentStep::kDone);
+  EXPECT_NEAR(s.scales[0], 0.1f * 1e3f, 1e-2);
+  EXPECT_NEAR(s.scales[1], 0.1f * 2e-3f, 1e-9);
+  EXPECT_NEAR(s.scales[2], 0.1f * 1e-3f, 1e-9);
+  EXPECT_EQ(static_cast<int>(s.m[300]), -127);
+  // 1e-3 of a 2e-3 absmax: an octave down, level 8 exactly — no dither.
+  EXPECT_EQ(static_cast<int>(s.m[301]), 119);
+  EXPECT_EQ(static_cast<int>(s.m[n - 1]), 127);
+  EXPECT_EQ(static_cast<int>(s.v[n - 1]), 255);
+}
+
+TEST(Moments8, AnAllZeroBlockStoresZerosAndDividesByNothing) {
+  // LoRA's A gradient is exactly zero at step 1 (B starts at zero): its
+  // blocks must code as zeros with a zero scale, and the next step must
+  // dequantize them as zeros — no 0 / 0 anywhere.
+  const size_t n = 512;
+  std::vector<float> g(n, 0.0f);
+  for (size_t i = 256; i < n; ++i) g[i] = 0.5f;
+  std::vector<float> p(n, 1.0f);
+  Moments8 s(n);
+  for (uint64_t step = 1; step <= 3; ++step)
+    ASSERT_TRUE(Step8(p, g, s, step) == k::MomentStep::kDone);
+  EXPECT_EQ(s.scales[0], 0.0f);
+  EXPECT_EQ(s.scales[2], 0.0f);
+  for (size_t i = 0; i < 256; ++i) {
+    ASSERT_EQ(static_cast<int>(s.m[i]), 0);
+    ASSERT_EQ(static_cast<int>(s.v[i]), 0);
+    ASSERT_TRUE(std::isfinite(p[i]));
+    EXPECT_LT(p[i], 1.0f);  // weight decay alone
+  }
+  // A block of moments below the floor (2^-80) is stored as zeros too.
+  std::vector<float> tiny(256, 1e-30f), q(256, 0.0f);
+  Moments8 t(256);
+  ASSERT_TRUE(Step8(q, tiny, t, 1) == k::MomentStep::kDone);
+  EXPECT_EQ(t.scales[0], 0.0f);
+  EXPECT_EQ(t.scales[1], 0.0f);
+}
+
+TEST(Moments8, ANonFiniteMomentOrScaleIsRefusedUntouched) {
+  const size_t n = 300;
+  std::vector<float> g = RandnVector(n, 55);
+  std::vector<float> p = RandnVector(n, 56);
+  Moments8 s(n);
+  ASSERT_TRUE(Step8(p, g, s, 1) == k::MomentStep::kDone);
+  const std::vector<float> p_before = p;
+  const Moments8 s_before = s;
+  auto untouched = [&](const char* what) {
+    EXPECT_TRUE(p == p_before);
+    if (!(s == s_before)) ADD_FAILURE(std::string(what) + ": state written");
+  };
+  // A NaN gradient with no clip: the moment it makes is not finite.
+  g[290] = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_TRUE(Step8(p, g, s, 2) == k::MomentStep::kMomentRefused);
+  untouched("nan gradient");
+  // With a fused clip the norm refuses first, in the clip's words.
+  EXPECT_TRUE(Step8(p, g, s, 2, 1.0f) == k::MomentStep::kNormRefused);
+  untouched("nan gradient, clipped");
+  // An infinite gradient makes an infinite v.
+  g[290] = std::numeric_limits<float>::infinity();
+  EXPECT_TRUE(Step8(p, g, s, 2) == k::MomentStep::kMomentRefused);
+  untouched("inf gradient");
+  // A finite gradient whose square overflows: v is infinite.
+  g[290] = 1e23f;  // (1 - beta2) g g = 1e43
+  EXPECT_TRUE(Step8(p, g, s, 2) == k::MomentStep::kMomentRefused);
+  untouched("overflowing square");
+  g[290] = 0.25f;
+  // A stored scale that is not a finite non-negative float (state is an
+  // input: a checkpoint, an arena) is refused, not dequantized.
+  for (float bad : {std::numeric_limits<float>::quiet_NaN(), -1.0f,
+                    std::numeric_limits<float>::infinity()}) {
+    Moments8 hostile = s;
+    hostile.scales[3] = bad;  // block 1's v max
+    std::vector<float> q = p;
+    EXPECT_TRUE(Step8(q, g, hostile, 2) == k::MomentStep::kMomentRefused);
+    EXPECT_TRUE(q == p);
+  }
+  ASSERT_TRUE(Step8(p, g, s, 2) == k::MomentStep::kDone);  // the control
+}
+
+TEST(Moments8, ManyStepsTrackF32AdamW) {
+  // Fifty steps on a drifting gradient: the 8-bit state's parameters stay
+  // within a few percent of the f32 state's total movement.
+  const size_t n = 1000;
+  std::vector<float> p8 = RandnVector(n, 57), p32 = p8;
+  const std::vector<float> start = p8;
+  std::vector<float> m(n, 0.0f), v(n, 0.0f);
+  Moments8 s(n);
+  for (uint64_t step = 1; step <= 50; ++step) {
+    std::vector<float> g = RandnVector(n, 100 + step, 0.1f);
+    for (size_t i = 0; i < n; ++i) g[i] += 0.05f * start[i];
+    ASSERT_TRUE(Step8(p8, g, s, step) == k::MomentStep::kDone);
+    ASSERT_TRUE(k::AdamWStep(p32.data(), g.data(), m.data(), v.data(), n, 0.01f,
+                             0.9f, 0.999f, 1e-8f, 0.01f, step));
+  }
+  double moved = 0.0, apart = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    moved += std::fabs(static_cast<double>(p32[i]) - start[i]);
+    apart += std::fabs(static_cast<double>(p8[i]) - p32[i]);
+  }
+  std::printf("  [ %-32s ] apart / moved %.4f\n", "adamw8 50 steps",
+              apart / moved);
+  EXPECT_LT(apart, 0.05 * moved);
+}
+
+/// The f32 m a stored code stands for.
+float MValue8(const Moments8& s, size_t i) {
+  return seeml::update::MomentValueM(s.m[i], s.scales[i / 256]);
+}
+/// The f32 v a stored code stands for.
+float VValue8(const Moments8& s, size_t i) {
+  const size_t blocks = s.scales.size() / 2;
+  return seeml::update::MomentValueV(s.v[i], s.scales[blocks + i / 256]);
+}
+
+TEST(Moments8, StarvedMomentsFollowTheTrueAverageBesideALargeNeighbour) {
+  // The dead band (#192 review). One block: element 0 keeps gradient 1 and
+  // so holds the block's scales; the other 255 see 0.3 for ten steps and
+  // then zero-mean noise of 1e-3 — a thousandth of the block's largest.
+  // Their true m decays to ~2e-4 and their parameters stop near 0.02. A
+  // requantization that rounds to the nearest level never lets a code
+  // under half a level's change move: m stays where the burst left it and
+  // the parameters walk on it for 3000 steps (mean |p| 0.5). The unbiased
+  // rule must hold the 8-bit state to the f32 trajectory: the starved m
+  // within 2x of the true average's size, and the parameters within a
+  // quarter of the f32 ones' own size.
+  const size_t n = 256;
+  std::vector<float> p8(n, 0.0f), p32(n, 0.0f), m(n, 0.0f), v(n, 0.0f);
+  Moments8 s(n);
+  for (uint64_t step = 1; step <= 3000; ++step) {
+    std::vector<float> g = RandnVector(n, 5000 + step, 1e-3f);
+    if (step <= 10) std::fill(g.begin(), g.end(), 0.3f);
+    g[0] = 1.0f;
+    ASSERT_TRUE(Step8(p8, g, s, step, 0.0f, 1e-3f) == k::MomentStep::kDone);
+    ASSERT_TRUE(k::AdamWStep(p32.data(), g.data(), m.data(), v.data(), n, 1e-3f,
+                             0.9f, 0.999f, 1e-8f, 0.01f, step));
+  }
+  double m8_abs = 0.0, m32_abs = 0.0, p32_abs = 0.0, p8_abs = 0.0, apart = 0.0;
+  for (size_t i = 1; i < n; ++i) {
+    m8_abs += std::fabs(static_cast<double>(MValue8(s, i)));
+    m32_abs += std::fabs(static_cast<double>(m[i]));
+    p8_abs += std::fabs(static_cast<double>(p8[i]));
+    p32_abs += std::fabs(static_cast<double>(p32[i]));
+    apart += std::fabs(static_cast<double>(p8[i]) - p32[i]);
+  }
+  std::printf(
+      "  [ %-32s ] mean |m| 8-bit %.3g f32 %.3g; mean |p| 8-bit %.4f "
+      "f32 %.4f; mean |p8 - p32| %.4f\n",
+      "adamw8 starved m", m8_abs / 255, m32_abs / 255, p8_abs / 255,
+      p32_abs / 255, apart / 255);
+  EXPECT_LT(m8_abs, 2.0 * m32_abs);
+  EXPECT_GT(m8_abs, 0.5 * m32_abs);
+  EXPECT_LT(apart, 0.25 * p32_abs);
+  // The element that holds the scales is coded exactly: it never differs.
+  EXPECT_NEAR(p8[0], p32[0], 1e-4);
+}
+
+TEST(Moments8, AGradientChangeUnderHalfALevelStillMovesTheFirstMoment) {
+  // m's dead band on any code rounded to nearest (#192 review): a finer
+  // code narrows the band and keeps it. Element 0 holds the scales with
+  // gradient 1; the other 255 settle on gradient 0.010 and are then given
+  // 0.013. The new m is 0.9 of the coded one plus 0.1 of the gradient: 3 %
+  // above the code it had, under half of a 9 % level — rounded to nearest
+  // it returns to its code and m stays 22 % low for good (the first rule's
+  // linear code, a step of 1 / 127 there, held it 39 % low). Dithered, one
+  // step in three moves it a level, and the 255 average the true m.
+  const size_t n = 256;
+  std::vector<float> p8(n, 0.0f), p32(n, 0.0f), m(n, 0.0f), v(n, 0.0f);
+  Moments8 s(n);
+  for (uint64_t step = 1; step <= 600; ++step) {
+    std::vector<float> g(n, step <= 300 ? 0.010f : 0.013f);
+    g[0] = 1.0f;
+    ASSERT_TRUE(Step8(p8, g, s, step, 0.0f, 1e-3f) == k::MomentStep::kDone);
+    ASSERT_TRUE(k::AdamWStep(p32.data(), g.data(), m.data(), v.data(), n, 1e-3f,
+                             0.9f, 0.999f, 1e-8f, 0.01f, step));
+  }
+  double m8_sum = 0.0, m32_sum = 0.0;
+  for (size_t i = 1; i < n; ++i) {
+    m8_sum += MValue8(s, i);
+    m32_sum += m[i];
+    // Each element is on one of the two levels around the true m.
+    EXPECT_NEAR(MValue8(s, i), m[i], 0.10 * m[i]);
+  }
+  std::printf("  [ %-32s ] mean m 8-bit %.5f f32 %.5f\n", "adamw8 nudged m",
+              m8_sum / 255, m32_sum / 255);
+  EXPECT_NEAR(m32_sum / 255, 0.013, 1e-5);  // the scenario: f32 arrived
+  EXPECT_NEAR(m8_sum, m32_sum, 0.03 * m32_sum);
+}
+
+TEST(Moments8, TheSecondMomentFallsAndRisesWithItsGradient) {
+  // v's dead band (#192 review): beta2 moves v by 0.1 % a step, a level of
+  // the code is 9 %, so rounding to the nearest level returns every code
+  // whose block max does not fall with it to where it was — v could never
+  // decay, and rose only by jumps of more than half a level. Element 0
+  // keeps gradient 1 (the block's max); the other 255 see 0.3 for 200
+  // steps, nothing for 2800 (f32's v falls 16x), then 0.06 for 3000 more
+  // (v rises again). The coded v is unbiased, so its mean over the 255
+  // must follow f32's both ways (within 15 %: the 255 are independent
+  // draws). Each element carries the dither's scatter: falling 16x
+  // against a block max that does not fall is 32 levels crossed by
+  // chance, a level at a time with probability 1.2 % a step, and the
+  // count of crossings scatters as a Poisson count does — a log-normal
+  // factor of about 1.8 (one sigma) around f32's v, the price of having no
+  // bias, bounded here at a factor 10 where the first rule was 85x off.
+  // Once the gradient returns the scatter decays with v's own memory.
+  const size_t n = 256;
+  std::vector<float> p8(n, 0.0f), p32(n, 0.0f), m(n, 0.0f), v(n, 0.0f);
+  Moments8 s(n);
+  auto run = [&](uint64_t from, uint64_t to, float gradient) {
+    std::vector<float> g(n, gradient);
+    g[0] = 1.0f;
+    for (uint64_t step = from; step <= to; ++step) {
+      ASSERT_TRUE(Step8(p8, g, s, step, 0.0f, 1e-3f) == k::MomentStep::kDone);
+      ASSERT_TRUE(k::AdamWStep(p32.data(), g.data(), m.data(), v.data(), n,
+                               1e-3f, 0.9f, 0.999f, 1e-8f, 0.01f, step));
+    }
+  };
+  auto check = [&](const char* phase, double factor) {
+    double v8_sum = 0.0, v32_sum = 0.0, log_sq = 0.0;
+    for (size_t i = 1; i < n; ++i) {
+      const double a = VValue8(s, i), b = v[i];
+      v8_sum += a;
+      v32_sum += b;
+      log_sq += std::log(a / b) * std::log(a / b);
+      if (!(a < factor * b && a > b / factor))
+        ADD_FAILURE(std::string(phase) + ": element " + std::to_string(i) +
+                    " v " + std::to_string(a) + " against f32 " +
+                    std::to_string(b));
+    }
+    std::printf(
+        "  [ %-32s ] %s: mean v 8-bit %.4g f32 %.4g; per-element "
+        "scatter a factor %.2f (rms)\n",
+        "adamw8 v", phase, v8_sum / 255, v32_sum / 255,
+        std::exp(std::sqrt(log_sq / 255)));
+    EXPECT_NEAR(v8_sum, v32_sum, 0.15 * v32_sum);
+  };
+  run(1, 200, 0.3f);
+  const float peak = v[1];
+  run(201, 3000, 0.0f);
+  EXPECT_LT(v[1], peak / 15.0f);  // the scenario: f32's v fell 16x
+  check("fall", 10.0);
+  run(3001, 6000, 0.06f);
+  check("rise", 1.5);
+  double apart = 0.0, moved = 0.0;
+  for (size_t i = 1; i < n; ++i) {
+    apart += std::fabs(static_cast<double>(p8[i]) - p32[i]);
+    moved += std::fabs(static_cast<double>(p32[i]));
+  }
+  EXPECT_LT(apart, 0.05 * moved);
+}
+
+TEST(ParallelDeterminism, TheEightBitStepIsThreadCountInvariant) {
+  // Blocks are the unit of work: one block, one chunk. 1, 3 and 8 workers
+  // write the same parameters, codes and scales, bit for bit, over steps
+  // that carry the state and with the fused clip.
+  const size_t n = 100'003;
+  bool done = true;
+  auto run = [&](size_t threads) {
+    ScopedThreads scoped(threads);
+    std::vector<float> p = RandnVector(n, 58);
+    Moments8 s(n);
+    for (uint64_t step = 1; step <= 4; ++step) {
+      const std::vector<float> g = RandnVector(n, 200 + step);
+      done &=
+          Step8(p, g, s, step, step % 2 ? 50.0f : 0.0f) == k::MomentStep::kDone;
+    }
+    return std::pair{p, s};
+  };
+  const auto one = run(1);
+  for (size_t threads : {3, 8}) {
+    const auto wide = run(threads);
+    EXPECT_BITWISE_EQ_F32(wide.first, one.first);
+    EXPECT_TRUE(wide.second == one.second);
+  }
+  // Run to run: the dither has no state to carry between two runs.
+  const auto again = run(1);
+  EXPECT_BITWISE_EQ_F32(again.first, one.first);
+  EXPECT_TRUE(again.second == one.second);
+  EXPECT_TRUE(done);
+}
+
+TEST(ParallelDeterminism, TheEightBitDitherIsKeyedOnTheStepAndTheOperand) {
+  // What makes a resumed run the uninterrupted one: the requantization
+  // draws from (step, operand, element) and from nothing else. One state
+  // stepped with one gradient has the same new moments whatever the step
+  // number — the same scales — and codes them with another draw when the
+  // step number differs, or the operand; the same step and operand twice
+  // are the same bytes. A resumed run that took its step number from
+  // anywhere but the checkpoint would not be bit-identical
+  // (test/system/update_system_test.cc holds that end to end).
+  const size_t n = 4099;
+  const std::vector<float> g1 = RandnVector(n, 301), g2 = RandnVector(n, 302);
+  std::vector<float> p0 = RandnVector(n, 303);
+  Moments8 s0(n);
+  ASSERT_TRUE(Step8(p0, g1, s0, 1) == k::MomentStep::kDone);
+  bool done = true;
+  auto second = [&](uint64_t step, uint64_t operand) {
+    std::vector<float> p = p0;
+    Moments8 s = s0;
+    done &= Step8(p, g2, s, step, 0.0f, 0.01f, operand) == k::MomentStep::kDone;
+    return s;
+  };
+  const Moments8 base = second(2, 8192);
+  EXPECT_TRUE(second(2, 8192) == base);
+  for (const Moments8& other : {second(3, 8192), second(2, 12288)}) {
+    EXPECT_TRUE(other.scales == base.scales);
+    size_t m_differ = 0, v_differ = 0;
+    for (size_t i = 0; i < n; ++i) {
+      // The same moment, another draw: the same level or its neighbour.
+      ASSERT_LE(std::abs(static_cast<int>(other.m[i]) - base.m[i]), 1);
+      ASSERT_LE(std::abs(static_cast<int>(other.v[i]) - base.v[i]), 1);
+      m_differ += other.m[i] != base.m[i];
+      v_differ += other.v[i] != base.v[i];
+    }
+    // Two draws of a coin differ half the time at even odds: of 4099
+    // moments spread across their levels, more than an eighth do.
+    EXPECT_GT(m_differ, n / 8);
+    EXPECT_GT(v_differ, n / 8);
+  }
+  EXPECT_TRUE(done);
 }
 
 }  // namespace

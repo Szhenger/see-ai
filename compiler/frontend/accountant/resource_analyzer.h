@@ -7,6 +7,7 @@
 #include <string>
 
 #include "source/language/model_format.h"
+#include "source/plan/config.h"
 
 // =============================================================================
 // Resource analyzer — fail-fast static feasibility analysis for local
@@ -89,6 +90,17 @@ TrainingFootprint EstimateTrainingFootprint(
 /// estimate a lower bound.
 uint64_t EstimateLoraDeltaBytes(const SmfModel& model,
                                 std::span<const std::string> target_filters);
+
+/// Bytes of AdamW's moment state for the adapters LoRA will graft at `rank`
+/// (S5 #192): A [k, r] and B [r, m] for every adapted [k, m] weight, by the
+/// same eligibility rule as the delta estimate. f32 moments take 8 B a
+/// value; 8-bit ones (plan v27) a byte each for m and v plus two f32 block
+/// scales per kMomentBlock values — 3.94x fewer. Reported beside the bound,
+/// not in it: the bound predates the moments, and counting them now would
+/// move every compile's gate (they are 1-2 % of a LoRA arena, F5 #133).
+uint64_t EstimateMomentBytes(const SmfModel& model,
+                             std::span<const std::string> target_filters,
+                             int64_t rank, MomentsKind moments);
 
 /// The frozen-forward variant, for teacher models under distillation: no
 /// backward pass consumes the activations, so they die at their single

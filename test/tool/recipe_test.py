@@ -14,6 +14,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(REPO, "tool"))
+from seeml import formats  # noqa: E402
+from seeml.content_hash import content_hash64  # noqa: E402
 
 BUILD = os.environ.get("SEEML_BUILD_DIR", os.path.join(REPO, "build"))
 COMPILER = os.path.join(BUILD, "seeml-update-compile")
@@ -105,6 +107,9 @@ class RecipeCliTest(unittest.TestCase):
             (["--steps", " -1"], "--steps (recipe field steps) must be an integer"),
             (["--lora-seed", " -1"], "--lora-seed (recipe field lora_seed)"),
             (["--lora-rank", "5000"], "must be an integer in [1, 4096]"),
+            # #223: the bound the device's header contract holds.
+            (["--grad-accum", "65537"], "--grad-accum (recipe field "
+             "grad_accum) must be an integer in [1, 65536], got '65537'"),
             (["--temperature", "2"], "applies to a distillation loss only"),
             (["--distill-weight", "0.5"], "applies to a distillation loss only"),
             (["--teacher", teacher], "--teacher applies to a distillation loss"),
@@ -161,6 +166,7 @@ class RecipeCliTest(unittest.TestCase):
             ('{"rank": 4}', "unknown field 'rank'"),
             ('{"lora_rank": "4"}', "field 'lora_rank' takes a number"),
             ('{"lora_rank": 9999}', "must be an integer in [1, 4096]"),
+            ('{"grad_accum": 65537}', "must be an integer in [1, 65536]"),
             ('{"steps": 3, "steps": 4}', "field 'steps' appears twice"),
             ('[]', "not a JSON object"),
             # Not JSON's number: json.loads refuses both, and so does this.
@@ -187,6 +193,11 @@ class RecipeCliTest(unittest.TestCase):
         self.assertEqual(fields["loss"]["choices"], "xent|mse|kl|xent+kl")
         self.assertEqual(fields["val_frac"]["min_open"], True)
         self.assertEqual(fields["temperature"]["max"], 1000)
+        # #223: the accumulation's maximum is the load contract's bound.
+        self.assertEqual(fields["grad_accum"]["max"],
+                         formats.load_abi()["seeu"]["max_grad_accum_steps"])
+        self.assertEqual(fields["grad_accum"]["max"],
+                         formats.MAX_GRAD_ACCUM_STEPS)
         # Every flag the schema names is one the compiler's usage lists.
         usage = subprocess.run([COMPILER, "--help"], capture_output=True,
                                text=True).stderr
@@ -252,52 +263,63 @@ class RunnerFlagsTest(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr[-1500:])
         with open(ckpt, "rb") as f:
             own = f.read()
-        # This plan's checkpoint is a resume, bound to the first run's seed.
+        # This plan's checkpoint is a resume, bound to the first run's seed:
+        # another is a refused checkpoint (exit 1, CR4 #221), not a usage
+        # error — the refusal needs the corpus and the file read.
         r = self.update("--checkpoint", ckpt, "--resume", "--seed", "2",
                         "--force")
-        self.assertEqual(r.returncode, 2, r.stderr[-1500:])
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
         self.assertIn("--resume refused", r.stderr)
-        # The same record bound to another plan (the SEKP header's plan-hash
-        # word, bytes 8..15) is one the engine's load refuses before it
-        # starts fresh: it binds this run to nothing, so another seed is no
-        # usage error ...
+        # --resume is strict (CR4 #221): the same record bound to another
+        # plan (the SEKP header's plan-hash word, bytes 8..15, the header
+        # resealed so its integrity hash holds) is refused by name, exit 1,
+        # and the file left as it was — never a fresh run over it.
         stale = os.path.join(self.dir, "stale.ckpt")
         other = bytearray(own)
         other[8] ^= 0xFF
+        at = formats.SEKP_HEADER_BYTES - 8
+        head = bytearray(other[:formats.SEKP_HEADER_BYTES])
+        head[at:at + 8] = bytes(8)
+        other[at:at + 8] = content_hash64(bytes(head)).to_bytes(8, "little")
         with open(stale, "wb") as f:
             f.write(other)
         r = self.update("--checkpoint", stale, "--resume", "--seed", "2",
                         "--force")
-        self.assertEqual(r.returncode, 0, r.stderr[-1500:])
-        self.assertIn("no checkpoint resumed", r.stderr)
-        self.assertNotIn("--resume refused", r.stderr)
-        # ... and the fresh run's --steps rule is the one that holds.
-        with open(stale, "wb") as f:
-            f.write(other)
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
+        self.assertIn("belongs to a different plan", r.stderr)
+        with open(stale, "rb") as f:
+            self.assertEqual(f.read(), bytes(other))
+        # Refused before the rules a resume changes: the fresh run's --steps
+        # rule never gets to speak for a file that is there.
         r = self.update("--checkpoint", stale, "--resume", "--seed", "2",
+                        "--steps", "3")
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
+        self.assertIn("belongs to a different plan", r.stderr)
+        # With no file at the path there is nothing to resume: a fresh run,
+        # whose --steps rule holds.
+        absent = os.path.join(self.dir, "absent.ckpt")
+        r = self.update("--checkpoint", absent, "--resume", "--seed", "2",
                         "--steps", "3")
         self.assertEqual(r.returncode, 2, r.stderr[-1500:])
         self.assertIn("must exceed the plan's compiled warmup", r.stderr)
         # A resume's --steps counts further steps: from step 6, two more
         # end at 8, past the warmup, and the engine's rule admits it.
-        with open(ckpt, "wb") as f:
-            f.write(own)
         r = self.update("--checkpoint", ckpt, "--resume", "--seed", "1",
                         "--steps", "2", "--force")
         self.assertEqual(r.returncode, 0, r.stderr[-1500:])
-        self.assertNotIn("no checkpoint resumed", r.stderr)
-        # A checkpoint of this plan that does not load (truncated): the
-        # peek calls it a resume, the engine starts fresh — and the engine's
-        # own warmup rule refuses the 2-step horizon the runner's early
-        # check could not see.
+        self.assertNotIn("nothing to resume", r.stderr)
+        # A checkpoint of this plan that does not load (truncated) is
+        # refused, exit 1, and left as it was.
         broken = os.path.join(self.dir, "broken.ckpt")
         with open(broken, "wb") as f:
             f.write(own[:200])
         r = self.update("--checkpoint", broken, "--resume", "--seed", "1",
                         "--steps", "2", "--force")
-        self.assertNotEqual(r.returncode, 0, r.stderr[-1500:])
-        self.assertIn("does not exceed the plan's compiled warmup", r.stderr)
-
+        self.assertEqual(r.returncode, 1, r.stderr[-1500:])
+        self.assertIn("--resume refused", r.stderr)
+        self.assertIn("truncated checkpoint", r.stderr)
+        with open(broken, "rb") as f:
+            self.assertEqual(f.read(), own[:200])
 
 if __name__ == "__main__":
     unittest.main()

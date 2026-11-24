@@ -64,7 +64,12 @@ struct TrainOptions {
   std::string checkpoint_path;    // empty = no checkpointing
   uint64_t checkpoint_every = 0;  // steps between checkpoints (0 = off)
   uint64_t log_every = 100;       // steps between loss log lines (0 = quiet)
-  bool resume = false;            // load checkpoint_path before training
+  // Load checkpoint_path before training. Strict (CR4 #221): no file at the
+  // path is a fresh run; a file that is there and cannot be resumed — not a
+  // checkpoint, corrupt, an older format, another plan's, another corpus's,
+  // split's, seed's or backend's, or one whose stored losses the engine
+  // does not re-measure to the bit — fails Train, and is left as it was.
+  bool resume = false;
 
   // The LR schedule's horizon, in optimizer steps (E8, #91). 0 = derive it
   // from the run, which is what every ordinary caller wants:
@@ -167,6 +172,15 @@ struct TrainReport {
   uint64_t checkpoint_bytes = 0;
   uint64_t checkpoint_fsyncs = 0;
   bool stopped_by_patience = false;
+  // CR4 #221. A stopped run: whether the checkpoint file holds the state
+  // the run stopped at (false with no checkpoint path, and for a fresh run
+  // stopped before its first step, which wrote none). resumed_step is the
+  // step the call resumed a checkpoint at (0 = it resumed none), and
+  // resume_evaluations the validation passes that resume spent re-measuring
+  // the gate's stored losses (the source model's, and the best state's).
+  bool stop_checkpointed = false;
+  uint64_t resumed_step = 0;
+  uint64_t resume_evaluations = 0;
   uint64_t eval_every = 0;
   uint64_t patience = 0;
 
@@ -378,9 +392,36 @@ class UpdateEngine {
   /// and fully usable.
   [[nodiscard]] std::expected<void, std::string> Initialize(
       const uint8_t* plan, size_t plan_size, RelaxedPlanPermit permit);
+  /// The resume of TrainOptions::checkpoint_path (CR4 #221): loads it, holds
+  /// it to the run (step, binding, backend, corpus, split, horizon,
+  /// patience), replays the feeder to its step and re-measures the gate's
+  /// stored losses. Any refusal names its reason.
+  [[nodiscard]] std::expected<void, std::string> ResumeFromCheckpoint(
+      Dataset& data, const TrainOptions& options, bool explicit_steps);
+  /// Scores the source state and the best state on `validation` and holds
+  /// the checkpoint's stored losses and accuracies to those bits; the
+  /// persistent segment is byte for byte what it was when this returns.
+  [[nodiscard]] std::expected<void, std::string> RemeasureGate(
+      Dataset& validation, const std::string& path);
   /// The training loop itself; Train wraps it with the diagnostics contract.
   [[nodiscard]] std::expected<TrainReport, std::string> TrainImpl(
       Dataset& data, uint64_t steps, const TrainOptions& options);
+  /// TrainImpl's phases, in the order it runs them (S8 #154). Whether a
+  /// checkpoint was resumed; the step count of this call, with the run's
+  /// horizon decided; the gate's baseline and the first best state; the
+  /// steps, with their periodic evaluations and checkpoints; the bracketing
+  /// evaluation and the best-state restore.
+  [[nodiscard]] std::expected<bool, std::string> ResumeIfAsked(
+      Dataset& data, const TrainOptions& options, bool explicit_steps);
+  [[nodiscard]] std::expected<uint64_t, std::string> DecideStepsAndHorizon(
+      uint64_t steps, bool explicit_steps, const TrainOptions& options);
+  [[nodiscard]] std::expected<void, std::string> OpenValidation(
+      const TrainOptions& options, bool track_best, TrainReport* report);
+  [[nodiscard]] std::expected<void, std::string> RunSteps(
+      Dataset& data, uint64_t steps, const TrainOptions& options,
+      bool track_best, bool from_checkpoint, TrainReport* report);
+  [[nodiscard]] std::expected<void, std::string> CloseValidation(
+      const TrainOptions& options, bool track_best, TrainReport* report);
   [[nodiscard]] std::expected<void, std::string> ValidateDataset(
       Dataset& data) const;
   /// Dispatches [begin, end) of `program` through the backend and flushes
@@ -457,11 +498,22 @@ class UpdateEngine {
     uint64_t shuffle_origin = 0;
     uint64_t train_samples = 0;
     uint64_t val_samples = 0;
+    // v6 (CR4 #221): the corpus's and the split's identity as the datasets
+    // name them (0 = unnamed), and the backend (kCkptBackend*).
+    uint64_t corpus_hash = 0;
+    uint64_t split_hash = 0;
+    uint32_t backend = 0;
   } binding_;
-  GateState gate_;  // the source model's score, the best state, patience
-  double eval_seconds_ = 0.0;  // accumulated by EvaluateMetrics
-  uint64_t num_classes_ = 0;   // softmax width, 0 = no class loss
-  uint64_t vocab_bound_ = 0;   // narrowest embedding table, 0 = none
+  /// The binding a run over these datasets on this backend carries.
+  RunBinding BindingOf(const Dataset& data, const Dataset* validation) const;
+  /// This engine's backend as a checkpoint names it.
+  uint32_t CheckpointBackend() const;
+  GateState gate_;       // the source model's score, the best state, patience
+  LossWindows windows_;  // the train-loss gate's windows, the run's
+  uint64_t resume_evaluations_ = 0;  // RemeasureGate's passes, this call
+  double eval_seconds_ = 0.0;        // accumulated by EvaluateMetrics
+  uint64_t num_classes_ = 0;         // softmax width, 0 = no class loss
+  uint64_t vocab_bound_ = 0;         // narrowest embedding table, 0 = none
   bool merged_ = false;
 
   // Where the eval program materializes its softmax probabilities — the

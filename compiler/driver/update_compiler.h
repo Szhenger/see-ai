@@ -151,6 +151,10 @@ struct CompiledUpdate {
   std::vector<uint8_t> corpus_sds;
   std::string corpus_manifest;
   bool corpus_from_sds = false;
+  // Under a compiled split, the held-out records byte-identical to a
+  // training record (#222): 0 for raw text, whose duplicate windows are
+  // dropped before the split; what a given SDS holds otherwise.
+  uint64_t corpus_held_out_twins = 0;
   // What the compile did, as numbers with units and derivations: the
   // console screens and the report's "screens" are renderings of these.
   CompileScreens screens;

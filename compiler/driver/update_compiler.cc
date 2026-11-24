@@ -103,8 +103,9 @@ struct Compilation {
   int64_t in_dim = 0;
   std::optional<tokenization::CorpusIngress> corpus;
   bool masked_loss = false;
-  bool segment_mask = false;     // the decision (DecideSegmentMask)
-  std::string segment_mask_why;  // and its reason, for the screen
+  bool segment_mask = false;       // the decision (DecideSegmentMask)
+  std::string segment_mask_why;    // and its reason, for the screen
+  int32_t segment_separator = -1;  // the id the mask scans for (#218)
   TrainingFootprint footprint;
   AttentionKind attention = AttentionKind::kAuto;
   sir::Block block;
@@ -137,6 +138,7 @@ struct Compilation {
   Rematerialization remat;
   PlanPrograms programs;
   uint64_t relaxed_gemms = 0, relaxed_attention = 0;
+  uint64_t moment_steps = 0;  // kAdamW8Step instructions (#192, v27)
   std::unordered_set<const sir::Value*> shipped;
   PlanHeader header;
   uint32_t recorded_accum = 1;
@@ -404,12 +406,14 @@ Status Compilation::IngestData() {
         tokenization::LabelsOf(
             config_.loss, static_cast<uint64_t>(topology->output.dims.at(1))),
         static_cast<uint64_t>(batch) * config_.grad_accum_steps,
-        config_.default_steps);
+        config_.default_steps,
+        tokenization::SplitRequest{config_.val_frac, config_.split_seed});
     if (!c) return std::unexpected(c.error());
     corpus = std::move(*c);
-    // The compiled split (S3 #149): the held-out records drawn here, by
-    // the function the device recomputes; the plan carries the seed, the
-    // fraction and the indices' hash.
+    // The compiled split (S3 #149): the held-out records drawn by the
+    // ingress, by the function the device recomputes, with the held-out
+    // twins counted there (#222); the plan carries the seed, the fraction
+    // and the indices' hash.
     if (config_.val_frac != 0.0f) {
       if (!(config_.val_frac > 0.0f && config_.val_frac < 1.0f))
         return generating::Error(generating::kDriver,
@@ -417,18 +421,13 @@ Status Compilation::IngestData() {
       if (corpus->facts.records < 2)
         return generating::Error(generating::kDriver,
                                  "a held-out split needs at least two records");
-      const std::vector<uint64_t> held = HeldOutIndices(
-          corpus->facts.records, config_.split_seed, config_.val_frac);
-      corpus->facts.val_records = held.size();
-      corpus->facts.split_seed = config_.split_seed;
-      corpus->facts.val_split_hash = SplitHash(held);
-      corpus->facts.split = true;
       // The epoch arithmetic is over the records the plan trains on: the
       // held-out ones are scored, not stepped through. Both rows scale
       // with the record count (batches per epoch with it, epochs covered
       // against it).
       const double train_share =
-          static_cast<double>(corpus->facts.records - held.size()) /
+          static_cast<double>(corpus->facts.records -
+                              corpus->facts.val_records) /
           static_cast<double>(corpus->facts.records);
       corpus->facts.batches_per_epoch *= train_share;
       corpus->facts.epochs_covered /= train_share;
@@ -482,35 +481,33 @@ Status Compilation::DecideSegmentMask() {
   // inputs give identical plan bytes; a compile with no corpus decides
   // nothing and stays unmasked. `auto` never refuses: where it cannot mask
   // it says why and compiles the unmasked plan.
-  int32_t eos = -1;
-  if (!source.tokenizer.empty())
-    if (auto head = tokenizer::ReadSmtkHead(source.tokenizer))
-      eos = head->eos_id;
-  // #218: the mask finds documents by the EOS id, and on a checkpoint whose
-  // EOS is the chat template's turn end (<|im_end|>, the instruct variants)
-  // a chat record holds that id inside itself, after every turn — whether
-  // it came as a prompt/response record or as plain text already rendered
-  // in ChatML (a literal special-token string encodes to its id). Masked
-  // there, every response would be hidden from its own prompt, and no
-  // corpus can tell a turn end from a document end when they are one id.
-  // So on such a model nothing is masked: `auto` says why and compiles
-  // unmasked, `on` is refused. (A section that does not load — a head-only
-  // one — names no such marker.) The stopgap: the fix is starts from the
-  // pack stage's document boundaries instead of the raw EOS.
-  bool turns_in_records = false;
-  if (eos >= 0)
-    if (auto tok = tokenizer::ByteLevelBpe::Load(source.tokenizer))
-      turns_in_records = tokenizer::EosEndsChatTurns(*tok);
+  // The mask finds documents by the document separator (#218), the id the
+  // pack stage joins them with: the EOS, or <|endoftext|> on a checkpoint
+  // whose EOS is the chat template's turn end (<|im_end|>, the instruct
+  // variants), which a chat record holds after every turn — whether it came
+  // as a prompt/response record or as plain text already rendered in
+  // ChatML (a literal special-token string encodes to its id). One case
+  // stays guarded: an <|im_end|> EOS with no <|endoftext|> in the
+  // vocabulary, where a turn end and a document end are one id and no
+  // corpus can tell them apart. Masked there, every response would be
+  // hidden from its own prompt, so nothing is masked: `auto` says why and
+  // compiles unmasked, `on` is refused. (A section that does not load — a
+  // head-only one — names no token texts, and its EOS is the separator.)
+  const tokenizer::DocumentSeparator separator =
+      tokenizer::FindDocumentSeparator(source.tokenizer);
+  const bool turns_in_records = separator.is_turn_end;
+  segment_separator = separator.id;
   switch (config_.segment_mask) {
     case SegmentMaskKind::kOn:
       if (turns_in_records)
         return generating::Error(
             generating::kDriver,
             "--segment-mask on with a model whose EOS is the chat template's "
-            "turn end (<|im_end|>): the mask finds documents by the EOS, "
-            "which a chat record holds after every turn, and would hide "
-            "every response from its own prompt (#218); compile with "
-            "--segment-mask off");
+            "turn end (<|im_end|>) and whose vocabulary has no "
+            "<|endoftext|> to separate documents by: the mask would find "
+            "documents by the turn end, which a chat record holds after "
+            "every turn, and would hide every response from its own prompt "
+            "(#218); compile with --segment-mask off");
       segment_mask = true;  // a model with no EOS is refused by the pass
       segment_mask_why = "asked for";
       break;
@@ -524,12 +521,13 @@ Status Compilation::DecideSegmentMask() {
         segment_mask_why.clear();  // nothing to decide on, nothing to say
       } else if (!topology->token_input) {
         segment_mask_why = "not a token model";
-      } else if (eos < 0) {
+      } else if (separator.id < 0) {  // only when it names no EOS
         segment_mask_why = "the model's tokenizer section names no EOS id";
       } else if (turns_in_records) {
         segment_mask_why =
             "the model's EOS (<|im_end|>) also ends each turn of a chat "
-            "record, and a turn is not a document";
+            "record, a turn is not a document, and the vocabulary has no "
+            "<|endoftext|> to separate documents by";
       } else if (corpus->facts.multi_document_windows == 0) {
         segment_mask_why =
             "no window of the corpus holds more than one "
@@ -640,6 +638,15 @@ Status Compilation::ProveFootprint() {
     acc.footprint_deltas = footprint.delta_bytes;
     acc.footprint_caches = footprint.probs_cache_bytes;
     acc.footprint_total = footprint.total_bytes();
+    if (config_.optimizer.kind == OptimizerKind::kAdamW &&
+        config_.optimizer.moments == MomentsKind::kInt8) {
+      acc.footprint_moments =
+          EstimateMomentBytes(source, config_.lora.target_filters,
+                              config_.lora.rank, MomentsKind::kInt8);
+      acc.footprint_moments_f32 =
+          EstimateMomentBytes(source, config_.lora.target_filters,
+                              config_.lora.rank, MomentsKind::kF32);
+    }
     acc.memory_budget = config_.memory_budget_bytes != 0
                             ? config_.memory_budget_bytes
                             : DetectLocalMemoryBytes();
@@ -834,12 +841,13 @@ Status Compilation::StructuralPasses() {
     if (segment_mask)
       pm.Add("segment-mask",
              [this](sir::Block& b) -> std::expected<void, std::string> {
-        auto head = tokenizer::ReadSmtkHead(source.tokenizer);
-        if (source.tokenizer.empty() || !head || head->eos_id < 0)
+        // The document separator DecideSegmentMask found (#218): the id
+        // the pack stage joined the documents with.
+        if (segment_separator < 0)
           return std::unexpected(std::string(
               "segment mask: the model's tokenizer section names no "
               "EOS id to find document boundaries by"));
-        auto masked = SegmentMasker(build.input, head->eos_id).Run(b);
+        auto masked = SegmentMasker(build.input, segment_separator).Run(b);
         if (!masked) return std::unexpected(masked.error());
         facts.segment_masked_ops = *masked;
         return {};
@@ -886,10 +894,10 @@ Status Compilation::CalculusPasses() {
     // then get the folds and no step).
     if (config_.emit_optimizer || accum > 1)
       pm.Add("optimizer", [&](sir::Block& b) {
-        return OptimizerSynthesizer(config_.optimizer.kind,
-                                    config_.optimizer.clip_norm, accum,
-                                    config_.emit_optimizer, config_.fuse_clip,
-                                    config_.optimizer.clip_global)
+        return OptimizerSynthesizer(
+                   config_.optimizer.kind, config_.optimizer.clip_norm, accum,
+                   config_.emit_optimizer, config_.fuse_clip,
+                   config_.optimizer.clip_global, config_.optimizer.moments)
             .Run(b, param_grads);
       });
     if (auto ok = pm.Run(block); !ok) return std::unexpected(ok.error());
@@ -1229,7 +1237,7 @@ Status Compilation::LowerTrain() {
       // (kClipNorm precedes the step only with fuse_clip off.)
       return op == OpCode::kClipNorm || op == OpCode::kSqNormAccum ||
              op == OpCode::kClipGlobal || op == OpCode::kSgdStep ||
-             op == OpCode::kAdamWStep;
+             op == OpCode::kAdamWStep || op == OpCode::kAdamW8Step;
     };
     auto split =
         std::find_if(train_instrs->begin(), train_instrs->end(), is_step);
@@ -1247,6 +1255,10 @@ Status Compilation::LowerTrain() {
   }
   programs.train = std::move(*train_instrs);
   programs.step = std::move(step_instrs);
+  for (const auto* program : {&programs.train, &programs.step})
+    for (const UpdateInstruction& ins : *program)
+      if (ins.opcode == static_cast<uint16_t>(OpCode::kAdamW8Step))
+        ++moment_steps;
   return {};
 }
 
@@ -1326,6 +1338,11 @@ Status Compilation::LowerEvalAndMerge() {
 }
 
 Status Compilation::FillHeader() {
+  // The oldest version whose vocabulary the plan uses, from v26 on (#192):
+  // a plan without 8-bit moments is the v26 plan, byte for byte, and every
+  // v26 runtime still runs it.
+  header.version =
+      moment_steps ? kSeeuInt8MomentsVersion : kSeeuPreInt8MomentsVersion;
   header.arena_size = AlignUp(binding->arena_size);
   header.persistent_size = binding->persistent_size;
   header.input_ref = binding->refs.at(build.input);
@@ -1519,6 +1536,7 @@ Status Compilation::ReportSummary() {
     result.corpus_sds = std::move(corpus->sds);
     result.corpus_manifest = std::move(corpus->manifest_json);
     result.corpus_from_sds = corpus->from_sds;
+    result.corpus_held_out_twins = corpus->facts.held_out_twins;
   }
   if (config_.adapter_only)
     seeml::diag::Note(generating::kDriver,
@@ -1584,6 +1602,15 @@ Status Compilation::ReportSummary() {
   facts.attention_ops = attention_decision.attention_ops;
   facts.segment_mask = segment_mask;
   facts.segment_mask_why = segment_mask_why;
+  facts.moment_steps = moment_steps;
+  facts.moment_bytes = 0;
+  if (moment_steps != 0)
+    for (const ParamInit& pi : binding->params) {
+      const std::string_view id = pi.value->id();
+      if (id.ends_with(".adam_m") || id.ends_with(".adam_v") ||
+          id.ends_with(".adam_scales"))
+        facts.moment_bytes += pi.bytes;
+    }
   FillCompileScreens(facts, config_, result);
 
   // Backend boundary: the assembled plan must be internally consistent with
@@ -1653,9 +1680,20 @@ std::vector<uint8_t> Compilation::BuildMetadata() {
   std::vector<LedgerEntry> ledger;
   for (const PassTiming& t : timings)
     for (const Reason& r : kExactPasses)
-      if (t.name == r.pass)
+      if (t.name == r.pass) {
         ledger.push_back(
             MakeLedgerEntry(r.pass, kLedgerExact, 0, r.did ? r.why : r.idle));
+        // 8-bit moments (#192): the optimizer pass stored AdamW's state
+        // narrower — a quantization, opt-in, whose rule every backend and
+        // the oracle share and whose unbiased rounding is deterministic
+        // given the step and the element. It changes arithmetic, so
+        // its own line follows the pass that emitted it.
+        if (r.pass == "optimizer" && moment_steps != 0)
+          ledger.push_back(MakeLedgerEntry(
+              "moments-int8", kLedgerQuantized,
+              static_cast<uint32_t>(moment_steps),
+              "AdamW m, v 8-bit, block 256: log2/8, unbiased dither"));
+      }
   // The one pass that changes arithmetic: the precision assignment puts
   // frozen-weight GEMMs and tiled attention on relaxed kernels, and the
   // reason says how many of each.

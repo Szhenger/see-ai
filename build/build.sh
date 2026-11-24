@@ -138,6 +138,10 @@ compile test/support/models.cc                fixtures_models.o
 compile test/support/corpora.cc               fixtures_corpora.o
 compile test/support/probes.cc                fixtures_probes.o
 compile test/support/metal_gemm_source.cc     metal_gemm_source.o
+# The fuzz harness as an ordinary object (CR3 #208): the replay suite links
+# it and runs the seed corpus through its entry point, so every build
+# compiles what the libFuzzer build (CMake's -DSEEML_FUZZ=ON) compiles.
+compile test/fuzz/binary_formats.cc           fuzz_formats.o
 
 LIBS="build/model_format.o build/model_reader.o build/export_report.o build/model_writer.o \
       build/resource_analyzer.o build/corpus_ingress.o \
@@ -181,7 +185,7 @@ eval "$CXX -pthread build/seeml_abi.o -o build/seeml-abi"
 echo "  LINK seeml-tokenize"
 # The core's tokenizer over an SMF model's section (S2 #148): the parity
 # harness and the frontend's data path call the same encoder.
-eval "$CXX -pthread build/seeml_tokenize.o build/tokenizer_bpe.o build/model_format.o build/model_reader.o build/parallel_for.o build/logger.o -o build/seeml-tokenize"
+eval "$CXX -pthread build/seeml_tokenize.o build/tokenizer_bpe.o build/tokenizer_ingest.o build/model_format.o build/model_reader.o build/parallel_for.o build/logger.o -o build/seeml-tokenize"
 echo "  LINK seeml-plan-probe"
 # The frontier executor's C++ oracle (tool/frontier_exec.py, P4): one plan
 # section through one executor backend, every write traced.
@@ -217,10 +221,12 @@ for suite in \
     runtime/verifier/verifier_test \
     runtime/storage/storage_test \
     runtime/dispatcher/engine_test runtime/dispatcher/update_engine_test \
-    system/update_system_test; do
+    system/update_system_test fuzz/fuzz_replay_test; do
   name="seeml_$(basename "$suite")"
   echo "  CXX+LINK $name"
   eval "$CXX $FLAGS -c 'test/$suite.cc' -o 'build/$name.o'"
-  eval "$CXX -pthread 'build/$name.o' $TESTING $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o 'build/$name'"
+  extra=""
+  if [ "$name" = seeml_fuzz_replay_test ]; then extra="build/fuzz_formats.o"; fi
+  eval "$CXX -pthread 'build/$name.o' $extra $TESTING $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o 'build/$name'"
 done
 echo "build complete"

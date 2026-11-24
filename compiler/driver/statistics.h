@@ -57,6 +57,11 @@ struct AccountantFacts {
   uint64_t footprint_deltas = 0;
   uint64_t footprint_caches = 0;
   uint64_t footprint_total = 0;
+  // 8-bit moments (#192): AdamW's moment state, estimated beside the bound
+  // and not in it — at the storage compiled, and as f32 would hold it.
+  // Zero (and no screen row) for a plan with f32 moments.
+  uint64_t footprint_moments = 0;
+  uint64_t footprint_moments_f32 = 0;
   uint64_t memory_budget = 0;  // configured, else the host's memory
   // Adapter-only: the frozen weights are read from the model file, so the
   // bound counts none of them.
@@ -78,8 +83,11 @@ struct CorpusFacts {
   uint64_t bidi_controls = 0;
   uint64_t remainder_tokens = 0;    // ids the last partial window dropped
   uint64_t straddling_windows = 0;  // windows holding a document boundary
+  uint64_t dropped_duplicate_windows = 0;  // byte-identical windows (#222)
   // Every token corpus, when the model's tokenizer names an EOS (#191): the
-  // records in which that id falls before the last input position — the
+  // records in which the document separator (the EOS, or <|endoftext|>
+  // when the EOS ends a chat turn: #218) falls before the last input
+  // position — the
   // windows holding more than one document, which is to say the windows a
   // segment mask changes. Counted from the ids themselves, so a given SDS
   // and the raw text it was made from agree. What `--segment-mask auto`
@@ -106,6 +114,10 @@ struct CorpusFacts {
   uint64_t val_records = 0;
   uint64_t split_seed = 0;
   uint64_t val_split_hash = 0;
+  // Held-out records byte-identical to a training record (#222): zero by
+  // construction for raw text, whose duplicate windows are dropped before
+  // the split; a stated fact for a given SDS, which is never modified.
+  uint64_t held_out_twins = 0;
 };
 
 struct FrontendStats {
@@ -148,6 +160,10 @@ struct CompileFacts {
   uint64_t epilogue_bytes_removed = 0;  // intermediates no longer written
   uint64_t addend_bytes_removed = 0;
   uint64_t chain_bytes_removed = 0;
+  // 8-bit moments (#192): the moment steps the plan carries and the
+  // persistent bytes of their codes and scales, as bound.
+  uint64_t moment_steps = 0;
+  uint64_t moment_bytes = 0;
   // Backend (S6 #152): the five largest values the arena holds.
   std::vector<TensorFact> largest_tensors;
 };

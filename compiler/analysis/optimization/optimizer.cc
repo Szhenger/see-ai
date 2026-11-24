@@ -5,6 +5,8 @@
 #include <utility>
 #include <vector>
 
+#include "source/plan/instruction.h"
+
 namespace seeml::update {
 
 namespace sir = seeml::sir;
@@ -85,18 +87,34 @@ std::expected<void, std::string> OptimizerSynthesizer::Run(
       continue;
     }
     // AdamW: declare persistent first/second moment state (zero-initialized,
-    // checkpointed with the adapters), then the in-place fused step.
+    // checkpointed with the adapters), then the in-place fused step. With
+    // 8-bit moments (#192) m and v are one byte a value (int8 / uint8 codes;
+    // SIR's I8 is the byte width) and a third state value holds the block
+    // scales; all-zero bytes are the zero moments, as zero floats are.
+    const bool int8 = moments_ == MomentsKind::kInt8;
+    const sir::DataType state = int8 ? sir::DataType::I8 : sir::DataType::F32;
     sir::Operation* m_op = block.appendOp("sc_mem.param");
     m_op->setAttribute("trainable", int64_t{0});
     m_op->setAttribute("init", std::string("zeros"));
-    sir::Value* m = m_op->addResult(std::string(p->id()) + ".adam_m",
-                                    sir::DataType::F32, p->shape());
+    sir::Value* m =
+        m_op->addResult(std::string(p->id()) + ".adam_m", state, p->shape());
 
     sir::Operation* v_op = block.appendOp("sc_mem.param");
     v_op->setAttribute("trainable", int64_t{0});
     v_op->setAttribute("init", std::string("zeros"));
-    sir::Value* v = v_op->addResult(std::string(p->id()) + ".adam_v",
-                                    sir::DataType::F32, p->shape());
+    sir::Value* v =
+        v_op->addResult(std::string(p->id()) + ".adam_v", state, p->shape());
+
+    sir::Value* scales = nullptr;
+    if (int8) {
+      const uint64_t count = static_cast<uint64_t>(p->shape().volume());
+      sir::Operation* s_op = block.appendOp("sc_mem.param");
+      s_op->setAttribute("trainable", int64_t{0});
+      s_op->setAttribute("init", std::string("zeros"));
+      scales = s_op->addResult(
+          std::string(p->id()) + ".adam_scales", sir::DataType::F32,
+          sir::Shape{static_cast<int64_t>(2 * MomentBlocks(count))});
+    }
 
     sir::Operation* step = block.appendOp("sc_low.adamw_step");
     if (fused) step->setAttribute("clip_norm", clip_norm_);
@@ -104,6 +122,7 @@ std::expected<void, std::string> OptimizerSynthesizer::Run(
     step->addOperand(g);
     step->addOperand(m);
     step->addOperand(v);
+    if (scales) step->addOperand(scales);
     // The accumulator restarts from zero for the next G micro-batches.
     if (accumulate) block.appendOp("sc_low.zero")->addOperand(g);
   }

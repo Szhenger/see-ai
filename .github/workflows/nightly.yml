@@ -7,8 +7,10 @@
 #                     engines on the shared pool, pipeline teardown, chunk
 #                     exceptions) execute with the race detector watching,
 #                     turning "bounded behavior" from assertion into proof
-#   extended fuzz     15 minutes over the four untrusted-input arms, with
-#                     the corpus carried between runs via the actions cache
+#   extended fuzz     15 minutes over the nine untrusted-input arms, from
+#                     the checked-in seeds and the corpus carried between
+#                     runs via the actions cache; a slow unit, an OOM or a
+#                     crash ends the job failed with its input uploaded
 #   bench             the Tier A throughput gate: seeml-bench against the
 #                     last green night on the same host (cached per host
 #                     and measuring setup) and the host's epoch pinned in
@@ -295,28 +297,70 @@ jobs:
             sleep 20
           done
           exit 1
+      # Restore only: actions/cache's own post-step save is skipped when
+      # the job is cancelled, which lost three nights of corpus (CR3 #207).
+      # The save is its own step below, on always(). The key is v2: the
+      # harness's selector byte went from four arms to nine (CR3 #208), so
+      # a v1 unit selects another arm than the one it was kept for.
       - name: Restore corpus
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: corpus
-          key: fuzz-corpus-${{ github.run_id }}
-          restore-keys: fuzz-corpus-
+          key: fuzz-corpus-v2-${{ github.run_id }}
+          restore-keys: fuzz-corpus-v2-
       - name: Configure
         run: cmake -S . -B build-fuzz -DSEEML_FUZZ=ON
       - name: Build harness
         run: cmake --build build-fuzz -j "$(nproc)" --target seeml_fuzz_formats
       - name: Fuzz
+        # Below the job's limit (CR3 #207): three nights running the runner
+        # cancelled the job at 30 minutes with a unit still in flight, and
+        # a cancel uploads nothing. A step that times out is a FAILED step,
+        # and the steps below still run. 18: the 15 minutes, one unit at its
+        # limit and the corpus load; a slow toolchain pin (6) and the build
+        # (1) still leave the upload and the save their time.
+        timeout-minutes: 18
         run: |
+          # The checked-in seeds every night, over whatever the cache held
+          # (a cold cache starts from them; after a plan-version bump they
+          # are the only plans the loader still takes). libFuzzer names its
+          # own units by hash, so a seed's name never collides with one.
           mkdir -p corpus
+          cp -r test/fuzz/seeds/. corpus/
+          # -timeout / -rss_limit_mb: the harness bounds every unit's work
+          # (milliseconds on the seeds; its caps allow seconds at -O0 under
+          # ASan), so a unit past 25 s or 2 GiB is a finding: libFuzzer
+          # writes it out (timeout-*, oom-*) and exits non-zero. Its default
+          # timeout, 1200 s, outlived the job.
           ./build-fuzz/seeml_fuzz_formats -max_total_time=900 \
-            -print_final_stats=1 corpus
-      - name: Upload crashes
-        if: failure()
+            -timeout=25 -rss_limit_mb=2048 \
+            -print_final_stats=1 corpus 2>&1 | tee fuzz.log
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Keep the log's tail
+        if: always()
+        run: tail -n 400 fuzz.log > fuzz-tail.log || true
+      - name: Upload findings
+        # always(): a cancelled job is not a failed one. Every prefix
+        # libFuzzer names a finding by, and the log's tail.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-fuzz-crashes
-          path: crash-*
+          name: nightly-fuzz-findings
+          path: |
+            crash-*
+            timeout-*
+            oom-*
+            slow-unit-*
+            leak-*
+            fuzz-tail.log
           if-no-files-found: ignore
+      - name: Save corpus
+        # Passed, failed or cancelled: what tonight explored is kept.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-v2-${{ github.run_id }}
 
   # The Tier A regression gate of docs/benchmarks.md: run the harness, diff
   # against the last green night's numbers (carried by the actions cache,

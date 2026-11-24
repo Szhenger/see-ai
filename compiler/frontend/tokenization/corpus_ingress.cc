@@ -9,6 +9,7 @@
 #include "compiler/diagnostics/tokenizing/error.h"
 #include "runtime/pipeline/dataset.h"
 #include "runtime/storage/durable_io.h"
+#include "source/contract/split.h"
 #include "source/identity/hash.h"
 #include "source/tokenizer/byte_level_bpe.h"
 #include "source/tokenizer/text_ingest.h"
@@ -50,21 +51,23 @@ const char* LabelKindName(uint32_t kind) {
 /// table (every id is below the table once HoldToModel has run).
 void FillCommon(const Dataset& ds, const sema::Topology& topology,
                 uint64_t rows_per_step, uint64_t steps,
-                std::optional<uint64_t> distinct_ids, int32_t eos,
+                std::optional<uint64_t> distinct_ids, int32_t separator,
                 CorpusFacts& f) {
   f.records = ds.num_samples();
   if (ds.input_kind() == 1) {
     const uint64_t seq = ds.input_dim();
     // The windows a segment mask changes (#191): a record of S + 1 ids
-    // whose EOS falls at an input position before the last, so that some
-    // later position's document starts after position 0. An EOS at the
-    // last input position, or as the final label, masks nothing.
-    if (eos >= 0 && seq >= 2) {
+    // whose document separator (the EOS, or <|endoftext|> on a model whose
+    // EOS ends a chat turn: #218) falls at an input position before the
+    // last, so that some later position's document starts after position
+    // 0. A separator at the last input position, or as the final label,
+    // masks nothing.
+    if (separator >= 0 && seq >= 2) {
       f.eos_known = true;
       uint64_t at = 0;
       bool multi = false;
       ds.each_token([&](int32_t id) {
-        if (at + 1 < seq && id == eos) multi = true;
+        if (at + 1 < seq && id == separator) multi = true;
         if (++at == seq + 1) {
           if (multi) ++f.multi_document_windows;
           at = 0;
@@ -177,6 +180,23 @@ std::expected<void, std::string> HoldToModel(const Dataset& ds,
   return {};
 }
 
+/// The compiled split over `ds`, when one was asked for and can be drawn
+/// (the driver refuses the others by name): the held-out indices by the
+/// function the device recomputes (source/contract/split.h), their hash,
+/// and how many of the held-out records have a byte-identical twin in
+/// training (#222).
+void DrawSplit(const Dataset& ds, SplitRequest split, CorpusFacts& f) {
+  if (!(split.val_frac > 0.0f && split.val_frac < 1.0f) || ds.num_samples() < 2)
+    return;
+  const std::vector<uint64_t> held =
+      HeldOutIndices(ds.num_samples(), split.seed, split.val_frac);
+  f.split = true;
+  f.val_records = held.size();
+  f.split_seed = split.seed;
+  f.val_split_hash = SplitHash(held);
+  f.held_out_twins = ds.HeldOutTwins(held);
+}
+
 CorpusShape ShapeOf(const Dataset& ds, uint64_t corpus_hash) {
   return CorpusShape{ds.input_kind(),     ds.input_dim(),
                      ds.label_kind(),     ds.label_bytes_per_sample(),
@@ -202,15 +222,14 @@ PlanLabels LabelsOf(LossKind loss, uint64_t width) {
 std::expected<CorpusIngress, std::string> IngestCorpus(
     const std::string& path, const SmfModel& model,
     const sema::Topology& topology, PlanLabels labels, uint64_t rows_per_step,
-    uint64_t steps) {
+    uint64_t steps, SplitRequest split) {
   const std::string ext = Extension(path);
   CorpusIngress out;
-  // The EOS id of the model's tokenizer section, when it has one (-1
-  // otherwise): what a segment mask would find documents by (#191).
-  int32_t eos = -1;
-  if (!model.tokenizer.empty())
-    if (auto head = seeml::tokenizer::ReadSmtkHead(model.tokenizer))
-      eos = head->eos_id;
+  // The document separator of the model's tokenizer section, when it names
+  // an EOS (-1 otherwise): what a segment mask would find documents by
+  // (#191), and what the pack stage below joins them with (#218).
+  const int32_t separator =
+      seeml::tokenizer::FindDocumentSeparator(model.tokenizer).id;
 
   if (ext == "sds") {
     // The corpus as given: loaded once by the feeder's own reader (which
@@ -223,9 +242,10 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
     out.from_sds = true;
     out.shape = ShapeOf(*ds, ds->content_hash());
     out.facts.kind = "sds";
-    FillCommon(*ds, topology, rows_per_step, steps, std::nullopt, eos,
+    FillCommon(*ds, topology, rows_per_step, steps, std::nullopt, separator,
                out.facts);
     out.facts.corpus_hash = out.shape.corpus_hash;
+    DrawSplit(*ds, split, out.facts);
     return out;
   }
 
@@ -295,8 +315,10 @@ std::expected<CorpusIngress, std::string> IngestCorpus(
   f.bidi_controls = m.sanitized.bidi_controls;
   f.remainder_tokens = m.remainder_tokens;
   f.straddling_windows = m.straddling_windows;
-  FillCommon(*ds, topology, rows_per_step, steps, m.distinct_ids, eos, f);
+  f.dropped_duplicate_windows = m.dropped_duplicate_windows;
+  FillCommon(*ds, topology, rows_per_step, steps, m.distinct_ids, separator, f);
   f.corpus_hash = out.shape.corpus_hash;
+  DrawSplit(*ds, split, f);
   return out;
 }
 

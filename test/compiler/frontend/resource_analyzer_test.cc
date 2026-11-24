@@ -4,6 +4,8 @@
 // =============================================================================
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
@@ -206,6 +208,29 @@ TEST(ResourceAnalyzer, DeltaSegmentCountsExactlyWhatLoraWillAdapt) {
                       .inputs = {"w2", "w2"},
                       .output = "odd_out"});
   EXPECT_EQ(EstimateLoraDeltaBytes(tied, {}), 4 * 8 * sizeof(float));
+}
+
+TEST(ResourceAnalyzer, EightBitMomentsAreAboutAQuarterOfTheF32Moments) {
+  // #192: the moment state of the adapters LoRA grafts at rank r — A [k, r]
+  // and B [r, m] per adapted [k, m] weight. f32: 8 B a value. int8: 2 B a
+  // value plus two f32 scales a 256-value block.
+  SmfModel model = MakeMlp(64, 256, 32, /*seed=*/2);
+  const uint64_t r = 8;
+  const uint64_t counts[] = {64 * r, r * 256, 256 * r, r * 32};
+  uint64_t f32 = 0, int8 = 0;
+  for (uint64_t n : counts) {
+    f32 += 8 * n;
+    int8 += 2 * n + 8 * ((n + 255) / 256);
+  }
+  EXPECT_EQ(EstimateMomentBytes(model, {}, 8, MomentsKind::kF32), f32);
+  EXPECT_EQ(EstimateMomentBytes(model, {}, 8, MomentsKind::kInt8), int8);
+  const double ratio = static_cast<double>(f32) / static_cast<double>(int8);
+  EXPECT_GT(ratio, 3.9);  // 8 / (2 + 8 / 256) = 3.94 for whole blocks
+  EXPECT_LT(ratio, 4.0);
+  // The grafter's targets decide which adapters exist, as for the deltas.
+  const std::vector<std::string> only_w2 = {"w2"};
+  EXPECT_EQ(EstimateMomentBytes(model, only_w2, 8, MomentsKind::kF32),
+            8 * (256 * r + r * 32));
 }
 
 TEST(ResourceAnalyzer, TheEarlyGateSeesTheDeltasAQuantizedBaseHides) {

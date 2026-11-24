@@ -117,6 +117,19 @@ jobs:
           exit 1
       - name: Toolchain version
         run: $CXX --version
+      # S8 #154: the formatter is the rule (STYLE.md section 1). The check
+      # is STYLE.md's command with --dry-run -Werror in place of -i, over
+      # the same file list; .clang-format-ignore holds the exclusions. One
+      # leg is enough, and it must be clang-format 19 -- the version the
+      # tree was formatted with (llvm.sh's "19 all" installs it; another
+      # release lays some constructs out differently). xargs exits 123
+      # when any batch reports a file the formatter would change.
+      - name: clang-format --dry-run -Werror
+        if: matrix.cxx == 'clang++-19'
+        run: |
+          clang-format-19 --version
+          git ls-files -z '*.cc' '*.h' '*.mm' |
+            xargs -0 clang-format-19 --dry-run -Werror
       - name: Build (shell driver, no CMake)
         run: sh build/build.sh
       - name: Run every suite
@@ -135,6 +148,14 @@ jobs:
           python3 -m unittest discover -s test/tool -p 'bench_runtime_test.py' -v 2>&1 | tee bench_rt.log
           test "${PIPESTATUS[0]}" -eq 0
           ! grep -q "skipped" bench_rt.log
+      # S8 #154: every built tool exits 2 on a bad command line and keeps 1
+      # for work that failed. All six tools exist in this job (the e2e job
+      # builds no bench), so no test of the file may skip.
+      - name: The tools' exit-code contract (all six, nothing skipped)
+        run: |
+          python3 -m unittest discover -s test/tool -p 'cli_exit_codes_test.py' -v 2>&1 | tee cli_exit.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ! grep -q "skipped" cli_exit.log
 
   # --- Determinism: identical bits at every pool width -----------------------
   # SEEML_THREADS pins the global worker pool. The bitwise assertions inside
@@ -251,7 +272,10 @@ jobs:
   # --- Correctness: bounded fuzz over the untrusted-input arms ---------------
   # 90 seconds per PR is a smoke pass, not a campaign (nightly runs the long
   # one): it still catches shallow regressions in the reader/validator
-  # rejection paths that a hand-written test didn't anticipate.
+  # rejection paths that a hand-written test didn't anticipate. It starts
+  # from the checked-in seed corpus (test/fuzz/seeds, CR3 #208) — from an
+  # empty one, ninety seconds never built a plan that passes the seal and
+  # the contract, and the job passed having executed nothing.
   fuzz-smoke:
     name: fuzz (90s smoke)
     runs-on: ubuntu-24.04
@@ -295,26 +319,80 @@ jobs:
       - name: Build harness
         run: cmake --build build-fuzz -j "$(nproc)" --target seeml_fuzz_formats
       - name: Fuzz
+        # Below the job's limit: a run that outlives it is killed here, as
+        # a failed step the upload below still follows.
+        timeout-minutes: 8
         run: |
-          mkdir -p corpus
+          # One valid input per arm and per plan family, so the first unit
+          # already runs an accepted plan (CR3 #208).
+          rm -rf corpus
+          cp -r test/fuzz/seeds corpus
+          # -timeout / -rss_limit_mb: the harness bounds every unit's work
+          # (milliseconds here; its caps allow seconds at -O0 under ASan),
+          # so a unit past 25 s or 2 GiB is a finding libFuzzer reports and
+          # writes out — its defaults (1200 s) outlive the job (CR3 #207).
           ./build-fuzz/seeml_fuzz_formats -max_total_time=90 \
+            -timeout=25 -rss_limit_mb=2048 \
             -print_final_stats=1 -print_coverage=1 corpus 2>&1 | tee fuzz.log
           test "${PIPESTATUS[0]}" -eq 0
-          # The corpus must reach the code under test, not the harness alone
-          # (CR3 #144 N41): covered functions inside runtime/ and compiler/.
-          for dir in runtime/ compiler/; do
-            if ! grep -q "COVERED_FUNC.*$dir" fuzz.log; then
-              echo "::error::the fuzzer covered no function under $dir"
-              exit 1
+          # The gate names what must be reached (CR3 #208): a function is
+          # reached when libFuzzer prints it COVERED with non-zero hits.
+          # The gate this replaces grepped "COVERED_FUNC.*runtime/", which
+          # every UNCOVERED_FUNC line under runtime/ satisfies.
+          missed=0
+          gate() {  # $1: what it is; $2: the function, an extended regex
+            if ! grep -Eq "^COVERED_FUNC: hits: [1-9][0-9]* edges: [0-9]+/[0-9]+ $2(\[abi:[a-z0-9]+\])?\(" fuzz.log; then
+              echo "::error::the fuzzer never reached $1 ($2)"
+              grep -E " $2(\[abi:[a-z0-9]+\])?\(" fuzz.log | head -n 3 || true
+              missed=1
             fi
-          done
-      - name: Upload crashes
-        if: failure()
+          }
+          gate "the execution of an accepted plan" '\(anonymous namespace\)::ExecuteOnce'
+          # (The loader validates through DescribeInstruction; the public
+          # ValidateInstruction is the tests' entry. Both run the Impl.)
+          gate "the validator" 'seeml::update_rt::\(anonymous namespace\)::ValidateInstructionImpl'
+          gate "the train loop" 'seeml::update_rt::UpdateEngine::Train'
+          gate "the instruction dispatch" 'seeml::update_rt::UpdateEngine::ExecuteRange'
+          gate "a completed compile" 'seeml::update::AssemblePlan'
+          gate "the tokenizer section loader" 'seeml::tokenizer::ByteLevelBpe::Load'
+          gate "the JSONL reader" 'seeml::tokenizer::DocumentsFromJsonl'
+          gate "the text ingest" 'seeml::tokenizer::Ingest'
+          gate "the recipe file parser" 'seeml::update::recipe::ParseRecipeFile'
+          gate "the export report reader" 'seeml::update::ReadExportReport'
+          test "$missed" -eq 0
+      # CR3 #208, acceptance 2. Ninety seconds of libFuzzer do not reliably
+      # find one opcode's missing bounds rule: with kAddBias's destination
+      # rule removed, the step above found it in one run of four
+      # (2026-11-24; one of two with the plan-aware mutator as it is now) —
+      # the corpus is a thousand units within the run, and the plan seeds
+      # are fourteen of them. The replay suite's operand pass is
+      # the same plan-aware edit (test/fuzz/plan_mutate.h) made 57,344
+      # times over those fourteen seeds, in this job's sanitizer build: the
+      # planted rule ends it in an AddressSanitizer report.
+      - name: Operand sweep (plan-aware edits over the plan seeds)
+        timeout-minutes: 6
+        run: |
+          cmake --build build-fuzz -j "$(nproc)" --target seeml_fuzz_replay_test
+          SEEML_FUZZ_MUTATIONS=2048 ./build-fuzz/seeml_fuzz_replay_test \
+            --filter=PlanOperandEdits 2>&1 | tee -a fuzz.log
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Keep the log's tail
+        if: failure() || cancelled()
+        run: tail -n 400 fuzz.log > fuzz-tail.log || true
+      - name: Upload findings
+        # A cancelled job is not a failed one, and libFuzzer names a
+        # finding by its kind (CR3 #207): every prefix, and the log's tail.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashes
           path: |
             crash-*
+            timeout-*
+            oom-*
+            slow-unit-*
+            leak-*
+            fuzz-tail.log
             corpus
           if-no-files-found: ignore
 

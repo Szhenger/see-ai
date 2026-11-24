@@ -1,0 +1,5 @@
+  corpus                   221 records of 129 ids (jsonl, masked)  records and their width, and what --data named (text, jsonl, sds)
+  documents                600 in, 600 kept              documents read and kept (raw text)
+  dropped                  0 empty, 0 duplicate, 0 degenerate  documents dropped: empty, exact duplicates, degenerate (raw text)
+  straddling windows       221                           records that span a document boundary (see the segment mask row)
+  segment mask             on, 30 op(s): asked for       no attention across a window's documents: the decision and its reason

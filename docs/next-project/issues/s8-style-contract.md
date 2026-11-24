@@ -52,6 +52,35 @@ doc-drift items are folded in here. Design: [`docs/next-project/seeai.md`](https
    Python-surface sentence, `tool/README.md`'s doctrine line, and the stale
    test count.
 
+## Status 2026-11-24
+
+Acceptance 3 is met and held by a test. The three dispatch paths the
+2026-11-19 status left over the limit — `MetalBackend::Encode` (635
+lines), `CpuBackend::Execute` (398), `UpdateEngine::TrainImpl` (377) — and
+the two the stack had since pushed or left over it,
+`VerifyExecutorContract` (228) and the emitter's `BuildScript` (245), are
+decomposed with every case body and message moved verbatim: the two
+backends hand an instruction to one function a kernel family, the train
+loop runs five named phases, the executor contract is one function a rule.
+The committed model of a SmolLM-135M package is the same before and after
+on both backends and the step time does not move
+(`docs/benchmarks.md`, "The v1.0.0.B close"; measured on battery).
+`test/tool/function_length_test.py` holds the limit over `compiler/`,
+`runtime/` and `tool/`; the scanner it shares with `driver_shape_test.py`
+no longer reads a preprocessor line as a function head, which had hidden
+every function of four files, `Execute` among them.
+
+Acceptance 1's CI half: `ci.yml` runs `clang-format-19 --dry-run -Werror`
+on the clang leg and the exit-code test with no skip allowed. Design
+item 6's drift list grew by three and they are corrected:
+`runtime/README.md` and `docs/runtime.md` said "until S7" after S7,
+`source/README.md` listed four of nine directories, `seeai.md` §3 called
+the device's raw-text re-run open after #202 shipped it.
+
+Still as the tree states it, not as the issue first asked: about thirty
+`(pointer, size)` parameter pairs and the suites' `using namespace`
+(STYLE.md sections 5 and 6 name both as the direction for new code).
+
 ## Acceptance
 
 - `clang-format --dry-run -Werror` clean in CI; STYLE.md linked from the

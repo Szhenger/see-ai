@@ -991,6 +991,82 @@ TEST(UpdateSystem, TokenDecoderResumeMatchesUninterruptedRun) {
             0);
 }
 
+TEST(UpdateSystem, EightBitMomentsResumeBitForBitFromTheirCheckpoint) {
+  // #192: the 8-bit moments live in the persistent segment the checkpoint
+  // copies (SEKP is unchanged: the segment is narrower, the format is not).
+  // A run stopped at step 3, checkpointed and resumed cold equals the
+  // uninterrupted run byte for byte — codes and scales included — with and
+  // without accumulation under the global clip; and the checkpoint loads
+  // back into a fresh engine as the bytes that were saved. The codes are
+  // rounded with a dither hashed from the optimizer step (instruction.h):
+  // steps 4 to 6 of the resumed run draw the uninterrupted run's bits only
+  // because the step counter is the checkpoint's — a resumed engine that
+  // counted from 1 again would code other bytes (kernels_test.cc,
+  // TheEightBitDitherIsKeyedOnTheStepAndTheOperand).
+  const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16;
+  const int64_t batch = 16;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 41);
+  for (const uint32_t accum : {1u, 2u}) {
+    UpdateConfig config = BaseConfig(batch);
+    config.optimizer.moments = MomentsKind::kInt8;
+    config.optimizer.clip_norm = 0.5f;
+    config.optimizer.clip_global = accum > 1;
+    config.grad_accum_steps = accum;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                         UpdateCompiler(config).Compile(model));
+    auto corpus = [&]() {
+      auto d = seeml::testing::MakeTokenCorpus(10, seq, vocab, 43);
+      if (d) d->EnableShuffle(7);
+      return d;
+    };
+    UpdateEngine straight;
+    ASSERT_OK(
+        straight.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK_AND_ASSIGN(Dataset d1, corpus());
+    ASSERT_OK(straight.Train(d1, 6, Quiet()));
+
+    ScopedTempDir dir;
+    const std::string ck = dir.File("ck.bin");
+    std::vector<uint8_t> saved;
+    {
+      UpdateEngine first;
+      ASSERT_OK(
+          first.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK_AND_ASSIGN(Dataset d2, corpus());
+      ASSERT_OK(first.Train(d2, 3, Quiet()));
+      ASSERT_OK(first.SaveCheckpoint(ck));
+      saved.assign(first.arena(),
+                   first.arena() + first.header().persistent_size);
+    }
+    // The round trip: a fresh engine loads the checkpoint's segment.
+    {
+      UpdateEngine loaded;
+      ASSERT_OK(
+          loaded.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+      ASSERT_OK(loaded.LoadCheckpoint(ck));
+      EXPECT_EQ(loaded.step(), 3u);
+      EXPECT_EQ(std::memcmp(loaded.arena(), saved.data(), saved.size()), 0);
+    }
+    UpdateEngine resumed;
+    ASSERT_OK(
+        resumed.LoadFromMemory(compiled.plan.data(), compiled.plan.size()));
+    ASSERT_OK_AND_ASSIGN(Dataset d3, corpus());
+    TrainOptions opt = Quiet();
+    opt.checkpoint_path = ck;
+    opt.resume = true;
+    ASSERT_OK(resumed.Train(d3, 3, opt));
+    EXPECT_EQ(straight.step(), 6u);
+    EXPECT_EQ(resumed.step(), 6u);
+    EXPECT_EQ(std::memcmp(straight.arena(), resumed.arena(),
+                          straight.header().persistent_size),
+              0);
+    // Not vacuous: the moments moved off their zero image.
+    const std::vector<uint8_t> zeros(saved.size(), 0);
+    EXPECT_TRUE(saved != zeros);
+  }
+}
+
 TEST(UpdateSystem, TokenDecoderTrainsMergesAndCommits) {
   const int64_t vocab = 16, dim = 8, heads = 2, seq = 4, ffn = 16;
   const int64_t batch = 16;  // 4 sequences per step
@@ -1614,6 +1690,83 @@ TEST(UpdateSystem, AMaskedWindowsSecondDocumentIgnoresItsFirst) {
   // Both families agree on the masked loss, bit for bit.
   EXPECT_EQ(std::bit_cast<uint32_t>(loss_of(true, AttentionKind::kCached, 1)),
             std::bit_cast<uint32_t>(loss_of(true, AttentionKind::kTiled, 1)));
+}
+
+TEST(UpdateSystem, AnInstructModelsMaskSeparatesDocumentsNotTurns) {
+  // #218 with #191's acceptance: on a model whose EOS is the chat turn end
+  // <|im_end|> and whose vocabulary has <|endoftext|>, the compiled mask
+  // finds documents by <|endoftext|>. Every window is
+  // [a a a <|endoftext|> p <|im_end|> y y] — a first document, then a chat
+  // document whose prompt p ends its turn — and the loss is masked to the
+  // two response positions (labels of -1 elsewhere). The loss carries the
+  // same bits whatever the first document holds, and moves with the
+  // response's own prompt p, which a mask that split at the turn end would
+  // hide from it. On both families.
+  const int64_t vocab = 259, dim = 8, heads = 2, seq = 8, ffn = 16;
+  const int64_t windows = 4, batch = windows * seq;
+  const int32_t kEndOfText = 256, kImEnd = 258;
+  SmfModel model =
+      seeml::testing::MakeTinyTokenDecoder(vocab, dim, heads, seq, ffn, 73);
+  {
+    // A byte vocabulary, specials <|endoftext|> <|im_start|> <|im_end|>
+    // (ids 256..258), the EOS <|im_end|>.
+    std::vector<uint8_t>& b = model.tokenizer;
+    auto u32 = [&](uint32_t v) {
+      for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    auto u16 = [&](uint16_t v) {
+      for (int i = 0; i < 2; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+    };
+    for (uint32_t x : {0x4B544D53u, 1u, 1u, 2u, 0u, 259u, 0u, 3u, 258u,
+                       0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+      u32(x);
+    for (int v = 0; v < 256; ++v) {
+      u16(1);
+      b.push_back(static_cast<uint8_t>(v));
+    }
+    for (const char* lit : {"<|endoftext|>", "<|im_start|>", "<|im_end|>"}) {
+      const std::string s = lit;
+      u16(static_cast<uint16_t>(s.size()));
+      b.insert(b.end(), s.begin(), s.end());
+    }
+    for (uint32_t i = 0; i < 3; ++i) u32(256 + i);
+  }
+  auto loss_of = [&](AttentionKind kind, int32_t first_doc,
+                     int32_t prompt) -> float {
+    UpdateConfig config = BaseConfig(batch);
+    config.emit_optimizer = false;
+    config.masked_loss = true;
+    config.segment_mask = SegmentMaskKind::kOn;
+    config.attention = kind;
+    auto compiled = UpdateCompiler(config).Compile(model);
+    if (!compiled) return std::numeric_limits<float>::quiet_NaN();
+    UpdateEngine engine;
+    if (!engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()))
+      return std::numeric_limits<float>::quiet_NaN();
+    std::vector<int32_t> tokens(batch), labels(batch, -1);
+    for (int64_t w = 0; w < windows; ++w)
+      for (int64_t t = 0; t < seq; ++t) {
+        const int64_t at = w * seq + t;
+        tokens[at] = t < 3 ? static_cast<int32_t>('a' + (first_doc + w + t) % 4)
+                     : t == 3 ? kEndOfText
+                     : t == 4 ? static_cast<int32_t>('p' + (prompt + w) % 4)
+                     : t == 5 ? kImEnd
+                              : static_cast<int32_t>('y' + (w + t) % 2);
+        if (t >= 6)
+          labels[at] = static_cast<int32_t>((3 * tokens[at] + 1) % vocab);
+      }
+    seeml::testing::FillTokenSlots(engine, tokens, labels);
+    engine.ExecuteTrainOnce();
+    return engine.LossValue();
+  };
+  for (AttentionKind kind : {AttentionKind::kCached, AttentionKind::kTiled}) {
+    const float a = loss_of(kind, 0, 0), b = loss_of(kind, 2, 0);
+    EXPECT_TRUE(std::isfinite(a));
+    EXPECT_EQ(std::bit_cast<uint32_t>(a), std::bit_cast<uint32_t>(b));
+    const float c = loss_of(kind, 0, 1);
+    EXPECT_TRUE(std::isfinite(c));
+    EXPECT_NE(c, a);
+  }
 }
 
 TEST(UpdateSystem, SegmentMaskedGradientsMatchFiniteDifferences) {

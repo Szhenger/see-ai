@@ -51,7 +51,7 @@ prints the measured step beside it, and the ratio is the utilization.
 | **accountant** | weights + activations lower bound vs the budget; corpus statistics before and after sanitization; the identity manifest | `frontend/accountant/resource_analyzer.cc` | estimate + manifest |
 | **topology** | well-formedness: dependency order, unique names, output exists, every shape agrees with its op; cross-input checks (student↔teacher, corpus↔model, adapter↔weight, tokenizer vocab == embedding rows == head width) | `frontend/topology/sema.cc` — `VerifyModel` runs to completion over the tensor table before computation (S1, 2026-11-09); `VerifyCrossInputs` holds the student↔teacher, loss↔input, adapter↔weight, `t::` and tokenizer-vocab == embedding rows == head width rules (S2, 2026-11-09) | verdict + inferred shapes |
 | **computation** | mechanical translation of the verified op list into the SIR computation graph, then `Block::verify()`; teacher prefixed `t::` | `frontend/computation/parser.cc`, `value_resolver.cc`, `graph_build.h` | the SIR forward graph |
-| **tokenization** | the training subsystem: raw text in; normalize → sanitize/filter → deduplicate (exact, by hash) → encode (byte-level BPE, zero-dependency) → pack (concatenate with EOS, cut fixed S+1 windows, never pad) | `source/tokenizer/{byte_level_bpe,text_ingest}.cc` (the stages, vendored) driven by `frontend/tokenization/corpus_ingress.cc` — `seeml-update-compile --data corpus.txt\|.jsonl\|.sds` (S2, 2026-11-09); the device-side re-run on raw text is open | canonical SDS + manifest of drops + hash, the plan pinned to it |
+| **tokenization** | the training subsystem: raw text in; normalize → sanitize/filter → deduplicate (exact, by hash) → encode (byte-level BPE, zero-dependency) → pack (concatenate with the document separator — the EOS, or `<|endoftext|>` when the EOS is the ChatML turn end, #218 — cut fixed S+1 windows, never pad) | `source/tokenizer/{byte_level_bpe,text_ingest}.cc` (the stages, vendored) driven by `frontend/tokenization/corpus_ingress.cc` — `seeml-update-compile --data corpus.txt\|.jsonl\|.sds` (S2, 2026-11-09); the device re-runs the same stages on raw text (`model_update --data corpus.txt|.jsonl`, #202) | canonical SDS + manifest of drops + hash, the plan pinned to it |
 | **validation** | "what counts": the held-out split (seeded partition after dedup, or `--val-data` through the same tokenizer; seed, indices and hashes into the plan) and the loss mask (chat template from the SMF tokenizer section; response positions are targets) | `source/contract/split.h` (the seeded partition the plan names and the device recomputes), the masked cross-entropy opcodes 51 / 52, prompt/response JSONL through ChatML (S3, 2026-11-09); `--val-data` not implemented | the corpus with its mask, the split named in the plan |
 
 Shared infrastructure beside the six, not stages: `representation/` (SIR),
@@ -75,7 +75,16 @@ Frontend doctrine lines:
 - Threat model, stated on the screen: the sanitizer covers malformed bytes,
   out-of-contract records, degenerate records and exact duplicates. It does
   **not** cover well-formed poisoned data; the gate and a held-out set the
-  training source cannot influence are that defense.
+  training source cannot influence are that defense. On each input kind
+  (#222): a `.txt` and every `.jsonl` document lose invalid UTF-8, control
+  characters but tab / newline / CR, and bidi controls (counted, nothing
+  normalized: clean text passes the sanitizer byte for byte, and its corpus
+  changes only where a window repeats); a `.jsonl` also drops empty,
+  degenerate and exactly duplicated documents; every raw-text corpus drops
+  windows equal to an earlier one before the split, so no held-out record
+  has a twin in training. A given `.sds` is pinned as is: under a split the
+  screen counts its held-out records with a twin in training. Near-
+  duplicates are not detected.
 - The recipe is a declarative file with a schema; flags override fields; the
   resolved recipe is hashed into the manifest with the model, tokenizer and
   corpus hashes. The exporter stays in Python and SMF stays canonical; the

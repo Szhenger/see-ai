@@ -1,0 +1,47 @@
+seeml-update: plan embedded (298631168 bytes)
+seeml-update: backend metal (Apple M5, rodata zero-copy, relaxed GEMMs on tensor ops)
+seeml-update: validation scores the shipped model (the f32 weights of '~/.claude/jobs/ddb59ea7/tmp/mask_row/smollm.smf' plus the update)
+seeml-update: resource contract — arena 1576898688 bytes (36292608 persistent)
+seeml-update: step 1  loss 4.636280
+seeml-update: step 30  validation loss 4.137197 (best 4.137197 at step 30)
+seeml-update: step 60  validation loss 3.966637 (best 3.966637 at step 60)
+seeml-update: step 90  validation loss 3.836097 (best 3.836097 at step 90)
+seeml-update: step 101  loss 3.790241
+seeml-update: step 120  validation loss 3.806852 (best 3.806852 at step 120)
+seeml-update: step 150  validation loss 3.767063 (best 3.767063 at step 150)
+seeml-update: step 180  validation loss 3.734024 (best 3.734024 at step 180)
+seeml-update: step 201  loss 2.900971
+seeml-update: step 210  validation loss 3.726177 (best 3.726177 at step 210)
+seeml-update: step 240  validation loss 3.843574 (best 3.726177 at step 210)
+seeml-update: step 270  validation loss 3.848458 (best 3.726177 at step 210)
+seeml-update: restored the best state (step 210, validation loss 3.726177); the last state (step 300) scored 3.845109
+seeml-update: train loss 4.610540 -> 2.570940 over 300 steps
+seeml-update: validation loss 4.803799 -> 3.726177 [backend metal]
+seeml-update: best state at step 210 (validation loss 3.726177); last state 3.845109; 9 periodic evaluation(s)
+seeml-update: validation accuracy 0.2551 -> 0.3490
+seeml-update: gate min-improvement 0 require-accuracy no -> accepted [backend metal]
+runtime — planned by the compiler, measured by the device
+  model hash               4448e52d513b5011              the source model the plan is bound to and the run verified
+  tokenizer hash           bc20bbcbeb260e1f              the tokenizer section every corpus must name
+  corpus hash              6f4903425ae97c27              the corpus the plan is pinned to
+  recipe hash              85ec96295658c5cc              the resolved recipe the plan was compiled from
+  planned memory           1,875,529,856 B (1.7 GiB)     arena + plan: the resource contract the device checks
+  work per step            324,440,948,736 FLOP          GEMM + attention work of one optimizer step
+  backend                  metal                         the executor that ran the plan
+  threads                  10                            the worker-pool width the run used (--threads, $SEEML_THREADS, or the hardware's); measured, so the compile's screen leaves it unset
+  steps                    300                           optimizer steps trained
+  measured step            229.027 ms                    training wall time ÷ steps, evaluations excluded
+  achieved                 1416.6 GFLOP/s                the work per step ÷ the measured step
+  peak RSS                 2,608,529,408 B (2.4 GiB)     the process's resident peak, as the OS reports it
+  RSS ÷ planned            1.391                         the resident peak ÷ the planned memory
+  train loss, start        4.6105 nats                   the mean loss over the run's first window of steps
+  train loss, end          2.5709 nats                   the mean loss over the run's last window of steps
+  validation loss, start   4.8038 nats                   the held-out loss before training
+  validation loss, end     3.7262 nats                   the held-out loss of the state the gate weighed
+  input-blind loss         6.6643 nats                   the training labels' entropy: an input-blind predictor's loss
+  validation accuracy      0.3490                        the held-out accuracy of the state the gate weighed
+  energy meter             IOReport GPU Energy           the energy domain read (the GPU's, on a Metal run), or why none was
+  energy                   583.984 J                     that domain's energy over the training run, evaluations included
+  energy per token         0.0038020 J                   the energy ÷ the tokens trained (steps × rows per optimizer step)
+  verdict                  accepted                      the gate's decision on the update: accepted, rejected or forced; stopped when a signal ended the run before the gate; measured in a seeml-bench row, which has no gate
+seeml-update: committed '/tmp/f192d/row/s123/metal/f32/out.smf'

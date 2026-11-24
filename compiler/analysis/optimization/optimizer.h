@@ -42,15 +42,20 @@ class OptimizerSynthesizer {
   // instead of one per tensor — the squared norms accumulated into one
   // persistent float, every gradient scaled by the factor it implies, then
   // the steps (unclipped), then the sum zeroed for the next step.
+  // `moments` (#192, plan v27): AdamW's state as f32, or block-wise 8-bit
+  // codes plus a scales vector per parameter (the step op then carries the
+  // scales as a fifth operand and lowers to kAdamW8Step).
   OptimizerSynthesizer(OptimizerKind kind, float clip_norm,
                        uint32_t grad_accum_steps = 1, bool emit_step = true,
-                       bool fuse_clip = true, bool clip_global = false)
+                       bool fuse_clip = true, bool clip_global = false,
+                       MomentsKind moments = MomentsKind::kF32)
       : kind_(kind),
         clip_norm_(clip_norm),
         grad_accum_steps_(grad_accum_steps),
         emit_step_(emit_step),
         fuse_clip_(fuse_clip),
-        clip_global_(clip_global) {}
+        clip_global_(clip_global),
+        moments_(moments) {}
 
   [[nodiscard]] std::expected<void, std::string> Run(
       seeml::sir::Block& block,
@@ -64,6 +69,7 @@ class OptimizerSynthesizer {
   bool emit_step_;
   bool fuse_clip_;
   bool clip_global_;
+  MomentsKind moments_;
 };
 
 }  // namespace seeml::update

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -165,34 +166,49 @@ size_t SkipSpaces(std::string_view s, size_t i) {
   return i;
 }
 
+/// FNV-1a over a window's ids and its target flags (empty when the corpus
+/// is unmasked): a bucket key for the duplicate-window drop, which then
+/// compares the windows themselves, so the hash decides nothing on its own.
+uint64_t WindowHash(std::span<const int32_t> ids,
+                    std::span<const uint8_t> mask) {
+  uint64_t h = 0xCBF29CE484222325ull;
+  auto mix = [&](uint8_t byte) {
+    h ^= byte;
+    h *= 0x100000001B3ull;
+  };
+  for (const int32_t id : ids) {
+    const auto v = static_cast<uint32_t>(id);
+    for (int k = 0; k < 4; ++k) mix(static_cast<uint8_t>(v >> (8 * k)));
+  }
+  for (const uint8_t t : mask) mix(t);
+  return h;
+}
+
 constexpr std::string_view kImStart = "<|im_start|>";
 constexpr std::string_view kImEnd = "<|im_end|>";
+constexpr std::string_view kEndOfText = "<|endoftext|>";
 
 }  // namespace
 
-std::string Sanitize(std::string_view text, bool count_only,
-                     SanitizeCounts* counts) {
+std::string Sanitize(std::string_view text, SanitizeCounts* counts) {
   std::string out;
-  if (!count_only) out.reserve(text.size());
+  out.reserve(text.size());
   size_t i = 0;
   while (i < text.size()) {
     uint32_t cp = 0;
     const size_t next = DecodeUtf8Strict(text, i, &cp);
     if (next == 0) {
       ++counts->invalid_utf8_bytes;
-      if (count_only) out.push_back(text[i]);
       ++i;
       continue;
     }
-    bool drop = false;
     if (IsControl(cp)) {
       ++counts->control_chars;
-      drop = true;
     } else if (IsBidiControl(cp)) {
       ++counts->bidi_controls;
-      drop = true;
+    } else {
+      out.append(text.data() + i, next - i);
     }
-    if (!drop || count_only) out.append(text.data() + i, next - i);
     i = next;
   }
   return out;
@@ -298,8 +314,11 @@ std::expected<IngestResult, std::string> Ingest(
   if (documents.empty()) return std::unexpected("ingest: no documents");
   if (options.one_document && documents.size() != 1)
     return std::unexpected("ingest: one-document mode takes one document");
-  const int32_t eos = tokenizer.info().eos_id;
-  if (!options.one_document && documents.size() > 1 && eos < 0)
+  // The joiner (#218): the EOS, or <|endoftext|> on a model whose EOS is
+  // the ChatML turn end — so a turn end inside a record never reads as a
+  // document end to the segment mask, which scans for this same id.
+  const int32_t separator = FindDocumentSeparator(tokenizer).id;
+  if (!options.one_document && documents.size() > 1 && separator < 0)
     return std::unexpected(
         "ingest: the tokenizer names no EOS token, which joining documents "
         "needs");
@@ -331,18 +350,20 @@ std::expected<IngestResult, std::string> Ingest(
   // Sanitize, deduplicate, encode: one pass over the documents, in order.
   // `target` marks, per id, whether predicting it is a loss target: every
   // id of a plain document, the response side of a chat document, and the
-  // EOS that joins documents when the document before it was plain.
+  // separator that joins documents when the document before it was plain.
   std::unordered_map<uint64_t, uint64_t> seen;  // hash -> first index
   std::vector<int32_t> ids;                     // the packed stream
   std::vector<uint8_t> target;
-  std::vector<uint64_t> boundaries;  // ids index of each EOS join
+  std::vector<uint64_t> boundaries;  // ids index of each join
   bool previous_plain = true;
   for (uint64_t d = 0; d < documents.size(); ++d) {
     const Document& doc = documents[d];
     SanitizeCounts counts;
-    const std::string clean = Sanitize(doc.text, options.one_document, &counts);
+    // Every input kind is sanitized (#222): a .txt was counted and kept
+    // until then, which let its controls and invalid bytes reach the ids.
+    const std::string clean = Sanitize(doc.text, &counts);
     const std::string clean_response =
-        doc.chat ? Sanitize(doc.response, false, &counts) : std::string();
+        doc.chat ? Sanitize(doc.response, &counts) : std::string();
     m.sanitized.invalid_utf8_bytes += counts.invalid_utf8_bytes;
     m.sanitized.control_chars += counts.control_chars;
     m.sanitized.bidi_controls += counts.bidi_controls;
@@ -399,7 +420,7 @@ std::expected<IngestResult, std::string> Ingest(
       }
     }
     if (!ids.empty()) {
-      ids.push_back(eos);
+      ids.push_back(separator);
       target.push_back(previous_plain ? 1 : 0);
       boundaries.push_back(ids.size() - 1);
     }
@@ -418,6 +439,11 @@ std::expected<IngestResult, std::string> Ingest(
   // Pack: consecutive non-overlapping windows of S + 1 ids. The mask of a
   // window holds, per position j, whether the next id (j + 1) is a target;
   // under a mask, a window with no target trains nothing and is dropped.
+  // A window equal to one already kept — its ids, and its mask where the
+  // corpus is masked — is dropped too (#222): the split is drawn over the
+  // records, so a record and its twin could otherwise land on both sides.
+  // Bucketed by a hash of the window, decided by comparing the bytes; the
+  // first occurrence is kept and the kept order is the cut's.
   const uint64_t S = options.seq_len, rec = S + 1;
   const uint64_t windows = ids.size() / rec;
   m.remainder_tokens = ids.size() - windows * rec;
@@ -427,6 +453,7 @@ std::expected<IngestResult, std::string> Ingest(
   kept_ids.reserve(windows * rec);
   if (masked) kept_mask.reserve(windows * S);
   {
+    std::unordered_map<uint64_t, std::vector<uint64_t>> kept_by_hash;
     size_t b = 0;
     for (uint64_t w = 0; w < windows; ++w) {
       const uint64_t lo = w * rec, hi = lo + rec;  // [lo, hi)
@@ -434,8 +461,8 @@ std::expected<IngestResult, std::string> Ingest(
       for (uint64_t j = 0; j < S; ++j) targets += target[lo + j + 1];
       bool straddles = false;
       while (b < boundaries.size() && boundaries[b] < hi) {
-        // An EOS strictly inside the window (not its first id) is a
-        // boundary the window spans; an EOS as the window's first id means
+        // A join strictly inside the window (not its first id) is a
+        // boundary the window spans; a join as the window's first id means
         // the window begins a new document.
         if (boundaries[b] > lo) straddles = true;
         ++b;
@@ -444,6 +471,27 @@ std::expected<IngestResult, std::string> Ingest(
         ++m.dropped_zero_target_windows;
         continue;
       }
+      const uint64_t h = WindowHash(
+          std::span<const int32_t>(ids).subspan(lo, rec),
+          masked ? std::span<const uint8_t>(target).subspan(lo + 1, S)
+                 : std::span<const uint8_t>());
+      std::vector<uint64_t>& bucket = kept_by_hash[h];
+      bool twin = false;
+      for (const uint64_t k : bucket) {
+        twin = std::equal(ids.begin() + static_cast<ptrdiff_t>(lo),
+                          ids.begin() + static_cast<ptrdiff_t>(hi),
+                          kept_ids.begin() + static_cast<ptrdiff_t>(k * rec)) &&
+               (!masked ||
+                std::equal(target.begin() + static_cast<ptrdiff_t>(lo + 1),
+                           target.begin() + static_cast<ptrdiff_t>(hi),
+                           kept_mask.begin() + static_cast<ptrdiff_t>(k * S)));
+        if (twin) break;
+      }
+      if (twin) {
+        ++m.dropped_duplicate_windows;
+        continue;
+      }
+      bucket.push_back(m.windows);
       if (straddles) ++m.straddling_windows;
       kept_ids.insert(kept_ids.end(), ids.begin() + static_cast<ptrdiff_t>(lo),
                       ids.begin() + static_cast<ptrdiff_t>(hi));
@@ -497,6 +545,7 @@ std::string ManifestJson(const IngestManifest& m) {
   field("dropped_duplicate", m.dropped_duplicate);
   field("dropped_degenerate", m.dropped_degenerate);
   field("dropped_zero_target_windows", m.dropped_zero_target_windows);
+  field("dropped_duplicate_windows", m.dropped_duplicate_windows);
   field("invalid_utf8_bytes", m.sanitized.invalid_utf8_bytes);
   field("control_chars", m.sanitized.control_chars);
   field("bidi_controls", m.sanitized.bidi_controls);
@@ -518,10 +567,27 @@ std::string ManifestJson(const IngestManifest& m) {
   return s;
 }
 
-bool EosEndsChatTurns(const ByteLevelBpe& tokenizer) {
-  const int32_t eos = tokenizer.info().eos_id;
-  return eos >= 0 && static_cast<uint32_t>(eos) < tokenizer.info().vocab_size &&
-         tokenizer.token(static_cast<uint32_t>(eos)) == kImEnd;
+DocumentSeparator FindDocumentSeparator(const ByteLevelBpe& tokenizer) {
+  const TokenizerInfo& info = tokenizer.info();
+  const int32_t eos = info.eos_id;
+  if (eos < 0 || static_cast<uint32_t>(eos) >= info.vocab_size) return {};
+  if (tokenizer.token(static_cast<uint32_t>(eos)) != kImEnd)
+    return {eos, false};
+  // The EOS ends a chat turn: the document end is <|endoftext|>, when the
+  // section names it as a special token.
+  for (uint32_t id = 0; id < info.vocab_size; ++id)
+    if (tokenizer.is_special(id) && tokenizer.token(id) == kEndOfText)
+      return {static_cast<int32_t>(id), false};
+  return {eos, true};
+}
+
+DocumentSeparator FindDocumentSeparator(std::span<const uint8_t> section) {
+  if (section.empty()) return {};
+  if (auto tok = ByteLevelBpe::Load(section))
+    return FindDocumentSeparator(*tok);
+  if (auto head = ReadSmtkHead(section))
+    return {head->eos_id < 0 ? -1 : head->eos_id, false};
+  return {};
 }
 
 }  // namespace seeml::tokenizer

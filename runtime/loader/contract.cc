@@ -2,8 +2,10 @@
 
 #include <cmath>
 #include <cstring>
-#include <vector>
+#include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "runtime/diagnostics/executing/error.h"
 #include "runtime/diagnostics/feeding/error.h"
@@ -48,6 +50,262 @@ std::expected<void, std::string> VerifyPlanContract(
   return {};
 }
 
+namespace {
+
+/// Which of the four programs an instruction belongs to, as the executor
+/// contract's rules need it.
+struct ProgramRole {
+  const char* name;
+  /// The eval and merge programs: no relaxed instruction and no optimizer
+  /// step may appear in either.
+  bool scores_or_merges;
+  /// The eval program may read the source model file from v17; every
+  /// program may from v21 (an adapter-only plan's frozen weights live
+  /// there, F6 #134). Reads only: the validator refuses a source ref as a
+  /// destination in any program.
+  bool allow_source;
+};
+
+bool Overlaps(uint64_t off, uint64_t bytes, uint64_t ref, uint64_t ref_bytes) {
+  const uint64_t slot = up::RefOffset(ref);
+  return ref != up::kNullRef && ref_bytes != 0 && bytes != 0 &&
+         off < slot + ref_bytes && slot < off + bytes;
+}
+
+/// The staged input and label slots are the feeder's (CR2 #143 N03): the
+/// provenance proofs hold only while no program writes them, so no
+/// instruction of any program may.
+std::expected<void, std::string> StagedSlotsUnwritten(
+    const up::UpdateInstruction& ins, const InstructionExtents& extents,
+    const up::PlanHeader& header, const ProgramRole& role) {
+  for (size_t t = 0; t < extents.count; ++t) {
+    const OperandExtent& r = extents.ranges[t];
+    if (!r.write || r.rodata || r.source) continue;
+    if (Overlaps(r.off, r.bytes, header.input_ref,
+                 header.input_floats * sizeof(float)))
+      return diag::executing::Error(
+          std::string("an instruction of the ") + role.name +
+          " program writes the staged input slot (opcode " +
+          std::to_string(ins.opcode) + ")");
+    if (header.label_kind != 0 &&
+        Overlaps(r.off, r.bytes, header.label_ref, header.label_bytes))
+      return diag::executing::Error(
+          std::string("an instruction of the ") + role.name +
+          " program writes the staged label slot (opcode " +
+          std::to_string(ins.opcode) + ")");
+  }
+  return {};
+}
+
+/// Label provenance for the class-indexed kernels. The softmax pair
+/// indexes probability rows with raw i32 labels (probs[n*C + labels[n]]) —
+/// the one place a validated instruction dereferences data-dependent
+/// offsets. That is only safe because the feeder contract proves every
+/// STAGED dataset label < the softmax width. The proof covers exactly the
+/// label slot's `batch` staged entries, so a softmax whose label operand
+/// is any other range, or whose row count exceeds the staged batch, or
+/// that appears in a plan not declaring class labels, would read
+/// unvalidated bytes as indices — an out-of-bounds write through the
+/// backward kernel, from a plan that passed every range check. Bind all
+/// three here.
+///
+/// The masked loss (S3 #149): the masked opcodes appear exactly when the
+/// header carries kDataFlagMaskedLoss — the flag is what lets the feeder
+/// stage -1 labels, and a plain kernel would index a row with -1.
+/// `saw_masked` is set when `ins` is one.
+std::expected<void, std::string> SoftmaxLabelsAreStaged(
+    const up::UpdateInstruction& ins, const up::PlanHeader& header,
+    bool* saw_masked) {
+  const auto op = static_cast<up::OpCode>(ins.opcode);
+  const bool masked_op = op == up::OpCode::kSoftmaxXEntMaskedFwd ||
+                         op == up::OpCode::kSoftmaxXEntMaskedBwd;
+  const bool plain_op =
+      op == up::OpCode::kSoftmaxXEntFwd || op == up::OpCode::kSoftmaxXEntBwd;
+  if (masked_op) {
+    if ((header.data_flags & up::kDataFlagMaskedLoss) == 0)
+      return diag::executing::Error(
+          "masked cross-entropy in a plan without the masked-loss flag");
+    *saw_masked = true;
+  } else if (plain_op && (header.data_flags & up::kDataFlagMaskedLoss) != 0) {
+    return diag::executing::Error(
+        "plain cross-entropy in a plan that carries the masked-loss flag");
+  }
+  if (plain_op || masked_op) {
+    if (header.label_kind != 1)
+      return diag::executing::Error(
+          "softmax cross-entropy in a plan without class labels");
+    if (ins.in[1] != header.label_ref)
+      return diag::executing::Error(
+          "softmax labels are not the plan's staged label slot");
+    if (ins.out[0] != header.batch)
+      return diag::executing::Error(
+          "softmax row count disagrees with the plan batch");
+  }
+  return {};
+}
+
+/// Embedding gather is the SECOND data-dependent-offset dereference: it
+/// indexes table rows with raw i32 tokens (table[tokens[t]]). The feeder
+/// contract proves only the STAGED ids < vocab, so — exactly as for the
+/// softmax labels — its token operand must be the staged input slot, its
+/// row count the staged batch, and the plan must declare token input. Any
+/// other range would gather with unvalidated arena bytes read as indices:
+/// an out-of-bounds read from a range-valid plan.
+std::expected<void, std::string> EmbeddingTokensAreStaged(
+    const up::UpdateInstruction& ins, const up::PlanHeader& header) {
+  if (static_cast<up::OpCode>(ins.opcode) != up::OpCode::kEmbedFwd) return {};
+  if (header.input_kind != 1)
+    return diag::executing::Error(
+        "embedding gather in a plan without token input");
+  if (ins.in[0] != header.input_ref)
+    return diag::executing::Error(
+        "embedding tokens are not the plan's staged input slot");
+  if (ins.out[0] != header.batch)
+    return diag::executing::Error(
+        "embedding row count disagrees with the plan batch");
+  return {};
+}
+
+/// The segment starts (v25, #191; review 2026-11-16 D1): kAttnFwdSeg uses
+/// each start as a loop bound, so its starts operand must be the very range
+/// a kSegmentStarts of the same program wrote — whose values are positions
+/// by construction — with no instruction writing it in between. One per
+/// program: the ranges written by kSegmentStarts and still intact.
+class LiveSegmentStarts {
+ public:
+  /// The rule for `ins`, then what `ins` does to the live ranges.
+  std::expected<void, std::string> Step(const up::UpdateInstruction& ins,
+                                        const InstructionExtents& extents) {
+    const auto op = static_cast<up::OpCode>(ins.opcode);
+    // v26: the tiled forward too.
+    if (op == up::OpCode::kAttnFwdSeg || op == up::OpCode::kAttnFwdTiledSeg) {
+      bool bound = false;
+      for (const Range& s : live_) bound |= s.ref == ins.out[2];
+      if (!bound)
+        return diag::executing::Error(
+            "segment-masked attention reads starts no segment_starts of the "
+            "same program wrote (or one written over since)");
+    }
+    // Any write over a live starts range retires it; kSegmentStarts then
+    // (re)establishes the range it writes.
+    for (size_t t = 0; t < extents.count; ++t) {
+      const OperandExtent& r = extents.ranges[t];
+      if (!r.write || r.rodata || r.source) continue;
+      std::erase_if(live_, [&](const Range& s) {
+        return r.off < s.off + s.bytes && s.off < r.off + r.bytes;
+      });
+    }
+    if (op == up::OpCode::kSegmentStarts) {
+      const uint64_t positions =
+          up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]);
+      live_.push_back(
+          {ins.in[1], up::RefOffset(ins.in[1]), positions * sizeof(int32_t)});
+    }
+    return {};
+  }
+
+ private:
+  struct Range {
+    uint64_t ref, off, bytes;
+  };
+  std::vector<Range> live_;
+};
+
+/// An optimizer step is the update, whatever its moments are stored as: it
+/// belongs to the train and step programs, as the certificate's bit does.
+/// One stepping in the eval program would move the adapters while scoring
+/// them — the engine evaluates between steps on the word that the eval
+/// program writes transients only — and one in the merge program would move
+/// them while their deltas are materialized. No compiler has emitted
+/// either; the f32 steps are held to the rule the 8-bit step arrived with.
+///
+/// The 8-bit moment step (v27, #192) is the update too, and its codes and
+/// scales are optimizer state — the persistent prefix the checkpoint
+/// carries and no step's transients reuse. A plan whose moments sat in the
+/// transient segment would train on whatever a forward last left there.
+std::expected<void, std::string> OptimizerStepInItsPlace(
+    const up::UpdateInstruction& ins, const up::PlanHeader& header,
+    const ProgramRole& role) {
+  const auto op = static_cast<up::OpCode>(ins.opcode);
+  if ((op == up::OpCode::kSgdStep || op == up::OpCode::kAdamWStep) &&
+      role.scores_or_merges)
+    return diag::executing::Error(
+        "an optimizer step outside the train / step programs (opcode " +
+        std::to_string(ins.opcode) + ")");
+  if (op != up::OpCode::kAdamW8Step) return {};
+  if (role.scores_or_merges)
+    return diag::executing::Error(
+        "an 8-bit moment step outside the train / step programs");
+  const uint64_t count = ins.out[0];
+  const uint64_t scales = up::MomentBlocks(count) * 2 * sizeof(float);
+  for (const auto& [ref, bytes] :
+       {std::pair{ins.in[2], count}, std::pair{ins.in[3], count},
+        std::pair{ins.out[2], scales}})
+    if (!RangeOk(up::RefOffset(ref), bytes, header.persistent_size))
+      return diag::executing::Error(
+          "an 8-bit moment step's codes or scales lie outside the "
+          "persistent segment");
+  return {};
+}
+
+/// The column scales of a quantized GEMM (v17, kFlagQ8ColScale) are a
+/// rodata vector the kernels multiply in blindly — N floats in the forward
+/// (NN), K in the dX GEMM (NT): each is a finite positive float (CR1 #142
+/// F33). The validator proved the vector in bounds.
+std::expected<void, std::string> Q8ColumnScalesArePositive(
+    const up::UpdateInstruction& ins, std::span<const uint8_t> rodata) {
+  const auto op = static_cast<up::OpCode>(ins.opcode);
+  if ((op != up::OpCode::kGemmNNQ8 && op != up::OpCode::kGemmNTQ8) ||
+      !(ins.flags & up::kFlagQ8ColScale))
+    return {};
+  const uint64_t count = op == up::OpCode::kGemmNTQ8 ? ins.out[2] : ins.out[1];
+  const uint8_t* scales = rodata.data() + up::RefOffset(ins.in[3]);
+  for (uint64_t i = 0; i < count; ++i) {
+    float s;
+    std::memcpy(&s, scales + i * sizeof(float), sizeof(s));
+    if (!std::isfinite(s) || s <= 0.0f)
+      return diag::executing::Error("quantized GEMM column scale " +
+                                    std::to_string(i) +
+                                    " is not a finite positive float (opcode " +
+                                    std::to_string(ins.opcode) + ")");
+  }
+  return {};
+}
+
+/// Every per-instruction rule of the executor contract over one program,
+/// in the order a plan breaking several is reported.
+std::expected<void, std::string> VerifyProgram(
+    std::span<const up::UpdateInstruction> program, const ProgramRole& role,
+    std::span<const uint8_t> rodata, const up::PlanHeader& header,
+    bool* saw_masked) {
+  LiveSegmentStarts starts;
+  for (const up::UpdateInstruction& ins : program) {
+    const auto extents =
+        DescribeInstruction(ins, header.arena_size, header.rodata_size,
+                            header.version, role.allow_source);
+    if (!extents) return std::unexpected(extents.error());
+    if (auto r = StagedSlotsUnwritten(ins, *extents, header, role); !r)
+      return r;
+    // The relaxed bit (v18 GEMMs, v20 tiled attention) belongs to the
+    // train and step programs: the eval program scores the model that
+    // ships in exact arithmetic, and the merge program has no
+    // instruction a certificate covers.
+    if ((ins.flags & up::kFlagRelaxed) && role.scores_or_merges)
+      return diag::executing::Error(
+          "a relaxed instruction outside the train / step programs "
+          "(opcode " +
+          std::to_string(ins.opcode) + ")");
+    if (auto r = SoftmaxLabelsAreStaged(ins, header, saw_masked); !r) return r;
+    if (auto r = EmbeddingTokensAreStaged(ins, header); !r) return r;
+    if (auto r = starts.Step(ins, *extents); !r) return r;
+    if (auto r = OptimizerStepInItsPlace(ins, header, role); !r) return r;
+    if (auto r = Q8ColumnScalesArePositive(ins, rodata); !r) return r;
+  }
+  return {};
+}
+
+}  // namespace
+
 std::expected<void, std::string> VerifyExecutorContract(
     std::span<const up::UpdateInstruction> train,
     std::span<const up::UpdateInstruction> merge,
@@ -56,178 +314,27 @@ std::expected<void, std::string> VerifyExecutorContract(
     std::span<const up::EmitEntry> emit_table, std::span<const uint8_t> rodata,
     const up::PlanHeader& header) {
   // The rodata handed in is the section the header describes: the column
-  // scales below are read from it at validator-proven offsets.
+  // scales are read from it at validator-proven offsets.
   if (rodata.size() != header.rodata_size)
     return diag::executing::Error(
         "rodata section handed to the executor contract disagrees with the "
         "header");
-  // The masked loss (S3 #149): the masked opcodes appear exactly when the
-  // header carries kDataFlagMaskedLoss — the flag is what lets the feeder
-  // stage -1 labels, and a plain kernel would index a row with -1.
+  const bool source_anywhere = header.version >= up::kSeeuSourceWeightsVersion;
   bool saw_masked = false;
-  // The segment starts (v25, #191; review 2026-11-16 D1): kAttnFwdSeg uses
-  // each start as a loop bound, so its starts operand must be the very range
-  // a kSegmentStarts of the same program wrote — whose values are positions
-  // by construction — with no instruction writing it in between. Per
-  // program: the ranges written by kSegmentStarts and still intact.
-  struct StartsRange {
-    uint64_t ref, off, bytes;
-  };
-  std::vector<StartsRange> starts_live;
-  for (const auto* program : {&train, &merge, &eval, &step}) {
-    starts_live.clear();
-    for (const up::UpdateInstruction& ins : *program) {
-      // The eval program may read the source model file from v17; every
-      // program may from v21 (an adapter-only plan's frozen weights live
-      // there, F6 #134). Reads only: the validator refuses a source ref as
-      // a destination in any program.
-      const bool allow_source =
-          program == &eval || header.version >= up::kSeeuSourceWeightsVersion;
-      const auto extents =
-          DescribeInstruction(ins, header.arena_size, header.rodata_size,
-                              header.version, allow_source);
-      if (!extents) return std::unexpected(extents.error());
-      // The staged input and label slots are the feeder's (CR2 #143 N03):
-      // the provenance proofs below hold only while no program writes
-      // them, so no instruction of any program may.
-      {
-        auto overlaps = [](uint64_t off, uint64_t bytes, uint64_t ref,
-                           uint64_t ref_bytes) {
-          const uint64_t slot = up::RefOffset(ref);
-          return ref != up::kNullRef && ref_bytes != 0 && bytes != 0 &&
-                 off < slot + ref_bytes && slot < off + bytes;
-        };
-        const char* const name = program == &train   ? "train"
-                                 : program == &merge ? "merge"
-                                 : program == &eval  ? "eval"
-                                                     : "step";
-        for (size_t t = 0; t < extents->count; ++t) {
-          const OperandExtent& r = extents->ranges[t];
-          if (!r.write || r.rodata || r.source) continue;
-          if (overlaps(r.off, r.bytes, header.input_ref,
-                       header.input_floats * sizeof(float)))
-            return diag::executing::Error(
-                std::string("an instruction of the ") + name +
-                " program writes the staged input slot (opcode " +
-                std::to_string(ins.opcode) + ")");
-          if (header.label_kind != 0 &&
-              overlaps(r.off, r.bytes, header.label_ref, header.label_bytes))
-            return diag::executing::Error(
-                std::string("an instruction of the ") + name +
-                " program writes the staged label slot (opcode " +
-                std::to_string(ins.opcode) + ")");
-        }
-      }
-      // The relaxed bit (v18 GEMMs, v20 tiled attention) belongs to the
-      // train and step programs: the eval program scores the model that
-      // ships in exact arithmetic, and the merge program has no
-      // instruction a certificate covers.
-      if ((ins.flags & up::kFlagRelaxed) &&
-          (program == &eval || program == &merge))
-        return diag::executing::Error(
-            "a relaxed instruction outside the train / step programs "
-            "(opcode " +
-            std::to_string(ins.opcode) + ")");
-      // Label provenance for the class-indexed kernels. The softmax pair
-      // indexes probability rows with raw i32 labels
-      // (probs[n*C + labels[n]]) — the one place a validated instruction
-      // dereferences data-dependent offsets. That is only safe because the
-      // feeder contract proves every STAGED dataset label < the softmax
-      // width. The proof covers exactly the label slot's `batch` staged
-      // entries, so a softmax whose label operand is any other range, or
-      // whose row count exceeds the staged batch, or that appears in a
-      // plan not declaring class labels, would read unvalidated bytes as
-      // indices — an out-of-bounds write through the backward kernel, from
-      // a plan that passed every range check. Bind all three here.
-      const auto op = static_cast<up::OpCode>(ins.opcode);
-      const bool masked_op = op == up::OpCode::kSoftmaxXEntMaskedFwd ||
-                             op == up::OpCode::kSoftmaxXEntMaskedBwd;
-      if (masked_op) {
-        if ((header.data_flags & up::kDataFlagMaskedLoss) == 0)
-          return diag::executing::Error(
-              "masked cross-entropy in a plan without the masked-loss flag");
-        saw_masked = true;
-      } else if ((op == up::OpCode::kSoftmaxXEntFwd ||
-                  op == up::OpCode::kSoftmaxXEntBwd) &&
-                 (header.data_flags & up::kDataFlagMaskedLoss) != 0) {
-        return diag::executing::Error(
-            "plain cross-entropy in a plan that carries the masked-loss flag");
-      }
-      if (op == up::OpCode::kSoftmaxXEntFwd ||
-          op == up::OpCode::kSoftmaxXEntBwd || masked_op) {
-        if (header.label_kind != 1)
-          return diag::executing::Error(
-              "softmax cross-entropy in a plan without class labels");
-        if (ins.in[1] != header.label_ref)
-          return diag::executing::Error(
-              "softmax labels are not the plan's staged label slot");
-        if (ins.out[0] != header.batch)
-          return diag::executing::Error(
-              "softmax row count disagrees with the plan batch");
-      }
-      // Embedding gather is the SECOND data-dependent-offset dereference:
-      // it indexes table rows with raw i32 tokens (table[tokens[t]]). The
-      // feeder contract proves only the STAGED ids < vocab, so — exactly as
-      // for the softmax labels — its token operand must be the staged input
-      // slot, its row count the staged batch, and the plan must declare
-      // token input. Any other range would gather with unvalidated arena
-      // bytes read as indices: an out-of-bounds read from a range-valid plan.
-      if (op == up::OpCode::kEmbedFwd) {
-        if (header.input_kind != 1)
-          return diag::executing::Error(
-              "embedding gather in a plan without token input");
-        if (ins.in[0] != header.input_ref)
-          return diag::executing::Error(
-              "embedding tokens are not the plan's staged input slot");
-        if (ins.out[0] != header.batch)
-          return diag::executing::Error(
-              "embedding row count disagrees with the plan batch");
-      }
-      // The column scales of a quantized GEMM (v17, kFlagQ8ColScale) are a
-      // rodata vector the kernels multiply in blindly — N floats in the
-      // forward (NN), K in the dX GEMM (NT): each is a finite positive
-      // float (CR1 #142 F33). The validator proved the vector in bounds.
-      if (op == up::OpCode::kAttnFwdSeg ||
-          op == up::OpCode::kAttnFwdTiledSeg) {  // v26: the tiled forward too
-        bool bound = false;
-        for (const StartsRange& s : starts_live) bound |= s.ref == ins.out[2];
-        if (!bound)
-          return diag::executing::Error(
-              "segment-masked attention reads starts no segment_starts of the "
-              "same program wrote (or one written over since)");
-      }
-      // Any write over a live starts range retires it; kSegmentStarts then
-      // (re)establishes the range it writes.
-      for (size_t t = 0; t < extents->count; ++t) {
-        const OperandExtent& r = extents->ranges[t];
-        if (!r.write || r.rodata || r.source) continue;
-        std::erase_if(starts_live, [&](const StartsRange& s) {
-          return r.off < s.off + s.bytes && s.off < r.off + r.bytes;
-        });
-      }
-      if (op == up::OpCode::kSegmentStarts) {
-        const uint64_t positions =
-            up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]);
-        starts_live.push_back(
-            {ins.in[1], up::RefOffset(ins.in[1]), positions * sizeof(int32_t)});
-      }
-      if ((op == up::OpCode::kGemmNNQ8 || op == up::OpCode::kGemmNTQ8) &&
-          (ins.flags & up::kFlagQ8ColScale)) {
-        const uint64_t count =
-            op == up::OpCode::kGemmNTQ8 ? ins.out[2] : ins.out[1];
-        const uint8_t* scales = rodata.data() + up::RefOffset(ins.in[3]);
-        for (uint64_t i = 0; i < count; ++i) {
-          float s;
-          std::memcpy(&s, scales + i * sizeof(float), sizeof(s));
-          if (!std::isfinite(s) || s <= 0.0f)
-            return diag::executing::Error(
-                "quantized GEMM column scale " + std::to_string(i) +
-                " is not a finite positive float (opcode " +
-                std::to_string(ins.opcode) + ")");
-        }
-      }
-    }
-  }
+  const ProgramRole train_role{"train", false, source_anywhere};
+  const ProgramRole merge_role{"merge", true, source_anywhere};
+  const ProgramRole eval_role{"eval", true, true};
+  const ProgramRole step_role{"step", false, source_anywhere};
+  if (auto r = VerifyProgram(train, train_role, rodata, header, &saw_masked);
+      !r)
+    return r;
+  if (auto r = VerifyProgram(merge, merge_role, rodata, header, &saw_masked);
+      !r)
+    return r;
+  if (auto r = VerifyProgram(eval, eval_role, rodata, header, &saw_masked); !r)
+    return r;
+  if (auto r = VerifyProgram(step, step_role, rodata, header, &saw_masked); !r)
+    return r;
 
   if ((header.data_flags & up::kDataFlagMaskedLoss) != 0 && !saw_masked)
     return diag::executing::Error(

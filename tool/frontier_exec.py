@@ -179,9 +179,10 @@ def header_violation(h, plan_size):
     prices here (CR2 #143: the review's N04 and N05 were rules this copy
     skipped). The C++ statement stays the one the device runs; this is held
     to it by test, rule by rule. The ABI manifest holds the rodata offset
-    alignment and the record sizes; the version gates (v11 GEMM tiles, v9
-    gradient accumulation) and the 4-wide unroll are literals here, as
-    every version gate of this reader is, held by the test alone."""
+    alignment, the accumulation bound (#223) and the record sizes; the
+    version gates (v11 GEMM tiles, v9 gradient accumulation) and the 4-wide
+    unroll are literals here, as every version gate of this reader is, held
+    by the test alone."""
     def mul_ok(a, b):
         return a * b < _U64
 
@@ -216,6 +217,9 @@ def header_violation(h, plan_size):
     # Gradient accumulation (v9, kSeeuGradAccumVersion).
     if (h.grad_accum_steps > 1) != (h.step_instr_count > 0):
         return "plan step program presence disagrees with grad_accum_steps"
+    if h.grad_accum_steps > formats.MAX_GRAD_ACCUM_STEPS:  # #223
+        return (f"plan grad_accum_steps {h.grad_accum_steps} exceeds the "
+                f"bound of {formats.MAX_GRAD_ACCUM_STEPS}")
     if h.version < 9 and (h.grad_accum_steps > 1 or h.step_instr_count > 0):
         return "pre-v9 plan carries gradient-accumulation fields"
     if h.batch == 0:
@@ -286,11 +290,16 @@ def _c_text(raw, allow_empty):
     return raw[:end].decode("ascii")
 
 
-def metadata_violation(h, blob, relaxed_instructions):
+def metadata_violation(h, blob, relaxed_instructions, quantized_instructions=0):
     """PlanMetadataViolation (source/plan/metadata.h), rule for rule: the
     v23 metadata section held to the plan it sits in. Returns (why, None)
-    or (None, metadata) — metadata is None for a plan without the flag."""
+    or (None, metadata) — metadata is None for a plan without the flag.
+    `quantized_instructions`: the 8-bit moment steps the four programs
+    carry (v27, #192)."""
     if not h.data_flags & formats.DATA_FLAG_METADATA:
+        if quantized_instructions:
+            return ("the plan carries 8-bit moment steps but no metadata "
+                    "section to record them"), None
         return None, None
     M, L = formats.PLAN_METADATA, formats.LEDGER_ENTRY
     off = formats.plan_metadata_offset(h.emit_table_offset, h.emit_count)
@@ -324,26 +333,37 @@ def metadata_violation(h, blob, relaxed_instructions):
             (not flags & formats.EXPORT_LOGITS_PARITY and delta != 0.0)):
         return ("plan metadata logits-parity figure is not a finite "
                 "non-negative value under its flag"), None
-    ledger, reordered = [], 0
+    ledger, reordered, quantized = [], 0, 0
+    quantized_ok = h.version >= formats.SEEU_INT8_MOMENTS_VERSION
     for i in range(m["ledger_count"]):
         raw_pass, arithmetic, count, raw_why = L.unpack_from(
             blob, off + M.size + i * L.size)
         name, why = _c_text(raw_pass, False), _c_text(raw_why, True)
         if name is None or why is None:
             return "plan metadata ledger entry is not NUL-padded text", None
-        if arithmetic not in (formats.LEDGER_EXACT, formats.LEDGER_REORDERED):
+        if arithmetic not in (formats.LEDGER_EXACT, formats.LEDGER_REORDERED) \
+                and not (arithmetic == formats.LEDGER_QUANTIZED and quantized_ok):
             return "plan metadata ledger entry has an unknown arithmetic", None
         if arithmetic == formats.LEDGER_EXACT and count:
             return "an exact ledger entry counts changed instructions", None
         if arithmetic == formats.LEDGER_REORDERED and not count:
             return "a reordered ledger entry changes no instruction", None
-        reordered += count
+        if arithmetic == formats.LEDGER_QUANTIZED and not count:
+            return "a quantized ledger entry changes no instruction", None
+        if arithmetic == formats.LEDGER_QUANTIZED:
+            quantized += count
+        else:
+            reordered += count
         ledger.append({"pass": name, "arithmetic": arithmetic,
                        "instructions": count, "why": why})
     if reordered != relaxed_instructions:
         return (f"the ledger accounts for {reordered} instruction(s) of "
                 f"reordered arithmetic, the programs carry "
                 f"{relaxed_instructions}"), None
+    if quantized != quantized_instructions:
+        return (f"the ledger accounts for {quantized} instruction(s) of "
+                f"quantized arithmetic, the programs carry "
+                f"{quantized_instructions}"), None
     m["ledger"] = ledger
     return None, m
 
@@ -386,7 +406,10 @@ class Plan:
                    if i.flags & FLAG_RELAXED]
         self.relaxed_instructions = len(relaxed)
         # v23: the metadata section — the manifest words and the ledger.
-        why, self.metadata = metadata_violation(self, blob, len(relaxed))
+        quantized = sum(1 for s in SECTIONS for i in self.sections[s]
+                        if i.opcode == 58)
+        why, self.metadata = metadata_violation(self, blob, len(relaxed),
+                                                quantized)
         if why:
             raise PlanError(f"{path}: {why}")
         self.relaxed_gemms = sum(1 for i in relaxed
@@ -418,7 +441,12 @@ class Plan:
                 if op == 54 and not positive(ins.src[2]):
                     raise PlanError(f"{where}: the global clip threshold must "
                                     "be a finite positive float")
-                if op in (17, 18) and ins.out[1] != 0:
+                if op == 58 and \
+                        self.version < formats.SEEU_INT8_MOMENTS_VERSION:
+                    raise PlanError(f"{where}: 8-bit moment opcode {op} in a "
+                                    "pre-v"
+                                    f"{formats.SEEU_INT8_MOMENTS_VERSION} plan")
+                if op in (17, 18, 58) and ins.out[1] != 0:
                     if self.version < 12:
                         raise PlanError(f"{where}: an optimizer step carries "
                                         "a clip threshold in a pre-v12 plan")
@@ -1277,7 +1305,7 @@ def require_numpy():
 
 # --- Memory: where a tensor reference lives -----------------------------------
 
-_DTYPE_BYTES = {"<f4": 4, "<i4": 4, "<i1": 1, "<u2": 2}
+_DTYPE_BYTES = {"<f4": 4, "<i4": 4, "<i1": 1, "<u1": 1, "<u2": 2}
 
 
 def _count(shape):
@@ -1383,6 +1411,29 @@ class Memory:
     def write(self, ref, tensor):
         raise NotImplementedError
 
+    # Host access to an arena range as NumPy, for state whose arithmetic is
+    # defined bit for bit (the 8-bit moments, v27): a copy of the bytes and
+    # a store of an array's bytes, checked and recorded as every write is.
+    def read_host(self, ref, count, kind):
+        nbytes = count * _DTYPE_BYTES[kind]
+        self._check(ref, nbytes)
+        self._host_sync(ref, nbytes)
+        return self.np.frombuffer(self.arena, kind, count, ref).copy()
+
+    def write_host(self, ref, array):
+        raw = array.tobytes()
+        self._check_write(ref, len(raw))
+        self._host_drop(ref, len(raw))
+        self.arena[ref:ref + len(raw)] = raw
+        if self.recorder:
+            self.recorder(ref, array.copy())
+
+    def _host_sync(self, ref, nbytes):
+        pass
+
+    def _host_drop(self, ref, nbytes):
+        pass
+
     def stage(self, ref, payload):
         raise NotImplementedError
 
@@ -1482,6 +1533,12 @@ class SlotMemory(Memory):
     def stage(self, ref, payload):
         self._evict(ref, len(payload), flush=False)
         self.arena[ref:ref + len(payload)] = payload
+
+    def _host_sync(self, ref, nbytes):
+        self._evict(ref, nbytes, flush=True)
+
+    def _host_drop(self, ref, nbytes):
+        self._evict(ref, nbytes, flush=False)
 
     def sync(self):
         self.x.sync([entry[2] for entry in self.live.values()])
@@ -1787,6 +1844,169 @@ def _adamw(m, x, ins, step):
         m_hat / (x.sqrt(v_hat) + step["eps"]) + step["weight_decay"] * p))
 
 
+# 8-bit moments (plan v27, S5 #192): source/plan/instruction.h's codes,
+# written a second time in NumPy from the documented arithmetic — the level
+# tables as their f32 bits, exponent-field bit operations, compares, IEEE
+# f32 multiplies, subtractions and one division, and the dither's 32-bit
+# integer hash — so the codes are the device's, bit for bit, for the same
+# f32 moments, step and operand. The step's own arithmetic (the moments'
+# blend, the parameter update) runs in the backend's precision, as _adamw's
+# does; the new moments are rounded to f32 before they are coded, so a code
+# can differ from the device's by one level where the device's f32 moment
+# and this one differ in their last bits.
+def moment_tables(np):
+    level = np.array(formats.MOMENT_LEVEL_BITS, np.uint32).view(np.float32)
+    threshold = np.array(formats.MOMENT_THRESHOLD_BITS,
+                         np.uint32).view(np.float32)
+    return level, threshold
+
+
+def moment_mix(np, x):
+    """MomentMix over uint64 arrays holding 32-bit values."""
+    mask = np.uint64(0xFFFFFFFF)
+    a, b = (np.uint64(c) for c in formats.MOMENT_MIX)
+    x = x ^ (x >> np.uint64(16))
+    x = (x * a) & mask
+    x = x ^ (x >> np.uint64(15))
+    x = (x * b) & mask
+    return x ^ (x >> np.uint64(16))
+
+
+def moment_dither(np, step, salt, stream, count):
+    """MomentDither of elements 0 .. count-1: 24-bit integers, a function
+    of the optimizer step, the m codes' operand and the element alone."""
+    mask = 0xFFFFFFFF
+    step32 = (step ^ (step >> 32)) & mask
+    salt32 = (salt ^ (salt >> 32)) & mask
+    key = int(moment_mix(np, np.array([salt32 ^ stream], np.uint64))[0])
+    key = int(moment_mix(np, np.array([(key + step32) & mask], np.uint64))[0])
+    index = (np.arange(count, dtype=np.uint64) + np.uint64(key)) \
+        & np.uint64(mask)
+    return (moment_mix(np, index) >> np.uint64(8)).astype(np.uint32)
+
+
+def moment_level_value(np, n, scale):
+    """The f32 magnitude of level n in a block whose scale is `scale`."""
+    f32 = np.float32
+    level, _ = moment_tables(np)
+    n = np.asarray(n, np.int64)
+    octave = ((127 - n // 8) << 23).astype(np.uint32).view(f32)
+    return (scale * (level[n % 8] * octave).astype(f32)).astype(f32)
+
+
+def moment_level(np, x, scale, max_level, to_zero, dither):
+    """MomentLevel: the level of each magnitude x > 0 ([blocks, B], f32) in
+    its block's scale — one of the two levels whose decoded values bracket
+    x, the upper one when the dither is below the fraction of the way
+    there. max_level + 1 stands for the zero code (to_zero only)."""
+    f32 = np.float32
+    _, threshold = moment_tables(np)
+    scale = scale[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.nan_to_num((x / scale).astype(f32)).astype(f32)
+    bits = ratio.view(np.uint32)
+    biased = ((bits >> 23) & 0xFF).astype(np.int64)
+    y = ((bits & 0x7FFFFF) | 0x3F800000).astype(np.uint32).view(f32)
+    below = (y[..., None] < threshold).sum(-1)
+    n = np.clip(8 * (126 - biased) + below, 0, max_level)
+    n = np.where(biased == 0, max_level, n)
+    at = moment_level_value(np, n, scale)
+    above = moment_level_value(np, np.maximum(n - 1, 0), scale)
+    under = np.where(n == max_level, f32(0.0),
+                     moment_level_value(np, np.minimum(n + 1, max_level),
+                                        scale))
+    up = x > at
+    lo, hi = np.where(up, at, under), np.where(up, above, at)
+    lo_n, hi_n = np.where(up, n, n + 1), np.where(up, n - 1, n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        frac = ((x - lo).astype(f32) / (hi - lo).astype(f32)).astype(f32)
+        cut = np.nan_to_num(frac * f32(1 << formats.MOMENT_DITHER_BITS),
+                            nan=0.0, posinf=0.0, neginf=0.0)
+    cut = np.clip(cut, 0, 1 << formats.MOMENT_DITHER_BITS).astype(np.uint32)
+    out = np.where(dither < cut, hi_n, lo_n)
+    out = np.where(x <= lo, lo_n, np.where(x >= hi, hi_n, out))
+    out = np.where(x == at, n, out)
+    out = np.where(up & (n == 0), 0, out)  # at the block's scale, or above
+    if not to_zero:  # below the lowest level: the lowest level, never zero
+        out = np.where(~up & (n == max_level), max_level, out)
+    return out
+
+
+def moment_dequantize(np, mq, vq, scales):
+    """The f32 m and v that int8 m codes, uint8 v codes and the block scales
+    (m absmaxes, then v maxes) stand for."""
+    n, blocks = mq.size, scales.size // 2
+    f32 = np.float32
+    blk = np.arange(n) // formats.MOMENT_BLOCK
+    q = mq.astype(np.int64)
+    mag = moment_level_value(np, np.clip(127 - np.abs(q), 0, 126),
+                             scales[:blocks][blk])
+    m0 = np.where(q == 0, f32(0.0), np.where(q < 0, -mag, mag))
+    q = vq.astype(np.int64)
+    v0 = np.where(q == 0, f32(0.0),
+                  moment_level_value(np, np.clip(255 - q, 0, 254),
+                                     scales[blocks:][blk]))
+    return m0.astype(f32), v0.astype(f32)
+
+
+def moment_quantize(np, m1, v1, step, salt):
+    """(int8 m codes, uint8 v codes, f32 scales) of f32 moments, dithered
+    for optimizer step `step` of the tensor whose m codes are operand
+    `salt`."""
+    f32, B = np.float32, formats.MOMENT_BLOCK
+    n = m1.size
+    blocks = (n + B - 1) // B
+    mp = np.zeros(blocks * B, f32)
+    vp = np.zeros(blocks * B, f32)
+    mp[:n], vp[:n] = m1, v1
+    mp, vp = mp.reshape(blocks, B), vp.reshape(blocks, B)
+    floor = np.array([formats.MOMENT_SCALE_FLOOR_BITS], np.uint32).view(f32)[0]
+    amax, vmax = np.abs(mp).max(1), vp.max(1)
+    m_zero, v_zero = amax < floor, vmax < floor
+    dm = moment_dither(np, step, salt, formats.MOMENT_DITHER_M, blocks * B)
+    dv = moment_dither(np, step, salt, formats.MOMENT_DITHER_V, blocks * B)
+    top = formats.MOMENT_M_MAX_LEVEL
+    lvl = moment_level(np, np.abs(mp), amax, top, True, dm.reshape(blocks, B))
+    qm = np.where(mp < 0, lvl - (top + 1), (top + 1) - lvl)
+    qm = np.where((mp == 0) | m_zero[:, None], 0, qm).astype(np.int8)
+    top = formats.MOMENT_V_MAX_LEVEL
+    lvl = moment_level(np, vp, vmax, top, False, dv.reshape(blocks, B))
+    qv = np.where((vp > 0) & ~v_zero[:, None], (top + 1) - lvl, 0)
+    scales = np.concatenate([np.where(m_zero, f32(0), amax),
+                             np.where(v_zero, f32(0), vmax)]).astype(f32)
+    return (qm.reshape(-1)[:n], qv.astype(np.uint8).reshape(-1)[:n], scales)
+
+
+def _adamw8(m, x, ins, step):
+    """kAdamW8Step: _adamw over the dequantized moments, then requantized."""
+    np = m.np
+    n = ins.out[0]
+    blocks = (n + formats.MOMENT_BLOCK - 1) // formats.MOMENT_BLOCK
+    mq = m.read_host(ins.src[2], n, "<i1")
+    vq = m.read_host(ins.src[3], n, "<u1")
+    scales = m.read_host(ins.out[2], 2 * blocks, "<f4")
+    if not (np.isfinite(scales).all() and (scales >= 0).all()):
+        raise PlanError("optimizer moments are not finite — the 8-bit step "
+                        "was refused")
+    m0, v0 = moment_dequantize(np, mq, vq, scales)
+    p, g = m.read(ins.src[0], (n,)), _step_gradient(m, x, ins)
+    b1, b2, t = step["beta1"], step["beta2"], step["step"]
+    mom = b1 * x.up(x.from_numpy(m0)) + (1.0 - b1) * g
+    var = b2 * x.up(x.from_numpy(v0)) + (1.0 - b2) * g * g
+    m1 = np.asarray(x.to_numpy(mom), dtype=np.float32)
+    v1 = np.asarray(x.to_numpy(var), dtype=np.float32)
+    if not (np.isfinite(m1).all() and np.isfinite(v1).all()):
+        raise PlanError("optimizer moments are not finite — the 8-bit step "
+                        "was refused")
+    m_hat, v_hat = mom / (1.0 - b1 ** t), var / (1.0 - b2 ** t)
+    m.write(ins.src[0], p - step["lr"] * (
+        m_hat / (x.sqrt(v_hat) + step["eps"]) + step["weight_decay"] * p))
+    qm, qv, new_scales = moment_quantize(np, m1, v1, t, ins.src[2])
+    m.write_host(ins.src[2], qm)
+    m.write_host(ins.src[3], qv)
+    m.write_host(ins.out[2], new_scales)
+
+
 def _fill(m, x, ins, step):
     m.write(ins.src[0], x.full(ins.out[0], bits_f32(ins.src[1])))
 
@@ -1917,8 +2137,9 @@ def _attn_fwd(m, x, ins, step):
 
 
 def _segment_starts(m, x, ins, step):
-    """v25 (#191): every position's document start, one past the last EOS
-    strictly before it — written as the i32 bits the runtime writes."""
+    """v25 (#191): every position's document start, one past the last
+    out[1] id (the document separator, #218) strictly before it — written
+    as the i32 bits the runtime writes."""
     import numpy as np
     b, s = hi_lo(ins.out[0])
     eos = int(ins.out[1])
@@ -2183,7 +2404,7 @@ INTERPRETER = {
     43: _gemm_nn("<u2"), 44: _gemm_nt("<u2"), 45: _rope_table,
     46: _fused_map, 51: _xent_masked_fwd, 52: _xent_masked_bwd,
     53: _sqnorm_accum, 54: _clip_global, 55: _segment_starts, 56: _attn_fwd_seg,
-    57: _attn_fwd_tiled_seg,
+    57: _attn_fwd_tiled_seg, 58: _adamw8,
 }
 assert sorted(INTERPRETER) == sorted(OPCODES)
 
@@ -2366,7 +2587,11 @@ def read_trace(np, path):
         for _ in range(extents):
             off, nbytes = extent.unpack_from(raw, pos)
             pos += extent.size
-            writes.append((off, np.frombuffer(raw, "<f4", nbytes // 4, pos)))
+            # An extent that is not whole floats is bytes (the 8-bit
+            # moment codes, v27); the differ reinterprets the others.
+            writes.append((off, np.frombuffer(raw, "<f4", nbytes // 4, pos)
+                           if nbytes % 4 == 0 else
+                           np.frombuffer(raw, "<u1", nbytes, pos)))
             pos += nbytes
         out.append((index, opcode, writes, relaxed))
     return out
@@ -2468,6 +2693,37 @@ class Differ:
         return (values.reshape(b * h, s, s) *
                 self.np.tril(self.np.ones((s, s), "<f4"))).reshape(-1)
 
+    def _codes(self, label, index, name, off, got, ref):
+        """The 8-bit moment codes (v27): the device's bytes against the
+        oracle's, each code within one level. Both start the step from the
+        device's state and draw the same dither (the step, the element, the
+        operand), so the same f32 moment takes the same code; the oracle
+        blends the moments in the backend's precision and rounds to f32
+        only to code them, and a moment whose last bits differ takes the
+        neighbouring level when it crosses a level's value or the dither's
+        threshold (instruction.h)."""
+        np = self.np
+        ref = ref.view(np.uint8).view(got.dtype)
+        if ref.shape != got.shape:
+            self._mismatch(f"{label} #{index} {name} @{off}: {got.size} codes "
+                           f"vs {ref.size}")
+            return
+        self.compared += 1
+        delta = np.abs(got.astype(np.int64) - ref.astype(np.int64))
+        worst = int(delta.max()) if delta.size else 0
+        stat = self.per_opcode.setdefault(name, new_stat(name))
+        stat["extents"] += 1
+        stat["code_extents"] = stat.get("code_extents", 0) + 1
+        stat["codes_off_by_one"] = stat.get("codes_off_by_one", 0) + int(
+            (delta == 1).sum())
+        stat["codes"] = stat.get("codes", 0) + int(delta.size)
+        if worst > 1:
+            at = int(delta.argmax())
+            self.failures.append(
+                f"{label} #{index} {name} @{off}: a code differs by {worst} "
+                f"levels (element {at}: here {int(got[at])}, "
+                f"C++ {int(ref[at])})")
+
     def outside(self, label, before, after, trace):
         """N33 (CR2 #143): a byte the C++ backend changed outside every
         extent its validator declared written is a kernel writing where
@@ -2515,6 +2771,9 @@ class Differ:
                 continue
             for off, ref in cpp:
                 got = mine_by_off[off]
+                if got.dtype in (np.int8, np.uint8):
+                    self._codes(label, index, name, off, got, ref)
+                    continue
                 if got.shape != ref.shape:
                     self._mismatch(f"{label} #{index} {name} @{off}: "
                                    f"{got.size} floats vs {ref.size}")

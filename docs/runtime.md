@@ -10,13 +10,13 @@ But "boring" has to be *earned*. The runtime's real job, beyond executing, is re
 
 ```
 runtime/
-  host/         the package entry point (contract only until S7)
-  loader/       plan load and the resource contract (contract only until S7)
+  host/         the package entry point: the generated runner, its flags and exit codes
+  loader/       plan load, the arena allocation and the load-time contracts
   verifier/     load-time bounds proof of every instruction
   pipeline/     corpus decode and pipelined batch staging
   dispatcher/   the VM dispatch loop; orchestrates the update, verifies every boundary
   executor/     the kernel library the dispatcher executes
-  gating/       the accept-or-refuse decision (contract only until S7)
+  gating/       the accept-or-refuse decision: the best state, patience, the loss windows
   storage/      durable state — checkpoints, atomic commits
   profiler/     the step split and the runtime screen model_update and seeml-bench share
   diagnostics/  error handling, partitioned by process

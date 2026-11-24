@@ -10,17 +10,21 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "compiler/driver/statistics.h"
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
 #include "compiler/frontend/egressor/model_writer.h"
 #include "compiler/frontend/ingressor/model_reader.h"
+#include "runtime/executor/update_kernels.h"
 #include "runtime/pipeline/dataset.h"
 #include "source/contract/split.h"
 #include "source/identity/hash.h"
+#include "source/language/dataset_format.h"
 #include "source/plan/metadata.h"
 #include "test/support/scoped_temp_dir.h"
 #include "source/plan/update_types.h"
@@ -108,7 +112,7 @@ TEST(UpdateCompiler, PlanHeaderContract) {
 
   const PlanHeader h = HeaderOf(compiled);
   EXPECT_EQ(h.magic, kSeeuMagic);
-  EXPECT_EQ(h.version, kSeeuVersion);
+  EXPECT_EQ(h.version, kSeeuPreInt8MomentsVersion);
   EXPECT_EQ(h.batch, static_cast<uint64_t>(kBatch));
   EXPECT_EQ(h.label_kind, 1u);  // softmax cross-entropy: class indices
   EXPECT_EQ(h.input_floats, static_cast<uint64_t>(kBatch * kInDim));
@@ -397,7 +401,7 @@ TEST(UpdateCompiler, CertifiedBf16MarksOnlyTheFrozenGemmsOfTraining) {
     EXPECT_EQ(b.relaxed_gemms, flagged);
     for (const auto& ins : EvalProgramOf(b))
       EXPECT_EQ(ins.flags & kFlagRelaxed, 0u);
-    EXPECT_EQ(HeaderOf(b).version, kSeeuVersion);
+    EXPECT_EQ(HeaderOf(b).version, kSeeuPreInt8MomentsVersion);
     EXPECT_GE(kSeeuVersion, kSeeuRelaxedVersion);
   }
 }
@@ -437,7 +441,7 @@ TEST(UpdateCompiler, CertifiedPrecisionAlsoMarksTheTiledAttentionOfTraining) {
     EXPECT_EQ(ins.flags & kFlagRelaxed, 0u);
   }
   EXPECT_GT(tiled_eval, 0u);  // the eval forward is tiled too, and exact
-  EXPECT_EQ(HeaderOf(t).version, kSeeuVersion);
+  EXPECT_EQ(HeaderOf(t).version, kSeeuPreInt8MomentsVersion);
   EXPECT_GE(kSeeuVersion, kSeeuRelaxedAttentionVersion);
   UpdateConfig cached = tiled;
   cached.attention = AttentionKind::kCached;
@@ -460,9 +464,9 @@ TEST(UpdateCompiler, Bf16BaseHalvesRodataAndLowersTheWideningGemms) {
   bf16.bf16_base = true;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate a, UpdateCompiler(f32).Compile(model));
   ASSERT_OK_AND_ASSIGN(CompiledUpdate b, UpdateCompiler(bf16).Compile(model));
-  // Declared at the current version, which is at least the one that
-  // introduced the widening opcodes (the validator gates them on it).
-  EXPECT_EQ(HeaderOf(b).version, kSeeuVersion);
+  // Declared at v26, the version a plan without 8-bit moments is written
+  // at (#192) — at least the one that introduced the widening opcodes.
+  EXPECT_EQ(HeaderOf(b).version, kSeeuPreInt8MomentsVersion);
   EXPECT_GE(kSeeuVersion, kSeeuBf16Version);
   // Both matmul weights are adapted: a forward NN per weight, and a
   // backward NT (dX through the frozen weight) for every weight but the
@@ -1065,7 +1069,7 @@ TEST(UpdateCompiler, AnAdapterOnlyPlanCarriesNoRodataAndReadsTheSourceModel) {
   ASSERT_OK_AND_ASSIGN(CompiledUpdate adapter,
                        UpdateCompiler(config).Compile(saved));
   const PlanHeader h = HeaderOf(adapter);
-  EXPECT_EQ(h.version, kSeeuVersion);
+  EXPECT_EQ(h.version, kSeeuPreInt8MomentsVersion);
   EXPECT_EQ(h.rodata_size, 0u);
   EXPECT_EQ(adapter.rodata_size, 0u);
   EXPECT_GT(HeaderOf(plain).rodata_size, 0u);
@@ -1632,6 +1636,186 @@ TEST(UpdateCompiler, TheDataPathPinsThePlanToTheCanonicalCorpus) {
       "carries no labels, but the loss stages class-index labels");
 }
 
+/// A byte vocabulary (id = byte) with one special EOS token, `<eos>` (id
+/// 256): the tokenizer section the corpus tests below compile raw text by.
+std::vector<uint8_t> ByteEosSection() {
+  std::vector<uint8_t> b;
+  auto u32 = [&](uint32_t v) {
+    for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
+  };
+  for (uint32_t v : {0x4B544D53u, 1u, 1u, 2u, 0u, 257u, 0u, 1u, 256u,
+                     0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+    u32(v);
+  for (int v = 0; v < 256; ++v) {
+    b.push_back(1);
+    b.push_back(0);
+    b.push_back(static_cast<uint8_t>(v));
+  }
+  const std::string eos = "<eos>";
+  b.push_back(static_cast<uint8_t>(eos.size()));
+  b.push_back(0);
+  b.insert(b.end(), eos.begin(), eos.end());
+  u32(256);
+  return b;
+}
+
+/// The records of a token SDS (v2 or v3, unmasked), each as its bytes.
+std::vector<std::string> RecordsOf(const std::vector<uint8_t>& sds) {
+  uint32_t version = 0;
+  uint64_t n = 0, seq = 0;
+  std::memcpy(&version, sds.data() + 4, 4);
+  std::memcpy(&n, sds.data() + 8, 8);
+  std::memcpy(&seq, sds.data() + 16, 8);
+  const size_t head = version >= 3 ? 64 : 40, width = (seq + 1) * 4;
+  std::vector<std::string> out;
+  for (uint64_t r = 0; r < n; ++r)
+    out.emplace_back(
+        reinterpret_cast<const char*>(sds.data()) + head + r * width, width);
+  return out;
+}
+
+TEST(UpdateCompiler, NoHeldOutRecordOfRawTextHasATwinInTraining) {
+  // #222 (S2 / S3): every raw-text kind is sanitized, and a window equal to
+  // one already kept is dropped before the split — so the held-out records
+  // of a compiled split have no byte-identical twin among the training
+  // records, checked here on the compiled corpus itself.
+  seeml::testing::ScopedTempDir dir;
+  auto write = [&](const std::string& name, const std::string& bytes) {
+    const std::string path = dir.File(name);
+    std::ofstream f(path, std::ios::binary);
+    f << bytes;
+    return path;
+  };
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(257, 8, 2, 4, 16, 43);
+  model.tokenizer = ByteEosSection();
+  UpdateConfig cfg = BaseConfig(16);
+  cfg.default_steps = 8;
+  cfg.val_frac = 0.25f;
+  std::string line_txt, spaces_jsonl;
+  for (int i = 0; i < 10; ++i) line_txt += "the cat sat on the mat.\n";
+  for (int k = 0; k < 10; ++k)
+    spaces_jsonl += "{\"text\": \"the cat sat on the mat." +
+                    std::string(static_cast<size_t>(k), ' ') + "\"}\n";
+  for (const auto& [name, text] :
+       {std::pair<std::string, std::string>{"line.txt", line_txt},
+        {"spaces.jsonl", spaces_jsonl}}) {
+    cfg.data_path = write(name, text);
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(cfg).Compile(model));
+    const std::vector<std::string> records = RecordsOf(c.corpus_sds);
+    const std::vector<uint64_t> held =
+        HeldOutIndices(records.size(), cfg.split_seed, cfg.val_frac);
+    ASSERT_TRUE(!held.empty());
+    uint64_t twins = 0;
+    for (const uint64_t h : held)
+      for (uint64_t t = 0; t < records.size(); ++t)
+        if (!std::binary_search(held.begin(), held.end(), t) &&
+            records[t] == records[h]) {
+          ++twins;
+          break;
+        }
+    EXPECT_EQ(twins, 0u);
+    EXPECT_EQ(c.corpus_held_out_twins, 0u);
+    // The drop is counted: in the manifest, and on the default screen.
+    EXPECT_STR_CONTAINS(c.corpus_manifest, "\"dropped_duplicate_windows\": ");
+    EXPECT_TRUE(c.corpus_manifest.find("\"dropped_duplicate_windows\": 0,") ==
+                std::string::npos);
+    const std::string console = RenderCompileScreens(c.screens, false);
+    EXPECT_STR_CONTAINS(console, "duplicate windows");
+    EXPECT_STR_CONTAINS(console, "held-out twins");
+    EXPECT_STR_CONTAINS(c.screens.frontend.Json(0), "\"validation_twins\": 0");
+  }
+
+  // A dirty .txt compiles to the clean one's corpus, the three counts in
+  // the manifest and on the default screen; the clean one shows no row.
+  cfg.val_frac = 0.0f;
+  const std::string clean =
+      "the quick brown fox jumps over the lazy dog; a stitch in time.\n";
+  const std::string dirty =
+      clean.substr(0, 10) + "\x01" + clean.substr(10, 20) + "\xe2\x80\xae" +
+      clean.substr(30, 20) + "\xff\xfe" + clean.substr(50);
+  cfg.data_path = write("clean.txt", clean);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c_clean,
+                       UpdateCompiler(cfg).Compile(model));
+  cfg.data_path = write("dirty.txt", dirty);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c_dirty,
+                       UpdateCompiler(cfg).Compile(model));
+  EXPECT_TRUE(c_dirty.corpus_sds == c_clean.corpus_sds);
+  EXPECT_EQ(HeaderOf(c_dirty).corpus_hash, HeaderOf(c_clean).corpus_hash);
+  EXPECT_STR_CONTAINS(c_dirty.corpus_manifest, "\"invalid_utf8_bytes\": 2,");
+  EXPECT_STR_CONTAINS(c_dirty.corpus_manifest, "\"control_chars\": 1,");
+  EXPECT_STR_CONTAINS(c_dirty.corpus_manifest, "\"bidi_controls\": 1,");
+  EXPECT_STR_CONTAINS(RenderCompileScreens(c_dirty.screens, false),
+                      "2 invalid UTF-8 byte(s), 1 control char(s), 1 bidi "
+                      "control(s) removed");
+  EXPECT_TRUE(std::string(RenderCompileScreens(c_clean.screens, true))
+                  .find("sanitized") == std::string::npos);
+
+  // All duplicates: one record survives (no refusal for want of a complete
+  // window), and a split of one record is refused by name.
+  cfg.data_path = write("same.txt", std::string(40, 'a'));
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c_same,
+                       UpdateCompiler(cfg).Compile(model));
+  EXPECT_EQ(RecordsOf(c_same.corpus_sds).size(), 1u);
+  EXPECT_STR_CONTAINS(c_same.corpus_manifest,
+                      "\"dropped_duplicate_windows\": 7,");
+  cfg.val_frac = 0.25f;
+  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(model),
+                        "a held-out split needs at least two records");
+}
+
+TEST(UpdateCompiler, AGivenSdsWithTwinsCompilesUnmodifiedAndStatesThem) {
+  // #222: a given SDS is pinned by its hash and never rewritten; under a
+  // compiled split the held-out records with a byte-identical twin in
+  // training are counted — a stated fact on the screen and in the result
+  // the report carries, not a refusal.
+  seeml::testing::ScopedTempDir dir;
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(257, 8, 2, 4, 16, 43);
+  model.tokenizer = ByteEosSection();
+  // 8 records of 5 ids: A, B, C, D each twice.
+  std::vector<int32_t> ids;
+  for (int r = 0; r < 8; ++r)
+    for (int j = 0; j < 5; ++j) ids.push_back(10 * (r % 4) + j);
+  std::vector<uint8_t> sds;
+  WriteSdsTokenCorpus([&](const void* p, size_t n) {
+    const auto* b = static_cast<const uint8_t*>(p);
+    sds.insert(sds.end(), b, b + n);
+  }, 8, 4, model.TokenizerHash(), false, ids.data(), nullptr);
+  const std::string path = dir.File("twins.sds");
+  {
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(sds.data()),
+            static_cast<std::streamsize>(sds.size()));
+  }
+  UpdateConfig cfg = BaseConfig(16);
+  cfg.default_steps = 8;
+  cfg.data_path = path;
+  cfg.val_frac = 0.25f;
+  cfg.split_seed = 3;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate c, UpdateCompiler(cfg).Compile(model));
+  EXPECT_TRUE(c.corpus_from_sds);
+  EXPECT_TRUE(c.corpus_sds.empty());  // nothing to write: the file as given
+  EXPECT_EQ(HeaderOf(c).corpus_hash, ContentHash64(sds.data(), sds.size()));
+  {
+    std::ifstream f(path, std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+    EXPECT_TRUE(after == std::string(reinterpret_cast<const char*>(sds.data()),
+                                     sds.size()));
+  }
+  // Seed 3 holds out records 3 and 4 (D and A); their twins, 7 and 0,
+  // train.
+  const std::vector<uint64_t> held = HeldOutIndices(8, 3, 0.25f);
+  ASSERT_EQ(held.size(), 2u);
+  EXPECT_EQ(held[0], 3u);
+  EXPECT_EQ(held[1], 4u);
+  EXPECT_EQ(c.corpus_held_out_twins, 2u);
+  EXPECT_STR_CONTAINS(c.screens.frontend.Json(0), "\"validation_twins\": 2");
+  EXPECT_STR_CONTAINS(RenderCompileScreens(c.screens, false), "held-out twins");
+  // No duplicate-window row for a given SDS: nothing is dropped from it.
+  EXPECT_TRUE(std::string(RenderCompileScreens(c.screens, true))
+                  .find("duplicate windows") == std::string::npos);
+}
+
 TEST(UpdateCompiler, TheAdapterScaleIsTheRecipesChoice) {
   // S5 #151: lora_scaling picks s = alpha / r (LoRA's own, the default) or
   // rank-stabilized s = alpha / sqrt(r). The default is untouched; the
@@ -1757,7 +1941,7 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
        {OpCode::kAttnDQTiled, OpCode::kAttnDKTiled, OpCode::kAttnDVTiled})
     EXPECT_EQ(CountOpcode(TrainProgramOf(t), back),
               CountOpcode(TrainProgramOf(tu), back));
-  EXPECT_EQ(HeaderOf(t).version, seeml::update::kSeeuVersion);
+  EXPECT_EQ(HeaderOf(t).version, seeml::update::kSeeuPreInt8MomentsVersion);
   // Off by default: the plan is the unmasked one.
   UpdateConfig plain = BaseConfig(16);
   ASSERT_OK_AND_ASSIGN(CompiledUpdate u, UpdateCompiler(plain).Compile(model));
@@ -1879,14 +2063,19 @@ TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
 }
 
 TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
-  // #218: the mask finds documents by the EOS id. On a checkpoint whose EOS
-  // is the chat template's turn end, <|im_end|> (the instruct variants), a
-  // chat record holds that id after every turn — a prompt/response record
-  // and plain text rendered in ChatML alike — so a mask would hide every
-  // response from its own prompt. On such a model nothing is masked:
-  // `auto` compiles unmasked and says why, `on` is refused by name. The
-  // guard reaches no further: a chat corpus on a model whose EOS is its own
-  // token is masked as before.
+  // #218: on a checkpoint whose EOS is the chat template's turn end,
+  // <|im_end|> (the instruct variants), a chat record holds the EOS after
+  // every turn — a prompt/response record and plain text rendered in
+  // ChatML alike. The mask finds documents by the document separator
+  // instead: <|endoftext|>, which the pack stage joins documents with on
+  // such a model. So `auto` masks a chat corpus there, and — checked on
+  // the compiled plan's behaviour, by running kSegmentStarts' kernel with
+  // the plan's own operand over the compiled corpus — every start falls
+  // just after a <|endoftext|>, and no response position's start is after
+  // its own prompt's first position. Only an <|im_end|> EOS with no
+  // <|endoftext|> in the vocabulary stays guarded: `auto` compiles
+  // unmasked and says why, `on` is refused by name. A chat corpus on a
+  // model whose EOS is its own token is masked as before.
   seeml::testing::ScopedTempDir dir;
   auto write = [&](const std::string& name, const std::string& bytes) {
     const std::string path = dir.File(name);
@@ -1895,8 +2084,8 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
     return path;
   };
   // A byte vocabulary (id = byte) and the given specials (ids 256, ...);
-  // the first special is the EOS.
-  auto section = [](const std::vector<std::string>& specials) {
+  // the special at `eos` is the EOS.
+  auto section = [](const std::vector<std::string>& specials, uint32_t eos) {
     std::vector<uint8_t> b;
     auto u32 = [&](uint32_t v) {
       for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF);
@@ -1906,7 +2095,7 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
     };
     for (uint32_t x : {0x4B544D53u, 1u, 1u, 2u, 0u,
                        static_cast<uint32_t>(256 + specials.size()), 0u,
-                       static_cast<uint32_t>(specials.size()), 256u,
+                       static_cast<uint32_t>(specials.size()), 256u + eos,
                        0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
       u32(x);
     for (int v = 0; v < 256; ++v) {
@@ -1921,10 +2110,11 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
     return b;
   };
   const int64_t dim = 8, heads = 2, seq = 16, ffn = 16, batch = 32;
-  auto model_with = [&](const std::vector<std::string>& specials) {
+  auto model_with = [&](const std::vector<std::string>& specials,
+                        uint32_t eos = 0) {
     SmfModel m = seeml::testing::MakeTinyTokenDecoder(
         256 + static_cast<int64_t>(specials.size()), dim, heads, seq, ffn, 47);
-    m.tokenizer = section(specials);
+    m.tokenizer = section(specials, eos);
     return m;
   };
   const std::string chat =
@@ -1960,47 +2150,111 @@ TEST(UpdateCompiler, TheSegmentMaskNeverSplitsAPromptFromItsResponse) {
   };
   auto row = [](const CompiledUpdate& c) { return c.screens.analysis.Json(0); };
 
-  // The EOS is the turn end.
-  const SmfModel instruct = model_with({"<|im_end|>", "<|im_start|>"});
+  // The EOS is the turn end, and the vocabulary has <|endoftext|>: ids
+  // 256 <|endoftext|>, 257 <|im_start|>, 258 <|im_end|> (the EOS).
+  const int32_t kEndOfText = 256, kImStart = 257, kImEnd = 258;
+  const SmfModel instruct =
+      model_with({"<|endoftext|>", "<|im_start|>", "<|im_end|>"}, 2);
+  // The plan's behaviour on its own corpus: kSegmentStarts' kernel, run
+  // with the plan's operand over every compiled record, against what the
+  // corpus says — a position is a response position when the last
+  // <|im_start|> at or before it opens the assistant turn, and its prompt
+  // begins at the <|im_start|> of the user turn before that (before the
+  // window when the window does not hold it: the start must then be 0).
+  auto check_starts = [&](const CompiledUpdate& c) {
+    const auto program = TrainProgramOf(c);
+    const auto seg = std::find_if(program.begin(), program.end(),
+                                  [](const UpdateInstruction& ins) {
+      return static_cast<OpCode>(ins.opcode) == OpCode::kSegmentStarts;
+    });
+    ASSERT_TRUE(seg != program.end());
+    const auto id = static_cast<int32_t>(seg->out[1]);
+    const std::vector<uint8_t>& sds = c.corpus_sds;
+    uint32_t version = 0, flags = 0;
+    uint64_t n = 0, s = 0;
+    std::memcpy(&version, sds.data() + 4, 4);
+    std::memcpy(&n, sds.data() + 8, 8);
+    std::memcpy(&s, sds.data() + 16, 8);
+    if (version >= 3) std::memcpy(&flags, sds.data() + 48, 4);
+    const size_t stride =
+        (s + 1) * 4 + ((flags & kSdsFlagMasked) != 0 ? SdsMaskBytes(s) : 0);
+    ASSERT_TRUE(n > 0 && s == static_cast<uint64_t>(seq));
+    uint64_t turn_ends_inside = 0, nonzero_starts = 0, response_positions = 0;
+    for (uint64_t r = 0; r < n; ++r) {
+      std::vector<int32_t> tokens(s);  // the input positions
+      std::memcpy(tokens.data(),
+                  sds.data() + SdsHeaderBytes(version) + r * stride, s * 4);
+      std::vector<int32_t> starts(s, -1);
+      seeml::update_rt::kernels::SegmentStarts(tokens.data(), starts.data(), 1,
+                                               s, id);
+      int64_t user_at = -1;  // the window's last user-turn <|im_start|>
+      bool in_response = false;
+      for (uint64_t t = 0; t < s; ++t) {
+        if (tokens[t] == kImEnd && t + 1 < s) ++turn_ends_inside;
+        if (starts[t] != 0) {
+          ++nonzero_starts;
+          // Every start falls just after a document separator.
+          EXPECT_EQ(tokens[static_cast<size_t>(starts[t]) - 1], kEndOfText);
+        }
+        if (tokens[t] == kImStart && t + 1 < s) {
+          in_response = tokens[t + 1] == 'a';
+          if (tokens[t + 1] == 'u') user_at = static_cast<int64_t>(t);
+        } else if (tokens[t] == kEndOfText) {
+          in_response = false;
+        }
+        if (in_response) {
+          ++response_positions;
+          EXPECT_TRUE(starts[t] <= std::max<int64_t>(user_at, 0));
+        }
+      }
+    }
+    // Not vacuous: the records hold turn ends a scan for the EOS would
+    // split at, and the mask does start documents inside them.
+    EXPECT_TRUE(turn_ends_inside > 0);
+    EXPECT_TRUE(nonzero_starts > 0);
+    EXPECT_TRUE(response_positions > 0);
+  };
   UpdateConfig cfg = BaseConfig(batch);
-  cfg.data_path = chat;
-  cfg.segment_mask = SegmentMaskKind::kAuto;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate held,
-                       UpdateCompiler(cfg).Compile(instruct));
-  EXPECT_EQ(masked_ops(held), 0u);
-  EXPECT_STR_CONTAINS(row(held), "also ends each turn of a chat record");
-  cfg.segment_mask = SegmentMaskKind::kOn;
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(instruct),
-                        "would hide every response from its own prompt");
-  cfg.segment_mask = SegmentMaskKind::kOff;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate off,
-                       UpdateCompiler(cfg).Compile(instruct));
-  EXPECT_EQ(masked_ops(off), 0u);
+  for (const std::string& corpus : {chat, rendered}) {
+    cfg.data_path = corpus;
+    cfg.segment_mask = SegmentMaskKind::kAuto;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate masked,
+                         UpdateCompiler(cfg).Compile(instruct));
+    EXPECT_TRUE(masked_ops(masked) > 0);
+    EXPECT_STR_CONTAINS(row(masked), "hold more than one document");
+    check_starts(masked);
+    cfg.segment_mask = SegmentMaskKind::kOn;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate on,
+                         UpdateCompiler(cfg).Compile(instruct));
+    check_starts(on);
+  }
 
-  // Pre-rendered ChatML in plain {"text"} documents on the same model: not
-  // a masked-loss plan, yet each document holds the EOS after every turn.
-  cfg.data_path = rendered;
-  cfg.segment_mask = SegmentMaskKind::kAuto;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate pre,
-                       UpdateCompiler(cfg).Compile(instruct));
-  EXPECT_EQ(masked_ops(pre), 0u);
-  EXPECT_STR_CONTAINS(row(pre), "also ends each turn");
-  cfg.segment_mask = SegmentMaskKind::kOn;
-  EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(instruct),
-                        "would hide every response from its own prompt");
-
-  // So on such a model nothing is masked, whatever the corpus: a turn end
+  // The EOS is the turn end and nothing else separates documents: the one
+  // case still guarded. Nothing is masked, whatever the corpus — a turn end
   // and a document end are one id, and no corpus can tell them apart.
-  cfg.data_path = plain;
-  cfg.segment_mask = SegmentMaskKind::kAuto;
-  ASSERT_OK_AND_ASSIGN(CompiledUpdate text,
-                       UpdateCompiler(cfg).Compile(instruct));
-  EXPECT_EQ(masked_ops(text), 0u);
+  const SmfModel guarded = model_with({"<|im_end|>", "<|im_start|>"});
+  for (const std::string& corpus : {chat, rendered, plain}) {
+    cfg.data_path = corpus;
+    cfg.segment_mask = SegmentMaskKind::kAuto;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate held,
+                         UpdateCompiler(cfg).Compile(guarded));
+    EXPECT_EQ(masked_ops(held), 0u);
+    EXPECT_STR_CONTAINS(row(held), "also ends each turn of a chat record");
+    EXPECT_STR_CONTAINS(row(held), "no <|endoftext|>");
+    cfg.segment_mask = SegmentMaskKind::kOn;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(cfg).Compile(guarded),
+                          "would hide every response from its own prompt");
+    cfg.segment_mask = SegmentMaskKind::kOff;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate off,
+                         UpdateCompiler(cfg).Compile(guarded));
+    EXPECT_EQ(masked_ops(off), 0u);
+  }
 
   // A chat corpus on a model whose EOS is its own token: the turn end is
   // not an EOS, the records are whole documents, and the mask is taken.
   const SmfModel base = model_with({"<eos>", "<|im_start|>", "<|im_end|>"});
   cfg.data_path = chat;
+  cfg.segment_mask = SegmentMaskKind::kAuto;
   ASSERT_OK_AND_ASSIGN(CompiledUpdate whole, UpdateCompiler(cfg).Compile(base));
   EXPECT_TRUE(masked_ops(whole) > 0);
   cfg.segment_mask = SegmentMaskKind::kOn;
@@ -2021,7 +2275,7 @@ TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
     ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
                          UpdateCompiler(config).Compile(model));
     const PlanHeader h = HeaderOf(c);
-    EXPECT_EQ(h.version, kSeeuVersion);
+    EXPECT_EQ(h.version, kSeeuPreInt8MomentsVersion);
     const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
     std::vector<OpCode> ops;
     for (const UpdateInstruction& ins : program)
@@ -2070,6 +2324,93 @@ TEST(UpdateCompiler, AGlobalClipAccumulatesEveryNormBeforeScalingAny) {
   }
 }
 
+TEST(UpdateCompiler, EightBitMomentsAreAV27PlanWithAQuantizedLedgerLine) {
+  // #192: --moments int8 lowers every AdamW step to kAdamW8Step — the
+  // codes and the scales persistent, the fused clip kept — stamps the plan
+  // v27, and the ledger names the pass that changed arithmetic, right
+  // after the optimizer pass, counting exactly the 8-bit steps. Under
+  // accumulation with the global clip the steps ride the step program.
+  SmfModel model = MakeMlp(kInDim, kHidden, kOutDim, 3);
+  for (uint32_t accum : {1u, 2u}) {
+    UpdateConfig config = BaseConfig(kBatch);
+    config.optimizer.moments = MomentsKind::kInt8;
+    config.optimizer.clip_norm = 0.5f;
+    config.optimizer.clip_global = accum > 1;
+    config.grad_accum_steps = accum;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate c,
+                         UpdateCompiler(config).Compile(model));
+    const PlanHeader h = HeaderOf(c);
+    EXPECT_EQ(h.version, kSeeuInt8MomentsVersion);
+    const auto program = accum > 1 ? StepProgramOf(c) : TrainProgramOf(c);
+    uint64_t steps = 0;
+    for (const UpdateInstruction& ins : program) {
+      const auto op = static_cast<OpCode>(ins.opcode);
+      EXPECT_TRUE(op != OpCode::kAdamWStep);
+      if (op != OpCode::kAdamW8Step) continue;
+      ++steps;
+      const uint64_t n = ins.out[0];
+      // The fused per-tensor clip rides out[1] as on kAdamWStep; under the
+      // global clip the gradients arrive scaled and the word is zero.
+      EXPECT_EQ(ins.out[1],
+                accum > 1 ? 0u : uint64_t{std::bit_cast<uint32_t>(0.5f)});
+      // Codes and scales: the persistent prefix, the scales 2 per block.
+      EXPECT_TRUE(RefOffset(ins.in[2]) + n <= h.persistent_size);
+      EXPECT_TRUE(RefOffset(ins.in[3]) + n <= h.persistent_size);
+      EXPECT_TRUE(RefOffset(ins.out[2]) + 8 * MomentBlocks(n) <=
+                  h.persistent_size);
+    }
+    EXPECT_EQ(steps, 4u);  // A and B of the two adapted weights
+    if (accum > 1)
+      for (const UpdateInstruction& ins : TrainProgramOf(c))
+        EXPECT_TRUE(static_cast<OpCode>(ins.opcode) != OpCode::kAdamW8Step);
+    DecodedMetadata meta;
+    const auto why =
+        PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
+    ASSERT_FALSE(why.has_value());
+    size_t at = meta.ledger.size();
+    for (size_t i = 0; i < meta.ledger.size(); ++i)
+      if (std::string(meta.ledger[i].pass) == "moments-int8") at = i;
+    ASSERT_TRUE(at > 0 && at < meta.ledger.size());
+    EXPECT_EQ(std::string(meta.ledger[at - 1].pass), "optimizer");
+    EXPECT_EQ(meta.ledger[at].arithmetic, kLedgerQuantized);
+    EXPECT_EQ(meta.ledger[at].instructions, 4u);
+    for (const LedgerEntry& e : meta.ledger)
+      if (&e != &meta.ledger[at]) EXPECT_EQ(e.arithmetic, kLedgerExact);
+    // The device holds the plan to its ledger, both ways: a quantized line
+    // one short — or a plan whose flag dropped the section — is refused.
+    std::vector<uint8_t> forged = c.plan;
+    const uint64_t entry =
+        PlanMetadataOffset(h) + sizeof(PlanMetadata) + at * sizeof(LedgerEntry);
+    LedgerEntry e;
+    std::memcpy(&e, forged.data() + entry, sizeof(e));
+    e.instructions = 3;
+    std::memcpy(forged.data() + entry, &e, sizeof(e));
+    EXPECT_TRUE(PlanMetadataViolation(h, forged.data(), forged.size()) ==
+                std::optional<std::string>(
+                    "the ledger accounts for 3 instruction(s) of quantized "
+                    "arithmetic, the programs carry 4"));
+    PlanHeader no_flag = h;
+    no_flag.data_flags &= ~kDataFlagMetadata;
+    EXPECT_STR_CONTAINS(
+        PlanMetadataViolation(no_flag, c.plan.data(), c.plan.size())
+            .value_or(""),
+        "8-bit moment steps but no metadata section");
+    // A pre-v27 plan's ledger knows two arithmetics.
+    PlanHeader old = h;
+    old.version = kSeeuPreInt8MomentsVersion;
+    EXPECT_STR_CONTAINS(
+        PlanMetadataViolation(old, c.plan.data(), c.plan.size()).value_or(""),
+        "unknown arithmetic");
+    // The persistent segment is smaller than the f32 moments' plan.
+    UpdateConfig f32 = config;
+    f32.optimizer.moments = MomentsKind::kF32;
+    ASSERT_OK_AND_ASSIGN(CompiledUpdate wide,
+                         UpdateCompiler(f32).Compile(model));
+    EXPECT_LT(h.persistent_size, HeaderOf(wide).persistent_size);
+    EXPECT_EQ(HeaderOf(wide).version, kSeeuPreInt8MomentsVersion);
+  }
+}
+
 TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
   // Plan v23 (S4 #150 / S5 #151 / S6 #152): the metadata section holds the
   // resolved recipe's hash and one ledger line per pass; an exact plan's
@@ -2081,8 +2422,9 @@ TEST(UpdateCompiler, ThePlanCarriesTheManifestAndTheLedger) {
     const PlanHeader h = HeaderOf(c);
     if ((h.data_flags & kDataFlagMetadata) == 0)
       ADD_FAILURE("the plan carries no metadata flag");
-    if (h.version != kSeeuVersion)
-      ADD_FAILURE("the plan is not at kSeeuVersion");
+    // #192: a plan without 8-bit moments is written at v26.
+    if (h.version != kSeeuPreInt8MomentsVersion)
+      ADD_FAILURE("the plan is not at kSeeuPreInt8MomentsVersion");
     const auto why =
         PlanMetadataViolation(h, c.plan.data(), c.plan.size(), &meta);
     if (why) ADD_FAILURE(*why);

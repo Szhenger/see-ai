@@ -1,0 +1,3 @@
+  straddling windows       221                           records that span a document boundary (see the segment mask row)
+  segment mask             off: the model's EOS (<|im_end|>) also ends each turn of a chat record, and a turn is not a document  no attention across a window's documents: the decision and its reason
+seeml-update-compile: UpdateCompiler: --segment-mask on with a model whose EOS is the chat template's turn end (<|im_end|>): the mask finds documents by the EOS, which a chat record holds after every turn, and would hide every response from its own prompt (#218); compile with --segment-mask off

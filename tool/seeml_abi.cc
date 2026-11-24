@@ -183,12 +183,13 @@ void PrintSeeu() {
       "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "
       "\"source_bit\": %d, "
       "\"rodata_alignment\": %llu, \"rodata_offset_alignment\": %llu, "
-      "\"gemm_panel_floats\": %llu,\n",
+      "\"gemm_panel_floats\": %llu, \"max_grad_accum_steps\": %u,\n",
       up::kSeeuMagic, up::kSeeuVersion, up::kSeeuOldestReadable,
       std::countr_zero(up::kRodataBit), std::countr_zero(up::kSourceBit),
       static_cast<unsigned long long>(up::kSeeuRodataAlignment),
       static_cast<unsigned long long>(up::kSeeuRodataOffsetAlignment),
-      static_cast<unsigned long long>(up::kDefaultGemmPanelFloats));
+      static_cast<unsigned long long>(up::kDefaultGemmPanelFloats),
+      up::kMaxGradAccumSteps);
   std::printf(
       "    \"flags\": {\"epilogue_bias\": %u, \"epilogue_act_shift\": "
       "%u, \"epilogue_act_mask\": %u, \"gemm_addend\": %u, "
@@ -202,6 +203,27 @@ void PrintSeeu() {
   std::printf("    \"kl_temperature_bits\": {\"min\": %u, \"max\": %u},\n",
               std::bit_cast<uint32_t>(up::kKlTemperatureMin),
               std::bit_cast<uint32_t>(up::kKlTemperatureMax));
+  // 8-bit moments (plan v27, #192): the block, the floor, the codes' level
+  // tables as f32 bits and the dither's hash constants — what the oracle's
+  // quantizer is held to.
+  std::printf(
+      "    \"moments\": {\"version\": %u, \"block\": %llu, "
+      "\"scale_floor_bits\": %u, \"m_max_level\": %u, "
+      "\"v_max_level\": %u,\n      \"level_bits\": [",
+      up::kSeeuInt8MomentsVersion,
+      static_cast<unsigned long long>(up::kMomentBlock),
+      std::bit_cast<uint32_t>(up::kMomentScaleFloor), up::kMomentMMaxLevel,
+      up::kMomentVMaxLevel);
+  for (size_t i = 0; i < 8; ++i)
+    std::printf("%s%u", i ? ", " : "", up::kMomentLevelBits[i]);
+  std::printf("],\n      \"threshold_bits\": [");
+  for (size_t i = 0; i < 8; ++i)
+    std::printf("%s%u", i ? ", " : "", up::kMomentThresholdBits[i]);
+  std::printf(
+      "],\n      \"dither\": {\"m\": %u, \"v\": %u, \"mix\": [%u, %u], "
+      "\"bits\": %u}},\n",
+      up::kMomentDitherM, up::kMomentDitherV, up::kMomentMixA, up::kMomentMixB,
+      up::kMomentDitherBits);
   Enum("fused_stages", fused, sizeof(fused) / sizeof(fused[0]), false);
   std::printf(
       "    \"fused_stage\": {\"kind_mask\": %u, \"arg_shift\": %u, "
@@ -241,13 +263,14 @@ void PrintSeeu() {
       "\"version\": %u, \"ledger_max\": %u,\n"
       "      \"export_flags\": {\"report\": %u, "
       "\"tokenizer_parity\": %u, \"logits_parity\": %u},\n"
-      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u}}\n"
+      "      \"arithmetic\": {\"exact\": %u, \"reordered\": %u, "
+      "\"quantized\": %u}}\n"
       "  },\n",
       up::kDataFlagMaskedLoss, up::kDataFlagCorpusPinned, up::kDataFlagSplit,
       up::kDataFlagMetadata, up::kPlanMetadataMagic, up::kPlanMetadataFormat,
       up::kSeeuMetadataVersion, up::kLedgerMaxEntries, up::kExportReportPresent,
       up::kExportTokenizerParity, up::kExportLogitsParity, up::kLedgerExact,
-      up::kLedgerReordered);
+      up::kLedgerReordered, up::kLedgerQuantized);
 }
 
 /// "sekp": the checkpoint.
@@ -256,10 +279,15 @@ void PrintSekp() {
       "  \"sekp\": {\n    \"magic\": %u, \"version\": %u, "
       "\"oldest_readable\": %u,\n    \"flags\": {\"has_val_initial\": "
       "%u, \"has_accuracy\": %u, \"has_best_payload\": %u, "
-      "\"has_best\": %u, \"has_binding\": %u},\n    \"structs\": {\n",
+      "\"has_best\": %u, \"has_binding\": %u, \"has_windows\": %u},\n"
+      "    \"header_bytes\": %llu, \"window_max\": %u,\n"
+      "    \"backends\": {\"unstated\": %u, \"cpu\": %u, \"metal\": %u},\n"
+      "    \"structs\": {\n",
       rt::kCkptMagic, rt::kCkptVersion, rt::kCkptOldestReadable,
       rt::kCkptHasValInitial, rt::kCkptHasAccuracy, rt::kCkptHasBestPayload,
-      rt::kCkptHasBest, rt::kCkptHasBinding);
+      rt::kCkptHasBest, rt::kCkptHasBinding, rt::kCkptHasWindows,
+      static_cast<unsigned long long>(rt::kCkptHeaderBytes), rt::kCkptWindowMax,
+      rt::kCkptBackendUnstated, rt::kCkptBackendCpu, rt::kCkptBackendMetal);
 #define X(f) SEEML_FIELD(rt::CkptHeader, f);
   Struct("CkptHeader", sizeof(rt::CkptHeader), [] { CKPT_FIELDS(X) });
 #undef X
@@ -278,7 +306,20 @@ void PrintSekp() {
 #undef SIZE_OF_V5
 #define X(f) SEEML_FIELD(rt::CkptHeaderV5Tail, f);
   Struct("CkptHeaderV5Tail", sizeof(rt::CkptHeaderV5Tail),
-         [] { CKPT_V5_FIELDS(X) }, true);
+         [] { CKPT_V5_FIELDS(X) });
+#undef X
+  // clang-format off
+#define CKPT_V6_FIELDS(X)                                                  \
+  X(corpus_hash) X(split_hash) X(window_count) X(first_window_sum_bits)    \
+  X(backend) X(window) X(last_losses_bits) X(header_hash)
+  // clang-format on
+#define SIZE_OF_V6(f) +sizeof(rt::CkptHeaderV6Tail::f)
+  static_assert(0 CKPT_V6_FIELDS(SIZE_OF_V6) == sizeof(rt::CkptHeaderV6Tail),
+                "a CkptHeaderV6Tail field is missing from the manifest");
+#undef SIZE_OF_V6
+#define X(f) SEEML_FIELD(rt::CkptHeaderV6Tail, f);
+  Struct("CkptHeaderV6Tail", sizeof(rt::CkptHeaderV6Tail),
+         [] { CKPT_V6_FIELDS(X) }, true);
 #undef X
   std::printf("    }\n  },\n");
 }

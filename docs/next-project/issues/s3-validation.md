@@ -78,7 +78,8 @@ the reference does: a response opening with two or more whitespace
 characters folds the template's `\n` with all but the last of them) with
 the prompt's ids those of the pieces ending at or before the join and a
 straddling piece the response's, the response side the
-targets, the joining EOS a target only after a plain document, windows
+targets, the joining separator (the EOS, or `<|endoftext|>` on an instruct
+model, #218) a target only after a plain document, windows
 with no target dropped and counted, a masked SDS v3 out; the compile then
 carries the masked objective (`--masked-loss` compiles it for a plan fed a
 masked corpus later; the cross-entropy alone — MSE / KL are refused). The
@@ -117,6 +118,17 @@ a masked twin of the corpus ("pinned to another corpus"); the same decoder
 compiled with `--data masked.sds --val-frac 0.25 --build` (861 of 1536
 positions targets) trains 2 steps on the masked cross-entropy with a
 periodic validation, the best state and accuracy judged on target rows.
+
+**#222 (2026-11-20).** "No held-out record has a twin in training" was not
+held: deduplication was over documents and for `.jsonl` alone, the split is
+over windows (on a 4-token test decoder a `.txt` of one repeated line held out 10 of 40 records, all
+with a twin). The pack stage now drops exact-duplicate windows (ids, and the
+mask where there is one) for every raw-text corpus before the split, so the
+line holds by construction; `split.h` is unchanged. A given `.sds` is never
+modified: under `--val-frac` the compiler counts its held-out records with a
+byte-identical twin in training (`held-out twins` row, report
+`data.held_out_twins`) — a stated fact, not a refusal. `--val-data` waits on
+#221.
 
 ## Acceptance
 

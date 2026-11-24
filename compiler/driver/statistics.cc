@@ -141,11 +141,16 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
              std::to_string(c.dropped_empty) + " empty, " +
                  std::to_string(c.dropped_duplicate) + " duplicate, " +
                  std::to_string(c.dropped_degenerate) + " degenerate");
-      fe.Set("corpus_sanitized",
-             std::to_string(c.invalid_utf8_bytes) + " invalid UTF-8 byte(s), " +
-                 std::to_string(c.control_chars) + " control char(s), " +
-                 std::to_string(c.bidi_controls) + " bidi control(s)" +
-                 (c.kind == "txt" ? " (counted, kept: one document)" : ""));
+      // Exact-duplicate windows, and what the sanitizer removed (#222):
+      // on the default screen whenever there is any, for every kind.
+      if (c.dropped_duplicate_windows)
+        fe.Set("corpus_duplicate_windows", c.dropped_duplicate_windows);
+      if (c.invalid_utf8_bytes + c.control_chars + c.bidi_controls)
+        fe.Set(
+            "corpus_sanitized",
+            std::to_string(c.invalid_utf8_bytes) + " invalid UTF-8 byte(s), " +
+                std::to_string(c.control_chars) + " control char(s), " +
+                std::to_string(c.bidi_controls) + " bidi control(s) removed");
       fe.Set("corpus_remainder", c.remainder_tokens);
       fe.Set("corpus_straddles", c.straddling_windows);
     }
@@ -166,6 +171,9 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
                                " records held out, seed " +
                                std::to_string(c.split_seed) + ", split " +
                                Hex16(c.val_split_hash));
+    // A stated fact for every split (#222): 0 for raw text by construction,
+    // what a given SDS holds otherwise — never a refusal.
+    if (c.split) fe.Set("validation_twins", c.held_out_twins);
   }
   // The identity manifest (S4 #150): every input of the fine-tune, hashed —
   // the accountant prints what the plan's header and metadata carry.
@@ -192,6 +200,8 @@ void FillFrontend(const CompileFacts& f, const UpdateConfig& config,
   fe.Set("footprint_activations", acc.footprint_activations);
   fe.Set("footprint_deltas", acc.footprint_deltas);
   fe.Set("footprint_caches", acc.footprint_caches);
+  if (acc.footprint_moments != 0)
+    fe.Set("footprint_moments", acc.footprint_moments);
   fe.Set("footprint_total", acc.footprint_total);
   fe.Set("bound_ratio", t.device_bytes ? static_cast<double>(r.estimate_bytes) /
                                              static_cast<double>(t.device_bytes)
@@ -277,8 +287,28 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   an.Set("epilogue_bytes_removed", f.epilogue_bytes_removed);
   an.Set("addend_bytes_removed", f.addend_bytes_removed);
   an.Set("chain_bytes_removed", f.chain_bytes_removed);
+  // 8-bit moments (#192): what the state is stored as, and what it saves
+  // against f32 by the accountant's estimate.
+  if (f.moment_steps != 0) {
+    const AccountantFacts& acc = f.frontend.accountant;
+    char ratio[24];
+    std::snprintf(ratio, sizeof(ratio), "%.2fx",
+                  acc.footprint_moments
+                      ? static_cast<double>(acc.footprint_moments_f32) /
+                            static_cast<double>(acc.footprint_moments)
+                      : 0.0);
+    an.Set("moments",
+           "int8, block " + std::to_string(kMomentBlock) +
+               " (m and v log2, 8 levels an octave, unbiased dither): " +
+               std::to_string(f.moment_steps) + " step(s), " +
+               std::to_string(f.moment_bytes) + " B bound; estimate " +
+               std::to_string(acc.footprint_moments) + " B vs " +
+               std::to_string(acc.footprint_moments_f32) + " B as f32 (" +
+               ratio + " fewer); not exact: the ledger's quantized line");
+  }
   uint64_t reordered = 0;
-  for (const LedgerEntry& e : r.ledger) reordered += e.instructions;
+  for (const LedgerEntry& e : r.ledger)
+    if (e.arithmetic == kLedgerReordered) reordered += e.instructions;
   an.Set("reordered_instructions", reordered);
   an.Set("analysis_ms", t.analysis_ms);
   for (const PassTiming& p : r.pass_timings)
@@ -295,8 +325,9 @@ void FillAnalysis(const CompileFacts& f, const UpdateConfig& config,
   for (const LedgerEntry& e : r.ledger)
     an.AddRow("ledger",
               {std::string(e.pass),
-               std::string(e.arithmetic == kLedgerExact ? "bit-identical"
-                                                        : "reordered"),
+               std::string(e.arithmetic == kLedgerExact       ? "bit-identical"
+                           : e.arithmetic == kLedgerReordered ? "reordered"
+                                                              : "quantized"),
                static_cast<uint64_t>(e.instructions), std::string(e.why)});
 }
 

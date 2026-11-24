@@ -396,6 +396,11 @@ std::expected<void, std::string> InstructionProof::VersionOk() const {
     return diag::validating::Error(
         "global clip opcode " + std::to_string(ins.opcode) + " in a pre-v" +
         std::to_string(up::kSeeuGlobalClipVersion) + " plan");
+  if (ins.opcode == static_cast<uint16_t>(up::OpCode::kAdamW8Step) &&
+      plan_version < up::kSeeuInt8MomentsVersion)
+    return diag::validating::Error(
+        "8-bit moment opcode " + std::to_string(ins.opcode) + " in a pre-v" +
+        std::to_string(up::kSeeuInt8MomentsVersion) + " plan");
   if (ins.opcode == static_cast<uint16_t>(up::OpCode::kAccumulate) &&
       plan_version < up::kSeeuGradAccumVersion)
     return diag::validating::Error("accumulate opcode in a pre-v" +
@@ -645,6 +650,20 @@ std::expected<void, std::string> InstructionProof::OptimizerStep() {
           !RefOk(ins.in[2], d0, true) || !RefOk(ins.in[3], d0, true))
         return Fail();
       return Disjoint();
+    case up::OpCode::kAdamW8Step: {
+      // v27 (#192): p and g f32 [count]; the codes one byte a value, m and
+      // v each [count], read and written; the scales f32 [2 * blocks], read
+      // and written. Every operand an arena range of its own: the codes
+      // and the scales are optimizer state, never rodata or the source.
+      if (auto r = ClipWordOk(d1); !r) return r;
+      uint64_t scales = 0;
+      if (!MulOk(up::MomentBlocks(d0), 2, &scales)) return Fail();
+      if (!RefOk(ins.in[0], d0, true) || !RefOk(ins.in[1], d0, false) ||
+          !RefOkW(ins.in[2], d0, true, 1) || !RefOkW(ins.in[3], d0, true, 1) ||
+          !RefOk(d2, scales, true))
+        return Fail();
+      return Disjoint();
+    }
     default:
       break;
   }
@@ -916,6 +935,7 @@ std::expected<void, std::string> InstructionProof::Run() {
     case up::OpCode::kAccumulate:
       return OptimizerStep();
     case up::OpCode::kAdamWStep:
+    case up::OpCode::kAdamW8Step:
       return OptimizerStep();
     case up::OpCode::kFill:
       return Elementwise();

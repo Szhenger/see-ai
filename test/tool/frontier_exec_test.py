@@ -158,6 +158,9 @@ class ReaderTest(unittest.TestCase):
              "multiple of the kernel's 4-wide unroll"),
             (good, dict(grad_accum_steps=2),
              "plan step program presence disagrees with grad_accum_steps"),
+            # #223: bounded, on a plan whose step program pairs with it.
+            (stepped, dict(grad_accum_steps=65537),
+             "plan grad_accum_steps 65537 exceeds the bound of 65536"),
             (stepped, dict(version=8),
              "pre-v9 plan carries gradient-accumulation fields"),
             (good, dict(batch=0), "plan batch size is zero"),
@@ -518,6 +521,205 @@ class InterpreterSelfCheck(unittest.TestCase):
             want = 1.0 - lr * (gi / (abs(gi) + eps) + wd)
             self.assertAlmostEqual(out[i], want, places=6)
 
+    def test_eight_bit_moments_code_as_the_device_does(self):
+        # #192: the oracle's quantizer, held to instruction.h's rules — the
+        # top of a block lands on the last level and back exactly, a value
+        # on a level keeps that level at every step, a value between two
+        # levels takes one of the two, a nonzero v is never coded 0, and an
+        # all-zero block stores zeros and a zero scale.
+        f32 = np.float32
+        m = np.array([2.5, -2.5, 3.5, 127.0] + [0.0] * 252, f32)
+        v = np.array([3.0, 3.0 * 2.0 ** -40, 1e-3, 0.0] + [1.0] * 252, f32)
+        qm, qv, scales = fx.moment_quantize(np, m, v, 1, 0)
+        self.assertEqual(scales[0], f32(127.0))
+        self.assertEqual(scales[1], f32(3.0))
+        self.assertEqual((qm[3], qm[4], qv[0], qv[3]), (127, 0, 255, 0))
+        self.assertEqual(qv[1], 1)  # below the lowest level: kept, not 0
+        m0, v0 = fx.moment_dequantize(np, qm, qv, scales)
+        self.assertEqual(v0[0], f32(3.0))
+        self.assertEqual(m0[3], f32(127.0))
+        # Every level of both codes, as the value of a block whose scale
+        # is 3: on a level the fraction is 0, and no dither moves it.
+        mq = np.concatenate([np.arange(127, 0, -1), -np.arange(127, 0, -1),
+                             [0, 0]]).astype(np.int8)
+        vq = np.concatenate([np.arange(255, 0, -1), [0]]).astype(np.uint8)
+        on_m, on_v = fx.moment_dequantize(np, mq, vq,
+                                          np.array([3.0, 3.0], f32))
+        for step in list(range(1, 40)) + [2 ** 32 + 7, 2 ** 63]:
+            qm, qv, sc = fx.moment_quantize(np, on_m, on_v, step, 4096)
+            self.assertEqual((qm.tolist(), qv.tolist()),
+                             (mq.tolist(), vq.tolist()), step)
+            self.assertEqual(sc.tolist(), [3.0, 3.0])
+        # Between two levels: one of the two neighbours, never further.
+        rng = np.random.default_rng(5)
+        vv = (3.0 * 2.0 ** -rng.uniform(0, 31.5, 512)).astype(f32)
+        mm = (3.0 * 2.0 ** -rng.uniform(0, 15.5, 512)).astype(f32)
+        mm[1::2] *= -1
+        vv[0] = mm[0] = 3.0
+        level = 2.0 ** (1 / 8)
+        for step in (1, 2, 3):
+            qm, qv, sc = fx.moment_quantize(np, mm, vv, step, 4096)
+            m_back, v_back = fx.moment_dequantize(np, qm, qv, sc)
+            self.assertTrue((np.sign(m_back) == np.sign(mm)).all())
+            for back, x in ((np.abs(m_back), np.abs(mm)), (v_back, vv)):
+                self.assertLess(float(np.max(back / x)), level * 1.000001)
+                self.assertGreater(float(np.min(back / x)),
+                                   1 / level / 1.000001)
+        z_m, z_v, z_s = fx.moment_quantize(np, np.zeros(300, f32),
+                                           np.zeros(300, f32), 1, 0)
+        self.assertFalse(z_m.any() or z_v.any() or z_s.any())
+        # The tables and the hash are the manifest's: the C++ header's own.
+        abi = fx.formats.load_abi()["seeu"]["moments"]
+        self.assertEqual(abi["level_bits"], list(fx.formats.MOMENT_LEVEL_BITS))
+        self.assertEqual(abi["block"], fx.formats.MOMENT_BLOCK)
+        self.assertEqual(abi["dither"]["mix"], list(fx.formats.MOMENT_MIX))
+
+    def test_eight_bit_moments_dither_is_the_devices_hash(self):
+        # #192: the dither is a stateless 32-bit integer hash of the step,
+        # the m codes' operand and the element — the vectors pinned here
+        # are pinned in test/runtime/executor/kernels_test.cc too
+        # (Moments8.TheDitherIsAStatelessHashPinnedAcrossBackends), so the
+        # oracle and the device draw the same 24 bits.
+        m_stream, v_stream = (fx.formats.MOMENT_DITHER_M,
+                              fx.formats.MOMENT_DITHER_V)
+        def draw(step, operand, stream):
+            return fx.moment_dither(np, step, operand, stream, 4).tolist()
+        self.assertEqual(draw(1, 8192, m_stream),
+                         [9272214, 15330162, 8064360, 10661393])
+        self.assertEqual(draw(1, 8192, v_stream),
+                         [15715996, 11661756, 10892955, 7251541])
+        # The operand's and the step's high words are folded in.
+        self.assertEqual(draw(3000, (1 << 40) + 12288, m_stream),
+                         [11430572, 14592737, 14047368, 2439640])
+        self.assertEqual(draw((1 << 32) + 5, 8192, v_stream),
+                         [11355500, 15652291, 14557753, 5131573])
+        # A fixed block's codes at a fixed step: the whole rule, pinned.
+        f32 = np.float32
+        x = (np.arange(1, 9, dtype=f32) * f32(0.37)).astype(f32)
+        qm, qv, sc = fx.moment_quantize(np, x * np.array(
+            [1, -1, 1, -1, 1, -1, 1, -1], f32), (x * x).astype(f32), 7, 8192)
+        self.assertEqual(qm.tolist(),
+                         [103, -111, 115, -119, 122, -124, 125, -127])
+        self.assertEqual(qv.tolist(), [207, 223, 232, 239, 244, 248, 252, 255])
+        self.assertEqual(sc.tolist(), [float(x[7]), float(f32(x[7] * x[7]))])
+
+    def test_eight_bit_moments_round_without_bias(self):
+        # #192: between the two neighbouring decodable values lo <= x <= hi
+        # the code is hi with probability (x - lo) / (hi - lo), so the
+        # dequantized value averages to x — in the decoded domain, for the
+        # logarithmic levels of both codes, and between 0 and the lowest
+        # level of m. A value that rounds to the nearest level instead
+        # averages to that level: up to 4.4 % off, where 4000 draws of the
+        # dither are within 0.3 %.
+        f32 = np.float32
+        rng = np.random.default_rng(6)
+        v = (2.0 ** -rng.uniform(0, 20, 512)).astype(f32)
+        m = (2.0 ** -rng.uniform(0, 15, 512)).astype(f32)
+        m[1::2] *= -1
+        m[2::256] = 2.0 ** -17  # under the lowest level, 2^-15.75
+        m[0::256] = v[0::256] = 1.0
+        m_sum, v_sum, steps = np.zeros(512), np.zeros(512), 4000
+        for step in range(1, steps + 1):
+            a, b = fx.moment_dequantize(
+                np, *fx.moment_quantize(np, m, v, step, 12288))
+            m_sum += a
+            v_sum += b
+        m_bias = (m_sum / steps - m) / np.abs(m)
+        v_bias = (v_sum / steps - v) / v
+        self.assertLess(float(np.abs(v_bias).max()), 0.004)
+        self.assertLess(float(np.abs(m_bias[m != f32(2.0 ** -17)]).max()),
+                        0.004)
+        # Under the lowest level m is 0 or that level: unbiased too, with
+        # the larger spread of a coin that lands 42 % of the time.
+        self.assertLess(float(np.abs(m_bias[2::256]).max()), 0.06)
+
+    def _coded_adamw(self, gradient, steps, weight_decay=0.01):
+        """f32 AdamW over one block of 256, with uncoded moments and with
+        the oracle's 8-bit ones: (p, m, v) of each, lr 1e-3."""
+        f32 = np.float32
+        b1, b2, eps, lr = f32(0.9), f32(0.999), f32(1e-8), f32(1e-3)
+        wd = f32(weight_decay)
+
+        def adamw(p, m, v, g, t):
+            m = (b1 * m + (1 - b1) * g).astype(f32)
+            v = (b2 * v + (1 - b2) * g * g).astype(f32)
+            m_hat, v_hat = m / (1 - b1 ** t), v / (1 - b2 ** t)
+            return (p - lr * (m_hat / (np.sqrt(v_hat) + eps) + wd * p)
+                    ).astype(f32), m, v
+        plain = [np.zeros(256, f32) for _ in range(3)]
+        coded = [np.zeros(256, f32) for _ in range(3)]
+        for t in range(1, steps + 1):
+            g = gradient(t)
+            plain = adamw(*plain, g, t)
+            p, m, v = adamw(*coded, g, t)
+            coded = (p, *fx.moment_dequantize(
+                np, *fx.moment_quantize(np, m, v, t, 8192)))
+        return plain, coded
+
+    def test_starved_eight_bit_moments_follow_the_true_average(self):
+        # The dead band (#192 review; kernels_test.cc's
+        # StarvedMomentsFollowTheTrueAverageBesideALargeNeighbour): element
+        # 0 holds the block's scales with gradient 1, the other 255 see 0.3
+        # for ten steps and then noise of 1e-3. Rounding to the nearest
+        # level froze their m at the burst's last code and walked the
+        # parameters to a mean |p| of 0.51 where f32 AdamW holds 0.019.
+        rng = np.random.default_rng(0)
+
+        def gradient(t):
+            g = np.full(256, 0.3, np.float32) if t <= 10 else rng.normal(
+                0, 1e-3, 256).astype(np.float32)
+            g[0] = 1.0
+            return g
+        (p, m, _), (p8, m8, _) = self._coded_adamw(gradient, 3000)
+        s = slice(1, None)
+        self.assertLess(float(np.abs(m8[s]).mean()),
+                        2.0 * float(np.abs(m[s]).mean()))
+        self.assertGreater(float(np.abs(m8[s]).mean()),
+                           0.5 * float(np.abs(m[s]).mean()))
+        self.assertLess(float(np.abs(p8[s] - p[s]).mean()),
+                        0.25 * float(np.abs(p[s]).mean()))
+
+    def test_a_gradient_change_under_half_a_level_moves_eight_bit_m(self):
+        # m's dead band on any code rounded to nearest (#192 review;
+        # kernels_test.cc's
+        # AGradientChangeUnderHalfALevelStillMovesTheFirstMoment): the 255
+        # settle on gradient 0.010 and are then given 0.013 — a new m 3 %
+        # above its code, under half of a 9 % level. Rounded to nearest it
+        # stays 22 % low (39 % on the first rule's linear code); dithered,
+        # the 255 average the true m.
+        def gradient(t):
+            g = np.full(256, 0.010 if t <= 300 else 0.013, np.float32)
+            g[0] = 1.0
+            return g
+        (_, m, _), (_, m8, _) = self._coded_adamw(gradient, 600)
+        s = slice(1, None)
+        self.assertAlmostEqual(float(m[s].mean()), 0.013, places=5)
+        self.assertLess(abs(float(m8[s].mean() / m[s].mean()) - 1), 0.03)
+        self.assertLess(float(np.abs(m8[s] / m[s] - 1).max()), 0.10)
+
+    def test_the_eight_bit_second_moment_falls_and_rises(self):
+        # v's dead band (#192 review; kernels_test.cc's
+        # TheSecondMomentFallsAndRisesWithItsGradient): 0.3 for 200 steps,
+        # nothing for 2800 — f32's v falls 16x, and a v rounded to the
+        # nearest level stayed where it was, 85x too large — then 0.06 for
+        # 3000 more. The coded v is unbiased, so its mean over the 255
+        # follows f32's; each element carries the dither's own scatter
+        # (levels are 9 % apart and v moves 0.1 % a step), bounded here at
+        # a factor 10.
+        def gradient(t):
+            g = np.full(256, 0.3 if t <= 200 else 0.0 if t <= 3000 else 0.06,
+                        np.float32)
+            g[0] = 1.0
+            return g
+        for steps in (3000, 6000):
+            (p, _, v), (p8, _, v8) = self._coded_adamw(gradient, steps)
+            s = slice(1, None)
+            self.assertLess(abs(float(v8[s].mean() / v[s].mean()) - 1), 0.15)
+            self.assertLess(float(np.abs(np.log(v8[s] / v[s])).max()),
+                            math.log(10))
+            self.assertLess(float(np.abs(p8[s] - p[s]).mean()),
+                            0.05 * float(np.abs(p[s]).mean()))
+
     def test_clip_norm(self):
         clip = [(28, 0, (0, fx.f32_bits(1.0), N, N), (2, 0, 0))]
         np.testing.assert_allclose(self.run_ops(4, clip, {0: [3.0, 4.0]})[:2],
@@ -851,6 +1053,19 @@ MATRIX = [
      "segdec/corpus.sds", 12,
      ["--segment-mask", "on", "--attention", "tiled", "--remat", "on",
       "--grad-accum", "2", "--lora-rank", "4"]),
+    # 8-bit moments (#192, plan v27): kAdamW8Step with the fused per-tensor
+    # clip, and on the decoder's step program under accumulation and the
+    # global clip. The codes are compared within one level: every step
+    # starts from the device's bytes and draws the device's dither, so the
+    # codes differ only where the oracle's moment (blended in float64,
+    # rounded to f32 to be coded) and the device's differ in their last
+    # bits across a level or the dither's threshold. The parameters and the
+    # scales are held at the matrix's tolerance.
+    ("mlp_moments_int8", "mlp.smf", "class.sds", 8,
+     ["--moments", "int8", "--clip-norm", "0.5"]),
+    ("dec_moments_int8_global_accum", "decoder.smf", "decoder_corpus.sds", 12,
+     ["--moments", "int8", "--clip-mode", "global", "--clip-norm", "0.05",
+      "--grad-accum", "2", "--lora-rank", "4"]),
 ]
 # Opcodes no seeml-update-compile invocation produces today: kNop is a
 # placeholder, kCopy a utility no pass selects, and kReduceRows the bias
@@ -912,6 +1127,16 @@ class DifferentialSuite(unittest.TestCase):
                 for opcode, stat in report["opcodes"].items():
                     self.assertGreater(stat["extents"], 0, opcode)
                     self.assertLess(stat["worst_ratio"], 1.0)
+                    # #192: the 8-bit codes are dithered, and the oracle
+                    # draws the device's bits — the differ fails a code two
+                    # levels off, and here no more than one code in a
+                    # hundred may be one level off (the last-bit cases). An
+                    # oracle that rounded another way, or drew another
+                    # dither, would differ on about every second code.
+                    if "codes" in stat:
+                        self.assertGreater(stat["codes"], 1000, opcode)
+                        self.assertLessEqual(stat["codes_off_by_one"],
+                                             stat["codes"] // 100, opcode)
                 # F42: every report says how many relaxed GEMMs it compared
                 # and how many the C++ backend ran on a relaxed kernel; the
                 # matrix compiles no relaxed plan.

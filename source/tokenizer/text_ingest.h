@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,19 +19,27 @@
 //               one per line of a .jsonl ({"text": ...})
 //   sanitize    invalid UTF-8 bytes, control characters other than tab,
 //               newline and carriage return, and the bidirectional override
-//               and isolate characters are removed; a document empty after
-//               that is dropped. In one-document mode the sanitizer only
-//               counts (the exporter's path encodes the bytes as they are,
-//               and the two must agree id for id).
+//               and isolate characters are removed — from every document,
+//               a .txt's one as a .jsonl's (#222; nothing is normalized, so
+//               clean text passes byte for byte); a document empty after
+//               that is dropped
 //   deduplicate exact, by the sanitized bytes' hash; later twins dropped
 //   encode      the section's byte-level BPE
-//   pack        documents joined by EOS (the section's eos_id), cut into
+//   pack        documents joined by the document separator (the section's
+//               eos_id, or <|endoftext|> when the EOS is the ChatML turn
+//               end: FindDocumentSeparator, #218), cut into
 //               (S + 1)-id windows at stride S + 1, the remainder dropped;
 //               never padded (every position is a loss target); windows
-//               that straddle a document boundary are counted
+//               that straddle a document boundary are counted; a window
+//               byte-identical to an earlier kept one (its ids, and its
+//               mask where there is one) is dropped and counted (#222), so
+//               no two records are equal and no split of them can put a
+//               record on one side and its twin on the other
 //
-// Every drop is recorded by index and reason in the manifest; the screen
-// prints the counts. What this does not defend against, and says: well-
+// Every dropped document is recorded by index and reason in the manifest,
+// every dropped window counted; the screen prints the counts. The
+// exporter's --text-corpus path encodes a file's bytes as they are: the two
+// agree id for id on clean text in which no window repeats. What this does not defend against, and says: well-
 // formed poisoned data — the gate and a held-out set are that defense.
 // =============================================================================
 
@@ -38,9 +47,10 @@ namespace seeml::tokenizer {
 
 struct IngestOptions {
   uint64_t seq_len = 0;       // S: records are S + 1 ids
-  bool one_document = false;  // a .txt: the file is one document, no EOS,
-                              // sanitizer counts only (bit-exact with the
-                              // exporter's --text-corpus)
+  bool one_document = false;  // a .txt: the file is one document, no EOS
+                              // and no document deduplication (on clean
+                              // text with no repeated window, bit-exact
+                              // with the exporter's --text-corpus)
 };
 
 /// One input document: plain text (every position a loss target), or a
@@ -72,16 +82,17 @@ struct IngestManifest {
   uint64_t documents_kept = 0;
   uint64_t chat_documents = 0;  // prompt / response pairs among them
   uint64_t dropped_zero_target_windows = 0;  // masked windows with no target
+  uint64_t dropped_duplicate_windows = 0;    // byte-identical to a kept one
   uint64_t target_tokens = 0;  // positions the loss counts (masked)
   uint64_t total_tokens = 0;   // positions in the records (windows x S)
   uint64_t dropped_empty = 0;
   uint64_t dropped_duplicate = 0;
   uint64_t dropped_degenerate = 0;  // fewer than two ids: no target
   SanitizeCounts sanitized;         // summed over the documents
-  uint64_t tokens = 0;              // ids after packing's EOS joins
+  uint64_t tokens = 0;              // ids after packing's joins
   uint64_t windows = 0;             // records written
   uint64_t remainder_tokens = 0;    // ids the last partial window dropped
-  uint64_t straddling_windows = 0;  // windows holding a document boundary
+  uint64_t straddling_windows = 0;  // kept windows holding a boundary
   uint64_t distinct_ids = 0;
   std::vector<DropRecord> drops;
 };
@@ -100,10 +111,9 @@ struct IngestResult {
   uint64_t tokenizer_hash = 0;
 };
 
-/// Removes what the sanitizer removes and counts it; `one_document` mode
-/// counts without removing.
-std::string Sanitize(std::string_view text, bool count_only,
-                     SanitizeCounts* counts);
+/// Removes what the sanitizer removes and counts it. Nothing else changes:
+/// text holding none of it is returned byte for byte.
+std::string Sanitize(std::string_view text, SanitizeCounts* counts);
 
 /// Splits a .jsonl file into its documents: each line a JSON object with a
 /// "text" string, or a "prompt" and a "response" string (JSON string escapes
@@ -112,11 +122,14 @@ std::string Sanitize(std::string_view text, bool count_only,
 DocumentsFromJsonl(std::string_view jsonl);
 
 /// Ingests `documents` through the stages above with `tokenizer`, whose
-/// section hash is `tokenizer_hash` (0 = the corpus names none). Refuses a
+/// section hash is `tokenizer_hash` (0 = the corpus names none), joining
+/// documents with FindDocumentSeparator(tokenizer). Refuses a
 /// multi-document corpus whose section names no EOS, a seq_len of zero, a
 /// chat document under a section without the ChatML markers, and a corpus
 /// that yields no complete window. A corpus with a chat document is
 /// masked: the SDS carries the mask and windows with no target are dropped.
+/// Duplicate windows are dropped after that, the first kept: a corpus with
+/// one complete window with a target keeps at least that one.
 [[nodiscard]] std::expected<IngestResult, std::string> Ingest(
     const ByteLevelBpe& tokenizer, uint64_t tokenizer_hash,
     const std::vector<Document>& documents, const IngestOptions& options);
@@ -124,12 +137,38 @@ DocumentsFromJsonl(std::string_view jsonl);
 /// The manifest as JSON (one object; the drops as an array).
 std::string ManifestJson(const IngestManifest& m);
 
-/// Whether the section's EOS is the ChatML turn-end marker, <|im_end|> —
-/// the instruct checkpoints' `eos_token`. A prompt/response record then
-/// holds the EOS id inside itself, after the user turn, so nothing that
-/// finds documents by the EOS id (the attention segment mask) can tell a
-/// turn from a document on such a model (#218).
-[[nodiscard]] bool EosEndsChatTurns(const ByteLevelBpe& tokenizer);
+/// The document separator (#218): the id the pack stage joins documents
+/// with and the attention segment mask finds documents by — one pure
+/// function of the tokenizer section, called by the compiler, the device's
+/// raw-text feeder (through Ingest) and seeml-tokenize alike.
+///
+/// It is the EOS id, unless the EOS token is the ChatML turn end
+/// `<|im_end|>` (the instruct checkpoints' `eos_token`) and the section has
+/// a special token `<|endoftext|>`: then it is that token's id. A chat
+/// record holds `<|im_end|>` after every turn — a prompt/response record
+/// rendered through the template, or plain text already rendered in ChatML
+/// (a literal special-token string encodes to its id) — so a turn end is
+/// not a document end; `<|endoftext|>` is the families' document end (the
+/// base checkpoints' EOS: SmolLM, SmolLM2, Qwen2.5).
+///
+/// `is_turn_end` marks the one case with no separator distinct from the
+/// turn end: an `<|im_end|>` EOS and no `<|endoftext|>`. Documents are
+/// then still joined by the EOS, and nothing that finds documents by the
+/// separator can tell a turn from a document: the segment mask is not
+/// taken on such a model.
+struct DocumentSeparator {
+  int32_t id = -1;           // -1: the section names no EOS
+  bool is_turn_end = false;  // id is <|im_end|>, which also ends a turn
+};
+[[nodiscard]] DocumentSeparator FindDocumentSeparator(
+    const ByteLevelBpe& tokenizer);
+
+/// The same for a section's bytes: the loaded section's separator, or, for
+/// a section that does not load (a head-only one names no token texts),
+/// its head's EOS id, not marked as a turn end; -1 for no section or an
+/// unreadable head.
+[[nodiscard]] DocumentSeparator FindDocumentSeparator(
+    std::span<const uint8_t> section);
 
 }  // namespace seeml::tokenizer
 

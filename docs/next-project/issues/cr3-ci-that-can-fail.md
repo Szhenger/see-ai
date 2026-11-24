@@ -69,6 +69,92 @@ now, and its twelve tests ran in CI for the first time; and the e2e job's
 by a packaged script, an embedding API in a packaged source, the word in
 the binary), not prose.
 
+## Status 2026-11-20 — the F22 / N41 claim corrected (#208, #207)
+
+The paragraph above says the fuzzer executes an accepted plan and the job
+gates on coverage. In CI neither was true (the 2026-11-17 review; #208):
+the pull-request job started from an empty corpus and in ninety seconds
+never built a plan that passes the seal and the contract — its own log
+lists `ExecuteOnce`, `UpdateEngine::Train` and every function of the
+validator with zero hits — and its gate, `grep "COVERED_FUNC.*runtime/"`,
+is satisfied by any `UNCOVERED_FUNC` line under `runtime/`. Two more
+things were found by running the harness on a valid plan: its one
+training step was refused for every plan compiled under the default
+schedule (a one-step horizon ends inside the compiled warmup), and its
+work bound did not cover `grad_accum_steps` — a one-bit mutation of an
+accumulating plan runs a "single step" of a billion micro-batches, a unit
+that prints nothing and does not return (a candidate for the nightly's
+three cancelled runs, #207; the nightly's own input is lost, so that is
+not shown).
+
+What each place does, as of this change:
+
+- **Every suite-running job** (the three build-and-test hosts, the
+  determinism matrix, ASan+UBSan per pull request, TSan nightly):
+  `seeml_fuzz_replay_test` runs the checked-in seed corpus
+  (`test/fuzz/seeds/`, one valid input per arm, one sealed plan per fixture
+  family) through the harness's entry point and asserts, per seed, what it
+  reached — a plan accepted and executed with its family's opcodes, a
+  compile completed and its plan run, a tokenizer section loaded, a window
+  ingested, a recipe applied, a report read — then refuses a battery of
+  malformed inputs and runs 128 structured mutations of every seed. This is
+  where "the harness executes an accepted plan" is held, and it needs no
+  workflow.
+- **The pull-request fuzz job** (`fuzz-smoke`, 90 s) and **the nightly**
+  (`fuzz-extended`, 15 min, cached corpus) build the same harness with
+  libFuzzer. Until the workflow change that accompanies #208 / #207 is
+  applied they still start from an empty (or cached) corpus with the old
+  gate and no `-timeout`: they exercise the refusal paths, and a finding
+  made on a cancelled nightly is not uploaded. With it applied: both start
+  from `test/fuzz/seeds`; the pull-request job fails unless libFuzzer
+  reports non-zero hits for `ExecuteOnce`, the validator, `UpdateEngine::
+  Train`, the instruction dispatch, a completed compile and each
+  text-facing parser; both pass `-timeout=25 -rss_limit_mb=2048`; the
+  nightly's fuzz step has its own time limit below the job's, uploads every
+  finding prefix and the log's tail on `always()`, and saves its corpus
+  with an explicit step on `always()`.
+
+## Status 2026-11-24 — the fuzz jobs' workflow steps, and what they were shown to do (#207, #208)
+
+The workflow steps are in `ci.yml` and `nightly.yml` (the combined patch
+of 2026-11-20, applied). What each acceptance line of the two follow-ups
+rests on:
+
+- **#208, the gate.** The PR job's log on the seed corpus reads non-zero
+  hits for all ten named functions (`ExecuteOnce` 453,
+  `ValidateInstructionImpl` 502, `UpdateEngine::ExecuteRange` 452,
+  `AssemblePlan` 436, `ByteLevelBpe::Load` 252, `DocumentsFromJsonl` 177,
+  `ParseRecipeFile` 416 — run 45438244719), and the job fails when one
+  reads zero.
+- **#208, a planted mutation.** With the destination bounds rule of
+  `kAddBias` removed from the validator, ninety seconds of libFuzzer
+  passed on the seed corpus alone (28,179 units) and with a first form of
+  the mutator below (25,772); with its final form it passed once (25,923)
+  and found the rule once, at 197 units (run 45446317062:
+  AddressSanitizer, SEGV in `kernels::AddBias`). Four runs, one find:
+  that is the honest size of a 90-second campaign
+  against one opcode's rule: the corpus is a thousand units within the
+  run and the plan seeds are fourteen of them. Two things were built
+  from it. `test/fuzz/plan_mutate.h` is a plan-aware edit — one operand
+  field of one instruction, the instruction drawn evenly over the opcodes
+  its stream holds — which the libFuzzer build makes for three in four
+  mutations of a re-sealed plan unit. And the job runs the replay
+  suite's operand pass at 57,344 such edits in its own sanitizer build
+  ("Operand sweep"): on the planted rule that step fails every time
+  (run 45446856402). The replay suite makes 3,584 of them in every
+  build.
+- **#207, failed, not cancelled.** A planted slow unit (the 300th input
+  sleeps 60 s) ended the nightly's fuzz job **failed** at libFuzzer's own
+  25 s limit, with `timeout-8b021012…` and the log's tail uploaded and
+  the corpus saved (run 45442934791).
+- **#207, the lost input.** The hang is reproduced in the nightly's own
+  harness over its cached corpus, and the unit libFuzzer wrote out is
+  kept (`docs/benchmarks.md`, "The v1.0.0.B close"). It is the candidate
+  of 2026-11-20 — `grad_accum_steps` = 1,090,519,040 in a plan the fuzzer
+  grew from nothing — and #223's bound refuses it at load. That the
+  cancelled nights held these very bytes cannot be shown: they uploaded
+  nothing.
+
 ## Acceptance
 
 - A deliberately failing Python test turns the seam job red.

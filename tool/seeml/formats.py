@@ -129,10 +129,26 @@ SMTK_HEAD = Layout("SmtkHead", [
 # --- SEEU: the update plan (source/plan/schema.h, instruction.h) -------------
 
 SEEU_MAGIC = 0x55454553  # "SEEU"
-SEEU_VERSION = 26
+SEEU_VERSION = 27
 SEEU_GLOBAL_CLIP_VERSION = 24  # kSqNormAccum, kClipGlobal (#190)
 SEEU_SEGMENT_MASK_VERSION = 25  # kSegmentStarts, kAttnFwdSeg (#191)
 SEEU_TILED_SEGMENT_MASK_VERSION = 26  # kAttnFwdTiledSeg (#191 step 2)
+SEEU_INT8_MOMENTS_VERSION = 27  # kAdamW8Step, the quantized ledger line (#192)
+# 8-bit moments (source/plan/instruction.h, plan v27): the block, the floor,
+# the level tables as f32 bits (m and v share them) and the dither's integer
+# hash, held to the manifest's.
+MOMENT_BLOCK = 256
+MOMENT_SCALE_FLOOR_BITS = 0x17800000  # 2^-80
+MOMENT_M_MAX_LEVEL = 126
+MOMENT_V_MAX_LEVEL = 254
+MOMENT_LEVEL_BITS = (0x3f800000, 0x3f6ac0c7, 0x3f5744fd, 0x3f45672a,
+                     0x3f3504f3, 0x3f25fed7, 0x3f1837f0, 0x3f0b95c2)
+MOMENT_THRESHOLD_BITS = (0x3ff5257d, 0x3fe0ccdf, 0x3fce248c, 0x3fbd08a4,
+                         0x3fad583f, 0x3f9ef532, 0x3f91c3d3, 0x3f85aac3)
+MOMENT_DITHER_M = 0x9E3779B9  # the m stream's constant
+MOMENT_DITHER_V = 0x85EBCA6B  # the v stream's
+MOMENT_MIX = (0x7FEB352D, 0x846CA68B)  # MomentMix's two multipliers
+MOMENT_DITHER_BITS = 24
 SEEU_DATA_CONTRACT_VERSION = 22  # the header grew to 320 bytes: the data contract
 # PlanHeader.data_flags (v22).
 DATA_FLAG_MASKED_LOSS = 1
@@ -152,6 +168,7 @@ EXPORT_TOKENIZER_PARITY = 2
 EXPORT_LOGITS_PARITY = 4
 LEDGER_EXACT = 0
 LEDGER_REORDERED = 1
+LEDGER_QUANTIZED = 2  # v27: state stored narrower (#192)
 SEEU_OLDEST_READABLE = 4
 RODATA_BIT = 1 << 63
 # v17: the source model file (E12), the eval program only; v21: every
@@ -163,6 +180,10 @@ RODATA_ALIGNMENT = 16384  # where the compiler puts rodata (a 16 KiB page)
 # plan the device accepts, laid out by the compiler or not.
 RODATA_OFFSET_ALIGNMENT = 16
 GEMM_PANEL_FLOATS = 8192
+# The most micro-batches one optimizer step may accumulate (#223): the load
+# contract refuses a header above it, and the recipe's grad_accum field
+# holds the same maximum.
+MAX_GRAD_ACCUM_STEPS = 65536
 
 PLAN_HEADER = Layout("PlanHeader", [
     ("magic", "I"), ("version", "I"),
@@ -219,6 +240,7 @@ OPCODES = {
     50: "attn.dv.tiled", 51: "softmax_xent_masked.fwd",
     52: "softmax_xent_masked.bwd", 53: "sqnorm.accum", 54: "clip.global",
     55: "segment.starts", 56: "attn.fwd.seg", 57: "attn.fwd.tiled.seg",
+    58: "adamw8.step",
 }
 # The tiled family's stats row: [row max, 1/denominator, delta, start] —
 # the fourth float is the row's document start since v26 (0 unmasked).
@@ -324,8 +346,11 @@ FUSED_MAX_STAGES = 4
 # --- SEKP: the checkpoint (runtime/storage/checkpoint_format.h) ------------
 
 SEKP_MAGIC = 0x504B4553  # "SEKP"
-SEKP_VERSION = 5         # v5: the run binding, source score and best state
-SEKP_OLDEST_READABLE = 3
+SEKP_VERSION = 6         # v6: the header hash, corpus / split / backend
+SEKP_OLDEST_READABLE = 6  # binding, train-loss windows; v3-v5 are refused
+SEKP_HEADER_BYTES = 240  # CkptHeader + the v4, v5 and v6 tails
+SEKP_WINDOW_MAX = 20
+SEKP_BACKENDS = {"unstated": 0, "cpu": 1, "metal": 2}
 CKPT_HEADER = Layout("CkptHeader", [
     ("magic", "I"), ("version", "I"), ("plan_hash", "Q"), ("step", "Q"),
     ("persistent_size", "Q"), ("payload_hash", "Q")])
@@ -343,6 +368,13 @@ CKPT_HAS_BEST = 8
 # CR4 #145 F71: the run binding is live (before this bit every v5 file read
 # as bound; a v5 file written before it reads as unbound).
 CKPT_HAS_BINDING = 16
+CKPT_HAS_WINDOWS = 32  # v6: the train-loss windows are live
+# v6 (CR4 #221). header_hash is ContentHash64 over the 240 header bytes with
+# the field itself zero; first_window_sum_bits is an f64, the ring f32 bits.
+CKPT_HEADER_V6_TAIL = Layout("CkptHeaderV6Tail", [
+    ("corpus_hash", "Q"), ("split_hash", "Q"), ("window_count", "Q"),
+    ("first_window_sum_bits", "Q"), ("backend", "I"), ("window", "I"),
+    ("last_losses_bits", "20I"), ("header_hash", "Q")])
 
 # --- The probe trace (tool/probe_trace.h) -------------------------------------
 
@@ -372,7 +404,8 @@ def plan_metadata_offset(emit_table_offset: int, emit_count: int) -> int:
 STRUCTS = {
     "seeu": (PLAN_HEADER, INSTRUCTION, EMIT_ENTRY, PLAN_METADATA,
              LEDGER_ENTRY),
-    "sekp": (CKPT_HEADER, CKPT_HEADER_V4_TAIL, CKPT_HEADER_V5_TAIL),
+    "sekp": (CKPT_HEADER, CKPT_HEADER_V4_TAIL, CKPT_HEADER_V5_TAIL,
+             CKPT_HEADER_V6_TAIL),
 }
 
 
@@ -420,6 +453,8 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
          seeu["rodata_offset_alignment"])
     same("seeu.gemm_panel_floats", GEMM_PANEL_FLOATS,
          seeu["gemm_panel_floats"])
+    same("seeu.max_grad_accum_steps", MAX_GRAD_ACCUM_STEPS,
+         seeu.get("max_grad_accum_steps"))
     same("seeu.opcodes", {n: k for k, n in OPCODES.items()}, seeu["opcodes"])
     same("seeu.data_flags", {"masked_loss": DATA_FLAG_MASKED_LOSS,
                              "corpus_pinned": DATA_FLAG_CORPUS_PINNED,
@@ -432,8 +467,19 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
           "export_flags": {"report": EXPORT_REPORT_PRESENT,
                            "tokenizer_parity": EXPORT_TOKENIZER_PARITY,
                            "logits_parity": EXPORT_LOGITS_PARITY},
-          "arithmetic": {"exact": LEDGER_EXACT, "reordered": LEDGER_REORDERED}},
+          "arithmetic": {"exact": LEDGER_EXACT, "reordered": LEDGER_REORDERED,
+                         "quantized": LEDGER_QUANTIZED}},
          seeu.get("metadata"))
+    same("seeu.moments",
+         {"version": SEEU_INT8_MOMENTS_VERSION, "block": MOMENT_BLOCK,
+          "scale_floor_bits": MOMENT_SCALE_FLOOR_BITS,
+          "m_max_level": MOMENT_M_MAX_LEVEL,
+          "v_max_level": MOMENT_V_MAX_LEVEL,
+          "level_bits": list(MOMENT_LEVEL_BITS),
+          "threshold_bits": list(MOMENT_THRESHOLD_BITS),
+          "dither": {"m": MOMENT_DITHER_M, "v": MOMENT_DITHER_V,
+                     "mix": list(MOMENT_MIX), "bits": MOMENT_DITHER_BITS}},
+         seeu.get("moments"))
     same("seeu.flags", {"epilogue_bias": FLAG_EPILOGUE_BIAS,
                         "epilogue_act_shift": FLAG_EPILOGUE_ACT_SHIFT,
                         "epilogue_act_mask": FLAG_EPILOGUE_ACT_MASK,
@@ -460,7 +506,14 @@ def check_against(abi: Dict[str, Any]) -> List[str]:
                         "has_accuracy": CKPT_HAS_ACCURACY,
                         "has_best_payload": CKPT_HAS_BEST_PAYLOAD,
                         "has_best": CKPT_HAS_BEST,
-                        "has_binding": CKPT_HAS_BINDING}, sekp["flags"])
+                        "has_binding": CKPT_HAS_BINDING,
+                        "has_windows": CKPT_HAS_WINDOWS}, sekp["flags"])
+    same("sekp.header_bytes", SEKP_HEADER_BYTES, sekp["header_bytes"])
+    same("sekp.header_bytes (the layouts)", SEKP_HEADER_BYTES,
+         CKPT_HEADER.size + CKPT_HEADER_V4_TAIL.size +
+         CKPT_HEADER_V5_TAIL.size + CKPT_HEADER_V6_TAIL.size)
+    same("sekp.window_max", SEKP_WINDOW_MAX, sekp["window_max"])
+    same("sekp.backends", SEKP_BACKENDS, sekp["backends"])
     same("probe_trace.magic", PROBE_TRACE_MAGIC, abi["probe_trace"]["magic"])
     same("probe_trace.version", PROBE_TRACE_VERSION,
          abi["probe_trace"]["version"])
