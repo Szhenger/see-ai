@@ -31,6 +31,7 @@
 #include "source/plan/update_types.h"
 #include "test/framework/seetest.h"
 #include "test/fuzz/fuzz_reach.h"
+#include "test/fuzz/plan_mutate.h"
 #include "test/support/builders.h"
 
 namespace {
@@ -765,6 +766,96 @@ TEST(FuzzReplay, MutatedSeedsAreRefusedOrRunNeverCrash) {
     EXPECT_GT(total.compiles_completed, uint64_t{0});
   }
   EXPECT_EQ(inputs, per_seed * seeds.size());
+}
+
+// --- The plan-aware edit (test/fuzz/plan_mutate.h) ---------------------------
+
+TEST(FuzzReplay, APlanOperandEditRewritesOneInstructionAndNothingElse) {
+  const std::vector<uint8_t> seed = ReadSeed("plan-mlp");
+  ASSERT_GT(seed.size(), sizeof(PlanHeader) + 1);
+  PlanHeader header;
+  std::memcpy(&header, seed.data() + 1, sizeof(header));
+  constexpr size_t kIns = sizeof(seeml::update::UpdateInstruction);
+  Rng rng{7};
+  uint64_t changed = 0;
+  for (int i = 0; i < 256; ++i) {
+    std::vector<uint8_t> edited = seed;
+    const uint64_t r0 = rng.Next(), r1 = rng.Next(), r2 = rng.Next();
+    ASSERT_TRUE(seeml::fuzz::MutatePlanOperand(edited, r0, r1, r2, rng.Next()));
+    ASSERT_EQ(edited.size(), seed.size());
+    size_t first = seed.size(), last = 0;
+    for (size_t b = 0; b < seed.size(); ++b)
+      if (edited[b] != seed[b]) {
+        first = std::min(first, b);
+        last = b;
+      }
+    if (first == seed.size()) continue;  // the value it already held
+    ++changed;
+    // Inside one instruction of one of the four streams the header names.
+    bool inside = false;
+    for (const auto& [offset, count] :
+         {std::pair{header.train_instr_offset, header.train_instr_count},
+          std::pair{header.merge_instr_offset, header.merge_instr_count},
+          std::pair{header.eval_instr_offset, header.eval_instr_count},
+          std::pair{header.step_instr_offset, header.step_instr_count}}) {
+      const size_t begin = 1 + offset, end = begin + count * kIns;
+      if (first >= begin && last < end)
+        inside |= (first - begin) / kIns == (last - begin) / kIns;
+    }
+    EXPECT_TRUE(inside);
+  }
+  EXPECT_GT(changed, uint64_t{200});
+  // Not a plan: left alone. A model, a header cut short, and a header
+  // whose streams lie outside the input.
+  for (std::vector<uint8_t> input :
+       {ReadSeed("smf-dec"),
+        std::vector<uint8_t>(seed.begin(), seed.begin() + 64),
+        std::vector<uint8_t>(seed.begin(),
+                             seed.begin() + 1 + sizeof(PlanHeader))}) {
+    const std::vector<uint8_t> before = input;
+    EXPECT_FALSE(seeml::fuzz::MutatePlanOperand(input, 1, 2, 3, 4));
+    EXPECT_TRUE(input == before);
+  }
+}
+
+TEST(FuzzReplay, PlanOperandEditsAreRefusedOrRunNeverCrash) {
+  // The validator's operand rules under the edits a byte-level pass almost
+  // never makes: every re-sealed plan seed, each instruction field pushed
+  // to a boundary or past it. What must hold is that the harness returns —
+  // under a sanitizer build, with no report: a rule that stops refusing
+  // what it refused lets a kernel read or write outside the arena here.
+  // Both verdicts must occur, or the edits are not reaching the rules.
+  uint64_t per_seed = 256;
+  if (const char* n = std::getenv("SEEML_FUZZ_MUTATIONS"))
+    per_seed = 2 * std::strtoull(n, nullptr, 10);
+  Rng rng{11};
+  uint64_t accepted = 0, refused = 0, plans = 0;
+  for (const SeedCase& seed : SeedCases()) {
+    if (seed.arm != seeml::fuzz::kArmPlan) continue;
+    const std::vector<uint8_t> clean = ReadSeed(seed.name);
+    ++plans;
+    for (uint64_t i = 0; i < per_seed; ++i) {
+      std::vector<uint8_t> input = clean;
+      for (uint64_t e = 0, edits = 1 + rng.Below(2); e < edits; ++e) {
+        const uint64_t r0 = rng.Next(), r1 = rng.Next(), r2 = rng.Next();
+        ASSERT_TRUE(
+            seeml::fuzz::MutatePlanOperand(input, r0, r1, r2, rng.Next()));
+      }
+      const Reach r = Run(input);
+      accepted += r.plans_accepted;
+      refused += r.plans_refused;
+    }
+  }
+  std::printf(
+      "             %llu operand edits over %llu plan seeds: %llu accepted, "
+      "%llu refused\n",
+      static_cast<unsigned long long>(plans * per_seed),
+      static_cast<unsigned long long>(plans),
+      static_cast<unsigned long long>(accepted),
+      static_cast<unsigned long long>(refused));
+  EXPECT_GT(plans, uint64_t{5});
+  EXPECT_GT(accepted, uint64_t{0});
+  EXPECT_GT(refused, uint64_t{0});
 }
 
 }  // namespace

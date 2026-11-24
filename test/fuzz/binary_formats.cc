@@ -36,6 +36,7 @@
 // =============================================================================
 
 #include "test/fuzz/fuzz_reach.h"
+#include "test/fuzz/plan_mutate.h"
 
 #include <unistd.h>
 
@@ -561,6 +562,34 @@ void CompileDataArm(Bytes input) {
 }
 
 }  // namespace
+
+#if defined(SEEML_LIBFUZZER)
+// libFuzzer's own mutator, for the edits this one does not make.
+extern "C" size_t LLVMFuzzerMutate(uint8_t* data, size_t size, size_t max_size);
+
+/// Three in four edits of a re-sealed plan unit go to an instruction's
+/// operands (test/fuzz/plan_mutate.h says why); every other edit, and
+/// every other arm's, is libFuzzer's. Only the libFuzzer build defines the
+/// hook: the replay suite links this file without libFuzzer and calls
+/// MutatePlanOperand itself.
+extern "C" size_t LLVMFuzzerCustomMutator(uint8_t* data, size_t size,
+                                          size_t max_size, unsigned int seed) {
+  uint64_t state = seed;
+  const auto next = [&state] {  // SplitMix64
+    uint64_t z = (state += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+  };
+  if (size >= 1 && data[0] % seeml::fuzz::kArmCount == seeml::fuzz::kArmPlan &&
+      next() % 4 != 0) {
+    const uint64_t r0 = next(), r1 = next(), r2 = next(), r3 = next();
+    if (seeml::fuzz::MutatePlanOperand({data, size}, r0, r1, r2, r3))
+      return size;
+  }
+  return LLVMFuzzerMutate(data, size, max_size);
+}
+#endif  // SEEML_LIBFUZZER
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   // The compiler narrates each pass at INFO; a fuzzing run would write

@@ -322,5 +322,9 @@ if(SEEML_FUZZ)
     add_executable(seeml_fuzz_formats test/fuzz/binary_formats.cc)
     target_compile_options(seeml_fuzz_formats PRIVATE -fsanitize=fuzzer,address)
     target_link_options(seeml_fuzz_formats PRIVATE -fsanitize=fuzzer,address)
+    # The plan-aware custom mutator (CR3 #208) calls LLVMFuzzerMutate, which
+    # only libFuzzer provides: the replay suite compiles the same file
+    # without the hook.
+    target_compile_definitions(seeml_fuzz_formats PRIVATE SEEML_LIBFUZZER)
     target_link_libraries(seeml_fuzz_formats PRIVATE seeml_update seeml_update_rt)
 endif()
