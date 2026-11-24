@@ -9,6 +9,7 @@
 //                    [--lr-bits 0xHHHHHHHH]
 //                    [--step N] [--backend cpu|metal|auto] [--threads N]
 //                    [--source model.smf]
+//                    [--relaxed-for-measurement]
 //                    [--version]
 //
 // A pure function of its inputs: (plan, section, arena image, step scalars)
@@ -54,6 +55,16 @@
 // the trace can never claim less than the instruction was allowed to write.
 // Every instruction is validated before anything executes, and the plan's
 // self-hash is verified: the probe refuses what the engine would refuse.
+//
+// --relaxed-for-measurement (F2 #206). A plan that carries relaxed
+// instructions (kFlagRelaxed) runs on a device only in the package built
+// beside its granted numerics certificate; the probe holds the same rule
+// and, having no certificate compiled in, refuses such a plan — unless
+// this flag says the run is a measurement. It is not a certificate and
+// grants nothing to a package: it is how the certifier's own instruments
+// (tool/frontier_exec.py's diff, price and profile, which
+// tool/certify_numerics.py verifies against) run a relaxed plan before a
+// certificate can exist. The generated runner has no such flag.
 // Strict arguments, as in every SeeAI tool: exit 2 for a bad command line,
 // 1 for a bad input.
 //
@@ -179,6 +190,8 @@ struct Options {
   rt::BackendKind backend = rt::BackendKind::kCpu;
   uint32_t lr_bits = 0;
   uint64_t step = 1, threads = 0, timed = 0, profiled = 0;
+  // --relaxed-for-measurement: by default no relaxed plan, as on a device.
+  rt::RelaxedPlanPermit relaxed_permit;
 };
 
 /// An input path the probe will read: it must name an existing regular
@@ -244,6 +257,8 @@ struct Options {
   const auto timed = args.TakeValue("--time");
   const auto profiled = args.TakeValue("--profile");
   const auto source = args.TakeValue("--source");
+  if (args.Take("--relaxed-for-measurement"))
+    opts->relaxed_permit = rt::RelaxedPlanPermit::UncertifiedForMeasurement();
   if (const auto& flag = args.MissingValue())
     return Usage(*flag + " is missing its value");
   if (const auto unknown = args.FirstUnknown())
@@ -371,7 +386,8 @@ struct Program {
 /// self-hash, section bounds) and validates every instruction of `section`
 /// before any of them runs. Returns an error message, or empty.
 std::string LoadProgram(const std::vector<uint8_t>& plan,
-                        const std::string& section, Program* out) {
+                        const std::string& section,
+                        rt::RelaxedPlanPermit permit, Program* out) {
   if (plan.size() < sizeof(up::PlanHeader)) return "plan is truncated";
   up::PlanHeader& h = out->header;
   std::memcpy(&h, plan.data(), sizeof(h));
@@ -410,6 +426,13 @@ std::string LoadProgram(const std::vector<uint8_t>& plan,
             h);
         !r)
       return r.error();
+    // The device's relaxed rule (F2 #206), under the probe's own permit:
+    // none, or the measurement permission --relaxed-for-measurement names.
+    if (auto r = rt::VerifyRelaxedPermit(h, train, merge, eval, step, permit);
+        !r)
+      return r.error() +
+             " (seeml-plan-probe measures an uncertified "
+             "relaxed plan only under --relaxed-for-measurement)";
   }
 
   uint64_t off = h.train_instr_offset, count = h.train_instr_count;
@@ -587,7 +610,8 @@ int main(int argc, char** argv) {
   std::vector<uint8_t> plan;
   if (!ReadFile(opts.plan, &plan)) return Fail("cannot read the plan");
   Program program;
-  if (const std::string err = LoadProgram(plan, opts.section, &program);
+  if (const std::string err =
+          LoadProgram(plan, opts.section, opts.relaxed_permit, &program);
       !err.empty())
     return Fail(err);
   const up::PlanHeader& h = program.header;

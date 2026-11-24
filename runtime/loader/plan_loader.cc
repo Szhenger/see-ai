@@ -239,7 +239,8 @@ uint64_t NarrowestSoftmax(const Programs& programs) {
 }  // namespace
 
 std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
-                                                   size_t plan_size) {
+                                                   size_t plan_size,
+                                                   RelaxedPlanPermit permit) {
   // Everything below validates into locals; the engine commits them only
   // after every contract has passed. A failed re-Load must leave the
   // previous plan fully usable.
@@ -287,6 +288,14 @@ std::expected<DecodedPlan, std::string> DecodePlan(const uint8_t* plan,
           std::span<const uint8_t>(plan + header.rodata_offset,
                                    header.rodata_size),
           header);
+      !ok)
+    return std::unexpected(ok.error());
+
+  // "No certificate, no relaxed plan", on the device (F2 #206): the seal
+  // DecodeHeader verified is the one the binary was built for, or the plan
+  // carries no relaxed instruction. After the executor contract, so a
+  // corrupt plan is still named for its corruption.
+  if (auto ok = VerifyRelaxedPermit(header, train, merge, eval, step, permit);
       !ok)
     return std::unexpected(ok.error());
 

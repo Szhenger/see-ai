@@ -16,7 +16,15 @@ environment.
   bounds-proven (via the verifier), the staged slots no program writes, the
   label and token bindings, the segment starts (#191), the masked-loss flag,
   the quantized column scales, the emit table (CR2 #143's coverage table:
-  `test/runtime/dispatcher/engine_test.cc`, `CoverageTable.*`).
+  `test/runtime/dispatcher/engine_test.cc`, `CoverageTable.*`). And the
+  relaxed permit (F2 #206, `RelaxedPlanPermit` / `VerifyRelaxedPermit`): a
+  plan with a `kFlagRelaxed` instruction loads only when the caller names
+  its seal — the generated runner passes the hash its build compiled in
+  after checking a granted numerics certificate, zero otherwise — or says it
+  is a measuring instrument (`UncertifiedForMeasurement`: the probe under
+  `--relaxed-for-measurement`, the fuzzer, the suites that prove the relaxed
+  kernels). Every load defaults to no permit (`RelaxedPermit.*` in the same
+  suite).
 
 `UpdateEngine::Initialize` calls both, binds the backend, and commits the
 result to its members only after every rule has passed — a refused re-load

@@ -34,6 +34,11 @@
 //                           (read from rodata; CR1 #142 F33), and every
 //                           emit entry targets the arena, so Execute() may
 //                           dispatch blindly
+//   VerifyRelaxedPermit     after decode — a plan that carries relaxed
+//                           instructions is the one plan this binary was
+//                           built to run under a granted numerics
+//                           certificate, or the caller is a measuring
+//                           instrument that said so (F2 #206)
 //   VerifyFeederContract    before train — the dataset's geometry matches
 //                           the compiled plan's batch, input, and label
 //                           slots
@@ -67,6 +72,62 @@ namespace seeml::update_rt {
     std::span<const seeml::update::UpdateInstruction> step,
     std::span<const seeml::update::EmitEntry> emit_table,
     std::span<const uint8_t> rodata, const seeml::update::PlanHeader& header);
+
+/// Which relaxed plans a load admits (F2 #206). Relaxed arithmetic
+/// (kFlagRelaxed: the bf16 tensor-op GEMMs, relaxed tiled attention) ships
+/// only under a granted numerics certificate, and a certificate cannot sit
+/// inside the plan it hashes — so the binding lives in the binary: the build
+/// path that checked the certificate compiles the certified plan's seal
+/// (PlanHeader::plan_hash) into the runner, and the loader holds every plan
+/// that reaches it — embedded, mapped from disk, or named by --plan — to it.
+/// The default admits no relaxed plan; an exact plan loads under any permit.
+class RelaxedPlanPermit {
+ public:
+  /// No relaxed plan: any kFlagRelaxed instruction refuses the load.
+  constexpr RelaxedPlanPermit() = default;
+  /// The one relaxed plan a granted certificate was checked for when the
+  /// calling binary was built, by its seal. Zero is "none was": the value
+  /// of a runner built without SEEML_CERTIFIED_PLAN_HASH.
+  [[nodiscard]] static constexpr RelaxedPlanPermit CertifiedPlan(
+      uint64_t plan_hash) {
+    RelaxedPlanPermit permit;
+    permit.certified_plan_hash_ = plan_hash;
+    return permit;
+  }
+  /// NOT a certificate — a measurement and testing permission: any relaxed
+  /// plan loads. For the instruments that must run a relaxed plan before a
+  /// certificate can exist (the certifier's probe, the bench, the test
+  /// suites that prove the relaxed kernels). The generated runner never
+  /// passes it and has no flag that could.
+  [[nodiscard]] static constexpr RelaxedPlanPermit UncertifiedForMeasurement() {
+    RelaxedPlanPermit permit;
+    permit.uncertified_for_measurement_ = true;
+    return permit;
+  }
+  constexpr uint64_t certified_plan_hash() const {
+    return certified_plan_hash_;
+  }
+  constexpr bool uncertified_for_measurement() const {
+    return uncertified_for_measurement_;
+  }
+
+ private:
+  uint64_t certified_plan_hash_ = 0;
+  bool uncertified_for_measurement_ = false;
+};
+
+/// The relaxed rule (F2 #206): a plan with at least one kFlagRelaxed
+/// instruction in any program loads only when `permit` names its seal —
+/// `header.plan_hash`, which the caller has already verified against the
+/// plan's bytes — or is the measurement permission. An exact plan passes
+/// under every permit.
+[[nodiscard]] std::expected<void, std::string> VerifyRelaxedPermit(
+    const seeml::update::PlanHeader& header,
+    std::span<const seeml::update::UpdateInstruction> train,
+    std::span<const seeml::update::UpdateInstruction> merge,
+    std::span<const seeml::update::UpdateInstruction> eval,
+    std::span<const seeml::update::UpdateInstruction> step,
+    RelaxedPlanPermit permit);
 
 /// The dataset can feed this plan: batch x input_dim matches the input
 /// slot, the label kind and per-batch width match the label slot, and

@@ -64,6 +64,11 @@ BINARY = "model_update"
 # The numerics certificate tool/certify_numerics.py writes beside a plan
 # (P3, #77). Optional — but one that is present must vouch for THIS plan.
 CERTIFICATE_FILE = "numerics_certificate.json"
+# Its attestation (F2 #206): the one line the package's build.sh — POSIX sh
+# on the device, no JSON parser — checks before it compiles the plan's seal
+# into the runner. This tool is the full check; a certificate that passes
+# it here has its attestation (re)written, one that fails has it removed.
+ATTESTATION_FILE = "numerics_certificate.attest"
 
 # The four bytes every plan starts with ("SEEU" little-endian; kSeeuMagic in
 # source/plan/schema.h). Checked only to refuse embedding a file that is not
@@ -88,6 +93,13 @@ DECIMAL_COMPILE_LINE = (
     "$CXX $FLAGS -c update_plan_embedded.cc -o update_plan_embedded.o\n")
 STUB_COMPILE_LINE = "$CXX -c update_plan_embedded.S -o update_plan_embedded.o\n"
 DISK_COMPILE_LINE = "$CXX $FLAGS -c update_plan_none.cc -o update_plan_embedded.o\n"
+
+# The define a relaxed plan's build.sh passes to the runner after its
+# certificate gate (F2 #206; BuildScript in native_emitter.cc): the seal of
+# the one relaxed plan the binary will load. A relaxed package whose script
+# does not carry it predates the device-side gate — its vendored runtime
+# runs any relaxed plan — and is not packed.
+CERTIFIED_HASH_DEFINE = "-DSEEML_CERTIFIED_PLAN_HASH=0x${PLAN_SEAL}ull"
 
 # The plan size from which the packer leaves the plan beside the binary
 # instead of embedding it (#158). Measured on macOS arm64 (2026-09-28): a
@@ -343,10 +355,17 @@ def parse_args(argv: Sequence[str]) -> Options:
 
 
 def check_certificate(package_dir: str, plan_path: str) -> Optional[dict]:
-    """None when the package carries no numerics certificate (every package
-    today); else its summary for the report. A certificate that does not
-    verify — issued for another plan, edited, or a refusal — is a packaging
-    error: recompiling a plan silently voids what was certified about it."""
+    """None when the package carries no numerics certificate (every exact
+    package); else its summary for the report. A certificate that does not
+    verify — issued for another plan, edited, a refusal, or weaker than a
+    certificate may be (a tolerance above its ceiling, a free run below the
+    floor: F2 #206) — is a packaging error: recompiling a plan silently
+    voids what was certified about it.
+
+    This is the full check, so it also settles the attestation build.sh
+    trusts in its place (F2 #206): written for a certificate that passes,
+    removed for one that does not — a package never keeps an attestation
+    this check would not have issued."""
     cert_path = os.path.join(package_dir, CERTIFICATE_FILE)
     if not os.path.exists(cert_path):
         return None
@@ -360,20 +379,32 @@ def check_certificate(package_dir: str, plan_path: str) -> Optional[dict]:
     except (OSError, ValueError) as e:
         raise PackError(f"cannot read '{cert_path}': {e}") from e
     problems = certify_numerics.check_certificate(cert, plan_path)
-    if problems:
-        raise PackError(f"'{cert_path}' does not vouch for this plan: "
-                        + "; ".join(problems)
-                        + " — re-run tool/certify_numerics.py or remove it")
+    try:
+        if problems:
+            certify_numerics.remove_attestation(cert_path)
+            raise PackError(
+                f"'{cert_path}' does not vouch for this plan: "
+                + "; ".join(problems)
+                + " — re-run tool/certify_numerics.py or remove it")
+        attestation = certify_numerics.write_attestation(cert_path, plan_path)
+        seal = certify_numerics.plan_seal(plan_path)
+    except certify_numerics.fx.PlanError as e:
+        raise PackError(str(e)) from e
     # F2 (#130): a certificate granted under tolerances looser than the
-    # certifier's defaults is legitimate — the contract is the issuer's —
-    # but the package says so, in the report and on stderr, so the decision
-    # is read where the binary is built rather than discovered when the row
-    # is measured.
+    # certifier's defaults is legitimate up to their ceilings (above one it
+    # was refused just now, F2 #206) — the contract is the issuer's — but
+    # the package says so, in the report and on stderr, so the decision is
+    # read where the binary is built rather than discovered when the row is
+    # measured.
     notes = certify_numerics.tolerance_notes(cert)
     for note in notes:
         print(f"pack_update: NOTE numerics certificate: {note}",
               file=sys.stderr)
     return {"file": cert_path, "family": cert["contract"]["family"],
+            # F2 #206: the attestation build.sh checks, and the seal it
+            # compiles into the runner (-DSEEML_CERTIFIED_PLAN_HASH) — the
+            # one relaxed plan the built binary will load.
+            "attestation": attestation, "certified_plan_seal": seal,
             "sites": cert["contract"]["sites"],
             "site_rel_tolerance": cert["tolerances"]["site_rel"],
             "tolerances": dict(cert["tolerances"]),
@@ -394,13 +425,25 @@ def pack(opts: Options) -> dict:
     plan_bytes = check_plan(plan_path)
     certificate = check_certificate(pkg, plan_path)
     # v18: relaxed GEMMs (--precision certified-bf16) ship only beside a
-    # certificate — the runtime's validator gates the bit on the version
-    # alone, so this is where "no certificate, no relaxed plan" is enforced.
+    # certificate. This is where "no certificate, no relaxed plan" is
+    # checked in full; the package's build.sh then holds the attestation
+    # written above and compiles the plan's seal into the runner, which
+    # refuses every other relaxed plan at load (F2 #206) — so the rule no
+    # longer ends where the binary is built.
     with open(plan_path, "rb") as f:
         relaxed = formats.relaxed_opcodes(f)
     relaxed_gemms = sum(1 for op in relaxed
                         if op in formats.RELAXED_GEMM_OPCODES)
     if relaxed and certificate is None:
+        # No certificate, so no attestation either: one left from an
+        # earlier pack of this directory attests a file that is gone.
+        try:
+            os.unlink(os.path.join(pkg, ATTESTATION_FILE))
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            raise PackError(f"cannot remove a stale {ATTESTATION_FILE}: "
+                            f"{e.strerror}") from e
         raise PackError(
             f"'{plan_path}' carries {len(relaxed)} relaxed instruction(s) "
             "(GEMMs, tiled attention: --precision certified-bf16) and no "
@@ -413,6 +456,15 @@ def pack(opts: Options) -> dict:
             script = f.read()
     except OSError as e:
         raise PackError(f"cannot read '{script_path}': {e.strerror}") from e
+
+    if relaxed and CERTIFIED_HASH_DEFINE not in script:
+        raise PackError(
+            f"'{plan_path}' carries relaxed instructions and {BUILD_SCRIPT} "
+            "does not build the device-side certificate gate (no "
+            "SEEML_CERTIFIED_PLAN_HASH: its emitter predates F2 #206, or "
+            "the script is an exact plan's): the binary it builds would "
+            "either run any relaxed plan or refuse this one — re-emit the "
+            "package with a current seeml-update-compile")
 
     mode = choose_mode(opts.mode, plan_bytes)
     adapted: Optional[str] = None

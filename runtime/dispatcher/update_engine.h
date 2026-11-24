@@ -243,12 +243,18 @@ class UpdateEngine {
   /// throughput knob the compiler decided; no result bit depends on it.
   kernels::GemmTiles gemm_tiles() const;
 
+  /// Every load takes the caller's RelaxedPlanPermit (F2 #206,
+  /// runtime/loader/contract.h) and by default admits no relaxed plan: a
+  /// plan carrying a kFlagRelaxed instruction loads only for the caller that
+  /// names its certified seal (the generated runner, from the hash its
+  /// build compiled in) or that says it is a measuring instrument.
+  ///
   /// Loads a plan the caller keeps alive (embedded object-file byte arrays).
   [[nodiscard]] std::expected<void, std::string> LoadFromMemory(
-      const uint8_t* plan, size_t size);
+      const uint8_t* plan, size_t size, RelaxedPlanPermit permit = {});
   /// Reads the plan file whole into a heap buffer the engine owns.
   [[nodiscard]] std::expected<void, std::string> LoadFromFile(
-      const std::string& path);
+      const std::string& path, RelaxedPlanPermit permit = {});
   /// Maps the plan file (#158): a private copy-on-write mapping, so the
   /// bytes are page-aligned, the page cache serves them (no copy, no
   /// second resident image), the file is never written through it, and
@@ -258,7 +264,7 @@ class UpdateEngine {
   /// (plan_hash), both contracts. A file that is absent, not a plan, or
   /// corrupt is refused and leaves any previously loaded plan usable.
   [[nodiscard]] std::expected<void, std::string> LoadFromFileMapped(
-      const std::string& path);
+      const std::string& path, RelaxedPlanPermit permit = {});
 
   [[nodiscard]] std::expected<TrainReport, std::string> Train(
       Dataset& data, uint64_t steps, const TrainOptions& options = {});
@@ -370,8 +376,8 @@ class UpdateEngine {
   /// Validates the candidate plan and commits engine state only if every
   /// contract passes: a rejected re-Load leaves the previous plan loaded
   /// and fully usable.
-  [[nodiscard]] std::expected<void, std::string> Initialize(const uint8_t* plan,
-                                                            size_t plan_size);
+  [[nodiscard]] std::expected<void, std::string> Initialize(
+      const uint8_t* plan, size_t plan_size, RelaxedPlanPermit permit);
   /// The training loop itself; Train wraps it with the diagnostics contract.
   [[nodiscard]] std::expected<TrainReport, std::string> TrainImpl(
       Dataset& data, uint64_t steps, const TrainOptions& options);
