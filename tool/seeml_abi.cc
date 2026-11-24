@@ -115,13 +115,8 @@ void Enum(const char* key, const Named* values, size_t count, bool last) {
   std::printf("}%s\n", last ? "" : ",");
 }
 
-}  // namespace
-
-int main(int argc, char**) {
-  if (argc != 1) {
-    std::fprintf(stderr, "seeml-abi: takes no arguments\n");
-    return 2;
-  }
+/// "smf", "sds" and "smtk": the model, corpus and tokenizer containers.
+void PrintContainers() {
   using K = up::SmfOpKind;
   const Named smf_ops[] = {
       {"matmul", unsigned(K::kMatMul)},       {"add_bias", unsigned(K::kAddBias)},
@@ -133,13 +128,6 @@ int main(int argc, char**) {
   };
   static_assert(sizeof(smf_ops) / sizeof(smf_ops[0]) == up::kSmfOpKindMax + 1,
                 "an SMF op kind is missing from the manifest");
-  using F = up::FusedStage;
-  const Named fused[] = {{"end", unsigned(F::kEnd)},   {"add", unsigned(F::kAdd)},
-                         {"mul", unsigned(F::kMul)},   {"scale", unsigned(F::kScale)},
-                         {"relu", unsigned(F::kRelu)}, {"gelu", unsigned(F::kGelu)},
-                         {"silu", unsigned(F::kSilu)}};
-
-  std::printf("{\n  \"schema\": 1,\n  \"generator\": \"tool/seeml_abi.cc\",\n");
   std::printf("  \"smf\": {\n    \"magic\": %u, \"version\": %u, "
               "\"min_version\": %u, \"default_rope_base\": %g,\n",
               up::kSmfMagic, up::kSmfVersion, up::kSmfMinVersion,
@@ -167,7 +155,16 @@ int main(int argc, char**) {
               static_cast<unsigned>(tk::PreTokenizer::kGpt2),
               static_cast<unsigned>(tk::PreTokenizer::kDigitsThenGpt2),
               tk::kSmtkFlagAddPrefixSpace, tk::kSmtkFlagNfc);
+}
 
+/// "seeu": the plan — its header constants, instruction flags, opcodes,
+/// on-disk structs, data-contract flags and metadata section.
+void PrintSeeu() {
+  using F = up::FusedStage;
+  const Named fused[] = {{"end", unsigned(F::kEnd)},   {"add", unsigned(F::kAdd)},
+                         {"mul", unsigned(F::kMul)},   {"scale", unsigned(F::kScale)},
+                         {"relu", unsigned(F::kRelu)}, {"gelu", unsigned(F::kGelu)},
+                         {"silu", unsigned(F::kSilu)}};
   std::printf("  \"seeu\": {\n    \"magic\": %u, \"version\": %u, "
               "\"oldest_readable\": %u,\n    \"rodata_bit\": %d, "
               "\"source_bit\": %d, "
@@ -238,7 +235,10 @@ int main(int argc, char**) {
               up::kSeeuMetadataVersion, up::kLedgerMaxEntries,
               up::kExportReportPresent, up::kExportTokenizerParity,
               up::kExportLogitsParity, up::kLedgerExact, up::kLedgerReordered);
+}
 
+/// "sekp": the checkpoint.
+void PrintSekp() {
   std::printf("  \"sekp\": {\n    \"magic\": %u, \"version\": %u, "
               "\"oldest_readable\": %u,\n    \"flags\": {\"has_val_initial\": "
               "%u, \"has_accuracy\": %u, \"has_best_payload\": %u, "
@@ -267,10 +267,10 @@ int main(int argc, char**) {
          [] { CKPT_V5_FIELDS(X) }, true);
 #undef X
   std::printf("    }\n  },\n");
+}
 
-  std::printf("  \"probe_trace\": {\"magic\": %u, \"version\": %u},\n",
-              seeml::tool::kProbeTraceMagic, seeml::tool::kProbeTraceVersion);
-
+/// "recipe": every recipe field, from the compiler's own table.
+void PrintRecipe() {
   // The recipe schema (S4 #150): every field's name, flag, kind and bound,
   // printed from the table the compiler applies and the runner's rules are
   // written against — the published contract of a recipe file.
@@ -297,7 +297,11 @@ int main(int argc, char**) {
     std::printf("}");
   }
   std::printf("\n  ]},\n");
+}
 
+/// "screens": every statistics screen's rows and tables — and the
+/// manifest's closing brace, since the screens are its last section.
+void PrintScreens() {
   // The statistics screens (S0 #146): each screen's rows and detail tables
   // — key, kind, unit and flags — printed from the very tables the console,
   // the compile report and the device's run report render, so a report key
@@ -337,5 +341,22 @@ int main(int argc, char**) {
     std::printf("]}");
   }
   std::printf("\n  }\n}\n");
+}
+
+}  // namespace
+
+int main(int argc, char**) {
+  if (argc != 1) {
+    std::fprintf(stderr, "seeml-abi: takes no arguments\n");
+    return 2;
+  }
+  std::printf("{\n  \"schema\": 1,\n  \"generator\": \"tool/seeml_abi.cc\",\n");
+  PrintContainers();
+  PrintSeeu();
+  PrintSekp();
+  std::printf("  \"probe_trace\": {\"magic\": %u, \"version\": %u},\n",
+              seeml::tool::kProbeTraceMagic, seeml::tool::kProbeTraceVersion);
+  PrintRecipe();
+  PrintScreens();
   return std::ferror(stdout) ? 1 : 0;
 }
