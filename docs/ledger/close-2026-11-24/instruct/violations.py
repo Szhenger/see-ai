@@ -19,7 +19,8 @@ def starts(tokens, sep):
     out, start = [], 0
     for t, tok in enumerate(tokens):
         out.append(start)
-        if tok == sep: start = t + 1
+        if tok == sep:
+            start = t + 1
     return out
 tot = {"responses": 0, "plan": 0, "eos": 0}
 windows_multi = 0
@@ -32,10 +33,12 @@ for r in range(n):
     sp, se = starts(tokens, plan_sep), starts(tokens, eos)
     turns = []  # positions of <|im_start|>
     for p in range(S):
-        if tokens[p] == im_start: turns.append(p)
+        if tokens[p] == im_start:
+            turns.append(p)
         # mask[p] says the label of position p (token p + 1) is a target:
         # position p attends as part of the response turn.
-        if not mask[p]: continue
+        if not mask[p]:
+            continue
         prompt_first = turns[-2] if len(turns) >= 2 else 0
         tot["responses"] += 1
         tot["plan"] += sp[p] > prompt_first
