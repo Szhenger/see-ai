@@ -1,6 +1,7 @@
 #ifndef SEEML_RUNTIME_EXECUTOR_UPDATE_KERNELS_H_
 #define SEEML_RUNTIME_EXECUTOR_UPDATE_KERNELS_H_
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -223,6 +224,30 @@ void EmbedFwd(const int32_t* tokens, const float* table, float* out,
               size_t rows, size_t dim);
 
 // --- Losses ------------------------------------------------------------------
+// -log of the probability the row softmax wrote for class `c`, as every
+// loss of the family reads it. An f32 probability holds a row's loss only
+// down to its own underflow: below kPickedProbFloor the family used to
+// read the floor itself, so a confidently wrong row reported 27.63
+// (-log 1e-12) whatever its logits said, and the gate compared validation
+// losses with that ceiling on them (review 2026-11-25). There the loss is
+// now the log-sum-exp form over the row's own logits, in double — the same
+// quantity where the two meet, and exact below. At or above the floor the
+// expression, and so every bit, is what it was; a NaN probability still
+// propagates, so the engine's finite-loss guard trips (fmax would scrub
+// it). `logits` is the row softmax's input and `inv_T` its temperature.
+inline constexpr float kPickedProbFloor = 1e-12f;
+[[nodiscard]] inline double NegLogPicked(float p, const float* logits, size_t C,
+                                         size_t c, float inv_T) {
+  if (std::isnan(p) || p >= kPickedProbFloor)
+    return -std::log(static_cast<double>(p));
+  double max_v = static_cast<double>(logits[0] * inv_T);
+  for (size_t i = 1; i < C; ++i)
+    max_v = std::fmax(max_v, static_cast<double>(logits[i] * inv_T));
+  double sum = 0.0;
+  for (size_t i = 0; i < C; ++i)
+    sum += std::exp(static_cast<double>(logits[i] * inv_T) - max_v);
+  return std::log(sum) - (static_cast<double>(logits[c] * inv_T) - max_v);
+}
 // loss = -(1/N) sum_n log softmax(logits)_n[label_n]; probs cached for bwd.
 void SoftmaxXEntFwd(const float* logits, const int32_t* labels, float* loss,
                     float* probs, size_t N, size_t C);

@@ -27,7 +27,7 @@ void ReluFwd(const float* x, float* out, size_t n) {
 
 void ReluBwd(const float* dy, const float* x, float* dx, size_t n) {
   up::ParallelFor(n, kGrainCheap, [&](size_t b, size_t e, size_t) {
-    for (size_t i = b; i < e; ++i) dx[i] = x[i] > 0.0f ? dy[i] : 0.0f;
+    for (size_t i = b; i < e; ++i) dx[i] = x[i] <= 0.0f ? 0.0f : dy[i];
   });
 }
 

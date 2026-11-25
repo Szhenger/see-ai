@@ -35,6 +35,9 @@ struct EvalTail {
   uint64_t a = seeml::update::kNullRef;
   uint64_t b = seeml::update::kNullRef;
   uint64_t width = 0;
+  /// The cross-entropy's logits (its softmax's input), which a row whose
+  /// probability underflowed is scored from (kernels::NegLogPicked).
+  uint64_t logits = seeml::update::kNullRef;
 };
 
 /// A plan proven and decoded: its header and metadata, the four programs and

@@ -512,6 +512,30 @@ class InterpreterSelfCheck(unittest.TestCase):
                                            4 * dy, 4 * dx), (nc, word, 0))],
             rng.standard_normal(n), target, tol=5e-3)
 
+    def test_a_confidently_wrong_row_reports_its_own_loss(self):
+        # Review 2026-11-25: the loss family read -log(max(p, 1e-12)), so a
+        # row whose label's probability underflowed reported 27.63 whatever
+        # its logits said. Below the floor the loss is the log-softmax of
+        # the row's logits: rows of loss 100 and 50, a mean of 75.
+        sc = self.SCRATCH
+        labels = np.array([0, 0], "<i4").view("<f4")
+        out = self.run_ops(
+            sc + 64, [(11, 0, (0, 4 * sc, 4 * 16, 4 * (sc + 16)), (2, 2, 0))],
+            {0: [0.0, 100.0, 0.0, 50.0], sc: labels})
+        self.assertAlmostEqual(out[16], 75.0, places=4)
+        masked = np.array([0, -1, 0], "<i4").view("<f4")
+        out = self.run_ops(
+            sc + 64, [(51, 0, (0, 4 * sc, 4 * 16, 4 * (sc + 16)), (3, 2, 0))],
+            {0: [0.0, 100.0, 9.0, -9.0, 0.0, 50.0], sc: masked})
+        self.assertAlmostEqual(out[16], 75.0, places=4)
+        # KL: a teacher certain of the class the student has ruled out.
+        word = fx.f32_bits(1.0) << 32 | fx.f32_bits(1.0)
+        out = self.run_ops(
+            sc + 64, [(15, 0, (0, 4 * 8, 4 * 16, 4 * (sc + 16)),
+                       (4 * (sc + 32), 1 << 32 | 2, word))],
+            {0: [100.0, 0.0], 8: [0.0, 100.0]})
+        self.assertAlmostEqual(out[16], 100.0, places=3)
+
     def test_adamw_matches_the_textbook_recurrence(self):
         g = [0.5, -2.0, 0.0, 1e-9]
         out = self.run_ops(16, [(18, 0, (0, 16, 32, 48), (4, 0, 0))],

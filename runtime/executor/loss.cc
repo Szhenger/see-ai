@@ -40,15 +40,12 @@ void SoftmaxXEntFwd(const float* logits, const int32_t* labels, float* loss,
     double total = 0.0;
     for (size_t n = r0; n < r1; ++n) {
       RowSoftmax(logits + n * C, probs + n * C, C, 1.0f);
-      const float p = probs[n * C + static_cast<size_t>(labels[n])];
-      // fmax would silently scrub a NaN probability (fmax(NaN, x) == x) and
-      // report a large-but-finite loss while the gradients poison the
-      // parameters. Propagate NaN so the engine's finite-loss guard trips;
-      // the clamp only rescues genuine underflow.
-      const double safe = std::isnan(p)
-                              ? static_cast<double>(p)
-                              : static_cast<double>(std::fmax(p, 1e-12f));
-      total -= std::log(safe);
+      const size_t label = static_cast<size_t>(labels[n]);
+      // A NaN probability propagates (the engine's finite-loss guard must
+      // trip while the gradients poison the parameters), and an underflowed
+      // one is read from the row's logits: NegLogPicked.
+      total +=
+          NegLogPicked(probs[n * C + label], logits + n * C, C, label, 1.0f);
     }
     partials[chunk] = total;
   });
@@ -85,11 +82,9 @@ void SoftmaxXEntMaskedFwd(const float* logits, const int32_t* labels,
       // expression and NaN rule.
       RowSoftmax(logits + n * C, probs + n * C, C, 1.0f);
       if (labels[n] < 0) continue;
-      const float p = probs[n * C + static_cast<size_t>(labels[n])];
-      const double safe = std::isnan(p)
-                              ? static_cast<double>(p)
-                              : static_cast<double>(std::fmax(p, 1e-12f));
-      total -= std::log(safe);
+      const size_t label = static_cast<size_t>(labels[n]);
+      total +=
+          NegLogPicked(probs[n * C + label], logits + n * C, C, label, 1.0f);
       ++t;
     }
     partials[chunk] = total;
@@ -164,18 +159,13 @@ void KLDistillFwd(const float* s_logits, const float* t_logits, float* loss,
       for (size_t c = 0; c < C; ++c) {
         const float pt = p_t[n * C + c];
         if (pt <= 0.0f) continue;
-        // Same NaN discipline as SoftmaxXEntFwd: fmax(NaN, x) == x would
-        // scrub a NaN student probability into a large-but-finite loss
-        // while the backward pass poisons the parameters — the engine's
-        // finite-loss guard must trip instead. The clamp only rescues
-        // genuine underflow. (A NaN teacher probability already propagates:
-        // `pt <= 0.0f` is false for NaN, and log(NaN) is NaN.)
-        const float ps_raw = p_s[n * C + c];
-        const double ps = std::isnan(ps_raw)
-                              ? static_cast<double>(ps_raw)
-                              : static_cast<double>(std::fmax(ps_raw, 1e-12f));
+        // SoftmaxXEntFwd's discipline for the student's log-probability:
+        // a NaN propagates, an underflowed one is read from the student's
+        // logits at the temperature. (A NaN teacher probability already
+        // propagates: `pt <= 0.0f` is false for NaN, and log(NaN) is NaN.)
         total += static_cast<double>(pt) *
-                 (std::log(static_cast<double>(pt)) - std::log(ps));
+                 (std::log(static_cast<double>(pt)) +
+                  NegLogPicked(p_s[n * C + c], s_logits + n * C, C, c, inv_T));
       }
     }
     partials[chunk] = total;

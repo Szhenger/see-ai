@@ -126,7 +126,11 @@ inline float SigmoidExpr(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 inline constexpr float kGeluC = 0.7978845608028654f;  // √(2/π)
 inline constexpr float kGeluA = 0.044715f;
 
-inline float ReluExpr(float x) { return x > 0.0f ? x : 0.0f; }
+// `x <= 0 ? 0 : x`, not `x > 0 ? x : 0`: the same bits for every number
+// (-0 included: +0), and a NaN — which fails either comparison — stays a
+// NaN instead of becoming a dead zero the finite-loss guard never sees
+// (review 2026-11-25). ReluBwd keys on the same comparison.
+inline float ReluExpr(float x) { return x <= 0.0f ? 0.0f : x; }
 
 inline float GeluExpr(float x) {
   const float t = std::tanh(kGeluC * (x + kGeluA * x * x * x));

@@ -259,6 +259,32 @@ TEST(Elementwise, AddBiasBroadcastsOverRows) {
   EXPECT_NEAR(out[5], 36.0f, 1e-6);
 }
 
+TEST(Elementwise, ReluKeepsEveryNumbersBitsAndLetsANaNThrough) {
+  // Review 2026-11-25: `x > 0 ? x : 0` turned a NaN into a zero — a dead
+  // unit the finite-loss guard never saw — against the loss family's own
+  // rule that a NaN must surface. `x <= 0 ? 0 : x` is the same function
+  // of every number, -0 and the infinities included.
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const std::vector<float> x = {-inf,   -2.0f, -1e-45f, -0.0f, 0.0f,
+                                1e-45f, 0.5f,  inf,     nan};
+  const std::vector<float> want = {0.0f,   0.0f, 0.0f, 0.0f, 0.0f,
+                                   1e-45f, 0.5f, inf,  nan};
+  std::vector<float> out(x.size()), dx(x.size());
+  k::ReluFwd(x.data(), out.data(), x.size());
+  for (size_t i = 0; i + 1 < x.size(); ++i)
+    EXPECT_EQ(std::bit_cast<uint32_t>(out[i]),
+              std::bit_cast<uint32_t>(want[i]));
+  EXPECT_TRUE(std::isnan(out.back()));
+  // The backward keys on the same comparison: a unit whose input is a NaN
+  // passes its adjoint on instead of zeroing it.
+  const std::vector<float> dy(x.size(), 3.0f);
+  k::ReluBwd(dy.data(), x.data(), dx.data(), x.size());
+  for (size_t i = 0; i < x.size(); ++i)
+    EXPECT_EQ(dx[i], x[i] <= 0.0f ? 0.0f : 3.0f);
+  EXPECT_EQ(dx.back(), 3.0f);
+}
+
 TEST(Elementwise, ReluFwdClampsNegatives) {
   const std::vector<float> x = {-2, -0.5f, 0, 0.5f, 2};
   std::vector<float> out(5);
@@ -1060,6 +1086,57 @@ TEST(Loss, SingleClassSoftmaxIsExactlyCertain) {
   k::SoftmaxXEntFwd(logits.data(), labels.data(), &loss, probs.data(), N, 1);
   EXPECT_EQ(loss, 0.0f);
   for (float p : probs) EXPECT_EQ(p, 1.0f);
+}
+
+TEST(Loss, AConfidentlyWrongRowReportsItsOwnLoss) {
+  // Review 2026-11-25: the family read -log(max(p, 1e-12)) from the f32
+  // probability, so every row whose label's probability had underflowed
+  // reported 27.63 whatever its logits said — the two rows below, whose
+  // losses are 100 and 50, a mean of 27.63. Below the floor the loss is
+  // now the log-sum-exp of the row's logits; at and above it, the bits it
+  // always was.
+  const size_t C = 2;
+  const std::vector<float> logits = {0.0f, 100.0f, 0.0f, 50.0f};
+  const std::vector<int32_t> labels = {0, 0};
+  std::vector<float> probs(2 * C);
+  float loss = 0.0f;
+  k::SoftmaxXEntFwd(logits.data(), labels.data(), &loss, probs.data(), 2, C);
+  EXPECT_NEAR(loss, 75.0, 1e-5);
+  // The masked pair, with an ignored row between them.
+  const std::vector<float> three = {0.0f, 100.0f, 9.0f, -9.0f, 0.0f, 50.0f};
+  const std::vector<int32_t> masked = {0, -1, 0};
+  std::vector<float> p3(3 * C);
+  k::SoftmaxXEntMaskedFwd(three.data(), masked.data(), &loss, p3.data(), 3, C);
+  EXPECT_NEAR(loss, 75.0, 1e-5);
+  // The probabilities are untouched by the rule: the cached row is what
+  // the backward reads, and it is the row softmax's own: e^-100, a
+  // subnormal no f32 log could have told from e^-50.
+  EXPECT_GT(probs[0], 0.0f);
+  EXPECT_LT(probs[0], 1e-40f);
+  EXPECT_EQ(probs[1], 1.0f);
+  // Continuous across the floor: a gap of 27 is above it (p = 1.9e-12),
+  // 28 below (p = 6.9e-13, which the floor read as 27.63).
+  for (float gap : {27.0f, 28.0f, 40.0f}) {
+    const std::vector<float> row = {0.0f, gap};
+    const std::vector<int32_t> zero = {0};
+    std::vector<float> p(C);
+    k::SoftmaxXEntFwd(row.data(), zero.data(), &loss, p.data(), 1, C);
+    EXPECT_NEAR(loss, static_cast<double>(gap), 1e-4);
+  }
+  // KL against a teacher certain of the class the student has ruled out:
+  // sum p_t (log p_t - log p_s) = 1 * (0 + 100).
+  const std::vector<float> student = {100.0f, 0.0f}, teacher = {0.0f, 100.0f};
+  std::vector<float> ps(C), pt(C);
+  k::KLDistillFwd(student.data(), teacher.data(), &loss, ps.data(), pt.data(),
+                  1, C, 1.0f, 1.0f);
+  EXPECT_NEAR(loss, 100.0, 1e-4);
+  // An infinite logit is still a non-finite loss, never a finite floor.
+  const std::vector<float> gone = {-std::numeric_limits<float>::infinity(),
+                                   0.0f};
+  const std::vector<int32_t> zero = {0};
+  std::vector<float> p(C);
+  k::SoftmaxXEntFwd(gone.data(), zero.data(), &loss, p.data(), 1, C);
+  EXPECT_TRUE(std::isinf(loss));
 }
 
 TEST(Loss, NanLogitPropagatesToTheLossSlot) {

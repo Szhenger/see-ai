@@ -149,9 +149,13 @@ void ScanEvalTail(const std::vector<up::UpdateInstruction>& eval,
   // partial batch can then be excluded from the reported loss exactly, as
   // they already are from accuracy. A composite loss (xent + KL, pure KL)
   // is not row-separable from what the program keeps; it is weighted.
+  // The tail's logits are the softmax's input as the program leaves it:
+  // named only when that softmax is the program's last instruction, so no
+  // later write can have reused the range.
   EvalTail eval_tail;
   for (const up::UpdateInstruction& ins : eval) {
     const auto op = static_cast<up::OpCode>(ins.opcode);
+    const bool last = &ins == &eval.back();
     if (op == up::OpCode::kSoftmaxXEntFwd ||
         op == up::OpCode::kSoftmaxXEntMaskedFwd) {
       eval_probs_ref = ins.in[3];
@@ -160,11 +164,12 @@ void ScanEvalTail(const std::vector<up::UpdateInstruction>& eval,
       if (ins.in[2] == header.loss_ref && ins.out[0] == header.batch)
         eval_tail = {op == up::OpCode::kSoftmaxXEntFwd ? EvalTail::kXent
                                                        : EvalTail::kXentMasked,
-                     ins.in[3], ins.in[1], ins.out[1]};
+                     ins.in[3], ins.in[1], ins.out[1],
+                     last ? ins.in[0] : up::kNullRef};
     } else if (op == up::OpCode::kMseFwd && ins.in[2] == header.loss_ref &&
                header.batch > 0 && ins.out[0] % header.batch == 0) {
       eval_tail = {EvalTail::kMse, ins.in[0], ins.in[1],
-                   ins.out[0] / header.batch};
+                   ins.out[0] / header.batch, up::kNullRef};
     }
   }
   out.eval_probs_ref = eval_probs_ref;
