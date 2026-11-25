@@ -15,6 +15,7 @@
 #endif
 
 #include "compiler/diagnostics/tokenizing/error.h"
+#include "source/platform/durable.h"
 #include "source/identity/hash.h"
 
 namespace seeml::update {
@@ -185,11 +186,8 @@ std::expected<void, std::string> SaveSmf(const std::string& path,
   const bool written =
       std::fwrite(w.buf.data(), 1, w.buf.size(), f) == w.buf.size() &&
       std::fflush(f) == 0;
-#ifndef _WIN32
-  const bool synced = written && ::fsync(::fileno(f)) == 0;
-#else
-  const bool synced = written && ::_commit(::_fileno(f)) == 0;
-#endif
+  // The platform seam's sync: F_FULLFSYNC on Darwin, fsync elsewhere.
+  const bool synced = written && platform::SyncStream(f);
   const bool closed = std::fclose(f) == 0;
   if (!synced || !closed) return fail("short write to");
   if (std::rename(tmp.c_str(), path.c_str()) != 0)
