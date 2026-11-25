@@ -87,6 +87,19 @@ class RecipeCliTest(unittest.TestCase):
         self.assertNotEqual(self.report("override")["recipe_hash"],
                             ra["recipe_hash"])
         self.assertNotEqual(self.plan(out_c), self.plan(out_a))
+        # Review 2026-11-25: a pass switch changes the program, and the
+        # recipe hash did not move with it — two plans, one recipe. Each
+        # switch that is off is part of the identity; none of them at its
+        # default changes what the hash was (ra == rb above).
+        seen = {ra["recipe_hash"]}
+        for switch in ("--no-fuse-epilogue", "--no-fuse-addend",
+                       "--no-fuse-elementwise", "--no-fuse-clip",
+                       "--no-rope-table"):
+            name = "switch" + switch.replace("-", "_")
+            d, _ = self.compile(name, "--recipe", path, switch)
+            self.assertEqual(d.returncode, 0, d.stderr[-1500:])
+            self.assertNotIn(self.report(name)["recipe_hash"], seen, switch)
+            seen.add(self.report(name)["recipe_hash"])
 
     def test_a_written_negative_zero_is_the_plans_one_zero(self):
         # "-0" passes a bound closed at 0; stored as -0.0f it was other
