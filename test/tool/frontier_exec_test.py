@@ -246,6 +246,14 @@ class ReaderTest(unittest.TestCase):
         with self.assertRaisesRegex(fx.PlanError, "pre-v8"):
             plan(kl(bits(4.0) << 32 | bits(2.0)), version=7)
 
+        def acc(alpha):
+            return (4, 0, (0, 16, 32, alpha), (2, 2, 2))
+        for alpha in (bits(2.0), bits(-0.5), bits(0.0)):
+            plan(acc(alpha))
+        for alpha in (bits(nan), bits(float("inf")), bits(2.0) | 1 << 32):
+            with self.assertRaisesRegex(fx.PlanError, "accumulating GEMM"):
+                plan(acc(alpha))
+
         def q8(scale, flags=0):
             return (29, flags, (0, fx.RODATA_BIT, 16, scale), (1, 2, 2))
         plan(q8(bits(0.5)), rodata=bytes(16))

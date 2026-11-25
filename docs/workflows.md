@@ -205,6 +205,8 @@ paravirtual GPU does not have. An image that lost its Metal device
 altogether would otherwise turn the whole Metal suite into counted skips
 under a green check (review 2026-11-25).
 
+The bench gate has the same rule since the same review: a fixture the baseline measured and tonight's bench did not is a failure, never a skip, and the smaller report is never promoted over the baseline. A fixture removed on purpose is said so — `reseed_baseline` on a manual run for the rolling baseline, a re-pinned file under `docs/ledger/bench-epochs/` for an epoch.
+
 Three more steps close holes of the same kind — code that was built or
 run nowhere a tool could see it:
 

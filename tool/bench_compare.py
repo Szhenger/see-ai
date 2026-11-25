@@ -572,8 +572,10 @@ def gate(args):
                       "not in the current report (--allow-removed)")
             else:
                 line = (f"{name}: in the {short}, not in the current "
-                        "report — the bench did not measure it (pass "
-                        "--allow-removed if the fixture was removed)")
+                        "report — the bench did not measure it (if the "
+                        "fixture was removed on purpose: --allow-removed "
+                        "by hand, a reseed for the rolling baseline, a "
+                        "re-pinned file for a committed epoch)")
                 print(f"bench_compare: FAIL {line}")
                 f = f + [line]
         fatal.extend(f)
