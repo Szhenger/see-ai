@@ -319,6 +319,23 @@ void AppendCompileFlags(std::string& s, bool relaxed_plan) {
   s += "# batch feeder; SEEML_THREADS=1 at run time restores fully serial\n";
   s += "# execution (with bit-identical results — chunking is fixed).\n";
   s += "FLAGS=\"-std=c++23 -O2 -Wall -Wextra -pthread -I. $TILE_FLAGS\"\n";
+  // What the package is built FOR is asked of the compiler, never of the
+  // machine running this script (review 2026-11-25): `uname` answered for
+  // the build host, so a Linux host cross-compiling for Apple got no Metal
+  // and no Accelerate, and a Mac cross-compiling for Linux got both. $CXX
+  // is expanded unquoted here as on every compile line — it may carry
+  // arguments ("xcrun clang++", "ccache c++"); the Metal probe quoted it,
+  // found no such program, and silently took the stub.
+  s += "# The target is the compiler's, not this host's: its own macros say\n";
+  s += "# whether it builds for Apple and whether it is clang.\n";
+  s +=
+      "CXX_MACROS=$($CXX $FLAGS -dM -E -x c++ /dev/null 2>/dev/null || true)\n";
+  s += "TARGET_APPLE=0\n";
+  s += "TARGET_CLANG=0\n";
+  s +=
+      "case \"$CXX_MACROS\" in *\"#define __APPLE__ \"*) TARGET_APPLE=1 ;; esac\n";
+  s +=
+      "case \"$CXX_MACROS\" in *\"#define __clang__ \"*) TARGET_CLANG=1 ;; esac\n";
   // Relaxed plans (v18): the CPU backend may run the frozen-weight f32
   // GEMMs on Accelerate — the AMX / SME matrix units — on Apple hosts. An
   // exact plan's script never mentions the framework, so the zero-
@@ -335,7 +352,7 @@ void AppendCompileFlags(std::string& s, bool relaxed_plan) {
     s += "# SME matrix units; an int8 weight is widened panel by panel).\n";
     s += "# SEEML_NO_ACCELERATE=1 keeps every kernel portable.\n";
     s +=
-        "if [ \"$(uname -s)\" = \"Darwin\" ] && [ -z \"${SEEML_NO_ACCELERATE:-}\" ]; then\n";
+        "if [ \"$TARGET_APPLE\" = 1 ] && [ -z \"${SEEML_NO_ACCELERATE:-}\" ]; then\n";
     s += "  ACCEL_FLAGS=\"-DSEEML_ACCELERATE\"\n";
     s += "  ACCEL_LDFLAGS=\"-framework Accelerate\"\n";
     s += "fi\n";
@@ -423,9 +440,8 @@ void AppendPlatformUnits(std::string& s) {
   s += "    *) return 0 ;;\n";
   s += "  esac\n";
   s += "}\n";
-  s +=
-      "if [ \"$(uname -s)\" = \"Darwin\" ] && ! seeml_on \"${SEEML_NO_METAL:-}\" "
-      "&& \"$CXX\" --version 2>/dev/null | grep -qi clang; then\n";
+  s += "if [ \"$TARGET_APPLE\" = 1 ] && [ \"$TARGET_CLANG\" = 1 ] && "
+       "! seeml_on \"${SEEML_NO_METAL:-}\"; then\n";
   s += "  $CXX $FLAGS -x objective-c++ -fobjc-arc -c "
        "runtime/executor/metal_backend.mm -o metal_backend.o\n";
   s += "  METAL_OBJ=metal_backend.o\n";
@@ -441,15 +457,9 @@ void AppendPlatformUnits(std::string& s) {
   // of the build host: a Linux host cross-compiling for Apple needs the
   // framework, and a Mac cross-compiling for Linux must not pass it.
   s += "ENERGY_LDFLAGS=\"\"\n";
-  s +=
-      "CXX_MACROS=$($CXX $FLAGS -dM -E -x c++ /dev/null 2>/dev/null || true)\n";
-  s += "case \"$CXX_MACROS\" in\n";
-  s += "  *\"#define __APPLE__ \"*)\n";
-  s += "    case \"$CXX_MACROS\" in\n";
-  s += "      *\"#define __clang__ \"*) "
-       "ENERGY_LDFLAGS=\"-framework CoreFoundation\" ;;\n";
-  s += "    esac ;;\n";
-  s += "esac\n";
+  s += "if [ \"$TARGET_APPLE\" = 1 ] && [ \"$TARGET_CLANG\" = 1 ]; then\n";
+  s += "  ENERGY_LDFLAGS=\"-framework CoreFoundation\"\n";
+  s += "fi\n";
 }
 
 /// The link, and the clean-up after it.
@@ -493,6 +503,27 @@ std::expected<EmitPaths, std::string> EmitNativePackage(
     const std::vector<uint8_t>& plan, const std::string& out_dir,
     const std::string& repo_root, const EmitOptions& options) {
   std::error_code ec;
+  // Every source the package vendors is there before the first byte is
+  // written (review 2026-11-25): given a tree without them the emitter
+  // used to write the plan and its embedded TU, then fail on the runner —
+  // and into an existing package that left a new plan beside the old
+  // runtime and build.sh, a directory that still built.
+  {
+    std::vector<const char*> needed(std::begin(kVendoredSources),
+                                    std::end(kVendoredSources));
+    needed.push_back(kMainSource);
+    for (const char* rel : needed) {
+      const auto src = std::filesystem::path(repo_root) / rel;
+      if (!std::filesystem::is_regular_file(src, ec))
+        return generating::Error(
+            generating::kNativeEmitter,
+            "cannot vendor the runtime: '" + src.string() +
+                "' is not there ('" + repo_root +
+                "' is not a checkout of this compiler's sources); nothing "
+                "was written to '" +
+                out_dir + "'");
+    }
+  }
   std::filesystem::create_directories(out_dir, ec);
   if (ec)
     return generating::FileError(generating::kNativeEmitter, "cannot create",

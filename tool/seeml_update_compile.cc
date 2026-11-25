@@ -107,6 +107,12 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
+
 #include "compiler/backend/architecture/host_arch.h"
 #include "compiler/backend/packaging/native_emitter.h"
 #include "compiler/backend/architecture/kernel_policy_table.h"
@@ -284,6 +290,14 @@ class Args {
     return missing_value_;
   }
 
+  /// Whether `arg` also stands in a slot a Take* call consumed: the
+  /// leftover is then a flag given twice, not an unknown one.
+  [[nodiscard]] bool TakenElsewhere(const std::string& arg) const {
+    for (int i = 1; i < argc_; ++i)
+      if (taken_[i] && arg == argv_[i] && arg.starts_with("--")) return true;
+    return false;
+  }
+
   /// Any argv slot not consumed by a Take* call is an error.
   [[nodiscard]] std::optional<std::string> FirstUnknown() const {
     for (int i = 1; i < argc_; ++i)
@@ -390,6 +404,14 @@ struct CompileArgs {
   }
   policy_request.table_path = args.TakeValue("--kernel-policy");
   policy_request.target_host = args.TakeValue("--target-host");
+  // A host key names an entry of a table: without the table the two flags
+  // contradict, which is the command line's fault (exit 2), not a failed
+  // lookup (it reached the policy resolver and exited 1).
+  if (policy_request.target_host && !policy_request.table_path &&
+      !args.MissingValue())
+    return Usage(
+        "--target-host names a table entry; pass the table with "
+        "--kernel-policy");
   if (policy_request.target_host)
     config.target_host = *policy_request.target_host;
   return std::nullopt;
@@ -428,7 +450,9 @@ struct CompileArgs {
   if (const auto& m = args.MissingValue())
     return Usage(*m + " requires a value");
   if (auto unknown = args.FirstUnknown())
-    return Usage("unknown argument '" + *unknown + "' (see --help)");
+    return Usage(args.TakenElsewhere(*unknown)
+                     ? "'" + *unknown + "' is given more than once"
+                     : "unknown argument '" + *unknown + "' (see --help)");
   // Without an embedded TU, build.sh would build the disk mode (#158)
   // regardless of the plan's size; the packer owns that choice (embed
   // below its limit, disk from it) and drives the build itself. Refuse
@@ -471,6 +495,12 @@ struct CompileArgs {
     return std::unexpected(0);
   }
 
+  // --version in a value flag's slot asked for nothing, as --help there
+  // does not: `--out --version` left --out without a value.
+  for (int i = 2; i < argc; ++i)
+    if (std::strcmp(argv[i], "--version") == 0 && TakesValue(argv[i - 1]))
+      return std::unexpected(
+          Usage(std::string(argv[i - 1]) + " requires a value"));
   if (args.Take("--version")) {
     std::printf("seeml-update-compile %s\n", kSeemlVersion);
     return std::unexpected(0);
@@ -631,6 +661,47 @@ void PrintScreens(const CompiledUpdate* compiled, bool verbose) {
                  relaxed);
 }
 
+/// Where this executable is, as the OS knows it — not as argv[0] spells it.
+/// Run through PATH, argv[0] is a bare name and its parent directory is
+/// the empty string; through a symlink, it is the link's directory. Either
+/// way the vendored runtime was then looked for in the current directory,
+/// and the emission failed with a plan already written (review
+/// 2026-11-25). Empty when the platform has no answer.
+std::filesystem::path ExecutablePath(const char* argv0) {
+  std::error_code ec;
+#if defined(__APPLE__)
+  char buf[4096];
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) == 0) {
+    auto real = std::filesystem::canonical(buf, ec);
+    if (!ec) return real;
+  }
+#elif defined(__linux__)
+  char buf[4096];
+  const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n > 0) {
+    buf[n] = '\0';
+    auto real = std::filesystem::canonical(buf, ec);
+    if (!ec) return real;
+  }
+#endif
+  auto real = std::filesystem::canonical(argv0, ec);
+  return ec ? std::filesystem::path() : real;
+}
+
+/// The tree the runtime is vendored from: the checkout this binary was
+/// built in (<root>/build/seeml-update-compile), else the current
+/// directory when it is one. The emitter names the tree it was given if a
+/// source is missing from it.
+std::string VendorRoot(const char* argv0) {
+  const std::filesystem::path root =
+      ExecutablePath(argv0).parent_path().parent_path();
+  std::error_code ec;
+  if (!root.empty() && std::filesystem::exists(root / "source", ec))
+    return root.string();
+  return ".";
+}
+
 /// Emit: the package beside the plan, vendored from this binary's tree.
 [[nodiscard]] std::expected<EmitPaths, int> EmitPackage(
     const CompileArgs& args, const CompiledUpdate* compiled,
@@ -638,8 +709,7 @@ void PrintScreens(const CompiledUpdate* compiled, bool verbose) {
   const std::string* out_dir = &args.out_dir;
   const bool no_embed = args.no_embed;
   const UpdateConfig& config = args.config;
-  const std::string repo_root =
-      std::filesystem::path(argv0).parent_path().parent_path().string();
+  const std::string repo_root = VendorRoot(argv0);
   EmitOptions emit_options;
   // Any kFlagRelaxed instruction (v18 GEMMs, v20 tiled attention) makes
   // the package one that builds only beside a certificate.
@@ -648,12 +718,8 @@ void PrintScreens(const CompiledUpdate* compiled, bool verbose) {
   emit_options.embed_plan_tu = !no_embed;
   emit_options.peak_gflops = config.peak_gflops;
   emit_options.gpu_peak_gflops = config.gpu_peak_gflops;
-  auto paths = EmitNativePackage(
-      compiled->plan, *out_dir,
-      repo_root.empty() || !std::filesystem::exists(repo_root + "/source")
-          ? "."
-          : repo_root,
-      emit_options);
+  auto paths =
+      EmitNativePackage(compiled->plan, *out_dir, repo_root, emit_options);
   if (!paths) return std::unexpected(Fail(paths.error()));
 
   std::fprintf(stderr, "seeml-update-compile: emitted %s\n",

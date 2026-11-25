@@ -40,6 +40,35 @@ std::string ReadText(const std::string& path) {
                      std::istreambuf_iterator<char>());
 }
 
+TEST(NativeEmitter, ATreeWithoutTheRuntimeWritesNothing) {
+  // Review 2026-11-25: run through PATH from another directory, the
+  // compiler looked for the runtime in the current directory, wrote the
+  // plan and its embedded TU, and then failed on the runner — into an
+  // existing package, a new plan beside the old runtime. The sources are
+  // checked first, and the refusal names the tree.
+  ScopedTempDir dir;
+  SmfModel model = MakeMlp(6, 10, 3, 1);
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate compiled,
+                       UpdateCompiler(BaseConfig(4)).Compile(model));
+  const std::string elsewhere = (dir.path() / "not-a-checkout").string();
+  std::filesystem::create_directories(elsewhere);
+  const std::string fresh = (dir.path() / "fresh").string();
+  EXPECT_ERROR_CONTAINS(EmitNativePackage(compiled.plan, fresh, elsewhere),
+                        "nothing was written");
+  EXPECT_FALSE(std::filesystem::exists(fresh));
+  // An existing package is left byte for byte as it was.
+  const std::string out_dir = (dir.path() / "pkg").string();
+  ASSERT_OK(EmitNativePackage(compiled.plan, out_dir, RepoRoot()));
+  const std::string before = ReadText(out_dir + "/update_plan.seeu");
+  UpdateConfig other = BaseConfig(4);
+  other.lora.rank = 2;
+  ASSERT_OK_AND_ASSIGN(CompiledUpdate recompiled,
+                       UpdateCompiler(other).Compile(model));
+  EXPECT_ERROR_CONTAINS(EmitNativePackage(recompiled.plan, out_dir, elsewhere),
+                        "is not a checkout");
+  EXPECT_EQ(ReadText(out_dir + "/update_plan.seeu"), before);
+}
+
 TEST(NativeEmitter, EmitsCompletePackage) {
   ScopedTempDir dir;
   SmfModel model = MakeMlp(6, 10, 3, 1);
@@ -130,6 +159,14 @@ TEST(NativeEmitter, EmitsCompletePackage) {
   }
   const std::string script = ReadText(paths.build_script);
   EXPECT_STR_CONTAINS(script, "dispatcher/update_engine");
+  // Review 2026-11-25: what the package is built for is the compiler's
+  // answer (its macros), never the build host's — `uname` gave a Linux
+  // host cross-compiling for Apple no Metal — and $CXX is never quoted
+  // into one word ("xcrun clang++" silently took the Metal stub).
+  EXPECT_STR_CONTAINS(script, "CXX_MACROS=$($CXX $FLAGS -dM -E");
+  EXPECT_STR_CONTAINS(script, "TARGET_APPLE");
+  EXPECT_TRUE(script.find("uname") == std::string::npos);
+  EXPECT_TRUE(script.find("\"$CXX\" --version") == std::string::npos);
   // The vendored runtime is threaded: the script must compile the parallel
   // substrate and link with -pthread.
   EXPECT_STR_CONTAINS(script, "source/parallel/parallel_for.cc");
