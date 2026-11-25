@@ -5,7 +5,8 @@ Usage:
     python3 bench_compare.py baseline.json current.json
         [--max-regression F] [--epoch-baseline epoch.json]
         [--max-epoch-regression F] [--state gate_state.json] [--promote]
-        [--sha COMMIT] [--across-hosts] [--seed-epoch]
+        [--sha COMMIT] [--across-hosts] [--across-releases] [--seed-epoch]
+        [--allow-removed]
     python3 bench_compare.py --host-slug current.json
     python3 bench_compare.py --cache-key current.json
 
@@ -17,11 +18,17 @@ tokens_per_s / samples_per_s; the gate keeps the schema-1 key so a baseline
 stored before the rename still compares)
 (default 0.10, the >10% gate of docs/benchmarks.md). A missing baseline
 file exits 0 with a note: the first run of a new host seeds the baseline
-rather than failing it. Fixtures or thread widths present on only one side
-are reported and skipped — adding a fixture must not fail the night it
-lands — but a comparison with NO overlapping keys is an error (exit 1),
-not a pass: after a key rename the gate would otherwise be blind forever
-while printing "no regression".
+rather than failing it. A fixture or thread width only the current report
+holds is reported and skipped — adding a fixture must not fail the night
+it lands. One a baseline holds and the current report does not fails the
+gate at once (exit 1) and is never promoted over: the bench did not measure
+it, the largest regression there is. --allow-removed says a fixture was
+removed on purpose; the nightly never passes it, and says so by re-seeding
+(a BENCH_GENERATION bump for every host's rolling baseline — a reseed
+dispatch reaches only the host it lands on) and by re-pinning the committed
+epoch. A comparison with NO overlapping keys is an error (exit 1), not a
+pass: after a key rename the gate would otherwise be blind forever while
+printing "no regression".
 
 The rolling baseline (last green night) catches step changes; a slow
 compounding drift of <10%/night would never trip it. --epoch-baseline names
@@ -98,9 +105,10 @@ commits: cleared at the same commit is the runner's variance on record,
 cleared at a later one is a fix. The workflow saves the state after every
 gate, failed ones included, so "the previous run" is the previous night.
 A red key the current report does not measure (a fixture dropped, a
-thread width removed) is not cleared: it stays red in the state, fails
-the night it is measured red again, and while it is carried the baseline
-is not rolled forward (the report would drop the key's only reference).
+thread width removed — a failure of its own without --allow-removed) is
+not cleared: it stays red in the state, fails the night it is measured
+red again, and while it is carried the baseline is not rolled forward
+(the report would drop the key's only reference).
 
 Schema-3 reports name the kernel policy they ran under (the CPU GEMM
 tiles the compiler wrote into every plan); two reports with different
@@ -565,15 +573,21 @@ def gate(args):
         # A key the reference holds and tonight's report does not. Fatal at
         # once, state or no state — nothing about it is a runner's noise —
         # and so never promoted over. A fixture removed on purpose is said
-        # so: --allow-removed.
+        # so: --allow-removed by hand; in the nightly, where every CPU
+        # model keeps its own rolling baseline, a BENCH_GENERATION bump (a
+        # reseed dispatch reaches one host) and a re-pinned epoch.
         for name in missing:
             if args.allow_removed:
                 print(f"bench_compare: NOTE {name} is in the {short} and "
                       "not in the current report (--allow-removed)")
             else:
                 line = (f"{name}: in the {short}, not in the current "
-                        "report — the bench did not measure it (pass "
-                        "--allow-removed if the fixture was removed)")
+                        "report — the bench did not measure it (if the "
+                        "fixture was removed on purpose: --allow-removed "
+                        "by hand; in the nightly, a BENCH_GENERATION bump "
+                        "re-seeds every host's rolling baseline — a reseed "
+                        "dispatch only the host it lands on — and a "
+                        "committed epoch is re-pinned)")
                 print(f"bench_compare: FAIL {line}")
                 f = f + [line]
         fatal.extend(f)
