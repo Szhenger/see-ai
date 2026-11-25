@@ -108,6 +108,37 @@ TEST(PlanValidator, AccumulateIsVersionGatedAndInPlace) {
   EXPECT_ERROR(ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion));
 }
 
+TEST(PlanValidator, TheAccumulatingGemmsAlphaIsAFiniteFloat) {
+  // Review 2026-11-25: C += alpha * A @ B carries alpha in in[3]'s low
+  // word, and it was the one float an instruction carries that no rule
+  // proved finite — a NaN there made every merged delta NaN.
+  const auto f32 = [](float f) { return uint64_t{std::bit_cast<uint32_t>(f)}; };
+  up::UpdateInstruction acc{};
+  acc.opcode = static_cast<uint16_t>(up::OpCode::kGemmAccNN);
+  acc.in[0] = up::MakeArenaRef(0);    // A: 2 x 2
+  acc.in[1] = up::MakeArenaRef(64);   // B: 2 x 2
+  acc.in[2] = up::MakeArenaRef(128);  // C: 2 x 2
+  acc.out[0] = 2;
+  acc.out[1] = 2;
+  acc.out[2] = 2;
+  for (float ok : {2.0f, -0.5f, 0.0f}) {
+    acc.in[3] = f32(ok);
+    EXPECT_OK(ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion));
+  }
+  for (float bad : {std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::infinity(),
+                    -std::numeric_limits<float>::infinity()}) {
+    acc.in[3] = f32(bad);
+    EXPECT_ERROR_CONTAINS(
+        ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion),
+        "alpha must be a finite float");
+  }
+  acc.in[3] = (uint64_t{1} << 32) | f32(2.0f);  // a high word nobody wrote
+  EXPECT_ERROR_CONTAINS(
+      ValidateInstruction(acc, kArena, kRodata, up::kSeeuVersion),
+      "alpha must be a finite float");
+}
+
 TEST(PlanValidator, KlLossScaleIsVersionGated) {
   // N=2, C=3 -> 6 floats per logit/prob tensor, disjoint arena slots; the
   // loss is one float. T = 2 in the low word; the v8 scale in the high word.

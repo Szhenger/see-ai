@@ -464,6 +464,17 @@ std::expected<void, std::string> InstructionProof::Gemm() {
     if (!up::IsRodataRef(ins.in[3]) || !RefOk(ins.in[3], nt ? d2 : d1, false))
       return Fail();
   }
+  // The accumulating GEMM's alpha (C += alpha * A @ B; the merge
+  // program's adapter scale) is an f32 in in[3]'s low word. Every float an
+  // instruction carries is proven finite before a kernel multiplies by it
+  // (CR1 #142); this one was not, and a NaN alpha made every delta NaN
+  // (review 2026-11-25).
+  if (oc == up::OpCode::kGemmAccNN) {
+    const float alpha = std::bit_cast<float>(static_cast<uint32_t>(ins.in[3]));
+    if (up::HighWord(ins.in[3]) != 0 || !std::isfinite(alpha))
+      return diag::validating::Error(
+          "accumulating GEMM alpha must be a finite float");
+  }
   // The addend (v14, f32 GEMMs only — proved above): in[3] is a read of
   // M*N floats, disjoint from the written C like every other operand.
   if ((ins.flags & up::kFlagGemmAddend) && !RefOk(ins.in[3], mn, false))
