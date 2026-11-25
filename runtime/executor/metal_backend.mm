@@ -557,8 +557,16 @@ class MetalBackend final : public ExecutorBackend {
 // family's packed dim words are two 32-bit halves by construction, their
 // products are not. A wider plan — one that could not exist on the devices
 // this targets — takes the CPU path for that instruction.
+//
+// The grids are part of the proof (review 2026-11-25): a kernel that runs
+// one simdgroup a row is dispatched over rows * 32 threads, a 32-bit count
+// like every other, and only the tiled attention cases bounded it. A norm,
+// a loss, a softmax or a skinny GEMM over 2^27 rows or more — admitted
+// while its rows * cols fit — wrapped its grid and left outputs unwritten
+// with no error. kLanes is that factor.
 bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
   constexpr uint64_t kMax = 0xFFFFFFFFu;
+  constexpr uint64_t kLanes = 32;
   switch (op) {
     case up::OpCode::kGemmNN:
     case up::OpCode::kGemmNT:
@@ -570,7 +578,9 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kGemmNTBF16:
       return ins.out[0] <= kMax && ins.out[1] <= kMax && ins.out[2] <= kMax &&
              ins.out[0] * ins.out[1] <= kMax &&
-             ins.out[0] * ins.out[2] <= kMax && ins.out[2] * ins.out[1] <= kMax;
+             ins.out[0] * ins.out[2] <= kMax &&
+             ins.out[2] * ins.out[1] <= kMax && ins.out[0] * kLanes <= kMax &&
+             ins.out[1] * kLanes <= kMax && ins.out[2] * kLanes <= kMax;
     case up::OpCode::kRopeFwd:
     case up::OpCode::kRopeBwd:
       return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) *
@@ -579,11 +589,13 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kAttnFwd: {
       const uint64_t B = up::HighWord(ins.out[1]), S = up::LowWord(ins.out[1]);
       const uint64_t H = up::HighWord(ins.out[2]), d = up::LowWord(ins.out[2]);
-      return B * H * S * S <= kMax && B * S * H * d <= kMax;
+      return B * H * S * S <= kMax && B * S * H * d <= kMax &&
+             B * H * S * kLanes <= kMax;
     }
     case up::OpCode::kAttnFwdSeg: {
       const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
-      return g.B * g.H * g.S * g.S <= kMax && g.B * g.S * g.H * g.d <= kMax;
+      return g.B * g.H * g.S * g.S <= kMax && g.B * g.S * g.H * g.d <= kMax &&
+             g.B * g.H * g.S * kLanes <= kMax;
     }
     case up::OpCode::kSegmentStarts:
       return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) <= kMax;
@@ -593,22 +605,26 @@ bool DimsFit32(up::OpCode op, const up::UpdateInstruction& ins) {
     case up::OpCode::kAttnDK: {
       const uint64_t B = up::HighWord(ins.out[0]), S = up::LowWord(ins.out[0]);
       const uint64_t H = up::HighWord(ins.out[1]), d = up::LowWord(ins.out[1]);
-      return B * H * S * S <= kMax && B * S * H * d <= kMax;
+      return B * H * S * S <= kMax && B * S * H * d <= kMax &&
+             B * H * S * kLanes <= kMax;
     }
     case up::OpCode::kSoftmaxXEntFwd:
     case up::OpCode::kSoftmaxXEntBwd:
     case up::OpCode::kSoftmaxXEntMaskedFwd:
     case up::OpCode::kSoftmaxXEntMaskedBwd:
       return ins.out[0] <= kMax && ins.out[1] <= kMax &&
-             ins.out[0] * ins.out[1] <= kMax;
+             ins.out[0] * ins.out[1] <= kMax && ins.out[0] * kLanes <= kMax;
     case up::OpCode::kSoftmaxRowsBwd:
     case up::OpCode::kLayerNormFwd:
     case up::OpCode::kRmsNormFwd:
-      return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) <= kMax;
+      return up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]) <= kMax &&
+             up::HighWord(ins.out[0]) * kLanes <= kMax;
     case up::OpCode::kLayerNormBwd:
-      return up::HighWord(ins.out[2]) * up::LowWord(ins.out[2]) <= kMax;
+      return up::HighWord(ins.out[2]) * up::LowWord(ins.out[2]) <= kMax &&
+             up::HighWord(ins.out[2]) * kLanes <= kMax;
     case up::OpCode::kRmsNormBwd:
-      return up::HighWord(ins.out[1]) * up::LowWord(ins.out[1]) <= kMax;
+      return up::HighWord(ins.out[1]) * up::LowWord(ins.out[1]) <= kMax &&
+             up::HighWord(ins.out[1]) * kLanes <= kMax;
     case up::OpCode::kAddBias:
     case up::OpCode::kReduceRows:
       return ins.out[0] <= kMax && ins.out[1] <= kMax &&
@@ -927,6 +943,11 @@ std::expected<void, std::string> MetalBackend::Bind(
           std::to_string(working_set_limit_) +
           " bytes): run on the CPU, or compile a smaller plan (a smaller "
           "micro-batch under --grad-accum, --remat on, --attention tiled)");
+    // The device proves itself before anything of the old binding is
+    // replaced (review 2026-11-25): the self-test touches the scratch
+    // buffer alone, and backend.h promises a failed Bind leaves the
+    // previous one intact and executable. It ran after the commit.
+    if (auto r = SelfTest(); !r) return r;
     if (auto r = cpu_->Bind(arena, arena_bytes, rodata, rodata_bytes,
                             rodata_mapped_bytes);
         !r)
@@ -941,7 +962,7 @@ std::expected<void, std::string> MetalBackend::Bind(
     extents_.clear();
     pending_reads_.clear();
     pending_writes_.clear();
-    return SelfTest();
+    return {};
   }
 }
 
@@ -993,8 +1014,13 @@ std::expected<void, std::string> MetalBackend::BindSource(const uint8_t* data,
       source_on_cpu_ = true;
       return {};
     }
+    // Zero-copy on the rodata's terms: page-aligned AND writable pages (a
+    // no-copy buffer over read-only pages leaves them unreadable from the
+    // CPU afterwards). The engine's copy-on-write mapping qualifies; any
+    // other caller's memory is copied instead of trusted.
     id<MTLBuffer> buf = nil;
-    if (reinterpret_cast<uintptr_t>(data) % page == 0)
+    if (reinterpret_cast<uintptr_t>(data) % page == 0 &&
+        PagesWritable(data, wrapped))
       buf = [device_ newBufferWithBytesNoCopy:const_cast<uint8_t*>(data)
                                        length:wrapped
                                       options:MTLResourceStorageModeShared

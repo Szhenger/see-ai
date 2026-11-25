@@ -2780,6 +2780,11 @@ using namespace mpp::tensor_ops;
 inline constexpr char kMetalRelaxedKernelSource[] = R"msl(
 static inline bfloat to_bf16_rne(float v) {
   uint u = as_type<uint>(v);
+  // A NaN stays a quiet NaN, as Float32ToBf16Bits keeps it (bf16.h): one
+  // whose payload sits only in the low 16 bits truncated to 0x7F80, an
+  // infinity the finite-loss guard reads as an overflow, not a NaN.
+  if ((u & 0x7FFFFFFFu) > 0x7F800000u)
+    return as_type<bfloat>((ushort)((u >> 16) | 0x0040u));
   if ((u & 0x7F800000u) != 0x7F800000u)  // finite: round to nearest even
     u = u + 0x7FFFu + ((u >> 16) & 1u);
   return as_type<bfloat>((ushort)(u >> 16));
