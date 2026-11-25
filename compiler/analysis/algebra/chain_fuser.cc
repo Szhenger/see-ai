@@ -5,6 +5,7 @@
 #include <optional>
 #include <string_view>
 
+#include "compiler/analysis/effects.h"
 #include "compiler/diagnostics/updating/error.h"
 #include "source/plan/instruction.h"
 
@@ -98,16 +99,20 @@ std::expected<ChainFusion, std::string> ElementwiseChainFuser::Run(
     if (!head_kind) continue;
     const sir::Shape& shape = head->result(0)->shape();
     // Foldable: one shape throughout, and no operand that is mutable
-    // storage. Fusion moves every read of the chain to the tail's position;
-    // a parameter or accumulator read there could see an in-place step,
-    // fold or zero that ran in between. Activations and gradients are
-    // single-assignment, so reading them later reads the same bytes.
+    // storage or that some op rewrites in place. Fusion moves every read of
+    // the chain to the tail's position; a parameter or accumulator read
+    // there could see an in-place step, fold or zero that ran in between,
+    // and so could a gradient a clip scales where it lies (effects.h — the
+    // rule used to name storage declarations only and call every gradient
+    // single-assignment). An activation nothing rewrites reads the same
+    // bytes later.
     auto same_shape = [&](const sir::Operation& op) {
       if (op.result(0)->shape().dims != shape.dims) return false;
       for (sir::Value* v : op.operands()) {
         if (v->shape().dims != shape.dims) return false;
         const sir::Operation* def = v->definingOp();
         if (def && def->mnemonic() == "sc_mem.param") return false;
+        if (RewrittenInPlace(v)) return false;
       }
       return true;
     };

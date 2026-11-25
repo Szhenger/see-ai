@@ -3,11 +3,13 @@
 // Block::verify gate, the timings) and the DCE sweep.
 // =============================================================================
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
 
+#include "compiler/analysis/effects.h"
 #include "compiler/analysis/update_passes.h"
 #include "compiler/frontend/operator/op_builder.h"
 #include "compiler/frontend/representation/sir.h"
@@ -186,6 +188,79 @@ TEST(DeadCodeElimination, SweepsDeadChainsKeepsRootsUsesAndEffects) {
   // Idempotent: a second sweep finds nothing.
   ASSERT_OK_AND_ASSIGN(size_t again, DeadCodeElimination().Run(block, roots));
   EXPECT_EQ(again, 0u);
+}
+
+TEST(InPlaceEffects, EveryRowSurvivesDeadCodeElimination) {
+  // effects.h is the one list of ops that rewrite a value they are handed
+  // (review 2026-11-25: DCE and the addend fuser each kept a copy). An op
+  // on it has no reader and no root and is still kept — for every row.
+  for (const seeml::update::InPlaceEffect& e : seeml::update::kInPlaceEffects) {
+    sir::Block block;
+    sir::Value* x = block.addArgument(sir::DataType::F32, sir::Shape{2, 4});
+    sir::Operation* op = block.appendOp(std::string(e.mnemonic));
+    for (int i = 0; i < 5; ++i) op->addOperand(x);
+    ASSERT_OK_AND_ASSIGN(size_t removed, DeadCodeElimination().Run(block, {}));
+    EXPECT_EQ(removed, 0u);
+    EXPECT_EQ(CountOps(block, std::string(e.mnemonic)), 1u);
+    EXPECT_TRUE(seeml::update::MutatesInPlace(*op));
+  }
+  sir::Block block;
+  sir::Operation* pure = block.appendOp("sc_high.relu");
+  EXPECT_FALSE(seeml::update::MutatesInPlace(*pure));
+}
+
+TEST(InPlaceEffects, AnOpRewritesTheOperandsItsRowNamesAndReadsTheRest) {
+  sir::Block block;
+  auto value = [&](const char* id) {
+    return block.appendOp("sc_mem.param")
+        ->addResult(id, sir::DataType::F32, sir::Shape{2, 4});
+  };
+  sir::Value *p = value("p"), *g = value("g"), *m = value("m"), *v = value("v"),
+             *other_p = value("p2"), *other_g = value("g2");
+  sir::Operation* step = block.appendOp("sc_low.adamw_step");
+  for (sir::Value* operand : {p, g, m, v}) step->addOperand(operand);
+  // The step moves the parameter and both moments; the gradient is read.
+  EXPECT_TRUE(seeml::update::RewrittenInPlace(p));
+  EXPECT_TRUE(seeml::update::RewrittenInPlace(m));
+  EXPECT_TRUE(seeml::update::RewrittenInPlace(v));
+  EXPECT_FALSE(seeml::update::RewrittenInPlace(g));
+  sir::Operation* sgd = block.appendOp("sc_low.sgd_step");
+  sgd->addOperand(other_p);
+  sgd->addOperand(other_g);
+  EXPECT_TRUE(seeml::update::RewrittenInPlace(other_p));
+  EXPECT_FALSE(seeml::update::RewrittenInPlace(other_g));
+  // A clip scales the gradient where it lies: now it is rewritten too.
+  block.appendOp("sc_low.clip_norm")->addOperand(other_g);
+  EXPECT_TRUE(seeml::update::RewrittenInPlace(other_g));
+}
+
+TEST(InPlaceEffects, AChainIsNotFoldedAcrossARewriteOfWhatItReads) {
+  // The chain fuser moves every read of a chain to its tail. It refused
+  // operands that are storage declarations and called gradients single-
+  // assignment — but a clip rewrites one in place, and a chain whose head
+  // read it before the clip would read it after. Latent (no plan has an
+  // elementwise reader of a clipped gradient); closed by the shared rule.
+  auto build = [](bool clip) {
+    auto block = std::make_unique<sir::Block>();
+    sir::Value* g = block->addArgument(sir::DataType::F32, sir::Shape{2, 4});
+    sir::Operation* head = block->appendOp("sc_high.relu");
+    head->addOperand(g);
+    sir::Value* a = head->addResult("a", sir::DataType::F32, sir::Shape{2, 4});
+    if (clip) block->appendOp("sc_low.clip_norm")->addOperand(g);
+    sir::Operation* tail = block->appendOp("sc_high.gelu");
+    tail->addOperand(a);
+    tail->addResult("b", sir::DataType::F32, sir::Shape{2, 4});
+    return block;
+  };
+  auto plain = build(false);
+  ASSERT_OK_AND_ASSIGN(seeml::update::ChainFusion folded,
+                       seeml::update::ElementwiseChainFuser().Run(*plain, {}));
+  EXPECT_EQ(folded.fused_chains, 1u);
+  auto clipped = build(true);
+  ASSERT_OK_AND_ASSIGN(
+      seeml::update::ChainFusion kept,
+      seeml::update::ElementwiseChainFuser().Run(*clipped, {}));
+  EXPECT_EQ(kept.fused_chains, 0u);
 }
 
 }  // namespace

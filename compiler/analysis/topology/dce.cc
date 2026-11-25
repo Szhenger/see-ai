@@ -1,5 +1,7 @@
 #include "compiler/analysis/topology/dce.h"
 
+#include "compiler/analysis/effects.h"
+
 #include <unordered_map>
 #include <vector>
 
@@ -12,12 +14,7 @@ namespace {
 /// mutation the program exists to perform.
 bool IsEffectful(const sir::Operation& op) {
   if (op.isMemoryOp()) return true;  // storage declarations, bound by name
-  const std::string_view m = op.mnemonic();
-  return m == "sc_low.clip_norm" || m == "sc_low.sqnorm_accum" ||
-         m == "sc_low.clip_global" || m == "sc_low.sgd_step" ||
-         m == "sc_low.adamw_step" || m == "sc_low.gemm_acc" ||
-         m == "sc_low.accumulate" || m == "sc_low.zero" ||
-         m == "sc_low.attn_dq_tiled";  // writes delta into the stats row
+  return MutatesInPlace(op);         // effects.h: the one list
 }
 
 }  // namespace
