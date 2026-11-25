@@ -33,6 +33,7 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(REPO, "tool"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import numpy as np
@@ -423,6 +424,73 @@ class TorchStepTest(unittest.TestCase):
                     "Metal backend is not built" in str(e)):
                 self.skipTest("no Metal device: " + str(e)[-200:])
             raise
+
+
+def have_transformers():
+    try:
+        import transformers  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+@unittest.skipIf(skip_reason(), skip_reason())
+@unittest.skipIf(not have_transformers(), "transformers not installed")
+class HfImportStepTest(unittest.TestCase):
+    """The --hf import, end to end against the framework it imports from
+    (review 2026-11-25). --hf-parity compares transformers with a NumPy
+    restatement of the decoder; nothing held the COMPILED plan of an
+    imported checkpoint to transformers itself. Here a synthetic Llama
+    (grouped-query attention, rotate-half RoPE, a tied head — no download)
+    is imported, compiled, and its train program's step-1 loss compared
+    with the cross-entropy of `transformers`' own forward on the same
+    tokens: a converted weight in the wrong layout, a head repeated the
+    wrong way or a rotation on the wrong pairs moves it by its own size."""
+
+    def test_the_compiled_import_scores_what_transformers_scores(self):
+        import export_model as em
+        import export_model_test as fixtures
+        from transformers import AutoModelForCausalLM
+
+        d = tempfile.mkdtemp(prefix="seeml-hf-step-")
+        self.addCleanup(shutil.rmtree, d, True)
+        seq, batch = 8, 4
+        cfg = fixtures.hf_tiny_config(D=32, H=4, Hkv=2, F=48, L=2, V=40)
+        fixtures.write_hf_dir(d, cfg, fixtures.hf_tiny_tensors(cfg, 11))
+        smf = os.path.join(d, "m.smf")
+        em.export_hf_decoder(d, smf, seq, tokenizer=False)
+        plan = CompiledPlan(d, smf, [
+            "--data-batch", str(batch * seq), "--loss", "xent",
+            "--lora-rank", "4", "--optimizer", "sgd", "--lr", "0.1",
+            "--lr-schedule", "const", "--weight-decay", "0", "--steps", "1"])
+
+        rng = np.random.default_rng(17)
+        records = rng.integers(0, cfg["vocab_size"], (batch, seq + 1))
+        tokens = records[:, :-1].astype("<i4")
+        labels = records[:, 1:].astype("<i4")
+        arena = plan.initial_arena()
+        for ref, data in ((plan.header["input_ref"], tokens),
+                          (plan.header["label_ref"], labels)):
+            arena[ref:ref + data.nbytes] = data.tobytes()
+        after = plan.train(arena, 1, 0.1)
+        compiled = struct.unpack_from("<f", after, plan.header["loss_ref"])[0]
+
+        try:  # transformers >= 5 spells the keyword `dtype`
+            model = AutoModelForCausalLM.from_pretrained(d, dtype=torch.float64)
+        except TypeError:
+            model = AutoModelForCausalLM.from_pretrained(
+                d, torch_dtype=torch.float64)
+        model.eval()
+        with torch.no_grad():
+            logits = model(torch.from_numpy(tokens.astype(np.int64))).logits
+        want = F.cross_entropy(
+            logits.reshape(-1, cfg["vocab_size"]).double(),
+            torch.from_numpy(labels.astype(np.int64)).reshape(-1)).item()
+        # LoRA starts as the identity (one factor of each pair is zero), so
+        # the step-1 loss is the imported model's own.
+        self.assertGreater(want, 1.0)
+        self.assertLess(abs(compiled - want), 1e-4 * abs(want),
+                        (compiled, want))
 
 
 if __name__ == "__main__":
