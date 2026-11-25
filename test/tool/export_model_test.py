@@ -716,6 +716,24 @@ def have_transformers():
         return False
 
 
+@unittest.skipIf(np is None, "NumPy not installed")
+class HfParityBoundTest(unittest.TestCase):
+    def test_a_delta_is_parity_only_within_the_bound(self):
+        # Review 2026-11-25: --hf-parity recorded any finite delta as a
+        # checked parity. Rounding passes; a delta of the logits' own size,
+        # a negative one and a non-finite one do not.
+        self.assertIsNone(em.hf_parity_problem(6.4e-5, 20.0))
+        self.assertIsNone(em.hf_parity_problem(0.0, 0.0))
+        self.assertIsNone(em.hf_parity_problem(
+            em.HF_PARITY_RTOL * 21.0, 20.0))
+        for delta, scale in ((1.0, 20.0), (1e6, 20.0), (-1e-9, 20.0),
+                             (float("nan"), 20.0), (float("inf"), 20.0),
+                             (0.0, float("nan"))):
+            why = em.hf_parity_problem(delta, scale)
+            self.assertIsNotNone(why, (delta, scale))
+            self.assertIn("does not reproduce transformers", why)
+
+
 @unittest.skipIf(np is None or not have_transformers(),
                  "transformers not installed")
 class HfParityTest(unittest.TestCase):
@@ -728,6 +746,7 @@ class HfParityTest(unittest.TestCase):
         conv = em.hf_llama_to_seeml(config, tensors, seq_len=16)
         delta, scale = em.hf_parity(d, conv)
         self.assertLess(delta, 1e-4 * (1.0 + scale))
+        self.assertIsNone(em.hf_parity_problem(delta, scale))
 
 
 @unittest.skipIf(np is None or not have_torch(), "PyTorch not installed")
