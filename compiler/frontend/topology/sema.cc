@@ -481,8 +481,20 @@ std::expected<void, std::string> ShapeWalk::SeedShapes(int64_t batch) {
   topo.shapes.reserve(model.tensors.size() + model.ops.size() + 1);
   topo.shapes[model.input_name] =
       topo.token_input ? sir::Shape{batch} : sir::Shape{batch, in_dim};
-  for (const SmfTensor& t : model.tensors)
-    if (t.is_const) topo.shapes[t.name] = sir::Shape(t.dims);
+  for (const SmfTensor& t : model.tensors) {
+    if (!t.is_const) continue;
+    // A constant's declared size is what every pass after this one sweeps
+    // from its payload's first byte (the int8 review, the arena binder,
+    // plan assembly). The reader holds a file to it; a model built in
+    // memory reaches the compiler through this door alone, so the two
+    // numbers are held equal here (review 2026-11-25): a tensor declaring
+    // more than it holds would be read past its end.
+    if (t.byte_size != 0 && t.byte_size != t.data.size())
+      return parsing::Error("tensor '" + t.name + "' declares " +
+                            std::to_string(t.byte_size) + " bytes and holds " +
+                            std::to_string(t.data.size()));
+    topo.shapes[t.name] = sir::Shape(t.dims);
+  }
   return {};
 }
 
