@@ -475,6 +475,16 @@ class Plan:
                         bits_f32(ins.src[3]))):
                     raise PlanError(f"{where}: the accumulating GEMM's "
                                     "alpha must be a finite float")
+                # The rotary base (rope fwd / bwd out[2], the table's
+                # out[1]): finite and above 1, the high word zero, as the
+                # validator holds it — the interpreter takes its log.
+                if op in (33, 34, 45):
+                    word = ins.out[1] if op == 45 else ins.out[2]
+                    base = bits_f32(word)
+                    if word >> 32 != 0 or not (math.isfinite(base)
+                                               and base > 1.0):
+                        raise PlanError(f"{where}: the rotary base must be "
+                                        "a finite float above 1")
                 if ins.imm:
                     self._check_imm_word(ins, where)
                 if op == 46:

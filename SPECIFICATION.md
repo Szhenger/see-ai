@@ -267,7 +267,8 @@ extracts them from the dispatcher. Subsystems with code today:
   orchestrates gate → merge → commit.
 - **verifier/** — load-time proof: every instruction operand is
   bounds-checked against arena/rodata geometry, and every immediate float
-  (clip thresholds, the distillation temperature, int8 dequant scales) is
+  (clip thresholds, the distillation temperature, int8 dequant scales, the
+  accumulating GEMM's alpha) is
   proven finite and in range, *before* execution; `Execute()` then runs
   unchecked by contract.
 - **executor/** — the kernel library (`gemm`, `elementwise`, `activation`,

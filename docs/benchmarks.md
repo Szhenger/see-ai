@@ -2002,9 +2002,13 @@ All three pieces of this program exist:
    and gates via `tool/bench_compare.py`: a key's first >10% regression
    in Tier A `rows_per_s` warns, its second consecutive one **fails**.
    The comparer seeds the baseline on a host's first night and skips
-   (never fails) fixtures that exist on only one side, so adding a
-   fixture can't fail the night it lands. Two fail-closed rules keep the
-   gate honest: a comparison with **zero overlapping keys is an error**
+   (never fails) a fixture only the night's report holds, so adding a
+   fixture can't fail the night it lands. Three fail-closed rules keep the
+   gate honest: a **fixture the reference holds and the night's report
+   does not fails at once** and is never promoted over (review
+   2026-11-25; removed on purpose, it is `--allow-removed` by hand and, in
+   the nightly, a `BENCH_GENERATION` bump plus a re-pinned epoch), a
+   comparison with **zero overlapping keys is an error**
    (a renamed metric must re-seed deliberately, not pass silently), and a
    **pinned epoch baseline** (`--epoch-baseline`, the host's report
    committed at `docs/ledger/bench-epochs/<host slug>.json`, never rolled

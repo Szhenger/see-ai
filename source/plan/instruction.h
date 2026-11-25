@@ -575,7 +575,8 @@ inline constexpr uint16_t kFlagQ8ColScale = 1u << 4;  // in[3] = scales ref
 // --- Immediate floats (CR1 #142). ---------------------------------------------
 // Every float an instruction carries as bits is proven finite and within a
 // stated range by the validator before any kernel multiplies by it: the
-// standalone clip threshold (kClipNorm's in[1]) and the fused one (the
+// accumulating GEMM's alpha (kGemmAccNN's in[3], low word; the high word
+// zero) finite; the standalone clip threshold (kClipNorm's in[1]) and the fused one (the
 // optimizer steps' out[1]; 0 = absent) finite and positive; the per-tensor
 // int8 dequant scale (the q8 GEMMs' in[3] without kFlagQ8ColScale) finite
 // and positive, and each per-column scale likewise (read from rodata by

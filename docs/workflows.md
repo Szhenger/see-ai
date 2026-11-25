@@ -205,7 +205,17 @@ paravirtual GPU does not have. An image that lost its Metal device
 altogether would otherwise turn the whole Metal suite into counted skips
 under a green check (review 2026-11-25).
 
-The bench gate has the same rule since the same review: a fixture the baseline measured and tonight's bench did not is a failure, never a skip, and the smaller report is never promoted over the baseline. A fixture removed on purpose is said so — `reseed_baseline` on a manual run for the rolling baseline, a re-pinned file under `docs/ledger/bench-epochs/` for an epoch.
+The bench gate has the same rule since the same review: a fixture the
+baseline measured and tonight's bench did not is a failure, never a skip,
+and the smaller report is never promoted over the baseline. A fixture
+removed on purpose is said so, once for every reference that still holds
+it. Each CPU model in the runner rotation keeps its own rolling baseline,
+so the nightly says it by bumping `BENCH_GENERATION` in the bench job,
+which re-seeds every host; a `reseed_baseline` dispatch re-seeds only the
+host it lands on, and every other model fails on the night it rotates in.
+A committed epoch is re-pinned: the host's file under
+`docs/ledger/bench-epochs/`, replaced by a night's report without the
+fixture.
 
 Three more steps close holes of the same kind — code that was built or
 run nowhere a tool could see it:
