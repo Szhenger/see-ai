@@ -82,7 +82,7 @@ enum class OpCode : uint16_t {
   kAddEW = 5,      // out = x + y            in: x, y, out; out[0] = count
   kAddBias = 6,    // out[N,M] = x + b[M]    in: x, b, out; out[0..1] = N, M
   kReluFwd = 7,    // out = max(x, 0)        in: x, out;    out[0] = count
-  kReluBwd = 8,    // dx = dy * (x > 0)      in: dy, x, dx; out[0] = count
+  kReluBwd = 8,    // dx = x <= 0 ? 0 : dy   in: dy, x, dx; out[0] = count
   kScale = 9,      // out = alpha * x        in: x, out, alpha_bits; out[0] = count
   kReduceRows = 10,  // db[M] = sum_n dY[N,M]  in: dy, db;  out[0..1] = N, M
   // Losses (fwd caches what the bwd kernel needs; scalar loss slot).

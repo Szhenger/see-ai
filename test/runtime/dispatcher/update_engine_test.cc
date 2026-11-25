@@ -1535,6 +1535,59 @@ TEST(UpdateEngineEval, AWrappedFinalBatchReportsTheRealSamplesMean) {
   }
 }
 
+TEST(UpdateEngineEval, ARealRowBelowTheProbabilityFloorKeepsItsOwnLoss) {
+  // Review 2026-11-25: the gate's validation loss over a set that is not
+  // whole batches (and over every masked plan) is RealRowLoss, the engine's
+  // per-row tail — which read -log(max(p, 1e-12)) as the kernels did, so a
+  // confidently wrong row scored 27.63. The tail now reads the row's
+  // logits, as the kernel does. Inputs scaled until labels' probabilities
+  // underflow; each sample alone (a batch of copies of itself: the kernel's
+  // mean) is the oracle for the five together (the tail). On the CPU, and
+  // on Metal where there is a device: the tail reads the logits out of the
+  // arena after a GPU program.
+  using seeml::update_rt::BackendKind;
+  for (const BackendKind backend : {BackendKind::kCpu, BackendKind::kMetal}) {
+    UpdateConfig config = BaseConfig(32);
+    SmfModel model = MakeMlp(kInDim, 10, 3, 5);
+    auto compiled = UpdateCompiler(config).Compile(model);
+    ASSERT_TRUE(compiled.has_value());
+    UpdateEngine engine;
+    ASSERT_OK(
+        engine.LoadFromMemory(compiled->plan.data(), compiled->plan.size()));
+    if (backend == BackendKind::kMetal && !engine.SelectBackend(backend))
+      continue;  // no Metal device: the CPU pass above is the test
+    std::mt19937_64 rng(77);
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    const uint64_t n = 5;
+    std::vector<float> x(n * kInDim);
+    for (auto& v : x) v = 400.0f * dist(rng);
+    std::vector<uint8_t> labels(n * sizeof(int32_t));
+    auto* lab = reinterpret_cast<int32_t*>(labels.data());
+    for (uint64_t i = 0; i < n; ++i) lab[i] = static_cast<int32_t>(i % 3);
+    double sum = 0.0, worst = 0.0;
+    for (uint64_t i = 0; i < n; ++i) {
+      std::vector<float> xi(x.begin() + i * kInDim,
+                            x.begin() + (i + 1) * kInDim);
+      std::vector<uint8_t> li(labels.begin() + i * sizeof(int32_t),
+                              labels.begin() + (i + 1) * sizeof(int32_t));
+      ASSERT_OK_AND_ASSIGN(
+          Dataset one,
+          Dataset::FromMemory(std::move(xi), std::move(li), 1, kInDim, 1, 0));
+      ASSERT_OK_AND_ASSIGN(float alone, engine.Evaluate(one));
+      sum += alone;
+      worst = std::max(worst, static_cast<double>(alone));
+    }
+    // The regime is the one under test: a row past the old ceiling.
+    EXPECT_GT(worst, 40.0);
+    ASSERT_OK_AND_ASSIGN(
+        Dataset five,
+        Dataset::FromMemory(std::vector<float>(x), std::vector<uint8_t>(labels),
+                            n, kInDim, 1, 0));
+    ASSERT_OK_AND_ASSIGN(float got, engine.Evaluate(five));
+    EXPECT_NEAR(got, sum / n, 1e-5 * (1.0 + std::fabs(sum / n)));
+  }
+}
+
 TEST(UpdateEngineLr, PastTheHorizonTheRateStaysAtTheDefaultFloor) {
   // G13 (#97): the default floor (0.1 since E8) holds after the horizon —
   // a step past it neither restarts the cosine nor falls to zero.

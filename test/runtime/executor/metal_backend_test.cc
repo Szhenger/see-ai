@@ -931,6 +931,14 @@ TEST(MetalBackend, RelaxedGemmsMatchCpuAtTheBf16Tolerance) {
   // non-skinny cases differ from the exact CPU bits (a rounded activation)
   // in all but a coincidence; without it every case may match exactly.
   if (tensor_ops) EXPECT_GE(relaxed_differs, cases / 2);
+  // Without it this test compared the exact fallback and nothing else: the
+  // relaxed kernels did not run, and a green line would say they had
+  // (review 2026-11-25 — the hosted macOS runner's GPU is paravirtual, so
+  // CI is such a host). Counted as what it is.
+  if (!tensor_ops)
+    ReportSkip(__FILE__, __LINE__,
+               "no Metal 4 tensor-op library on this GPU: the relaxed GEMM "
+               "kernels did not run (their exact fallback was compared)");
 }
 
 TEST(MetalBackend, AttentionMatchesCpuAtModelShape) {
@@ -1050,6 +1058,13 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
     for (uint32_t n = 0; n < s.n; ++n)
       arena[labels + n] =
           std::bit_cast<float>(static_cast<int32_t>((n * 7919u + 13u) % s.c));
+    // Row 1 is confidently wrong (review 2026-11-25): its label's
+    // probability (e^-50) is below the floor, and both backends read its
+    // loss from the logits — 50 — where both used to read the floor's
+    // 27.63. The gap is kept small enough that no probability of the row
+    // is subnormal: the two backends are not compared there.
+    arena[logits + s.c + (7919u + 13u) % s.c] = -40.0f;
+    arena[logits + s.c + (7919u + 14u) % s.c] = 10.0f;
     arena[seed] = 0.5f;
     auto ref = [](size_t floats) { return MakeArenaRef(floats * 4); };
     UpdateInstruction fwd, bwd;
@@ -1078,6 +1093,8 @@ TEST(MetalBackend, SoftmaxCrossEntropyMatchesCpu) {
     ExpectRangeClose("xent loss", *twin, loss, 1, 1e-5, 1e-7);
     ExpectRangeClose("xent dlogits", *twin, dlogits, nc, 1e-4, 1e-9);
     EXPECT_TRUE(std::isfinite(twin->gpu[loss]));
+    EXPECT_GT(twin->cpu[loss], 50.0f / static_cast<float>(s.n));
+    EXPECT_GT(twin->gpu[loss], 50.0f / static_cast<float>(s.n));
     // Same probabilities in, bit-identical gradient out.
     std::vector<float> again(arena);
     std::memcpy(again.data() + probs, twin->cpu.data() + probs,

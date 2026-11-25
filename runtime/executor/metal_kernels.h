@@ -76,7 +76,8 @@ struct KArgs {
 
 // --- Activation expressions (kernel_policy.h) ------------------------------
 static inline float sigmoid_expr(float x) { return 1.0f / (1.0f + exp(-x)); }
-static inline float relu_expr(float x) { return x > 0.0f ? x : 0.0f; }
+// The CPU's ReluExpr: a NaN fails the comparison and stays a NaN.
+static inline float relu_expr(float x) { return x <= 0.0f ? 0.0f : x; }
 static inline float gelu_expr(float x) {
   const float t = tanh(0.7978845608028654f * (x + 0.044715f * x * x * x));
   return 0.5f * x * (1.0f + t);
@@ -968,7 +969,7 @@ kernel void k_relu_fwd(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(1)[g] = relu_expr(RF(0)[g]);
 }
 kernel void k_relu_bwd(KSIG, uint g [[thread_position_in_grid]]) {
-  if (g < p.n) WF(2)[g] = RF(1)[g] > 0.0f ? RF(0)[g] : 0.0f;
+  if (g < p.n) WF(2)[g] = RF(1)[g] <= 0.0f ? 0.0f : RF(0)[g];
 }
 kernel void k_gelu_fwd(KSIG, uint g [[thread_position_in_grid]]) {
   if (g < p.n) WF(1)[g] = gelu_expr(RF(0)[g]);
@@ -2585,7 +2586,8 @@ kernel void k_attn_dv_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
 // the fixed shuffle trees; the row's -log p[label] lands in scratch[row]
 // and k_xent_finish folds the rows in order (compensated f32; the CPU
 // folds its chunk partials in f64) into the loss slot. The CPU's NaN rule
-// is kept: a NaN probability propagates, only genuine underflow is clamped.
+// is kept: a NaN probability propagates, and one below the floor is read
+// from the row's logits (NegLogPicked), not clamped.
 // p.rows = N, p.cols = C; slots: 0 logits, 1 labels (i32), 2 loss, 3 probs.
 kernel void k_xent_fwd(KSIG, device float* scratch [[buffer(3)]],
                        uint g [[thread_position_in_grid]],
@@ -2617,10 +2619,11 @@ kernel void k_xent_fwd(KSIG, device float* scratch [[buffer(3)]],
   // The label's probability as its lane computed it (e * inv, the CPU's
   // expression), handed to lane 0 by a sum every other lane adds 0 to.
   pl = simd_sum_tree(pl * inv);
-  if (lane == 0u) {
-    const float safe = isnan(pl) ? pl : max(pl, 1e-12f);
-    scratch[r] = -log(safe);
-  }
+  // Below the floor the loss is read from the row's logits (the CPU's
+  // NegLogPicked, in f32 here): log(sum) - (x[label] - m).
+  if (lane == 0u)
+    scratch[r] = (isnan(pl) || pl >= 1e-12f) ? -log(pl)
+                                             : log(sum) - (x[label] - m);
 }
 kernel void k_xent_finish(KSIG, device float* scratch [[buffer(3)]],
                           uint t [[thread_position_in_grid]]) {
@@ -2687,8 +2690,9 @@ kernel void k_xent_masked_fwd(KSIG, device float* scratch [[buffer(3)]],
     if (label < 0) {
       scratch[r] = 0.0f;
     } else {
-      const float safe = isnan(pl) ? pl : max(pl, 1e-12f);
-      scratch[r] = -log(safe);
+      scratch[r] = (isnan(pl) || pl >= 1e-12f)
+                       ? -log(pl)
+                       : log(sum) - (x[(uint)label] - m);
     }
   }
 }

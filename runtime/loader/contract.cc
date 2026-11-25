@@ -179,12 +179,30 @@ class LiveSegmentStarts {
     const auto op = static_cast<up::OpCode>(ins.opcode);
     // v26: the tiled forward too.
     if (op == up::OpCode::kAttnFwdSeg || op == up::OpCode::kAttnFwdTiledSeg) {
-      bool bound = false;
-      for (const Range& s : live_) bound |= s.ref == ins.out[2];
+      // ... and all of it, in the attention's own geometry: the same
+      // sequences of the same length. A forward whose B is not the starts'
+      // is a batch field that wrapped in its 16 bits (review 2026-11-25) —
+      // each word is in bounds, and the forward would cover a fraction of
+      // the batch. B and S each, not their product: starts written for 2
+      // sequences of 6 are document boundaries of another layout to a
+      // forward over 3 sequences of 4.
+      const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
+      bool bound = false, whole = false;
+      for (const Range& s : live_) {
+        if (s.ref != ins.out[2]) continue;
+        bound = true;
+        whole |= s.B == g.B && s.S == g.S;
+      }
       if (!bound)
         return diag::executing::Error(
             "segment-masked attention reads starts no segment_starts of the "
             "same program wrote (or one written over since)");
+      if (!whole)
+        return diag::executing::Error(
+            "segment-masked attention covers " + std::to_string(g.B * g.S) +
+            " positions (" + std::to_string(g.B) + " sequences of " +
+            std::to_string(g.S) +
+            "), not the sequences its segment_starts wrote");
     }
     // Any write over a live starts range retires it; kSegmentStarts then
     // (re)establishes the range it writes.
@@ -196,10 +214,10 @@ class LiveSegmentStarts {
       });
     }
     if (op == up::OpCode::kSegmentStarts) {
-      const uint64_t positions =
-          up::HighWord(ins.out[0]) * up::LowWord(ins.out[0]);
+      const uint64_t B = up::HighWord(ins.out[0]);
+      const uint64_t S = up::LowWord(ins.out[0]);
       live_.push_back(
-          {ins.in[1], up::RefOffset(ins.in[1]), positions * sizeof(int32_t)});
+          {ins.in[1], up::RefOffset(ins.in[1]), B * S * sizeof(int32_t), B, S});
     }
     return {};
   }
@@ -207,6 +225,7 @@ class LiveSegmentStarts {
  private:
   struct Range {
     uint64_t ref, off, bytes;
+    uint64_t B, S;  // the sequences the starts were written for
   };
   std::vector<Range> live_;
 };

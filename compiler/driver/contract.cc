@@ -8,6 +8,7 @@
 #include "compiler/diagnostics/passing/error.h"
 #include "compiler/diagnostics/tokenizing/error.h"
 #include "compiler/diagnostics/updating/error.h"
+#include "runtime/loader/plan_loader.h"
 #include "source/plan/metadata.h"
 #include "source/contract/plan_contract.h"
 
@@ -21,16 +22,27 @@ namespace generating = seeml::diag::generating;
 /// Every unit registered across the six diagnostics process modules. A
 /// message that cannot be attributed to one of these escaped the partition.
 constexpr std::string_view kRegisteredUnits[] = {
-    diag::tokenizing::kContainer,      diag::tokenizing::kIngressor,
-    diag::tokenizing::kCorpus,         diag::parsing::kUnit,
-    diag::passing::kPassManager,       diag::updating::kAutodiff,
-    diag::updating::kLoraGrafter,      diag::updating::kMergeBuilder,
-    diag::updating::kOptimizer,        diag::updating::kEpilogueFuser,
-    diag::updating::kRopeTable,        diag::updating::kChainFuser,
-    diag::updating::kAddendFuser,      diag::updating::kAttentionTiling,
-    diag::updating::kRematerializer,   diag::architecting::kHostArch,
-    diag::architecting::kKernelPolicy, diag::generating::kDriver,
-    diag::generating::kArenaBinder,    diag::generating::kInstructionLowering,
+    diag::tokenizing::kContainer,
+    diag::tokenizing::kIngressor,
+    diag::tokenizing::kCorpus,
+    diag::parsing::kUnit,
+    diag::passing::kPassManager,
+    diag::updating::kAutodiff,
+    diag::updating::kLoraGrafter,
+    diag::updating::kMergeBuilder,
+    diag::updating::kOptimizer,
+    diag::updating::kEpilogueFuser,
+    diag::updating::kRopeTable,
+    diag::updating::kChainFuser,
+    diag::updating::kAddendFuser,
+    diag::updating::kAttentionTiling,
+    diag::updating::kRematerializer,
+    diag::updating::kSegmentMasker,
+    diag::architecting::kHostArch,
+    diag::architecting::kKernelPolicy,
+    diag::generating::kDriver,
+    diag::generating::kArenaBinder,
+    diag::generating::kInstructionLowering,
     diag::generating::kNativeEmitter,
 };
 
@@ -141,6 +153,20 @@ std::expected<void, std::string> VerifyGeneratedPlan(
                     "contract: " +
                         *why);
   }
+  // ... and the rest of the device's load: every instruction of every
+  // program through the validator and the executor contract (review
+  // 2026-11-25) — the very DecodePlan the engine calls before it allocates
+  // anything. Until this line the compiler checked its header and trusted
+  // its own lowering, so an instruction the device refuses (or one it
+  // should) left the build host as a package. The relaxed permit is the
+  // instruments': nothing runs here, and whether a relaxed plan may run is
+  // the certificate's question, asked where the package is built.
+  if (auto decoded = update_rt::DecodePlan(
+          compiled.plan.data(), compiled.plan.size(),
+          update_rt::RelaxedPlanPermit::UncertifiedForMeasurement());
+      !decoded)
+    return Broken("backend", "the emitted plan fails the device's load: " +
+                                 decoded.error());
   if (compiled.train_instruction_count == 0 ||
       compiled.eval_instruction_count == 0 ||
       compiled.merge_instruction_count == 0)

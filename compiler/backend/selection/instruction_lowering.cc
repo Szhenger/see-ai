@@ -398,6 +398,19 @@ bool OpLowering::RopeAndAttention() {
       // was — the backward reads the row's start from there.
       Set(op->hasAttribute("tiled") ? OpCode::kAttnFwdTiledSeg
                                     : OpCode::kAttnFwdSeg);
+      // One word, 16 bits a field: a field that does not fit is a refusal
+      // here, as Pack32's is. AttentionTiling refuses it first for a tiled
+      // plan; the cached family reaches this line with no bound before it,
+      // and a wrapped B is an honest small batch to the validator.
+      if (rows / seq > 0xFFFF || seq > 0xFFFF || heads > 0xFFFF ||
+          width / heads > 0xFFFF) {
+        error = "segment-masked attention geometry (" +
+                std::to_string(rows / seq) + " sequences of " +
+                std::to_string(seq) + ", " + std::to_string(heads) +
+                " heads of " + std::to_string(width / heads) +
+                ") exceeds the 16-bit ISA fields of its one geometry word";
+        return true;
+      }
       ins.in[0] = Ref(op->operand(0));
       ins.in[1] = Ref(op->operand(1));
       ins.in[2] = Ref(op->operand(2));

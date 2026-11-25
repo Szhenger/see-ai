@@ -21,6 +21,7 @@
 #include "runtime/loader/contract.h"
 #include "runtime/loader/plan_loader.h"
 #include "runtime/executor/backend.h"
+#include "runtime/executor/update_kernels.h"
 #include "runtime/pipeline/batch_pipeline.h"
 #include "runtime/verifier/plan_validator.h"
 #include "source/identity/hash.h"
@@ -1016,18 +1017,30 @@ double UpdateEngine::RealRowLoss(uint64_t real, const uint8_t* label_slot,
     case EvalTail::kXent:
     case EvalTail::kXentMasked: {
       const float* probs = ReadPtr(eval_tail_.a);
+      // The logits a row below the probability floor is scored from; a
+      // program that does not end on its softmax keeps the floor.
+      const float* logits = eval_tail_.logits == up::kNullRef
+                                ? nullptr
+                                : ReadPtr(eval_tail_.logits);
       const auto* labels = reinterpret_cast<const int32_t*>(label_slot);
       double sum = 0.0;
       uint64_t rows = 0;
       for (uint64_t r = 0; r < real; ++r) {
         if (labels[r] < 0) continue;
         ++rows;
-        const float p =
-            probs[r * eval_tail_.width + static_cast<uint64_t>(labels[r])];
-        const double safe = std::isnan(p)
-                                ? static_cast<double>(p)
-                                : static_cast<double>(std::fmax(p, 1e-12f));
-        sum -= std::log(safe);
+        const auto label = static_cast<size_t>(labels[r]);
+        const float p = probs[r * eval_tail_.width + label];
+        // No row pointer is formed from a null `logits` (an offset from a
+        // null pointer is undefined, read or not). A NaN fails the
+        // comparison and reaches the log, as in the kernels.
+        if (logits == nullptr) {
+          const float floored =
+              p < kernels::kPickedProbFloor ? kernels::kPickedProbFloor : p;
+          sum += -std::log(static_cast<double>(floored));
+        } else {
+          sum += kernels::NegLogPicked(p, logits + r * eval_tail_.width,
+                                       eval_tail_.width, label, 1.0f);
+        }
       }
       *counted = rows;
       return sum;

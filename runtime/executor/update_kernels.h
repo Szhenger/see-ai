@@ -1,6 +1,7 @@
 #ifndef SEEML_RUNTIME_EXECUTOR_UPDATE_KERNELS_H_
 #define SEEML_RUNTIME_EXECUTOR_UPDATE_KERNELS_H_
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -223,6 +224,57 @@ void EmbedFwd(const int32_t* tokens, const float* table, float* out,
               size_t rows, size_t dim);
 
 // --- Losses ------------------------------------------------------------------
+// -log of the probability the row softmax wrote for class `c`, as every
+// loss of the family reads it. An f32 probability holds a row's loss only
+// down to its own underflow: below kPickedProbFloor the family used to
+// read the floor itself, so a confidently wrong row reported 27.63
+// (-log 1e-12) whatever its logits said, and the gate compared validation
+// losses with that ceiling on them (review 2026-11-25). There the loss is
+// now the log-sum-exp form over the row's own logits, in double — the same
+// quantity where the two meet, and exact below. At or above the floor the
+// expression, and so every bit, is what it was; a NaN probability still
+// propagates, so the engine's finite-loss guard trips (fmax would scrub
+// it). `logits` is the row softmax's input and `inv_T` its temperature.
+inline constexpr float kPickedProbFloor = 1e-12f;
+// One softmax row, for a loss that reads more than one of its classes (KL
+// reads every class the teacher gives mass to): the row's log-sum-exp is
+// taken once, at the first class below the floor, and kept. Taken per
+// class it made the KL forward O(C^2) a row — at a 49,152-class head with
+// an ordinary logit spread, seconds a row where the kernel takes
+// microseconds.
+class PickedRow {
+ public:
+  PickedRow(const float* logits, size_t C, float inv_T)
+      : logits_(logits), C_(C), inv_T_(inv_T) {}
+
+  /// -log p for class `c`, whose probability the row softmax wrote as `p`.
+  [[nodiscard]] double NegLog(float p, size_t c) {
+    if (std::isnan(p) || p >= kPickedProbFloor)
+      return -std::log(static_cast<double>(p));
+    if (!reduced_) {
+      max_ = static_cast<double>(logits_[0] * inv_T_);
+      for (size_t i = 1; i < C_; ++i)
+        max_ = std::fmax(max_, static_cast<double>(logits_[i] * inv_T_));
+      double sum = 0.0;
+      for (size_t i = 0; i < C_; ++i)
+        sum += std::exp(static_cast<double>(logits_[i] * inv_T_) - max_);
+      log_sum_ = std::log(sum);
+      reduced_ = true;
+    }
+    return log_sum_ - (static_cast<double>(logits_[c] * inv_T_) - max_);
+  }
+
+ private:
+  const float* logits_;
+  size_t C_;
+  float inv_T_;
+  bool reduced_ = false;
+  double max_ = 0.0, log_sum_ = 0.0;
+};
+[[nodiscard]] inline double NegLogPicked(float p, const float* logits, size_t C,
+                                         size_t c, float inv_T) {
+  return PickedRow(logits, C, inv_T).NegLog(p, c);
+}
 // loss = -(1/N) sum_n log softmax(logits)_n[label_n]; probs cached for bwd.
 void SoftmaxXEntFwd(const float* logits, const int32_t* labels, float* loss,
                     float* probs, size_t N, size_t C);

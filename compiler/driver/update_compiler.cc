@@ -15,6 +15,7 @@
 #include "compiler/backend/assembly/plan_assembly.h"
 #include "compiler/backend/selection/instruction_lowering.h"
 #include "compiler/diagnostics/generating/error.h"
+#include "compiler/diagnostics/updating/error.h"
 #include "compiler/driver/contract.h"
 #include "compiler/driver/statistics.h"
 #include "compiler/frontend/accountant/resource_analyzer.h"
@@ -844,9 +845,10 @@ Status Compilation::StructuralPasses() {
         // The document separator DecideSegmentMask found (#218): the id
         // the pack stage joined the documents with.
         if (segment_separator < 0)
-          return std::unexpected(std::string(
-              "segment mask: the model's tokenizer section names no "
-              "EOS id to find document boundaries by"));
+          return seeml::diag::updating::Error(
+              seeml::diag::updating::kSegmentMasker,
+              "the model's tokenizer section names no EOS id to find "
+              "document boundaries by");
         auto masked = SegmentMasker(build.input, segment_separator).Run(b);
         if (!masked) return std::unexpected(masked.error());
         facts.segment_masked_ops = *masked;

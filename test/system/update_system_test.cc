@@ -156,8 +156,17 @@ float PortableUniform(std::mt19937_64& rng) {  // [-1, 1), same everywhere
   return static_cast<float>(static_cast<double>(rng() >> 11) * 0x1p-52 - 1.0);
 }
 
+// The tolerance is the estimator's, not the calculus's: a central
+// difference of an f32 loss at eps 2e-3 disagrees with a correct gradient
+// by up to 0.6 % of |numeric| + |analytic| over every model in this file,
+// on the coordinates tall enough to judge (measured 2026-11-25, Apple
+// clang), plus the loss's own rounding. The bound is that rounding plus
+// 1 %; it was "under the rounding, or within 2 % (3 % for the decoders)".
+// What holds the calculus tighter than any finite difference can is
+// test/tool/torch_step_test.py: the compiled step against torch.autograd
+// in float64, at 1e-4.
 void GradientCheck(const CompiledUpdate& compiled, UpdateEngine& engine,
-                   uint64_t nudge_seed, double tol = 2e-2,
+                   uint64_t nudge_seed, double tol = 1e-2,
                    bool portable = false) {
   std::mt19937_64 rng(nudge_seed);
   std::normal_distribution<float> dist(0.0f, 1.0f);
@@ -169,7 +178,7 @@ void GradientCheck(const CompiledUpdate& compiled, UpdateEngine& engine,
 
   engine.ExecuteTrainOnce();
   const double eps = 2e-3;
-  size_t checked = 0;
+  size_t checked = 0, resolved = 0;
 
   for (const auto& p : compiled.params) {
     // Sample a few coordinates per parameter tensor.
@@ -187,22 +196,25 @@ void GradientCheck(const CompiledUpdate& compiled, UpdateEngine& engine,
       WriteArenaF32(engine, p.param_ref, i, saved);
 
       const double numeric = (plus - minus) / (2.0 * eps);
-      const double denom =
-          std::max(1e-4, std::fabs(numeric) + std::fabs(analytic));
-      const double rel = std::fabs(numeric - analytic) / denom;
+      const double size = std::fabs(numeric) + std::fabs(analytic);
       // The loss is a single f32 (ulp ~1e-7 near 1.0), so the central
-      // difference cannot resolve gradients below ~ulp/(2*eps) ≈ 5e-5.
-      // Accept absolute disagreement inside that estimator noise floor;
-      // demand relative agreement for everything the estimator can see.
+      // difference cannot resolve gradients below ~ulp/(2*eps) ≈ 5e-5:
+      // that noise is absolute, and it is added to the relative bound, not
+      // offered as an alternative to it.
       const double noise_floor = 1e-4;
-      if (std::fabs(numeric - analytic) >= noise_floor && rel >= tol)
+      if (std::fabs(numeric - analytic) >= noise_floor + tol * size)
         ADD_FAILURE("param " + p.id + "[" + std::to_string(i) + "]: analytic " +
                     std::to_string(analytic) + " vs numeric " +
                     std::to_string(numeric));
       ++checked;
+      // A coordinate the estimator can actually judge: a gradient a
+      // hundred noise floors tall. The floor above passes anything smaller
+      // unseen, so the check counts what it saw (review 2026-11-25).
+      resolved += size >= 1e-2;
     }
   }
   EXPECT_GE(checked, 20u);
+  EXPECT_GE(2 * resolved, checked);
 }
 
 TEST(UpdateSystem, GradientsMatchFiniteDifferences) {
@@ -251,7 +263,7 @@ TEST(UpdateSystem, Bf16BaseGradientsMatchFiniteDifferences) {
   std::vector<float> x(batch * dim);
   for (auto& v : x) v = dist(rng);
   FillSlots(engine, x, {1, 2, 0, 1, 2, 0, 1, 2});
-  GradientCheck(compiled, engine, 2424, /*tol=*/3e-2);
+  GradientCheck(compiled, engine, 2424);
 }
 
 TEST(UpdateSystem, Bf16BaseTrainsWithinADriftBudgetOfF32) {
@@ -653,10 +665,11 @@ TEST(UpdateSystem, NewOperatorGradientsMatchFiniteDifferences) {
   std::vector<float> x(batch * in_dim);
   for (auto& v : x) v = dist(rng);
   // LayerNorm's per-row normalization amplifies central-difference
-  // truncation noise on small gradients: allow 3% instead of 2%.
+  // truncation noise on small gradients; it stays inside GradientCheck's
+  // one bound (the loss's rounding plus 1 %), as every model here does.
   FillSlots(engine, x, {1, 2});
 
-  GradientCheck(compiled, engine, 4242, /*tol=*/3e-2);
+  GradientCheck(compiled, engine, 4242);
 }
 
 // =============================================================================
@@ -689,8 +702,9 @@ TEST(UpdateSystem, TransformerGradientsMatchFiniteDifferences) {
   for (auto& v : x) v = dist(rng);
   FillSlots(engine, x, {1, 2, 0, 1, 2, 0, 1, 2});
   // Normalization layers and the softmax inside attention amplify
-  // central-difference truncation noise, as with LayerNorm above.
-  GradientCheck(compiled, engine, 2323, /*tol=*/3e-2);
+  // central-difference truncation noise, as with LayerNorm above — still
+  // inside the one bound.
+  GradientCheck(compiled, engine, 2323);
 }
 
 TEST(UpdateSystem, TransformerTrainsMergesAndCommits) {
@@ -866,7 +880,7 @@ TEST(UpdateSystem, QuantizedBaseTrainsAndCommitsWithoutBakingError) {
     std::vector<int32_t> labels(batch);
     for (auto& l : labels) l = static_cast<int32_t>(rng() % out_dim);
     FillSlots(ge, x, labels);
-    GradientCheck(gplan, ge, 7, /*tol=*/2e-2, /*portable=*/true);
+    GradientCheck(gplan, ge, 7, /*tol=*/1e-2, /*portable=*/true);
   }
 
   // End-to-end on the saved artifact: train, merge, commit. The committed
@@ -937,7 +951,7 @@ TEST(UpdateSystem, TokenDecoderGradientsMatchFiniteDifferences) {
     labels[i] = t;
   }
   seeml::testing::FillTokenSlots(engine, tokens, labels);
-  GradientCheck(compiled, engine, 3737, /*tol=*/3e-2);
+  GradientCheck(compiled, engine, 3737);
 }
 
 TEST(UpdateSystem, TokenDecoderResumeMatchesUninterruptedRun) {
@@ -1548,7 +1562,7 @@ TEST(UpdateSystem, TiledAttentionGradientsMatchFiniteDifferences) {
     labels[i] = t;
   }
   seeml::testing::FillTokenSlots(engine, tokens, labels);
-  GradientCheck(compiled, engine, 3737, /*tol=*/3e-2);
+  GradientCheck(compiled, engine, 3737);
 }
 
 // =============================================================================
@@ -1793,7 +1807,7 @@ TEST(UpdateSystem, SegmentMaskedGradientsMatchFiniteDifferences) {
     const std::vector<int32_t> tokens = {7, 3, 1, 4, 2, 3, 9, 6};
     const std::vector<int32_t> labels = {3, 1, 4, 2, 3, 9, 6, 8};
     seeml::testing::FillTokenSlots(engine, tokens, labels);
-    GradientCheck(compiled, engine, 3737, /*tol=*/3e-2);
+    GradientCheck(compiled, engine, 3737);
   }
 }
 

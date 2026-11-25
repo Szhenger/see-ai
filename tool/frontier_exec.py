@@ -1580,6 +1580,21 @@ def _softmax(x, t):
     return e / x.sum(e, -1, keepdims=True)
 
 
+PROB_FLOOR = 1e-12  # kernels::kPickedProbFloor
+
+
+def _log_probs(x, logits, probs):
+    """log of every probability of softmax rows, as the loss family reads
+    it: the probability's own log at or above the floor (the bits the
+    kernels always computed), and below it — where an f32 probability has
+    underflowed and its log would say 27.63 for any row — the log-softmax
+    of the row's logits."""
+    shifted = logits - x.max(logits, -1)
+    exact = shifted - x.log(x.sum(x.exp(shifted), -1, keepdims=True))
+    return x.where(probs >= PROB_FLOOR, x.log(x.maximum(probs, PROB_FLOOR)),
+                   exact)
+
+
 def _heads(x, t, b, s, h, d):
     """[B*S, H*d] rows with heads interleaved -> [B, H, S, d]."""
     return x.perm(t.reshape((b, s, h, d)), (0, 2, 1, 3))
@@ -1729,11 +1744,12 @@ def _reduce_rows(m, x, ins, step):
 
 def _xent_fwd(m, x, ins, step):
     n, c = ins.out[0], ins.out[1]
-    probs = _softmax(x, m.read(ins.src[0], (n, c)))
+    logits = m.read(ins.src[0], (n, c))
+    probs = _softmax(x, logits)
     hot = x.one_hot(m.read(ins.src[1], (n,), "<i4"), c)
-    picked = x.maximum(x.sum(probs * hot, -1), 1e-12)  # the underflow clamp
+    picked = x.sum(_log_probs(x, logits, probs) * hot, -1)
     m.write(ins.src[3], probs)
-    m.write(ins.src[2], (-x.sum(x.log(picked), 0) / n).reshape((1,)))
+    m.write(ins.src[2], (-x.sum(picked, 0) / n).reshape((1,)))
 
 
 def _xent_bwd(m, x, ins, step):
@@ -1749,11 +1765,11 @@ def _xent_masked_fwd(m, x, ins, step):
     # (0 when a batch has none), the probabilities are written for every
     # row (the accuracy tail reads them).
     n, c = ins.out[0], ins.out[1]
-    probs = _softmax(x, m.read(ins.src[0], (n, c)))
+    logits = m.read(ins.src[0], (n, c))
+    probs = _softmax(x, logits)
     labels = m.read(ins.src[1], (n,), "<i4")
     target, weight, hot, count = _masked_targets(x, labels, c, probs.dtype)
-    picked = x.maximum(x.sum(probs * hot, -1), 1e-12)
-    logs = x.log(picked)
+    logs = x.sum(_log_probs(x, logits, probs) * hot, -1)
     # The ignored slot's zero comes from the finite weight, never from the
     # row's own log (0 * NaN is NaN, and the device never reads the row).
     kept = x.where(target, logs, 0.0 * weight)
@@ -1808,10 +1824,11 @@ def _kl_words(word):
 def _kl_fwd(m, x, ins, step):
     n, c = hi_lo(ins.out[1])
     temperature, scale = _kl_words(ins.out[2])
-    p_s = _softmax(x, m.read(ins.src[0], (n, c)) / temperature)
+    s_logits = m.read(ins.src[0], (n, c)) / temperature
+    p_s = _softmax(x, s_logits)
     p_t = _softmax(x, m.read(ins.src[1], (n, c)) / temperature)
     terms = x.where(p_t > 0.0, p_t * (x.log(x.maximum(p_t, 1e-30)) -
-                                      x.log(x.maximum(p_s, 1e-12))), 0.0 * p_t)
+                                      _log_probs(x, s_logits, p_s)), 0.0 * p_t)
     m.write(ins.src[3], p_s)
     m.write(ins.out[0], p_t)
     m.write(ins.src[2], (scale * x.sum(x.sum(terms, -1), 0) / n).reshape((1,)))
@@ -2388,7 +2405,7 @@ INTERPRETER = {
     0: _nop, 1: _gemm_nn("<f4"), 2: _gemm_nt("<f4"), 3: _gemm_tn,
     4: _gemm_acc, 5: _binary(lambda x, a, b: a + b), 6: _add_bias,
     7: _unary(lambda x, t: x.maximum(t, 0.0)),
-    8: _binary(lambda x, dy, v: x.where(v > 0.0, dy, 0.0 * dy)), 9: _scale,
+    8: _binary(lambda x, dy, v: x.where(v <= 0.0, 0.0 * dy, dy)), 9: _scale,
     10: _reduce_rows, 11: _xent_fwd, 12: _xent_bwd, 13: _mse_fwd,
     14: _mse_bwd, 15: _kl_fwd, 16: _kl_bwd, 17: _sgd, 18: _adamw, 19: _fill,
     20: _copy, 21: _binary(lambda x, a, b: a * b),
@@ -2479,16 +2496,24 @@ class Executor:
 
     def _eval_tail(self):
         """How the engine scores a final batch's real rows (G13): ("xent",
-        probs, labels, classes) or ("mse", pred, target, per_row) for a
-        lone row-separable loss, else ("weighted",)."""
+        probs, labels, classes, logits) or ("mse", pred, target, per_row)
+        for a lone row-separable loss, else ("weighted",). The logits are
+        named as the loader names them (ScanEvalTail): only when the
+        softmax is the program's last instruction, so nothing after it can
+        have written over them — otherwise None, and a row below the
+        probability floor keeps the floor."""
         p = self.plan
+        last = p.sections["eval"][-1] if p.sections["eval"] else None
         for ins in p.sections["eval"]:
+            logits_ref = ins.src[0] if ins is last else None
             if ins.opcode == 11 and ins.src[2] == p.loss_ref and \
                     ins.out[0] == p.batch:
-                return ("xent", ins.src[3], ins.src[1], ins.out[1])
+                return ("xent", ins.src[3], ins.src[1], ins.out[1],
+                        logits_ref)
             if ins.opcode == 51 and ins.src[2] == p.loss_ref and \
                     ins.out[0] == p.batch:
-                return ("xent_masked", ins.src[3], ins.src[1], ins.out[1])
+                return ("xent_masked", ins.src[3], ins.src[1], ins.out[1],
+                        logits_ref)
             if ins.opcode == 13 and ins.src[2] == p.loss_ref and \
                     p.batch and ins.out[0] % p.batch == 0:
                 return ("mse", ins.src[0], ins.src[1], ins.out[0] // p.batch)
@@ -2500,9 +2525,11 @@ class Executor:
         the kernels' own row expressions. A masked loss counts the target
         rows alone."""
         if tail[0] in ("xent", "xent_masked"):
-            _, probs_ref, labels_ref, classes = tail
+            _, probs_ref, labels_ref, classes, logits_ref = tail
             probs = self.x.to_numpy(self.mem.read(
                 probs_ref, (self.plan.batch, classes)))
+            logits = None if logits_ref is None else self.x.to_numpy(
+                self.mem.read(logits_ref, (self.plan.batch, classes)))
             labels = self.x.to_numpy(self.mem.read(
                 labels_ref, (self.plan.batch,), "<i4"))
             total, counted = 0.0, 0
@@ -2510,7 +2537,16 @@ class Executor:
                 if int(labels[r]) < 0:
                     continue
                 pr = float(probs[r, int(labels[r])])
-                total -= math.log(pr if pr != pr else max(pr, f32(1e-12)))
+                if pr != pr or pr >= f32(PROB_FLOOR):
+                    total -= math.log(pr)
+                elif logits is None:  # no logits named: the floor
+                    total -= math.log(f32(PROB_FLOOR))
+                else:  # underflowed: the row's own logits (NegLogPicked)
+                    z = [float(v) for v in logits[r]]
+                    top = max(z)
+                    total += math.log(math.fsum(
+                        math.exp(v - top) for v in z)) - (
+                            z[int(labels[r])] - top)
                 counted += 1
             return total, counted
         if tail[0] == "mse":

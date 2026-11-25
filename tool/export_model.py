@@ -1156,6 +1156,27 @@ def reference_decoder_logits(embedding, blocks, head, num_heads: int,
     return (nf @ head["w_head"]).astype(np.float32)
 
 
+# What --hf-parity accepts: max |Δ logits| within this fraction of
+# 1 + max |logits|. f32 forwards of the same function differ by rounding —
+# SmolLM-135M reproduces transformers to 6.4e-05 on logits of order 10 — and
+# a conversion that is wrong (a dropped bias, a rotation on the wrong
+# tensor, a head repeated the other way) differs by the logits' own size.
+HF_PARITY_RTOL = 1e-3
+
+
+def hf_parity_problem(delta: float, scale: float):
+    """None when a logits delta is parity, else why it is not. Until
+    2026-11-25 any finite delta was recorded as a parity that had been
+    checked; a report that says so now means the delta passed this."""
+    import math
+    bound = HF_PARITY_RTOL * (1.0 + scale)
+    if math.isfinite(delta) and math.isfinite(scale) and 0.0 <= delta <= bound:
+        return None
+    return (f"the converted model does not reproduce transformers: max "
+            f"|Δ logits| = {delta:.3g} against a bound of {bound:.3g} "
+            f"({HF_PARITY_RTOL:g} × (1 + max |logits| {scale:.3g}))")
+
+
 def hf_parity(model_dir: str, conv: dict, batch: int = 2, seed: int = 0):
     """max |Δ logits| between the SeeAI-semantics NumPy forward of the
     converted arrays and `transformers`' forward of the checkpoint on
@@ -1462,7 +1483,9 @@ if __name__ == "__main__":
     parser.add_argument("--hf-parity", action="store_true",
                         help="--hf only: after the export, compare the "
                              "SeeAI-semantics NumPy forward against "
-                             "transformers (needs torch + transformers)")
+                             "transformers (needs torch + transformers); a "
+                             "delta above 1e-3 x (1 + max |logits|) "
+                             "withdraws the export")
     parser.add_argument("--no-tokenizer", action="store_true",
                         help="--hf only: export without the SMF tokenizer "
                              "section (SMF v7; the default writes it from "
@@ -1608,6 +1631,10 @@ if __name__ == "__main__":
                                    tokenizer_section=conv["tokenizer_section"])
             if args.hf_parity:
                 delta, scale = hf_parity(args.hf[0], conv)
+                why = hf_parity_problem(delta, scale)
+                if why:
+                    withdraw_export(args.hf[1])
+                    raise ValueError(f"{why}; the export is withdrawn")
                 logits_delta = delta
                 print(f"hf parity: max |Δ logits| = {delta:.3g} "
                       f"(max |logits| {scale:.3g}) vs transformers",

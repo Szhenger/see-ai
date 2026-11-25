@@ -763,11 +763,20 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
                             "; ".join(cert.get("reasons", [])))
         # A tolerance of zero (or NaN, or infinity) certifies nothing:
         # every site measures inside it or nothing does (review F41).
+        # A JSON `true` is an int to Python (and 1.0 to every comparison
+        # here), and the ceiling check skips booleans: it passed both and
+        # certified at a tolerance of 1 (review 2026-11-25).
         for key, value in cert["tolerances"].items():
-            if not (isinstance(value, (int, float)) and
+            if isinstance(value, bool) or not (
+                    isinstance(value, (int, float)) and
                     math.isfinite(value) and value > 0.0):
                 problems.append(f"tolerance {key} is not a positive "
                                 f"finite number ({value!r})")
+        # The site tolerance is the one every certificate enforces and
+        # the one the packer reports; a document without it was attested
+        # first and failed on the lookup after.
+        if "site_rel" not in cert["tolerances"]:
+            problems.append("the certificate states no site_rel tolerance")
         if cert["contract"]["family"] not in FAMILIES:
             problems.append(f"unknown contract family "
                             f"{cert['contract']['family']!r}")
@@ -791,7 +800,10 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
                 problems.append(f"the plan carries {count} relaxed "
                                 f"instruction(s) at the {name} site the "
                                 "certificate does not cover")
-    except (KeyError, TypeError) as e:
+    except (KeyError, TypeError, AttributeError) as e:
+        # AttributeError: a section that is not the object it should be
+        # (`"tolerances": []` has no .items()) is a malformed document, not
+        # a traceback where the package is built.
         problems.append(f"malformed certificate ({e!r})")
     return problems
 
