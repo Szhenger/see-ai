@@ -82,10 +82,27 @@ inline int64_t WriteSome(FileHandle f, const uint8_t* data, size_t n,
 #endif
 }
 
-/// Forces the file's data to stable storage: fsync / FlushFileBuffers.
+#ifndef _WIN32
+/// One descriptor to stable storage. On Darwin fsync(2) hands the bytes to
+/// the drive and returns while they may still sit in the drive's own
+/// cache — a power cut after it can lose them, or keep a later write and
+/// lose an earlier one — so the durable step there is fcntl(F_FULLFSYNC),
+/// which fsyncs and then has the drive flush (review 2026-11-25; fsync(2)
+/// and fcntl(2) say so themselves). A filesystem that does not implement
+/// it (the call fails) gets the fsync every other POSIX host gets.
+[[nodiscard]] inline bool SyncDescriptor(int fd) {
+#ifdef __APPLE__
+  if (::fcntl(fd, F_FULLFSYNC) == 0) return true;
+#endif
+  return ::fsync(fd) == 0;
+}
+#endif
+
+/// Forces the file's data to stable storage: F_FULLFSYNC on Darwin, fsync
+/// on every other POSIX host, FlushFileBuffers on Win32.
 [[nodiscard]] inline bool SyncFile(FileHandle f) {
 #ifndef _WIN32
-  return ::fsync(static_cast<int>(f)) == 0;
+  return SyncDescriptor(static_cast<int>(f));
 #else
   return ::FlushFileBuffers(reinterpret_cast<HANDLE>(f)) != 0;
 #endif
@@ -142,7 +159,7 @@ inline void RemoveFile(const std::string& path) {
 /// SyncFile for a stdio stream (already fflush'ed by the caller).
 [[nodiscard]] inline bool SyncStream(std::FILE* f) {
 #ifndef _WIN32
-  return ::fsync(::fileno(f)) == 0;
+  return SyncDescriptor(::fileno(f));
 #else
   return ::FlushFileBuffers(
              reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)))) != 0;
@@ -209,7 +226,7 @@ inline std::string ParentDirectory(const std::string& path) {
 #ifndef _WIN32
   const int dfd = ::open(ParentDirectory(path).c_str(), O_RDONLY);
   if (dfd < 0) return false;
-  const bool synced = ::fsync(dfd) == 0;
+  const bool synced = SyncDescriptor(dfd);
   ::close(dfd);
   return synced;
 #else
