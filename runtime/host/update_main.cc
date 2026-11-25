@@ -1138,13 +1138,22 @@ struct ReportContext {
     str(error);
   }
   std::fputs("\n}\n", f);
-  const bool bad = std::ferror(f) != 0;
+  // The report is the one record of what this run decided; it is synced
+  // before it takes its name, like the model it describes (review
+  // 2026-11-25: it was renamed unsynced, so after a power cut the commit
+  // could be on the medium and its report not).
+  const bool bad = std::ferror(f) != 0 || std::fflush(f) != 0 ||
+                   !seeml::platform::SyncStream(f);
   if (std::fclose(f) != 0 || bad ||
       std::rename(staged.c_str(), report_path.c_str()) != 0) {
     std::fprintf(stderr, "seeml-update: failed writing --report '%s'\n",
                  report_path.c_str());
     std::remove(staged.c_str());
     outputs_ok = false;
+  } else {
+    // Best effort, as the storage writer's is: the rename reaches the
+    // directory.
+    (void)seeml::platform::SyncParentDirectory(report_path);
   }
   return outputs_ok;
 }

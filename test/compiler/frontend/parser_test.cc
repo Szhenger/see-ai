@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "compiler/frontend/computation/parser.h"
+#include "compiler/frontend/topology/sema.h"
 #include "compiler/frontend/representation/sir.h"
 #include "source/language/model_format.h"
 #include "test/framework/seetest.h"
@@ -294,6 +295,20 @@ TEST(ForwardBuilder, RejectsDuplicateOutputName) {
   EXPECT_ERROR_CONTAINS(
       BuildForward(block, model, "", build.input, kBatch, build),
       "redefines an existing value");
+}
+
+TEST(ForwardBuilder, RejectsATensorDeclaringMoreThanItHolds) {
+  // Review 2026-11-25: byte_size is what the passes sweep from the
+  // payload's first byte; a model built in memory was never held to it.
+  SmfModel model = seeml::testing::MakeMlp(4, 5, 3, 1);
+  ASSERT_OK(seeml::update::sema::VerifyModel(model, kBatch));
+  for (SmfTensor& t : model.tensors)
+    if (t.is_const) {
+      t.byte_size = t.data.size() + 64;
+      break;
+    }
+  EXPECT_ERROR_CONTAINS(seeml::update::sema::VerifyModel(model, kBatch),
+                        "bytes and holds");
 }
 
 TEST(ForwardBuilder, RejectsAnOperatorNothingReads) {

@@ -640,6 +640,29 @@ inline std::string ResolvedText(const UpdateConfig& c) {
     text += value;
     text += '\n';
   }
+  // The pass switches (--no-fuse-epilogue, --no-fuse-addend,
+  // --no-fuse-elementwise, --no-fuse-clip, --no-rope-table) are not recipe
+  // fields — they exist to diff a plan against itself — but each changes
+  // the program, and two different programs shared one recipe hash
+  // (review 2026-11-25). A switch that is off is a line; at their defaults
+  // the text, and so every existing plan's hash, is what it was.
+  //
+  // Two things the hash still does not say, on purpose: `segment_mask`
+  // records the request (under `auto` the decision is the corpus's, and
+  // the corpus has its own hash in the header), and the GEMM tiles are the
+  // kernel policy's (a host's, in the header, never bits).
+  const std::pair<const char*, bool> switches[] = {
+      {"fuse_epilogues", c.fuse_epilogues},
+      {"fuse_gemm_addend", c.fuse_gemm_addend},
+      {"fuse_elementwise", c.fuse_elementwise},
+      {"fuse_clip", c.fuse_clip},
+      {"rope_table", c.rope_table},
+  };
+  for (const auto& [name, on] : switches)
+    if (!on) {
+      text += name;
+      text += "=no\n";
+    }
   return text;
 }
 

@@ -381,7 +381,10 @@ class GateTest(unittest.TestCase):
         self.assertIn("WARN dec_v512_d192_s32@1t/cpu", gate.log)
         missing = report(1.0, night=2)
         del missing["fixtures"]["dec_v512_d192_s32"]
-        self.assertEqual(gate.night(missing), 0)
+        # Unmeasured is itself a failure now; said to be on purpose, the
+        # red it leaves behind is still neither cleared nor promoted over.
+        self.assertEqual(gate.night(missing), 1)
+        self.assertEqual(gate.night(missing, extra=["--allow-removed"]), 0)
         self.assertNotIn("CLEARED dec_v512_d192_s32", gate.log)
         self.assertIn("not measured now; it stays red", gate.log)
         # Measured again and still slow: the second red fails.
@@ -538,6 +541,38 @@ class GateTest(unittest.TestCase):
                            for k, v in rep["fixtures"].items()}
         self.assertEqual(gate.night(rep), 1)
         self.assertIn("would be blind", gate.log)
+
+    def test_a_fixture_the_bench_did_not_run_fails_and_is_not_promoted(self):
+        # Review 2026-11-25: a key in the baseline and not in tonight's
+        # report was a SKIP, the gate was green, and --promote replaced the
+        # baseline with the smaller report — the fixture gone for good.
+        gate = Gate(self.tmp, epoch=False)
+        self.assertEqual(gate.night(report(1.0)), 0)
+        before = gate.baseline_report()
+        rep = report(1.0, night=1)
+        dropped = sorted(rep["fixtures"])[0]
+        del rep["fixtures"][dropped]
+        self.assertEqual(gate.night(rep), 1)
+        self.assertIn("the bench did not measure it", gate.log)
+        self.assertIn(dropped, gate.log)
+        self.assertEqual(gate.baseline_report(), before)
+        # Said on purpose, it is a note, and the smaller report promotes.
+        self.assertEqual(gate.night(rep, extra=["--allow-removed"]), 0)
+        self.assertNotIn(dropped, gate.baseline_report()["fixtures"])
+
+    def test_a_rate_that_is_not_a_number_is_red(self):
+        # NaN fails every comparison, so `delta < -max` printed OK for it.
+        for bad in (float("nan"), 0.0, -5.0, float("inf")):
+            tmp = tempfile.mkdtemp(dir=self.tmp)
+            gate = Gate(tmp, epoch=False, state=False)
+            self.assertEqual(gate.night(report(1.0)), 0)
+            rep = report(1.0, night=1)
+            name = sorted(rep["fixtures"])[0]
+            cells = rep["fixtures"][name]["threads"]
+            first = sorted(cells)[0]
+            cells[first] = {"rows_per_s": bad}
+            self.assertEqual(gate.night(rep), 1, (bad, gate.log))
+            self.assertIn("is not a rate", gate.log)
 
     def test_different_kernel_policies_are_an_error(self):
         gate = Gate(self.tmp, epoch=False)

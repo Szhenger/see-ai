@@ -197,6 +197,33 @@ passes (`SKIP()`, S8 #154). A check that cannot run *must* say so and step
 aside — a skipped check that pretends to be a passed check is how CI
 lies to you.
 
+Saying so is half of it; the other half is that something reads what was
+said. The step after the suites greps the skips on the macOS cell and
+fails on any but the one this runner is known to take — the relaxed-GEMM
+test, whose kernels need a Metal 4 tensor-op library the runner's
+paravirtual GPU does not have. An image that lost its Metal device
+altogether would otherwise turn the whole Metal suite into counted skips
+under a green check (review 2026-11-25).
+
+Three more steps close holes of the same kind — code that was built or
+run nowhere a tool could see it:
+
+- **The runner end to end.** `runtime/host/update_main.cc` is the device's
+  `main`, and until 2026-11-25 only an emitted package ever compiled it.
+  The tree now builds it in its disk mode (`build/seeml-model-update`),
+  and `test/system/runner_disk_mode.sh` compiles the golden model, runs
+  it, and holds the exit codes to the table. The same script is a `ctest`
+  test, so the ASan + UBSan job runs the runner too, and CodeQL — which
+  follows `build.sh` — analyses it.
+- **Metal under the sanitizers.** The ASan + UBSan job is Linux, where no
+  `.mm` file compiles. The macOS cell builds the Metal suite and the
+  engine suite with both sanitizers and runs them on the runner's GPU.
+- **Parity without a download.** The e2e job's Python suite compares the
+  compiled plan of a synthetic Llama with `transformers`' own loss, and
+  the C++ tokenizer with a tokenizer the `tokenizers` library trains on
+  this repository's docs — the checks that needed a cached SmolLM-135M
+  and so ran in no job.
+
 Two steps here hold the house style (`STYLE.md`) rather than behavior.
 The clang cell runs `clang-format-19 --dry-run -Werror` over every
 tracked `.cc`, `.h` and `.mm`: the formatter is the rule, and it must be

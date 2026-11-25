@@ -1195,6 +1195,21 @@ Status Compilation::Rematerialize() {
             std::to_string(remat.declined) +
             " declined (no net saving); arena " + std::to_string(plain_arena) +
             " -> " + std::to_string(AlignUp(binding->arena_size)) + " B");
+    // The pass declines a value whose recompute would keep as much as it
+    // frees, one value at a time; a chain of them can still net nothing
+    // (review 2026-11-25: eighty stacked recomputes, 0 B saved). The
+    // binding is the measurement, so the trade that bought nothing is
+    // said aloud rather than left to the arena row of the report.
+    if (remat.recomputed_values > 0 &&
+        AlignUp(binding->arena_size) >= plain_arena)
+      seeml::diag::Fallback(
+          generating::kDriver,
+          "rematerialization recomputes " +
+              std::to_string(remat.recomputed_values) +
+              " value(s) every step and the arena is no smaller (" +
+              std::to_string(AlignUp(binding->arena_size)) +
+              " B): the plan pays the instructions for no memory — "
+              "compile with --remat off");
     phase("rebind-arena", block.numOps());
   }
   return {};

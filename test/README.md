@@ -40,6 +40,7 @@ test/
     dispatcher/         engine  update_engine
   system/               the cross-half end-to-end update
     update_system_test
+    runner_disk_mode.sh the device's main as the tree builds it (build/seeml-model-update): compile, run, the exit-code table; ctest runs it, sanitizers included
   fuzz/                 the fuzz harness, its seed corpus, and the suite that replays it
     binary_formats.cc   the harness: nine arms behind one entry point (libFuzzer under -DSEEML_FUZZ=ON)
     fuzz_reach.h        the input framing, and the counters of what the inputs reached
@@ -64,7 +65,7 @@ test/
     fuzz_seeds_test.py        test/fuzz/seeds/ is what test/fuzz/make_seeds.py writes today: byte for byte but for the plans, which the replay suite holds to being accepted
     masked_loss_test.py       the masked cross-entropy kernels of the oracle against PyTorch's cross_entropy(ignore_index=-1) and its gradient
     pack_update_test.py       tool/pack_update.py, the package assembler, on fabricated package directories
-    torch_step_test.py        the compiled train step next to PyTorch: a decoder and an MLP written in torch (float64), compiled with LoRA, a few steps through seeml-plan-probe, the adapters against torch.autograd and torch.optim (tier 2: torch)
+    torch_step_test.py        the compiled plan of a synthetic Llama imported through --hf scores what transformers' own forward scores (tier 2: transformers); and the compiled train step next to PyTorch: a decoder and an MLP written in torch (float64), compiled with LoRA, a few steps through seeml-plan-probe, the adapters against torch.autograd and torch.optim (tier 2: torch)
     recipe_test.py            the recipe at the command line: a recipe file compiles to the plan its flags compile to; the refusals name the field
     runner_stop_test.py       cooperative cancellation and --threads through a built model_update: SIGTERM stops at a step boundary, exit 5, resumable
     runner_text_test.py       raw text on the device: a run on .txt / .jsonl commits the bytes a run on the compiler's canonical SDS commits

@@ -153,6 +153,72 @@ class SectionBuilderTest(unittest.TestCase):
         self.assertNotEqual(a, content_hash.content_hash64(b"abc\x00"))
 
 
+@unittest.skipUnless(have_tokenizers(), "needs tokenizers (tier 2)")
+@unittest.skipUnless(os.path.isfile(TOKENIZE),
+                     "no built seeml-tokenize (build the tree)")
+class TrainedTokenizerParityTest(unittest.TestCase):
+    """The C++ tokenizer against the `tokenizers` library with no download
+    (review 2026-11-25). The SmolLM parity test below needs a cached
+    checkpoint, so in CI nothing compared the core with the reference at
+    all. Here the reference TRAINS a byte-level BPE on the repository's own
+    documentation — a few hundred real merges, the full byte alphabet, a
+    special token — in both pre-tokenizer shapes the core implements, and
+    the core must produce the reference's ids on the adversarial corpus
+    (every line, and the file as one document)."""
+
+    def train(self, directory, digits):
+        from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+        from tokenizers import trainers
+        tok = Tokenizer(models.BPE())
+        byte_level = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        tok.pre_tokenizer = (pre_tokenizers.Sequence([
+            pre_tokenizers.Digits(individual_digits=True), byte_level])
+            if digits else byte_level)
+        tok.decoder = decoders.ByteLevel()
+        trainer = trainers.BpeTrainer(
+            vocab_size=900, special_tokens=["<|eot|>"], show_progress=False,
+            initial_alphabet=pre_tokenizers.ByteLevel.alphabet())
+        docs = sorted(glob.glob(os.path.join(REPO, "docs", "*.md")))
+        tok.train(docs + [CORPUS], trainer)
+        tok.save(os.path.join(directory, "tokenizer.json"))
+        with open(os.path.join(directory, "tokenizer_config.json"), "w") as f:
+            json.dump({"eos_token": "<|eot|>"}, f)
+        return tok.get_vocab_size()
+
+    def test_the_core_matches_a_tokenizer_the_reference_trained(self):
+        sys.path.insert(0, os.path.join(REPO, "tool"))
+        import export_model as em
+        import numpy as np
+        for digits in (True, False):
+            with self.subTest(digits=digits):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                vocab = self.train(d, digits)
+                self.assertGreater(vocab, 600)  # real merges were learned
+                section = ts.build_section(d)
+                dim, ffn = 8, 16
+                rng = np.random.default_rng(0)
+
+                def mat(rows, cols):
+                    return (rng.standard_normal((rows, cols)) *
+                            0.15).astype(np.float32)
+                blocks = [{
+                    "ln1_g": np.ones(dim, np.float32), "wq": mat(dim, dim),
+                    "wk": mat(dim, dim), "wv": mat(dim, dim),
+                    "wo": mat(dim, dim), "ln2_g": np.ones(dim, np.float32),
+                    "w_gate": mat(dim, ffn), "w_up": mat(dim, ffn),
+                    "w_down": mat(ffn, dim)}]
+                head = {"lnf_g": np.ones(dim, np.float32),
+                        "w_head": mat(dim, vocab)}
+                smf = os.path.join(d, "tiny.smf")
+                em.export_token_decoder_smf(
+                    mat(vocab, dim), blocks, head, smf, seq_len=4,
+                    num_heads=2, tokenizer_section=section)
+                n, ids = em.tokenizer_parity(d, smf, CORPUS, TOKENIZE)
+                self.assertGreater(n, 30)
+                self.assertGreater(ids, 500)
+
+
 @unittest.skipUnless(SMOLLM and have_tokenizers(),
                      "tier 2: needs the `tokenizers` package and a cached "
                      "SmolLM-135M checkpoint (~/.cache/huggingface)")

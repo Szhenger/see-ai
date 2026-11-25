@@ -238,6 +238,16 @@ target_link_libraries(seeml-tokenize PRIVATE seeml_update)
 add_executable(seeml-plan-probe tool/seeml_plan_probe.cc)
 target_link_libraries(seeml-plan-probe PRIVATE seeml_update_rt)
 
+# The device's main in the disk mode (no embedded plan; --plan names one).
+# An emitted package compiles runtime/host/update_main.cc itself; this
+# target exists so the file is also built by the tree — under its warnings
+# and, with SEEML_SANITIZE, under the sanitizers (the seeml_runner_disk_mode
+# test below runs it end to end).
+add_executable(seeml-model-update
+    runtime/host/update_main.cc
+    runtime/host/no_embedded_plan.cc)
+target_link_libraries(seeml-model-update PRIVATE seeml_update_rt seeml_tokenizer)
+
 # ==============================================================================
 # Tests
 #
@@ -279,6 +289,13 @@ function(seeml_add_test name src)
     target_link_libraries(${name} PRIVATE seeml_testing)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
+
+# The runner end to end, by its exit codes (test/system/runner_disk_mode.sh).
+add_test(NAME seeml_runner_disk_mode
+         COMMAND sh ${CMAKE_SOURCE_DIR}/test/system/runner_disk_mode.sh
+                 $<TARGET_FILE:seeml-update-compile>
+                 $<TARGET_FILE:seeml-model-update>
+                 ${CMAKE_SOURCE_DIR})
 
 seeml_add_test(seeml_hash_test              test/source/identity/hash_test.cc)
 seeml_add_test(seeml_split_test             test/source/contract/split_test.cc)

@@ -70,8 +70,9 @@ struct StepParams {
 /// and Flush reports it. One string, so a twin test can hold the two
 /// backends to the same words.
 inline constexpr const char* kNonFiniteNormRefusal =
-    "gradient norm is not finite — the step was refused with the parameters "
-    "and optimizer state untouched";
+    "gradient norm is not finite — the step was refused with this tensor's "
+    "parameters and optimizer state untouched; the run ends here and "
+    "nothing is committed";
 /// The 8-bit moment step's verdict (v27, #192) for a new moment that is not
 /// finite — or a stored block scale that is not a finite non-negative float
 /// — which no clip measured: refused before anything is written, as above.

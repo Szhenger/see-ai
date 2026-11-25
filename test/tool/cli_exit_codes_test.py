@@ -94,6 +94,19 @@ class CliExitCodes(unittest.TestCase):
                 self.exits(1, "seeml-update-compile", *argv)
         self.exits(0, "seeml-update-compile", "--version")
         self.exits(0, "seeml-update-compile", "--help")
+        # Review 2026-11-25: three lines that were not what the table says.
+        # --version in a value flag's slot asked for nothing (as --help).
+        done = self.exits(2, "seeml-update-compile", "--out", "--version")
+        self.assertIn("--out requires a value", done.stderr)
+        # A host key without its table is a contradiction, not a failure.
+        done = self.exits(2, "seeml-update-compile", *base,
+                          "--target-host", "some-host")
+        self.assertIn("pass the table with --kernel-policy", done.stderr)
+        # A flag given twice is named as that, not as unknown.
+        done = self.exits(2, "seeml-update-compile", *base, "--lr", "1e-3",
+                          "--lr", "2e-3")
+        self.assertIn("'--lr' is given more than once", done.stderr)
+        self.assertFalse(os.path.exists(out))
 
     def recipe_fields(self):
         with open(os.path.join(REPO, "tool", "seeml", "abi.json")) as f:
