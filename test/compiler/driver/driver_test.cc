@@ -6,6 +6,7 @@
 // =============================================================================
 
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -14,6 +15,7 @@
 #include "compiler/driver/contract.h"
 #include "compiler/driver/update_compiler.h"
 #include "compiler/frontend/representation/sir.h"
+#include "source/identity/hash.h"
 #include "source/language/model_format.h"
 #include "source/plan/update_types.h"
 #include "test/framework/seetest.h"
@@ -141,6 +143,28 @@ TEST(DriverContract, PlanContractRejectsInconsistentPlans) {
   CompiledUpdate hookless = compiled;
   hookless.adapters.pop_back();
   EXPECT_FALSE(VerifyGeneratedPlan(hookless, n).has_value());
+
+  // Review 2026-11-25: the compiler holds its own instructions to the
+  // device's validator, not only its header. A train instruction the
+  // device would refuse — here an opcode no ISA version defines, in a plan
+  // re-sealed so its hash is honest — does not leave the compiler.
+  CompiledUpdate lowered_wrong = compiled;
+  PlanHeader header;
+  std::memcpy(&header, lowered_wrong.plan.data(), sizeof(header));
+  UpdateInstruction first;
+  std::memcpy(&first, lowered_wrong.plan.data() + header.train_instr_offset,
+              sizeof(first));
+  first.opcode = 0x7FFF;
+  std::memcpy(lowered_wrong.plan.data() + header.train_instr_offset, &first,
+              sizeof(first));
+  header.plan_hash =
+      PlanSelfHash(lowered_wrong.plan.data(), lowered_wrong.plan.size(),
+                   offsetof(PlanHeader, plan_hash));
+  std::memcpy(lowered_wrong.plan.data(), &header, sizeof(header));
+  const auto r_low = VerifyGeneratedPlan(lowered_wrong, n);
+  ASSERT_FALSE(r_low.has_value());
+  EXPECT_TRUE(WellFormedDiagnostic(r_low.error()));
+  EXPECT_NE(r_low.error().find("fails the device's load"), std::string::npos);
 }
 
 // =============================================================================

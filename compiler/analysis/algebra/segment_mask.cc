@@ -2,9 +2,12 @@
 
 #include <vector>
 
+#include "compiler/diagnostics/updating/error.h"
+
 namespace seeml::update {
 
 namespace sir = seeml::sir;
+namespace updating = seeml::diag::updating;
 
 std::expected<size_t, std::string> SegmentMasker::Run(sir::Block& block) {
   std::vector<sir::Operation*> attention;
@@ -13,16 +16,17 @@ std::expected<size_t, std::string> SegmentMasker::Run(sir::Block& block) {
   });
   if (attention.empty()) return size_t{0};
   if (tokens_ == nullptr || tokens_->dtype() != sir::DataType::I32)
-    return std::unexpected(std::string(
-        "segment mask: the model reads no token ids to find documents in"));
+    return updating::Error(updating::kSegmentMasker,
+                           "the model reads no token ids to find documents in");
   const int64_t seq = attention.front()->getAttrAs<int64_t>("seq").value_or(0);
   for (sir::Operation* op : attention) {
     if (op->numOperands() != 3)
-      return std::unexpected(std::string(
-          "segment mask: an attention op already carries a fourth operand"));
+      return updating::Error(
+          updating::kSegmentMasker,
+          "an attention op already carries a fourth operand");
     if (op->getAttrAs<int64_t>("seq").value_or(0) != seq)
-      return std::unexpected(std::string(
-          "segment mask: attention ops disagree on the sequence length"));
+      return updating::Error(updating::kSegmentMasker,
+                             "attention ops disagree on the sequence length");
   }
   // Declared at the end, moved above the first attention op while it has no
   // operand (the move's own rule), then handed its one operand: the block's

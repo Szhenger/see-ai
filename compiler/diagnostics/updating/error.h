@@ -29,6 +29,7 @@ inline constexpr std::string_view kChainFuser = "ElementwiseChainFuser";
 inline constexpr std::string_view kAddendFuser = "GemmAddendFuser";
 inline constexpr std::string_view kAttentionTiling = "AttentionTiling";
 inline constexpr std::string_view kRematerializer = "Rematerializer";
+inline constexpr std::string_view kSegmentMasker = "SegmentMasker";
 
 /// Analytic failure in `unit`: "<unit>: <message>".
 [[nodiscard]] inline std::unexpected<std::string> Error(
