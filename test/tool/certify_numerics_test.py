@@ -441,6 +441,21 @@ class CertificateTest(unittest.TestCase):
             self.assertEqual(status, 2, log)
             self.assertIn("certifies nothing", log)
 
+    def test_a_boolean_or_missing_tolerance_certifies_nothing(self):
+        # Review 2026-11-25: `true` passed the positivity check (a bool is
+        # an int) and escaped the ceiling; a document with no site_rel was
+        # attested and then failed on the packer's lookup.
+        cert = granted(self.plan, tolerances={"site_rel": True,
+                                              "loss_rel": 1e-4})
+        problems = cn.check_certificate(cert, self.plan)
+        self.assertTrue(any("tolerance site_rel is not a positive" in p
+                            for p in problems), problems)
+        for tolerances in ({}, {"loss_rel": 1e-4}):
+            cert = granted(self.plan, tolerances=tolerances)
+            problems = cn.check_certificate(cert, self.plan)
+            self.assertTrue(any("no site_rel tolerance" in p
+                                for p in problems), problems)
+
     def test_the_certificate_binds_to_the_source_model(self):
         other = os.path.join(self._tmp.name, "other.smf")
         with open(other, "wb") as f:
