@@ -31,9 +31,13 @@ on:
   push:
     branches: [main]
 
+# A pull request's newer push supersedes its older run. A push to main does
+# not: every merged commit keeps its own verdict (review 2026-11-25 — two
+# merges a minute apart used to leave the first one's run cancelled, and
+# main with commits no CI run had finished on).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Runner image: pinned to ubuntu-24.04, not ubuntu-latest. On 2026-11-11
 # `ubuntu-latest` became Ubuntu 26.04, where apt.llvm.org publishes no
@@ -454,6 +458,14 @@ jobs:
           cache-dependency-path: tool/requirements-pinned.txt
       - name: Install the pinned exporter stack (CPU torch)
         run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r tool/requirements-pinned.txt
+      # The parity stack (review 2026-11-25): with it the exporter's
+      # transformers parity test (a synthetic Llama, no download) and the
+      # frontier runner's tokenizer-training tests run here instead of
+      # skipping everywhere. The versions are the ones the suite was last
+      # run green on beside the pinned stack. The SmolLM-135M tokenizer
+      # parity test still needs a cached checkpoint and stays tier 2.
+      - name: Install the parity stack (transformers, tokenizers)
+        run: pip install "transformers==5.17.0" "tokenizers==0.23.2"
       - name: Export the demo model + corpus
         run: python3 -W error tool/export_model.py --demo out/
       - name: Build the compiler
@@ -478,7 +490,7 @@ jobs:
         run: |
           python3 -m unittest discover -s test/tool -p '*_test.py' -v 2>&1 | tee tools.log
           test "${PIPESTATUS[0]}" -eq 0
-          if grep -E "skipped .*(NumPy|PyTorch|no built|no seeml|seeml-abi|C\+\+ (driver|toolchain))" tools.log; then
+          if grep -E "skipped .*(NumPy|PyTorch|no built|no seeml|seeml-abi|C\+\+ (driver|toolchain)|transformers not installed|needs tokenizers \(tier 2\)|needs torch, transformers|tier 2: needs torch)" tools.log; then
             echo "::error::a tool test skipped for a dependency this job installs"
             exit 1
           fi
