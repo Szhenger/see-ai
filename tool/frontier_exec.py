@@ -469,6 +469,12 @@ class Plan:
                                         "must be a finite positive float")
                 if op in (29, 30):
                     self._check_q8_scales(ins, where, positive)
+                # The accumulating GEMM's alpha (in[3], low word): finite,
+                # the high word zero — the validator's rule of 2026-11-25.
+                if op == 4 and (ins.src[3] >> 32 != 0 or not math.isfinite(
+                        bits_f32(ins.src[3]))):
+                    raise PlanError(f"{where}: the accumulating GEMM's "
+                                    "alpha must be a finite float")
                 if ins.imm:
                     self._check_imm_word(ins, where)
                 if op == 46:
