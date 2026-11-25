@@ -129,7 +129,7 @@ digests (`test/tool/demo_digests.json`).
 | Interface | Where | Purpose |
 |---|---|---|
 | `std::thread` + `<mutex>`/`<condition_variable>`/`<atomic>` | `source/parallel/parallel_for.cc`, `runtime/pipeline/batch_pipeline.cc` | Worker pool and feeder thread. No direct `pthread_*` calls; `-pthread` at compile and link. |
-| POSIX file I/O: `open`/`write`/`fsync`/`close`, `rename`, directory fsync, `flock(LOCK_EX\|LOCK_NB)`, `fseeko`, `getpid` | `runtime/storage/durable_io.cc` | Durable sidecar-then-atomic-rename writes, commit lock, random-access durable edits. Win32 mirror (`CreateFileA`, `MoveFileExA(MOVEFILE_REPLACE_EXISTING\|MOVEFILE_WRITE_THROUGH)`, …) exists but is not CI-tested. |
+| POSIX file I/O: `open`/`write`/`fsync` (`fcntl(F_FULLFSYNC)` on Darwin)/`close`, `rename`, directory fsync, `flock(LOCK_EX\|LOCK_NB)`, `fseeko`, `getpid` | `runtime/storage/durable_io.cc` | Durable sidecar-then-atomic-rename writes, commit lock, random-access durable edits. Win32 mirror (`CreateFileA`, `MoveFileExA(MOVEFILE_REPLACE_EXISTING\|MOVEFILE_WRITE_THROUGH)`, …) exists but is not CI-tested. |
 | `sysctlbyname("hw.l1dcachesize"/"hw.l2cachesize"/"hw.physicalcpu"/"hw.cachelinesize"/"hw.memsize")` | `compiler/backend/architecture/host_arch.cc`, `compiler/frontend/accountant/resource_analyzer.cc` | Apple host cache/memory detection for GEMM tiling and memory gating. |
 | `sysconf(_SC_LEVEL*_CACHE*, _SC_NPROCESSORS_ONLN, _SC_PHYS_PAGES)` + sysfs `/sys/devices/system/cpu/*/topology/` scan | same | Linux equivalents (topology scan is Linux-only). Fallback: `std::thread::hardware_concurrency()`. |
 | `std::aligned_alloc(64, …)` | `runtime/dispatcher/update_engine.cc` | The single arena allocation. (Unavailable on MSVC — one reason Windows is untested.) |
@@ -179,7 +179,7 @@ behind `__cpp_concepts >= 202002L`, a macro Clang only defines from 19.
 **The generated package build** — the third, outward-facing build system:
 `EmitNativePackage` writes `update_plan.seeu`, the same plan embedded as an
 aligned C array TU (emission parallelized, byte-identical to serial; skipped
-by `--no-embed`), a generated driver `update_main.cc`, 35 vendored
+by `--no-embed`), a generated driver `update_main.cc`, 74 vendored
 runtime/`source/` files, and a `build.sh` that compiles them with
 `-std=c++23 -O2 -pthread` (no `-Werror` in the field). The script takes the
 plan from whichever TU the package carries — the C array, the packer's
@@ -189,9 +189,9 @@ executable (or `--plan FILE`) at start-up through
 `UpdateEngine::LoadFromFileMapped` and validates it exactly as an embedded
 plan. The packer picks that mode from 1 GiB, because an embedded image
 cannot be linked (the default linker segfaults at 1.85 GB) or loaded (a
-2.72 GB classic-linked image overlaps dyld's shared region) on macOS arm64. Host-derived GEMM tile geometry is baked in as
-`-DSEEML_GEMM_TILE_K/N` defines, overridable via `SEEML_TILE_FLAGS` when
-cross-compiling with `CXX`. The Metal backend *is* vendored: `build.sh`
+2.72 GB classic-linked image overlaps dyld's shared region) on macOS arm64. The GEMM tile geometry travels in the plan header (v11); the script
+bakes none, and `SEEML_TILE_FLAGS` (`-DSEEML_GEMM_TILE_K/N`) only moves the
+compiled-in defaults a plan with zero fields falls back to. The Metal backend *is* vendored: `build.sh`
 compiles its Objective-C++ unit and links the frameworks on Darwin, and the
 stub elsewhere, so a Linux package is byte-for-byte what it was.
 
@@ -400,8 +400,8 @@ test of the compiler-emitted GEMM source.
   host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
   with its reason, apart from the passes, never a failure. Exit codes:
   0 no test failed / 1 fail / 2 usage or empty selection. 34 suite executables mirror the source tree
-  one-to-one (and one replays the fuzz seeds), 654 tests in all, and 264 more in the Python plane's
-  `test/tool/` (counted on macOS, 2026-11-24; the live counts are the suite
+  one-to-one (and one replays the fuzz seeds), 659 tests in all, and 274 more in the Python plane's
+  `test/tool/` (counted on macOS, 2026-11-25; the live counts are the suite
   list of `build/build.sh`, each suite's `--list`, and what `unittest
   discover` reports).
 - **Fixtures** (`test/support/`) — seeded in-process builders for models,

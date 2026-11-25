@@ -174,7 +174,14 @@ too; its command-line errors are right, its run-time failures are not yet 1.
   corpus and `--dump-sir`) create files the way `fopen` did; new code
   uses the seam.
 - `source/` is what both halves share and neither owns: the compiler and
-  the runtime include it and never include each other. The on-disk structs
+  the runtime include it, and the runtime never includes the compiler.
+  The compiler includes the runtime in three places, each to run the
+  device's own code on the build host rather than keep a second copy:
+  `corpus_ingress.cc` (the runtime's `Dataset` and durable writer),
+  `compiler/driver/contract.cc` (the plan loader's `DecodePlan`, so the
+  emitted plan passes the device's load before it leaves) and
+  `compiler/driver/statistics.cc` (the Metal backend's planner, for the
+  runtime screen). A fourth needs the same kind of reason. The on-disk structs
   there are the ABI; `tool/seeml/abi.json` is generated from them and CI
   fails when it is stale.
 - `using namespace` never appears in a product header.

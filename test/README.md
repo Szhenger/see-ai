@@ -64,6 +64,7 @@ test/
     fuzz_seeds_test.py        test/fuzz/seeds/ is what test/fuzz/make_seeds.py writes today: byte for byte but for the plans, which the replay suite holds to being accepted
     masked_loss_test.py       the masked cross-entropy kernels of the oracle against PyTorch's cross_entropy(ignore_index=-1) and its gradient
     pack_update_test.py       tool/pack_update.py, the package assembler, on fabricated package directories
+    torch_step_test.py        the compiled train step next to PyTorch: a decoder and an MLP written in torch (float64), compiled with LoRA, a few steps through seeml-plan-probe, the adapters against torch.autograd and torch.optim (tier 2: torch)
     recipe_test.py            the recipe at the command line: a recipe file compiles to the plan its flags compile to; the refusals name the field
     runner_stop_test.py       cooperative cancellation and --threads through a built model_update: SIGTERM stops at a step boundary, exit 5, resumable
     runner_text_test.py       raw text on the device: a run on .txt / .jsonl commits the bytes a run on the compiler's canonical SDS commits

@@ -72,7 +72,7 @@ If you remember nothing else, remember these five, because every file in this re
 - **Verify at every boundary.** Each subsystem hands its output to the next only through an explicit contract that is checked, both in the compiler and again on the device. A plan is proven safe before it is run.
 - **Same bits, any thread count.** Work is chunked by problem shape, never by thread count, so parallelism never changes results.
 - **No improvement, no change.** Every update must prove itself on data it never trained on; a failed update leaves the device exactly as it was.
-- **Power cuts are ordinary.** Every durable write is an fsync'd sidecar file plus an atomic rename. There is no torn state.
+- **Power cuts are ordinary.** Every durable write is a synced sidecar file plus an atomic rename — `fcntl(F_FULLFSYNC)` on macOS, where `fsync` alone stops at the drive's cache, `fsync` elsewhere. There is no torn state.
 
 ## Scope and Limitations
 

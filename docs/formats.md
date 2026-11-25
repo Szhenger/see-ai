@@ -167,7 +167,7 @@ Version history: v2 added the eval program, integrity hashes, and LR schedule; v
 
 Why do hyperparameters live in the *header* while clip lives in the *stream*? Because a learning rate is a number the runtime consults, but clipping changes which instructions exist — structure belongs to the program, parameters to the header, and each fact has exactly one home ([compiler.md](compiler.md)).
 
-**Tensor references** are 64-bit words: bit 63 selects the address space (0 = mutable arena, 1 = read-only rodata), bits 0..62 are a byte offset. Two flat address spaces and an offset — the entire memory model, and the reason the validator can prove write-safety with a single bit test.
+**Tensor references** are 64-bit words: bit 63 selects the address space (0 = mutable arena, 1 = read-only rodata), bit 62 the source model file (read-only; an adapter-only plan's frozen weights, v21), and the bits below are a byte offset. Flat address spaces and an offset — the entire memory model, and the reason the validator can prove write-safety with a single bit test.
 
 **Instructions** are exactly 64 bytes — one cache line — laid out as:
 
@@ -237,7 +237,7 @@ Saving collects the leftovers a killed writer of the same path left — `<path>.
 
 ## Durability
 
-Model commits and checkpoints are written as `fsync`'d sidecar files followed by an atomic `rename` and a best-effort directory `fsync` — the full liturgy, and why each step exists, is in [runtime.md](runtime.md). The contract to remember: a power cut leaves either the old file or the new file, never a torn one.
+Model commits and checkpoints are written as synced sidecar files (`fcntl(F_FULLFSYNC)` on macOS, `fsync` elsewhere) followed by an atomic `rename` and a best-effort directory sync — the full liturgy, and why each step exists, is in [runtime.md](runtime.md). The contract to remember: a power cut leaves either the old file or the new file, never a torn one.
 
 ## To recap
 
