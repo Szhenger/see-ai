@@ -1130,6 +1130,27 @@ TEST(Loss, AConfidentlyWrongRowReportsItsOwnLoss) {
   k::KLDistillFwd(student.data(), teacher.data(), &loss, ps.data(), pt.data(),
                   1, C, 1.0f, 1.0f);
   EXPECT_NEAR(loss, 100.0, 1e-4);
+  // Several classes of one row below the floor share the row's one
+  // log-sum-exp (PickedRow): log p_s = {0, -100, -100, -70}, the teacher a
+  // third on each of the last three, so KL = log(1/3) + (100 + 100 + 70)/3.
+  const std::vector<float> s4 = {100.0f, 0.0f, 0.0f, 30.0f};
+  const std::vector<float> t4 = {0.0f, 100.0f, 100.0f, 100.0f};
+  std::vector<float> ps4(4), pt4(4);
+  k::KLDistillFwd(s4.data(), t4.data(), &loss, ps4.data(), pt4.data(), 1, 4,
+                  1.0f, 1.0f);
+  EXPECT_NEAR(loss, 90.0 - std::log(3.0), 1e-4);
+  // The row's reduction is taken once, however many classes read it: at an
+  // LM head's width a per-class reduction is C^2 exponentials a row.
+  const size_t wide = 8192;
+  std::vector<float> sw(wide, 0.0f), tw(wide, 0.0f), psw(wide), ptw(wide);
+  sw[0] = 60.0f;  // every other student class is e^-60, below the floor
+  k::KLDistillFwd(sw.data(), tw.data(), &loss, psw.data(), ptw.data(), 1, wide,
+                  1.0f, 1.0f);
+  // KL = -log(wide) + 60 * (wide - 1) / wide, the teacher being uniform.
+  EXPECT_NEAR(loss,
+              60.0 * static_cast<double>(wide - 1) / static_cast<double>(wide) -
+                  std::log(static_cast<double>(wide)),
+              1e-3);
   // An infinite logit is still a non-finite loss, never a finite floor.
   const std::vector<float> gone = {-std::numeric_limits<float>::infinity(),
                                    0.0f};

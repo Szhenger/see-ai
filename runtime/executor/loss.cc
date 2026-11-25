@@ -156,6 +156,9 @@ void KLDistillFwd(const float* s_logits, const float* t_logits, float* loss,
     for (size_t n = r0; n < r1; ++n) {
       RowSoftmax(s_logits + n * C, p_s + n * C, C, inv_T);
       RowSoftmax(t_logits + n * C, p_t + n * C, C, inv_T);
+      // One row, many classes read: the student's log-sum-exp is taken at
+      // most once a row (PickedRow), not once a class below the floor.
+      PickedRow student(s_logits + n * C, C, inv_T);
       for (size_t c = 0; c < C; ++c) {
         const float pt = p_t[n * C + c];
         if (pt <= 0.0f) continue;
@@ -163,9 +166,8 @@ void KLDistillFwd(const float* s_logits, const float* t_logits, float* loss,
         // a NaN propagates, an underflowed one is read from the student's
         // logits at the temperature. (A NaN teacher probability already
         // propagates: `pt <= 0.0f` is false for NaN, and log(NaN) is NaN.)
-        total += static_cast<double>(pt) *
-                 (std::log(static_cast<double>(pt)) +
-                  NegLogPicked(p_s[n * C + c], s_logits + n * C, C, c, inv_T));
+        total += static_cast<double>(pt) * (std::log(static_cast<double>(pt)) +
+                                            student.NegLog(p_s[n * C + c], c));
       }
     }
     partials[chunk] = total;

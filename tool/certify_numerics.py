@@ -800,7 +800,10 @@ def check_certificate(cert, plan_path, corpus_path=None, source_path=None):
                 problems.append(f"the plan carries {count} relaxed "
                                 f"instruction(s) at the {name} site the "
                                 "certificate does not cover")
-    except (KeyError, TypeError) as e:
+    except (KeyError, TypeError, AttributeError) as e:
+        # AttributeError: a section that is not the object it should be
+        # (`"tolerances": []` has no .items()) is a malformed document, not
+        # a traceback where the package is built.
         problems.append(f"malformed certificate ({e!r})")
     return problems
 

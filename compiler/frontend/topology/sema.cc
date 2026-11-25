@@ -26,11 +26,34 @@ namespace {
 /// later as "SIR invariants violated ... duplicate value id": an internal
 /// corruption message for a user's naming. Refused here, by name.
 ///
-/// A suffixed name collides only when what is left after stripping the
-/// derived suffixes is itself a model value (`w2.lora_out` beside `w2`):
-/// a model is free to call a tensor `block.delta` when no `block` exists.
+/// A suffixed name collides only when what is left after stripping derived
+/// suffixes is itself a value the compiler derives from (`w2.lora_out`
+/// beside `w2`): a model is free to call a tensor `block.delta` when no
+/// `block` exists. Every stem on the way down is tried, not only the last:
+/// `block.delta.lora_A` beside a weight `block.delta` is derived from that
+/// weight whether or not a `block` exists. And the values the parser
+/// creates beside an operator's output (`<y>.rstd`, `<y>.mean`,
+/// `<y>.probs`) are stems too — autodiff names an attention's
+/// `<y>.probs.d<N>`.
 [[nodiscard]] std::expected<void, std::string> CheckDerivedNames(
     const SmfModel& model, const std::unordered_set<std::string_view>& names) {
+  std::unordered_set<std::string> companions;
+  for (const SmfOp& op : model.ops) {
+    switch (op.kind) {
+      case SmfOpKind::kLayerNorm:
+        companions.insert(op.output + ".mean");
+        companions.insert(op.output + ".rstd");
+        break;
+      case SmfOpKind::kRmsNorm:
+        companions.insert(op.output + ".rstd");
+        break;
+      case SmfOpKind::kAttention:
+        companions.insert(op.output + ".probs");
+        break;
+      default:
+        break;
+    }
+  }
   static constexpr std::string_view kWhole[] = {"segment_starts",
                                                 "grad_sqnorm"};
   static constexpr std::string_view kPrefixes[] = {"loss.", "rope_table."};
@@ -68,13 +91,13 @@ namespace {
         return "'" + std::string(name) + "' is in the namespace '" +
                std::string(prefix) + "' the compiler names its own values in";
     std::string_view stem = name;
-    bool stripped = false;
-    while (strip(stem)) stripped = true;
-    if (stripped && !stem.empty() && names.contains(stem))
-      return "'" + std::string(name) +
-             "' is a name the compiler derives "
-             "from '" +
-             std::string(stem) + "'";
+    while (strip(stem))
+      if (!stem.empty() &&
+          (names.contains(stem) || companions.contains(std::string(stem))))
+        return "'" + std::string(name) +
+               "' is a name the compiler derives "
+               "from '" +
+               std::string(stem) + "'";
     return {};
   };
   for (const SmfTensor& t : model.tensors)

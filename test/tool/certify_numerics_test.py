@@ -455,6 +455,13 @@ class CertificateTest(unittest.TestCase):
             problems = cn.check_certificate(cert, self.plan)
             self.assertTrue(any("no site_rel tolerance" in p
                                 for p in problems), problems)
+        # A section of the wrong type is a malformed certificate, named,
+        # not an AttributeError out of the checker.
+        for tolerances in ([1e-5], "1e-5", None):
+            cert = granted(self.plan, tolerances=tolerances)
+            problems = cn.check_certificate(cert, self.plan)
+            self.assertTrue(any("malformed certificate" in p
+                                for p in problems), problems)
 
     def test_the_certificate_binds_to_the_source_model(self):
         other = os.path.join(self._tmp.name, "other.smf")

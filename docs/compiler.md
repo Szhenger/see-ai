@@ -362,7 +362,7 @@ Why bother, when the subsystems have their own tests? Because contracts catch *i
 
 - The **frontend** turns untrusted bytes into a verified SSA graph, with every semantic and shape error caught at the door.
 - The **analysis** phase is compile-time mathematics: LoRA grafts rank-r adapters (`r(K+M)` parameters instead of `K·M`), autodiff synthesizes the backward pass by reverse-mode VJP rewriting pruned to the trainable set, the optimizer becomes instructions, the merge program materializes `Δ = (α/r)·A@B`, and the frozen base is reviewed for symmetric int8 storage.
-- The **backend** binds every value to a byte offset (liveness + first-fit, like register allocation for tensors), lowers to a 58-opcode, 64-byte-instruction ISA with a three-address-space memory model (the arena, the plan's rodata, and — for an adapter-only plan — the source model file), writes the CPU GEMM tile geometry the offline tuner measured for the host (or the kernel defaults) into the plan, and emits a package that builds anywhere.
+- The **backend** binds every value to a byte offset (liveness + first-fit, like register allocation for tensors), lowers to a 59-opcode, 64-byte-instruction ISA with a three-address-space memory model (the arena, the plan's rodata, and — for an adapter-only plan — the source model file), writes the CPU GEMM tile geometry the offline tuner measured for the host (or the kernel defaults) into the plan, and emits a package that builds anywhere.
 - The **driver** sequences it all and verifies a contract at every seam.
 
 ## tool/ — the command-line surface

@@ -111,19 +111,23 @@ of `ci.yml`:
 
 ```yaml
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
 If you push twice to a pull request in quick succession, the first run is
 now testing dead code. This says: cancel it, test the newest. The
-`${{ ... }}` syntax is the workflow's variable interpolation — here, the
-branch name — so each branch gets its own cancellation group. A push to
-`main` is the exception, and the expression is why: a merged commit's run
-is never cancelled by the next merge, so every commit on `main` keeps a
-verdict of its own (until 2026-11-25 two merges a minute apart left the
-first run cancelled). Nothing here *requires* that verdict before a
-merge: that is branch protection, a repository setting, not a workflow.
+`${{ ... }}` syntax is the workflow's variable interpolation — for a pull
+request, its ref — so each pull request gets its own cancellation group.
+A push to `main` is the exception, and both expressions are why: a merged
+commit's run is never cancelled by the next merge, so every commit on
+`main` keeps a verdict of its own (until 2026-11-25 two merges a minute
+apart left the first run cancelled). The flag alone would not do it: a
+group holds one running and one *pending* run, and a third run replaces
+the pending one even with `cancel-in-progress` off — so a push's group is
+its own commit, and no two pushes share one. Nothing here *requires* that
+verdict before a merge: that is branch protection, a repository setting,
+not a workflow.
 
 That's the whole language. Now the interesting part: *what do we choose
 to check?*

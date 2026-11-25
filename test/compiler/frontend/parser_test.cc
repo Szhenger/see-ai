@@ -318,13 +318,14 @@ TEST(ForwardBuilder, RejectsNamesTheCompilerDerives) {
   // Review 2026-11-25: a model value named like one the passes create
   // beside another model value collided in the SIR value table and was
   // reported as "SIR invariants violated after pass 'lora-graft'".
-  auto build_with = [](const std::string& hidden) {
+  auto build_with = [](const std::string& hidden,
+                       const std::string& first = "w2") {
     SmfModel model;
     model.input_name = "x";
     model.output_name = "y";
     model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
-    model.ops.push_back({SmfOpKind::kRelu, "r0", {"x"}, "w2"});
-    model.ops.push_back({SmfOpKind::kRelu, "r1", {"w2"}, hidden});
+    model.ops.push_back({SmfOpKind::kRelu, "r0", {"x"}, first});
+    model.ops.push_back({SmfOpKind::kRelu, "r1", {first}, hidden});
     model.ops.push_back({SmfOpKind::kRelu, "r2", {hidden}, "y"});
     sir::Block block;
     GraphBuild build;
@@ -341,6 +342,31 @@ TEST(ForwardBuilder, RejectsNamesTheCompilerDerives) {
   // from: these are a model's own names.
   for (const char* free_name : {"w2.d", "block.delta", "w9.lora_A", "w2.dx"})
     EXPECT_OK(build_with(free_name));
+  // Every stem on the way down is a candidate, not only the shortest: a
+  // model's own `block.delta` (no `block` exists) is a value the compiler
+  // derives from like any other.
+  EXPECT_ERROR_CONTAINS(build_with("block.delta.lora_A", "block.delta"),
+                        "compiler derives from 'block.delta'");
+  EXPECT_ERROR_CONTAINS(
+      build_with("block.lora_B.lora_A.adam_m", "block.lora_B"),
+      "compiler derives from 'block.lora_B'");
+  EXPECT_OK(build_with("other", "block.delta"));
+  // ... and so is a value the parser creates beside an operator's output:
+  // autodiff names the adjoint of an RMSNorm's `<y>.rstd` after it.
+  SmfModel normed;
+  normed.input_name = "x";
+  normed.output_name = "y";
+  normed.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+  normed.tensors.push_back({.name = "g", .dims = {4}, .is_const = true});
+  normed.ops.push_back({SmfOpKind::kRmsNorm, "n0", {"x", "g"}, "h"});
+  normed.ops.push_back({SmfOpKind::kRelu, "r1", {"h"}, "h.rstd.d3"});
+  normed.ops.push_back({SmfOpKind::kRelu, "r2", {"h.rstd.d3"}, "y"});
+  sir::Block block;
+  GraphBuild build;
+  build.input = AddInput(block, 4);
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, normed, "", build.input, kBatch, build),
+      "compiler derives from 'h.rstd'");
 }
 
 TEST(ForwardBuilder, RejectsOutputShadowingTensorName) {

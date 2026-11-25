@@ -2586,7 +2586,8 @@ kernel void k_attn_dv_tiled_mma(KSIG, uint3 tg [[threadgroup_position_in_grid]],
 // the fixed shuffle trees; the row's -log p[label] lands in scratch[row]
 // and k_xent_finish folds the rows in order (compensated f32; the CPU
 // folds its chunk partials in f64) into the loss slot. The CPU's NaN rule
-// is kept: a NaN probability propagates, only genuine underflow is clamped.
+// is kept: a NaN probability propagates, and one below the floor is read
+// from the row's logits (NegLogPicked), not clamped.
 // p.rows = N, p.cols = C; slots: 0 logits, 1 labels (i32), 2 loss, 3 probs.
 kernel void k_xent_fwd(KSIG, device float* scratch [[buffer(3)]],
                        uint g [[thread_position_in_grid]],

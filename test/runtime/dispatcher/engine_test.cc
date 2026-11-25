@@ -445,6 +445,13 @@ TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
   wide.out[0] = (uint64_t{3} << 32) | S;  // 12 starts; the forward says 4
   EXPECT_ERROR_CONTAINS(verify({wide, fwd}), "covers 4 positions");
   EXPECT_ERROR_CONTAINS(verify({wide, tiled}), "covers 4 positions");
+  // The same count in another layout is not the same starts: 2 sequences
+  // of 2 mark document boundaries a forward over 1 sequence of 4 would
+  // read as its own.
+  up::UpdateInstruction reshaped = seg;
+  reshaped.out[0] = (uint64_t{2} << 32) | 2;
+  EXPECT_ERROR_CONTAINS(verify({reshaped, fwd}), "(1 sequences of 4)");
+  EXPECT_ERROR_CONTAINS(verify({reshaped, tiled}), "(1 sequences of 4)");
 }
 
 TEST(EngineContract, EightBitMomentsArePersistentStateOfTheTrainingPrograms) {

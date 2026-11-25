@@ -2496,18 +2496,24 @@ class Executor:
 
     def _eval_tail(self):
         """How the engine scores a final batch's real rows (G13): ("xent",
-        probs, labels, classes) or ("mse", pred, target, per_row) for a
-        lone row-separable loss, else ("weighted",)."""
+        probs, labels, classes, logits) or ("mse", pred, target, per_row)
+        for a lone row-separable loss, else ("weighted",). The logits are
+        named as the loader names them (ScanEvalTail): only when the
+        softmax is the program's last instruction, so nothing after it can
+        have written over them — otherwise None, and a row below the
+        probability floor keeps the floor."""
         p = self.plan
+        last = p.sections["eval"][-1] if p.sections["eval"] else None
         for ins in p.sections["eval"]:
+            logits_ref = ins.src[0] if ins is last else None
             if ins.opcode == 11 and ins.src[2] == p.loss_ref and \
                     ins.out[0] == p.batch:
                 return ("xent", ins.src[3], ins.src[1], ins.out[1],
-                        ins.src[0])
+                        logits_ref)
             if ins.opcode == 51 and ins.src[2] == p.loss_ref and \
                     ins.out[0] == p.batch:
                 return ("xent_masked", ins.src[3], ins.src[1], ins.out[1],
-                        ins.src[0])
+                        logits_ref)
             if ins.opcode == 13 and ins.src[2] == p.loss_ref and \
                     p.batch and ins.out[0] % p.batch == 0:
                 return ("mse", ins.src[0], ins.src[1], ins.out[0] // p.batch)
@@ -2522,8 +2528,8 @@ class Executor:
             _, probs_ref, labels_ref, classes, logits_ref = tail
             probs = self.x.to_numpy(self.mem.read(
                 probs_ref, (self.plan.batch, classes)))
-            logits = self.x.to_numpy(self.mem.read(
-                logits_ref, (self.plan.batch, classes)))
+            logits = None if logits_ref is None else self.x.to_numpy(
+                self.mem.read(logits_ref, (self.plan.batch, classes)))
             labels = self.x.to_numpy(self.mem.read(
                 labels_ref, (self.plan.batch,), "<i4"))
             total, counted = 0.0, 0
@@ -2533,6 +2539,8 @@ class Executor:
                 pr = float(probs[r, int(labels[r])])
                 if pr != pr or pr >= f32(PROB_FLOOR):
                     total -= math.log(pr)
+                elif logits is None:  # no logits named: the floor
+                    total -= math.log(f32(PROB_FLOOR))
                 else:  # underflowed: the row's own logits (NegLogPicked)
                     z = [float(v) for v in logits[r]]
                     top = max(z)

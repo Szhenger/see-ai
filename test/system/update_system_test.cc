@@ -665,7 +665,8 @@ TEST(UpdateSystem, NewOperatorGradientsMatchFiniteDifferences) {
   std::vector<float> x(batch * in_dim);
   for (auto& v : x) v = dist(rng);
   // LayerNorm's per-row normalization amplifies central-difference
-  // truncation noise on small gradients: allow 3% instead of 2%.
+  // truncation noise on small gradients; it stays inside GradientCheck's
+  // one bound (the loss's rounding plus 1 %), as every model here does.
   FillSlots(engine, x, {1, 2});
 
   GradientCheck(compiled, engine, 4242);
@@ -701,7 +702,8 @@ TEST(UpdateSystem, TransformerGradientsMatchFiniteDifferences) {
   for (auto& v : x) v = dist(rng);
   FillSlots(engine, x, {1, 2, 0, 1, 2, 0, 1, 2});
   // Normalization layers and the softmax inside attention amplify
-  // central-difference truncation noise, as with LayerNorm above.
+  // central-difference truncation noise, as with LayerNorm above — still
+  // inside the one bound.
   GradientCheck(compiled, engine, 2323);
 }
 

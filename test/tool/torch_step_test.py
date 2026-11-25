@@ -416,7 +416,11 @@ class TorchStepTest(unittest.TestCase):
             self.run_case(DecoderCase(self.dir), "adamw", 0.01, 5,
                           backend="metal")
         except AssertionError as e:
-            if "probe failed" in str(e) and "Metal" in str(e):
+            # Only a host without the backend is a skip (metal_backend.mm,
+            # metal_backend_stub.cc): any other Metal failure is the test's.
+            if "probe failed" in str(e) and (
+                    "no Metal device" in str(e) or
+                    "Metal backend is not built" in str(e)):
                 self.skipTest("no Metal device: " + str(e)[-200:])
             raise
 

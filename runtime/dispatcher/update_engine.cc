@@ -1030,10 +1030,17 @@ double UpdateEngine::RealRowLoss(uint64_t real, const uint8_t* label_slot,
         ++rows;
         const auto label = static_cast<size_t>(labels[r]);
         const float p = probs[r * eval_tail_.width + label];
-        sum += logits == nullptr && p < kernels::kPickedProbFloor
-                   ? -std::log(static_cast<double>(kernels::kPickedProbFloor))
-                   : kernels::NegLogPicked(p, logits + r * eval_tail_.width,
-                                           eval_tail_.width, label, 1.0f);
+        // No row pointer is formed from a null `logits` (an offset from a
+        // null pointer is undefined, read or not). A NaN fails the
+        // comparison and reaches the log, as in the kernels.
+        if (logits == nullptr) {
+          const float floored =
+              p < kernels::kPickedProbFloor ? kernels::kPickedProbFloor : p;
+          sum += -std::log(static_cast<double>(floored));
+        } else {
+          sum += kernels::NegLogPicked(p, logits + r * eval_tail_.width,
+                                       eval_tail_.width, label, 1.0f);
+        }
       }
       *counted = rows;
       return sum;
