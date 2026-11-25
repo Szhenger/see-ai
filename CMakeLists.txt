@@ -246,7 +246,7 @@ target_link_libraries(seeml-plan-probe PRIVATE seeml_update_rt)
 add_executable(seeml-model-update
     runtime/host/update_main.cc
     runtime/host/no_embedded_plan.cc)
-target_link_libraries(seeml-model-update PRIVATE seeml_update_rt)
+target_link_libraries(seeml-model-update PRIVATE seeml_update_rt seeml_tokenizer)
 
 # ==============================================================================
 # Tests
