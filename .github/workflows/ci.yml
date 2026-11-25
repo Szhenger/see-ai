@@ -145,9 +145,42 @@ jobs:
           fail=0
           for t in build/seeml_*_test; do
             echo "== $t"
-            "$t" || fail=1
+            "$t" 2>&1 | tee -a suites.log
+            test "${PIPESTATUS[0]}" -eq 0 || fail=1
           done
           exit $fail
+      # Review 2026-11-25: a skipped C++ test is reported and counted, and
+      # nothing acted on it — a macOS image with no Metal device would turn
+      # the whole Metal suite into skips under a green check. On macOS the
+      # one skip this runner is known to take is the relaxed-GEMM test (its
+      # paravirtual GPU has no Metal 4 tensor-op library); any other is a
+      # failure.
+      - name: No Metal test skipped but the relaxed-kernel one (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          grep -E '^\[  SKIPPED \] [A-Za-z0-9_]+\.[A-Za-z0-9_]+: ' suites.log > skips.log || true
+          cat skips.log
+          if grep -v 'no Metal 4 tensor-op library' skips.log | grep -q .; then
+            echo "::error::a test skipped on the macOS runner for a reason other than the missing tensor-op library"
+            exit 1
+          fi
+      # The device's main (runtime/host/update_main.cc), built by the tree
+      # in the disk mode and run end to end against the exit-code table.
+      # Until 2026-11-25 only an emitted package ever compiled that file.
+      - name: The runner end to end (build/seeml-model-update)
+        run: sh test/system/runner_disk_mode.sh build/seeml-update-compile build/seeml-model-update "$PWD"
+      # No .mm file ran under a sanitizer anywhere (the ASan + UBSan job is
+      # Linux). The Metal backend and its suite, and the engine suite that
+      # drives it, built with both here and run on the runner's GPU.
+      - name: Metal backend under ASan + UBSan (macOS)
+        if: runner.os == 'macOS'
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          cmake -S . -B build-san -DSEEML_SANITIZE="address;undefined"
+          cmake --build build-san -j "$(sysctl -n hw.ncpu)" --target seeml_metal_backend_test seeml_update_engine_test
+          ./build-san/seeml_metal_backend_test
+          ./build-san/seeml_update_engine_test
       # S7 #153: seeml-bench rows carry the runtime screen model_update prints.
       # This job builds seeml-bench (SEEML_BENCH=1), so the test must run, not
       # skip; the test is standard-library Python.

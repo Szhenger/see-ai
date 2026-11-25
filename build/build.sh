@@ -190,6 +190,13 @@ echo "  LINK seeml-plan-probe"
 # The frontier executor's C++ oracle (tool/frontier_exec.py, P4): one plan
 # section through one executor backend, every write traced.
 eval "$CXX -pthread build/seeml_plan_probe.o $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o build/seeml-plan-probe"
+echo "  CXX+LINK seeml-model-update"
+# The device's main in the disk mode (no embedded plan; --plan names one):
+# built here so update_main.cc meets the tree's warnings and every analysis
+# that follows this script. test/system/runner_disk_mode.sh runs it.
+compile runtime/host/update_main.cc        seeml_model_update.o
+compile runtime/host/no_embedded_plan.cc   no_embedded_plan.o
+eval "$CXX -pthread build/seeml_model_update.o build/no_embedded_plan.o $LIBS $METAL_LDFLAGS $ACCEL_LDFLAGS -o build/seeml-model-update"
 
 if seeml_bench_enabled; then
   echo "  CXX+LINK seeml-bench"

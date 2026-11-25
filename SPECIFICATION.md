@@ -157,9 +157,13 @@ OBJCXX. The release version is *extracted* from
 `source/identity/version.h` (`kSeemlVersion`, the single source of truth) with
 `file(STRINGS …)` + regex, failing configuration if unparseable. Targets:
 four static libraries (`seeml_parallel`, `seeml_sir`, `seeml_update`,
-`seeml_update_rt`), two executables (`seeml-update-compile`,
-`seeml-seeu-dump`), a `seeml_testing` support library, 25 test executables
-registered with `add_test`, and an opt-in fuzz target. Options:
+`seeml_update_rt`), the build-host tools (`seeml-update-compile`,
+`seeml-seeu-dump`, `seeml-plan-probe`, `seeml-tokenize`, `seeml-abi`), the
+runner in its disk mode (`seeml-model-update`: `runtime/host/update_main.cc`
+with no embedded plan, so the device's `main` is built and analysed by the
+tree, not only inside emitted packages), a `seeml_testing` support library,
+the 34 suites and the runner's end-to-end script registered with
+`add_test`, and an opt-in fuzz target. Options:
 
 - `SEEML_SANITIZE` (semicolon list → `-fsanitize=<list> -fno-omit-frame-pointer -g`),
   used as `"address;undefined"` and `"thread"` in CI.
@@ -400,7 +404,7 @@ test of the compiler-emitted GEMM source.
   host cannot run (no Metal device): reported and counted as `[  SKIPPED ]`
   with its reason, apart from the passes, never a failure. Exit codes:
   0 no test failed / 1 fail / 2 usage or empty selection. 34 suite executables mirror the source tree
-  one-to-one (and one replays the fuzz seeds), 660 tests in all, and 274 more in the Python plane's
+  one-to-one (and one replays the fuzz seeds), 663 tests in all, and 278 more in the Python plane's
   `test/tool/` (counted on macOS, 2026-11-25; the live counts are the suite
   list of `build/build.sh`, each suite's `--list`, and what `unittest
   discover` reports).
