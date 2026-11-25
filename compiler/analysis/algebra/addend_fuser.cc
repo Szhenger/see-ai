@@ -3,6 +3,7 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "compiler/analysis/effects.h"
 #include "compiler/diagnostics/updating/error.h"
 
 namespace seeml::update {
@@ -28,17 +29,6 @@ std::string_view GemmForm(const sir::Operation& op) {
 int64_t InnerDim(const sir::Operation& gemm, std::string_view form) {
   const auto& a = gemm.operand(0)->shape().dims;
   return form == "tn" ? a.at(0) : a.at(1);
-}
-
-/// Ops that rewrite storage in place. Mirrors DeadCodeElimination's
-/// effectful set, minus storage declarations (which execute nothing).
-bool MutatesInPlace(const sir::Operation& op) {
-  const std::string_view m = op.mnemonic();
-  return m == "sc_low.clip_norm" || m == "sc_low.sqnorm_accum" ||
-         m == "sc_low.clip_global" || m == "sc_low.sgd_step" ||
-         m == "sc_low.adamw_step" || m == "sc_low.gemm_acc" ||
-         m == "sc_low.accumulate" || m == "sc_low.zero" ||
-         m == "sc_low.attn_dq_tiled";
 }
 
 }  // namespace
