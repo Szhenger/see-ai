@@ -296,6 +296,53 @@ TEST(ForwardBuilder, RejectsDuplicateOutputName) {
       "redefines an existing value");
 }
 
+TEST(ForwardBuilder, RejectsAnOperatorNothingReads) {
+  // Review 2026-11-25: a dead MatMul over a frozen weight was an eligible
+  // LoRA site, so the model failed three passes later with "no gradient
+  // reached 'w3.lora_A'". The operator is named here instead.
+  SmfModel model;
+  model.input_name = "x";
+  model.output_name = "y";
+  model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+  model.ops.push_back({SmfOpKind::kRelu, "r1", {"x"}, "y"});
+  model.ops.push_back({SmfOpKind::kRelu, "r2", {"x"}, "dead"});
+  sir::Block block;
+  GraphBuild build;
+  build.input = AddInput(block, 4);
+  EXPECT_ERROR_CONTAINS(
+      BuildForward(block, model, "", build.input, kBatch, build),
+      "output 'dead' is never read");
+}
+
+TEST(ForwardBuilder, RejectsNamesTheCompilerDerives) {
+  // Review 2026-11-25: a model value named like one the passes create
+  // beside another model value collided in the SIR value table and was
+  // reported as "SIR invariants violated after pass 'lora-graft'".
+  auto build_with = [](const std::string& hidden) {
+    SmfModel model;
+    model.input_name = "x";
+    model.output_name = "y";
+    model.tensors.push_back({.name = "x", .dims = {-1, 4}, .is_const = false});
+    model.ops.push_back({SmfOpKind::kRelu, "r0", {"x"}, "w2"});
+    model.ops.push_back({SmfOpKind::kRelu, "r1", {"w2"}, hidden});
+    model.ops.push_back({SmfOpKind::kRelu, "r2", {hidden}, "y"});
+    sir::Block block;
+    GraphBuild build;
+    build.input = AddInput(block, 4);
+    return BuildForward(block, model, "", build.input, kBatch, build);
+  };
+  for (const char* derived :
+       {"w2.lora_out", "w2.lora_A", "w2.lora_B.adam_m", "w2.d3", "w2.grad_acc",
+        "w2.grad_acc2", "w2.remat"})
+    EXPECT_ERROR_CONTAINS(build_with(derived), "compiler derives from 'w2'");
+  EXPECT_ERROR_CONTAINS(build_with("grad_sqnorm"), "a value of its own");
+  EXPECT_ERROR_CONTAINS(build_with("loss.total"), "namespace 'loss.'");
+  // A suffix is only a collision beside the value it would be derived
+  // from: these are a model's own names.
+  for (const char* free_name : {"w2.d", "block.delta", "w9.lora_A", "w2.dx"})
+    EXPECT_OK(build_with(free_name));
+}
+
 TEST(ForwardBuilder, RejectsOutputShadowingTensorName) {
   SmfModel model;
   model.input_name = "x";

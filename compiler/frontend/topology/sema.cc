@@ -16,6 +16,105 @@ namespace seeml::update::sema {
 namespace sir = seeml::sir;
 namespace parsing = seeml::diag::parsing;
 
+namespace {
+
+/// The ids the analysis passes derive (review 2026-11-25). Each names a
+/// value the compiler creates beside a model value — `<w>.lora_A`,
+/// `<x>.d3`, `<w>.lora_B.adam_m` — or by itself (`grad_sqnorm`,
+/// `loss.total`). A model value carrying one of those names shares an SIR
+/// id with the compiler's own, and the collision used to surface passes
+/// later as "SIR invariants violated ... duplicate value id": an internal
+/// corruption message for a user's naming. Refused here, by name.
+///
+/// A suffixed name collides only when what is left after stripping the
+/// derived suffixes is itself a model value (`w2.lora_out` beside `w2`):
+/// a model is free to call a tensor `block.delta` when no `block` exists.
+[[nodiscard]] std::expected<void, std::string> CheckDerivedNames(
+    const SmfModel& model, const std::unordered_set<std::string_view>& names) {
+  static constexpr std::string_view kWhole[] = {"segment_starts",
+                                                "grad_sqnorm"};
+  static constexpr std::string_view kPrefixes[] = {"loss.", "rope_table."};
+  static constexpr std::string_view kSuffixes[] = {
+      ".lora_A",      ".lora_B",  ".lora_t", ".lora_u", ".lora_out",
+      ".merge_a",     ".merge_b", ".delta",  ".adam_m", ".adam_v",
+      ".adam_scales", ".seed",    ".remat"};
+  // ".d<N>" (an adjoint) and ".grad_acc<N>" (a fan-out or accumulation
+  // sum): the counted suffixes.
+  auto strip_counted = [](std::string_view& name, std::string_view stem) {
+    size_t end = name.size();
+    while (end > 0 && name[end - 1] >= '0' && name[end - 1] <= '9') --end;
+    const bool digits = end < name.size();
+    if (!name.substr(0, end).ends_with(stem)) return false;
+    if (stem == ".d" && !digits) return false;  // ".d" alone is a model's
+    name = name.substr(0, end - stem.size());
+    return true;
+  };
+  auto strip = [&](std::string_view& name) {
+    for (std::string_view suffix : kSuffixes)
+      if (name.ends_with(suffix)) {
+        name.remove_suffix(suffix.size());
+        return true;
+      }
+    return strip_counted(name, ".grad_acc") || strip_counted(name, ".d");
+  };
+  auto why = [&](std::string_view name) -> std::string {
+    for (std::string_view whole : kWhole)
+      if (name == whole)
+        return "'" + std::string(name) +
+               "' is a name the compiler gives a "
+               "value of its own";
+    for (std::string_view prefix : kPrefixes)
+      if (name.starts_with(prefix))
+        return "'" + std::string(name) + "' is in the namespace '" +
+               std::string(prefix) + "' the compiler names its own values in";
+    std::string_view stem = name;
+    bool stripped = false;
+    while (strip(stem)) stripped = true;
+    if (stripped && !stem.empty() && names.contains(stem))
+      return "'" + std::string(name) +
+             "' is a name the compiler derives "
+             "from '" +
+             std::string(stem) + "'";
+    return {};
+  };
+  for (const SmfTensor& t : model.tensors)
+    if (auto w = why(t.name); !w.empty())
+      return parsing::Error("tensor " + w + "; rename it");
+  if (auto w = why(model.input_name); !w.empty())
+    return parsing::Error("model input " + w + "; rename it");
+  for (const SmfOp& op : model.ops)
+    if (auto w = why(op.output); !w.empty())
+      return parsing::OpError("op", op.name, "output " + w + "; rename it");
+  return {};
+}
+
+/// Every operator's output is read: by a later operator, or as the model
+/// output (review 2026-11-25). An operator nothing reads is not part of
+/// the function being trained, and it was not harmless: a dead MatMul over
+/// a frozen weight is an eligible LoRA site, so the grafter gave it an
+/// adapter no gradient can reach and the whole model failed to compile
+/// with "no gradient reached 'w3.lora_A'" — naming a value the user never
+/// wrote. Named here instead, as what it is.
+[[nodiscard]] std::expected<void, std::string> CheckEveryOpIsRead(
+    const SmfModel& model) {
+  std::unordered_set<std::string_view> read;
+  read.insert(model.output_name);
+  for (const SmfOp& op : model.ops)
+    for (const std::string& in : op.inputs) read.insert(in);
+  for (const SmfOp& op : model.ops)
+    if (!read.contains(op.output))
+      return parsing::OpError(
+          "op", op.name,
+          "output '" + op.output +
+              "' is never read: no operator consumes it and it is not the "
+              "model output '" +
+              model.output_name +
+              "' (remove the operator; the compiler trains one function)");
+  return {};
+}
+
+}  // namespace
+
 std::expected<void, std::string> CheckGraph(const SmfModel& model) {
   // Every name an op may produce, for distinguishing "consumed before
   // produced" (a topological-order violation) from "does not exist" (a
@@ -88,6 +187,9 @@ std::expected<void, std::string> CheckGraph(const SmfModel& model) {
   if (!all_outputs.contains(model.output_name))
     return parsing::Error("model output '" + model.output_name +
                           "' was never produced by an operation");
+
+  if (auto r = CheckDerivedNames(model, bound); !r) return r;
+  if (auto r = CheckEveryOpIsRead(model); !r) return r;
 
   // Token-input discipline (SMF v4): a rank-1 dynamic ({-1}) non-const
   // input declares i32 token ids. That declaration and kEmbedding must
