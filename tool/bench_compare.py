@@ -109,6 +109,7 @@ measures, not a regression — and the gate exits 1 telling you to re-seed.
 """
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -277,7 +278,8 @@ def key_name(key):
 
 def compare(label, ref, cur, max_regression):
     """Prints per-key lines; returns ({key_name: line} of regressed keys,
-    {key_name of every key compared}). Deltas are runner-normalized (see
+    {key_name of every key compared}, [key_name of every key the reference
+    holds and the current report does not]). Deltas are runner-normalized (see
     runner_ratio)."""
     base, now = ref.tier_a, cur.tier_a
     ratio = runner_ratio(label, ref, cur)
@@ -291,10 +293,13 @@ def compare(label, ref, cur, max_regression):
                if raw else "")
         print(f"bench_compare: NOTE runner calibrates at {ratio:.3f}x the "
               f"{label}'s{mid}; deltas below are normalized")
-    failures, skipped, compared = {}, [], set()
+    failures, skipped, compared, missing = {}, [], set(), []
     for key, base_v in sorted(base.items()):
         if key not in now:
-            skipped.append(f"{key_name(key)}: in {label} only")
+            # Not a skip (review 2026-11-25): a fixture the reference
+            # measured and tonight's bench did not is the largest regression
+            # there is, and it used to pass the gate and be promoted away.
+            missing.append(key_name(key))
             continue
         compared.add(key_name(key))
         cur_v = now[key]
@@ -304,7 +309,13 @@ def compare(label, ref, cur, max_regression):
                  else f"{cur_v:.0f} (normalized {norm_v:.0f})")
         line = (f"{key_name(key)}: {base_v:.0f} -> {shown} rows/s "
                 f"({delta:+.1%}) vs {label}")
-        if delta < -max_regression:
+        # A rate that is not a positive finite number is no measurement: a
+        # NaN fails every comparison, so `delta < -max` read it as green.
+        if not (isinstance(cur_v, (int, float)) and math.isfinite(cur_v)
+                and cur_v > 0):
+            failures[key_name(key)] = (f"{key_name(key)}: {cur_v!r} rows/s "
+                                       f"is not a rate (vs {label})")
+        elif delta < -max_regression:
             failures[key_name(key)] = line
         else:
             print(f"bench_compare: OK   {line}")
@@ -312,7 +323,7 @@ def compare(label, ref, cur, max_regression):
         skipped.append(f"{key_name(key)}: new, not in {label}")
     for s in skipped:
         print(f"bench_compare: SKIP {s}")
-    return failures, compared
+    return failures, compared, missing
 
 
 STATE_SCHEMA = 2  # 2: carries the commit the reds were measured at
@@ -409,6 +420,10 @@ def main():
                         "--epoch-baseline from the current report (the "
                         "nightly keeps its epochs in git and never passes "
                         "this)")
+    p.add_argument("--allow-removed", action="store_true",
+                   help="accept a key a baseline holds and the current "
+                        "report does not (a fixture removed on purpose); "
+                        "without it a missing key fails the gate")
     p.add_argument("--across-releases", action="store_true",
                    help="compare against a rolling baseline measured on a "
                         "different seeml_version (refused by default)")
@@ -528,7 +543,8 @@ def gate(args):
         check_policy(label, ref)
         check_host(label, ref)
         short = label.split()[0]
-        failures, compared = compare(short, ref, cur, max_regression)
+        failures, compared, missing = compare(short, ref, cur,
+                                              max_regression)
         if not compared:
             # Fail closed: zero overlap means the gate measured nothing.
             raise GateError("no Tier A metric is present in both the "
@@ -546,6 +562,20 @@ def gate(args):
             print(f"bench_compare: NOTE {n} was red vs {short} on the "
                   "previous run and is not measured now; it stays red")
         red[short] = sorted(set(failures) | set(carried))
+        # A key the reference holds and tonight's report does not. Fatal at
+        # once, state or no state — nothing about it is a runner's noise —
+        # and so never promoted over. A fixture removed on purpose is said
+        # so: --allow-removed.
+        for name in missing:
+            if args.allow_removed:
+                print(f"bench_compare: NOTE {name} is in the {short} and "
+                      "not in the current report (--allow-removed)")
+            else:
+                line = (f"{name}: in the {short}, not in the current "
+                        "report — the bench did not measure it (pass "
+                        "--allow-removed if the fixture was removed)")
+                print(f"bench_compare: FAIL {line}")
+                f = f + [line]
         fatal.extend(f)
         warned.extend(w)
         if short == "baseline":
