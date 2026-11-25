@@ -1952,6 +1952,31 @@ TEST(UpdateCompiler, TheSegmentMaskFindsDocumentsByTheTokenizersEos) {
             CountOpcode(TrainProgramOf(u), OpCode::kAttnFwd));
 }
 
+TEST(UpdateCompiler, AMaskedCachedForwardRefusesABatchItsWordCannotHold) {
+  // Review 2026-11-25: the masked forward packs B, S, H and d into one
+  // word, 16 bits each. The tiled family is refused by AttentionTiling;
+  // the cached one had no bound, and 65,538 sequences compiled to a
+  // forward over 2 that the device accepted. 65,536 wraps to 0.
+  SmfModel model = seeml::testing::MakeTinyTokenDecoder(8, 4, 2, 2, 4, 41);
+  std::vector<uint8_t> head;
+  for (uint32_t x : {0x4B544D53u, 1u, 1u, 1u, 0u, 8u, 0u, 0u, 5u, 0xFFFFFFFFu,
+                     0xFFFFFFFFu, 0xFFFFFFFFu, 0u})
+    for (int i = 0; i < 4; ++i)
+      head.push_back(static_cast<uint8_t>((x >> (8 * i)) & 0xFF));
+  model.tokenizer = head;
+  for (int64_t sequences : {int64_t{65536}, int64_t{65538}}) {
+    UpdateConfig config = BaseConfig(2 * sequences);
+    config.segment_mask = SegmentMaskKind::kOn;
+    config.attention = AttentionKind::kCached;
+    EXPECT_ERROR_CONTAINS(UpdateCompiler(config).Compile(model),
+                          "exceeds the 16-bit ISA fields");
+  }
+  UpdateConfig fits = BaseConfig(2 * 4);
+  fits.segment_mask = SegmentMaskKind::kOn;
+  fits.attention = AttentionKind::kCached;
+  EXPECT_OK(UpdateCompiler(fits).Compile(model));
+}
+
 TEST(UpdateCompiler, TheSegmentMaskIsDecidedOnTheCorpusGiven) {
   // #191 design item 3: under `auto` the compiler grafts the mask when the
   // corpus it was given holds a window with more than one document, and

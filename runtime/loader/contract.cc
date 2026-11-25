@@ -179,12 +179,26 @@ class LiveSegmentStarts {
     const auto op = static_cast<up::OpCode>(ins.opcode);
     // v26: the tiled forward too.
     if (op == up::OpCode::kAttnFwdSeg || op == up::OpCode::kAttnFwdTiledSeg) {
-      bool bound = false;
-      for (const Range& s : live_) bound |= s.ref == ins.out[2];
+      // ... and all of it: one start per position of the attention's own
+      // geometry. A forward whose B*S is not the starts' is a batch field
+      // that wrapped in its 16 bits (review 2026-11-25) — each word is in
+      // bounds, and the forward would cover a fraction of the batch.
+      const up::AttnGeometry g = up::UnpackAttnGeometry(ins.out[1]);
+      const uint64_t bytes = g.B * g.S * sizeof(int32_t);  // 16-bit fields
+      bool bound = false, whole = false;
+      for (const Range& s : live_) {
+        if (s.ref != ins.out[2]) continue;
+        bound = true;
+        whole |= s.bytes == bytes;
+      }
       if (!bound)
         return diag::executing::Error(
             "segment-masked attention reads starts no segment_starts of the "
             "same program wrote (or one written over since)");
+      if (!whole)
+        return diag::executing::Error(
+            "segment-masked attention covers " + std::to_string(g.B * g.S) +
+            " positions, not the positions its segment_starts wrote");
     }
     // Any write over a live starts range retires it; kSegmentStarts then
     // (re)establishes the range it writes.

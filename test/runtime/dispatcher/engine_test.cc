@@ -438,6 +438,13 @@ TEST(EngineContract, SegmentStartsAreBoundToTheirSegmentStartsInstruction) {
   EXPECT_ERROR_CONTAINS(verify({seg}, {tiled}), "segment-masked attention");
   EXPECT_ERROR_CONTAINS(verify({seg, fill, tiled}), "segment-masked attention");
   EXPECT_OK(verify({seg, fill, seg, tiled}));
+  // Review 2026-11-25: the forward covers every position its starts were
+  // written for. A batch field that wrapped in its 16 bits leaves each
+  // word in bounds and the forward over a fraction of the batch.
+  up::UpdateInstruction wide = seg;
+  wide.out[0] = (uint64_t{3} << 32) | S;  // 12 starts; the forward says 4
+  EXPECT_ERROR_CONTAINS(verify({wide, fwd}), "covers 4 positions");
+  EXPECT_ERROR_CONTAINS(verify({wide, tiled}), "covers 4 positions");
 }
 
 TEST(EngineContract, EightBitMomentsArePersistentStateOfTheTrainingPrograms) {
